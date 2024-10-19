@@ -446,10 +446,15 @@ void TESObjectREFR::SetInventory(const Inventory& aInventory) noexcept
 {
     spdlog::debug("Setting inventory for {:X}", formID);
 
-    ScopedInventoryOverride _;
+    Inventory currentInventory = GetInventory();
+    spdlog::info(__FUNCTION__ ": initial inventory count {}, inventory to set {}", currentInventory.Entries.size(), aInventory.Entries.size());
+    for (Inventory::Entry entry : currentInventory.Entries)
+    {
+        entry.Count = -entry.Count;
+        AddOrRemoveItem(entry, false);
+    }
 
-    RemoveAllItems();
-
+     ScopedInventoryOverride _;
     for (const Inventory::Entry& entry : aInventory.Entries)
     {
         if (entry.Count != 0)

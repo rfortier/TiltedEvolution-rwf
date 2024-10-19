@@ -138,7 +138,17 @@ void EquipManager::UnequipAll(Actor* apActor)
 
     ScopedEquipOverride equipOverride;
 
-    TiltedPhoques::ThisCall(s_unequipAll, this, apActor);
+    Inventory inv = apActor->GetEquipment();
+
+    // Avoid empty UnequipAll()s, as they can trigger an infinite unequip animation loop.
+    if (inv.Entries.size() || inv.CurrentMagicEquipment.LeftHandSpell.BaseId ||
+        inv.CurrentMagicEquipment.RightHandSpell.BaseId || inv.CurrentMagicEquipment.Shout.BaseId)
+    {
+        TiltedPhoques::ThisCall(s_unequipAll, this, apActor);
+    }
+
+    if (apActor->GetExtension()->IsPlayer())
+        std::this_thread::sleep_for(20ms);
 }
 
 void* TP_MAKE_THISCALL(EquipHook, EquipManager, Actor* apActor, TESForm* apItem, EquipData* apData)
