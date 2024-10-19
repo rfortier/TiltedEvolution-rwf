@@ -25,6 +25,8 @@ void PlayerCharacter::PayCrimeGoldToAllFactions() noexcept
 // TODO: ft (verify)
 NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
 {
+    spdlog::info(__FUNCTION__ ": pPlayer {:X}, formID {:X}, formType {}, IsRemote() {}", (uintptr_t)this, formID, (uint8_t)formType, GetExtension()->IsRemote());
+
     // Make bleedout state recoverable
     SetNoBleedoutRecovery(false);
 

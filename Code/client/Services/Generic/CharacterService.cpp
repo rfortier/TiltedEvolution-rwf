@@ -142,6 +142,14 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
     }
 #endif
 
+    auto pNpc = Cast<TESNPC>(pActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, serverId {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)pActor, pActor->formID, acServerId,
+                 pActor->GetExtension()->IsPlayer(), 
+                 pActor->GetExtension()->IsRemote(),
+                 pName);
+
     pExtension->SetRemote(false);
 
     // TODO(cosideci): this should be done differently.
@@ -163,6 +171,15 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
 void CharacterService::DeleteTempActor(const uint32_t aFormId) noexcept
 {
     Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
+
+    auto pNpc = Cast<TESNPC>(pActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)pActor, pActor->formID,
+                pActor->GetExtension()->IsPlayer(), 
+                pActor->GetExtension()->IsRemote(),
+                pName);
+
     if (pActor && ((pActor->formID & 0xFF000000) == 0xFF000000))
     {
         pActor->Delete();
@@ -200,19 +217,42 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
     else
         entity = m_world.create();
 
-    m_world.emplace_or_replace<FormIdComponent>(entity, acEvent.FormId);
+    auto pNpc = Cast<TESNPC>(pActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)pActor, pActor->formID,
+                pActor->GetExtension()->IsPlayer(), 
+                pActor->GetExtension()->IsRemote(),
+                pName);
+
+     m_world.emplace_or_replace<FormIdComponent>(entity, acEvent.FormId);
 
     ProcessNewEntity(entity);
 }
 
 void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
 {
+    Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.FormId));
+
+    if (!pActor)
+        spdlog::info(__FUNCTION__ ": formID {:X}", acEvent.FormId);
+    else
+    {
+        auto pNpc = Cast<TESNPC>(pActor->baseForm);
+        auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+        spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                    (uintptr_t)pActor, pActor->formID,
+                    pActor->GetExtension()->IsPlayer(), 
+                    pActor->GetExtension()->IsRemote(),
+                    pName);
+    }
+
     auto view = m_world.view<FormIdComponent>();
     const auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.FormId](auto aEntity) { return view.get<FormIdComponent>(aEntity).Id == formId; });
 
     if (entityIt == view.end())
     {
-        spdlog::error("Actor to remove not found in form ids map {:X}", acEvent.FormId);
+        spdlog::error(__FUNCTION__ ": actor to remove not found in form ids map {:X}", acEvent.FormId);
         return;
     }
 
@@ -285,7 +325,7 @@ void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEve
 
 void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessage) noexcept
 {
-    spdlog::info("Received for cookie {:X}, server id {:X}", acMessage.Cookie, acMessage.ServerId);
+    spdlog::info(__FUNCTION__ ": received for cookie {:X}, server id {:X}", acMessage.Cookie, acMessage.ServerId);
 
     auto view = m_world.view<WaitingForAssignmentComponent>();
     const auto itor = std::find_if(std::begin(view), std::end(view), [view, cookie = acMessage.Cookie](auto entity) { return view.get<WaitingForAssignmentComponent>(entity).Cookie == cookie; });
@@ -315,6 +355,14 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         return;
     }
 
+    auto pNpc = Cast<TESNPC>(pActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)pActor, pActor->formID,
+                pActor->GetExtension()->IsPlayer(), 
+                !acMessage.Owner,
+                pName);
+
     // TODO: how could this possibly trigger?
     // it's kinda interfering with my WaitingFor3D code
     if (acMessage.PlayerId != 0)
@@ -322,7 +370,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
     if (acMessage.Owner)
     {
-        spdlog::info("Received local actor, form id: {:X}", pActor->formID);
+        spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}", pActor->formID);
 
         m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId);
         m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
@@ -331,7 +379,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     }
     else
     {
-        spdlog::info("Received remote actor, form id: {:X}, isweapondrawn: {}", pActor->formID, acMessage.IsWeaponDrawn);
+        spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}", pActor->formID, acMessage.IsWeaponDrawn);
 
         m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id);
 
@@ -359,9 +407,10 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     if (remoteItor != std::end(remoteView))
     {
-        spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+        spdlog::warn(__FUNCTION__ ": character with remote id {:X} is already spawned.", acMessage.ServerId);
         return;
     }
+    spdlog::info(__FUNCTION__ ": formID {:X}, serverID {:X}", acMessage.FormId, acMessage.ServerId);
 
     Actor* pActor = nullptr;
 
@@ -379,7 +428,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             const auto cNpcId = World::Get().GetModSystem().GetGameId(acMessage.BaseId);
             if (cNpcId == 0)
             {
-                spdlog::error("Failed to retrieve NPC, it will not be spawned, possibly missing mod, base: {:X}:{:X}, form: {:X}:{:X}", acMessage.BaseId.BaseId, acMessage.BaseId.ModId, acMessage.FormId.BaseId, acMessage.FormId.ModId);
+                spdlog::error(__FUNCTION__ ": failed to retrieve NPC, it will not be spawned, possibly missing mod, base: {:X}:{:X}, form: {:X}:{:X}", acMessage.BaseId.BaseId, acMessage.BaseId.ModId, acMessage.FormId.BaseId, acMessage.FormId.ModId);
                 return;
             }
 
@@ -404,7 +453,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
         if (waitingItor != std::end(waitingView))
         {
-            spdlog::info("Character with form id {:X} already has a spawn request in progress.", cActorId);
+            spdlog::info(__FUNCTION__ ": character with form id {:X} already has a spawn request in progress.", cActorId);
             return;
         }
 
@@ -413,7 +462,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
         if (!pActor)
         {
-            spdlog::error("Failed to retrieve Actor {:X}, it will not be spawned, possibly missing mod", cActorId);
+            spdlog::error(__FUNCTION__ ": failed to retrieve Actor {:X}, it will not be spawned, possibly missing mod", cActorId);
             spdlog::error("\tForm : {:X}", pForm ? pForm->formID : 0);
             return;
         }
@@ -429,16 +478,24 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     if (!pActor)
     {
-        spdlog::error("Actor object {:X} could not be created.", acMessage.ServerId);
+        spdlog::error(__FUNCTION__ ": actor object {:X} could not be created.", acMessage.ServerId);
         return;
     }
-
-    spdlog::info("CharacterSpawnRequest, server id: {:X}, form id: {:X}", acMessage.ServerId, pActor->formID);
+ 
+    spdlog::info(__FUNCTION__ ": characterSpawnRequest, server id: {:X}, form id: {:X}", acMessage.ServerId, pActor->formID);
 
     if (pActor->IsDisabled())
         pActor->Enable();
 
     pActor->GetExtension()->SetRemote(true);
+
+    auto pNpc = Cast<TESNPC>(pActor);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                    (uintptr_t)pActor, pActor->formID, 
+                    pActor->GetExtension()->IsPlayer(),
+                    pActor->GetExtension()->IsRemote(),
+                    pName);
 
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
@@ -456,7 +513,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     if (pActor->IsDead() != acMessage.IsDead)
         acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
 
-    spdlog::info("Spawn Request Is summon {}", acMessage.IsPlayerSummon);
+    spdlog::info(__FUNCTION__ ": spawn Request Is summon {}", acMessage.IsPlayerSummon);
 
 #if TP_SKYRIM64
     if (acMessage.IsPlayerSummon)
@@ -511,6 +568,14 @@ void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessag
 
     if (!pActor)
         return;
+
+    auto pNpc = Cast<TESNPC>(pActor);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                    (uintptr_t)pActor, pActor->formID, 
+                    pActor->GetExtension()->IsPlayer(),
+                    pActor->GetExtension()->IsRemote(),
+                    pName);
 
     pActor->SetActorValues(acMessage.NewActorData.InitialActorValues);
     pActor->SetActorInventory(acMessage.NewActorData.InitialInventory);
@@ -604,12 +669,12 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
 
         if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, *itor))
         {
-            spdlog::info("Ownership claimed {:X}", acMessage.ServerId);
+            spdlog::info(__FUNCTION__ ": ownership claimed formID {:X}, serverID {:X}", formIdComponent.Id, acMessage.ServerId);
             return;
         }
     }
 
-    spdlog::warn("Actor for ownership transfer not found {:X}", acMessage.ServerId);
+    spdlog::warn(__FUNCTION__ ": actor for ownership transfer not found {:X}", acMessage.ServerId);
 
     RequestOwnershipTransfer request{};
     request.ServerId = acMessage.ServerId;

@@ -122,6 +122,13 @@ Actor* TP_MAKE_THISCALL(HookCharacterConstructor, Actor)
 
     TiltedPhoques::ThisCall(RealCharacterConstructor, apThis);
 
+    auto pNpc = Cast<TESNPC>(apThis->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)apThis, apThis->formID,
+                 const_cast<Actor*>(apThis)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(apThis)->GetExtension()->IsRemote(),
+                 pName);    
     return apThis;
 }
 
@@ -130,6 +137,13 @@ Actor* TP_MAKE_THISCALL(HookCharacterConstructor2, Actor, uint8_t aUnk)
     TP_EMPTY_HOOK_PLACEHOLDER;
 
     TiltedPhoques::ThisCall(RealCharacterConstructor2, apThis, aUnk);
+    auto pNpc = Cast<TESNPC>(apThis->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)apThis, apThis->formID,
+                 const_cast<Actor*>(apThis)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(apThis)->GetExtension()->IsRemote(),
+                 pName);
 
     return apThis;
 }
@@ -137,6 +151,14 @@ Actor* TP_MAKE_THISCALL(HookCharacterConstructor2, Actor, uint8_t aUnk)
 Actor* TP_MAKE_THISCALL(HookCharacterDestructor, Actor)
 {
     TP_EMPTY_HOOK_PLACEHOLDER;
+
+    auto pNpc = Cast<TESNPC>(apThis->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)apThis, apThis->formID,
+                 const_cast<Actor*>(apThis)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(apThis)->GetExtension()->IsRemote(),
+                 pName);
 
     auto pExtension = apThis->GetExtension();
 
@@ -153,6 +175,7 @@ Actor* TP_MAKE_THISCALL(HookCharacterDestructor, Actor)
 GamePtr<Actor> Actor::New() noexcept
 {
     auto* const pActor = Memory::Allocate<Actor>();
+    spdlog::info(__FUNCTION__ ": pActor {:X}", (uintptr_t)(pActor));
 
     TiltedPhoques::ThisCall(RealCharacterConstructor, pActor);
 
@@ -351,6 +374,14 @@ void Actor::ForceActorValue(ActorValueOwner::ForceMode aMode, uint32_t aId, floa
 
 Inventory Actor::GetActorInventory() const noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)this, this->formID,
+                 const_cast<Actor*>(this)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                 pName);
+
     Inventory inventory = GetInventory();
 
     inventory.CurrentMagicEquipment = GetMagicEquipment();
@@ -378,6 +409,14 @@ MagicEquipment Actor::GetMagicEquipment() const noexcept
 
 Inventory Actor::GetEquipment() const noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)this, this->formID,
+                 const_cast<Actor*>(this)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                 pName);
+
     Inventory inventory = GetInventory();
     inventory.RemoveByFilter([](const auto& entry) { return !entry.IsWorn(); });
     inventory.CurrentMagicEquipment = GetMagicEquipment();
@@ -393,7 +432,13 @@ int32_t Actor::GetGoldAmount() const noexcept
 
 void Actor::SetActorInventory(const Inventory& aInventory) noexcept
 {
-    spdlog::info("Setting inventory for actor {:X}", formID);
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)this, this->formID,
+                 const_cast<Actor*>(this)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                 pName);
 
     UnEquipAll();
 
@@ -495,6 +540,14 @@ void Actor::SetPlayerTeammate(bool aSet) noexcept
 
 void Actor::UnEquipAll() noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)this, this->formID,
+                 const_cast<Actor*>(this)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                 pName);
+
     EquipManager::Get()->UnequipAll(this);
 
     // Taken from skyrim's code shouts can be two form types apparently
@@ -556,6 +609,14 @@ bool Actor::IsDragon() const noexcept
 
 void Actor::Kill() noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)this, this->formID,
+                 const_cast<Actor*>(this)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                 pName);
+
     // Never kill players
     ActorExtension* pExtension = GetExtension();
     if (pExtension->IsPlayer())
@@ -573,6 +634,14 @@ void Actor::Kill() noexcept
 
 void Actor::Reset() noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)this, this->formID,
+                 const_cast<Actor*>(this)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                 pName);
+
     using ObjectReference = TESObjectREFR;
 
     PAPYRUS_FUNCTION(void, ObjectReference, Reset, int, TESObjectREFR*);
@@ -588,6 +657,14 @@ bool Actor::PlayIdle(TESIdleForm* apIdle) noexcept
 
 void Actor::Respawn() noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)this, this->formID,
+                 const_cast<Actor*>(this)->GetExtension()->IsPlayer(),
+                 const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                 pName);
+
     Resurrect(false);
     Reset();
 }
@@ -655,11 +732,13 @@ static TSpawnActorInWorld* RealSpawnActorInWorld = nullptr;
 
 // TODO: this isn't SpawnActorInWorld, this is TESObjectREFR::UpdateReference3D()
 bool TP_MAKE_THISCALL(HookSpawnActorInWorld, Actor)
-{
+{    
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}", (uintptr_t)apThis, apThis->formID);
+
     const auto* pNpc = Cast<TESNPC>(apThis->baseForm);
     if (pNpc)
     {
-        spdlog::info("Spawn Actor: {:X}, and NPC {}", apThis->formID, pNpc->fullName.value);
+        spdlog::info(__FUNCTION__ ": Actor: {:X}, and NPC {}", apThis->formID, pNpc->fullName.value);
     }
 
     return TiltedPhoques::ThisCall(RealSpawnActorInWorld, apThis);
@@ -770,6 +849,18 @@ void* TP_MAKE_THISCALL(HookRegenAttributes, Actor, int aId, float aRegenValue)
 
 void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner)
 {
+    auto pNpc = Cast<TESNPC>(apThis->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\", itemFormId "
+                              "{:X}, itemName \"{}\", count {} overrides equip {} unequip {} inventory {}", 
+                 (uintptr_t)apThis, apThis->formID, 
+                 apThis->GetExtension()->IsPlayer(), 
+                 apThis->GetExtension()->IsRemote(),
+                 pName, apThis->formID, apThis->GetName(), aCount,
+                 ScopedEquipOverride::IsOverriden(),
+                 ScopedUnequipOverride::IsOverriden(),
+                 ScopedInventoryOverride::IsOverriden());
+
     if (!ScopedInventoryOverride::IsOverriden())
     {
         auto& modSystem = World::Get().GetModSystem();

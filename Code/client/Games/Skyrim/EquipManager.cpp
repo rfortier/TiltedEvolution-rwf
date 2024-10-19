@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <EquipManager.h>
+#include <Forms/TESNPC.h>
 #include <Games/References.h>
 #include <Games/Overrides.h>
 
@@ -73,6 +74,16 @@ void* EquipManager::Equip(Actor* apActor, TESForm* apItem, ExtraDataList* apExtr
     POINTER_SKYRIMSE(TEquipInternal, s_equipFunc, 38894);
 
     ScopedEquipOverride equipOverride;
+    auto pNpc = Cast<TESNPC>(apActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\", itemFormId "
+                              "{:X}, itemName \"{}\", overrides equip {} inventory {}", 
+                 (uintptr_t)apActor, apActor->formID, 
+                 apActor->GetExtension()->IsPlayer(), 
+                 apActor->GetExtension()->IsRemote(),
+                 pName, apItem->formID, apItem->GetName(),
+                 ScopedEquipOverride::IsOverriden(),
+                 ScopedInventoryOverride::IsOverriden());
 
     spdlog::debug("Call Actor[{:X}]::Equip(), item id: {:X}, extra data? {}, count: {}", apActor->formID, apItem->formID, (bool)apExtraDataList, aCount);
 
@@ -85,6 +96,16 @@ void* EquipManager::UnEquip(Actor* apActor, TESForm* apItem, ExtraDataList* apEx
     POINTER_SKYRIMSE(TUnEquipInternal, s_unequipFunc, 38901);
 
     ScopedEquipOverride equipOverride;
+    auto pNpc = Cast<TESNPC>(apActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\", itemFormId "
+                              "{:X}, itemName \"{}\", overrides equip {} inventory {}", 
+                 (uintptr_t)apActor, apActor->formID, 
+                 apActor->GetExtension()->IsPlayer(), 
+                 apActor->GetExtension()->IsRemote(),
+                 pName, apItem->formID, apItem->GetName(),
+                 ScopedEquipOverride::IsOverriden(),
+                 ScopedInventoryOverride::IsOverriden());
 
     spdlog::debug("Call Actor[{:X}]::UnEquip(), item id: {:X}, extra data? {}, count: {}", apActor->formID, apItem->formID, (bool)apExtraDataList, aCount);
 
@@ -138,8 +159,34 @@ void EquipManager::UnequipAll(Actor* apActor)
 
     ScopedEquipOverride equipOverride;
 
-    Inventory inv = apActor->GetEquipment();
+    auto pNpc = Cast<TESNPC>(apActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\", overrides equip "
+                              "{} inventory {}", 
+                 (uintptr_t)apActor, apActor->formID, 
+                 apActor->GetExtension()->IsPlayer(), 
+                 apActor->GetExtension()->IsRemote(),
+                 pName, 
+                 ScopedEquipOverride::IsOverriden(),
+                 ScopedInventoryOverride::IsOverriden());
 
+    Inventory inv = apActor->GetEquipment();
+    if (apActor->GetExtension()->IsPlayer())
+    {
+        Inventory inv = apActor->GetEquipment();
+        for (auto& entry : inv.Entries)
+            if (entry.IsWorn())
+                spdlog::info(__FUNCTION__ ": equipment formID {:X}, name \"{}\", itemID {:X}, isWorn {}",
+                             apActor->formID, pName, entry.BaseId, entry.IsWorn());
+
+        spdlog::info(__FUNCTION__ ": magic formID {:X}, name \"{}\", left hand itemID {:X}",
+                     apActor->formID, pName, inv.CurrentMagicEquipment.LeftHandSpell.BaseId);
+        spdlog::info(__FUNCTION__ ": magic formID {:X}, name \"{}\", right hand itemID {:X}",
+                     apActor->formID, pName, inv.CurrentMagicEquipment.RightHandSpell.BaseId);
+        spdlog::info(__FUNCTION__ ": magic formID {:X}, name \"{}\", Shout itemID {:X}",
+                     apActor->formID, pName, inv.CurrentMagicEquipment.Shout.BaseId);
+    }       
+            
     // Avoid empty UnequipAll()s, as they can trigger an infinite unequip animation loop.
     if (inv.Entries.size() || inv.CurrentMagicEquipment.LeftHandSpell.BaseId ||
         inv.CurrentMagicEquipment.RightHandSpell.BaseId || inv.CurrentMagicEquipment.Shout.BaseId)
@@ -148,13 +195,24 @@ void EquipManager::UnequipAll(Actor* apActor)
     }
 
     if (apActor->GetExtension()->IsPlayer())
-        std::this_thread::sleep_for(20ms);
-}
+        std::this_thread::sleep_for(20ms);      // This avoids a crash from the massive changes of cell change if the unequip hook fires too soon.
+    }
 
 void* TP_MAKE_THISCALL(EquipHook, EquipManager, Actor* apActor, TESForm* apItem, EquipData* apData)
 {
     if (!apActor)
         return nullptr;
+
+    auto pNpc = Cast<TESNPC>(apActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\", itemFormId "
+                              "{:X}, itemName \"{}\", overrides equip {} inventory {}", 
+                 (uintptr_t)apActor, apActor->formID, 
+                 apActor->GetExtension()->IsPlayer(), 
+                 apActor->GetExtension()->IsRemote(),
+                 pName, apItem->formID, apItem->GetName(),
+                 ScopedEquipOverride::IsOverriden(),
+                 ScopedInventoryOverride::IsOverriden());
 
     const auto pExtension = apActor->GetExtension();
     if (pExtension->IsRemote())
@@ -181,6 +239,12 @@ void* TP_MAKE_THISCALL(EquipHook, EquipManager, Actor* apActor, TESForm* apItem,
 
     ScopedUnequipOverride _;
 
+    spdlog::info(__FUNCTION__ ": RealEquip, apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)apActor, apActor->formID, 
+                 apActor->GetExtension()->IsPlayer(), 
+                 apActor->GetExtension()->IsRemote(),
+                 pName);
+
     return TiltedPhoques::ThisCall(RealEquip, apThis, apActor, apItem, apData);
 }
 
@@ -189,10 +253,22 @@ void* TP_MAKE_THISCALL(UnEquipHook, EquipManager, Actor* apActor, TESForm* apIte
     if (!apActor)
         return nullptr;
 
+    auto pNpc = Cast<TESNPC>(apActor->baseForm);
+    auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\", itemFormId "
+                              "{:X}, itemName \"{}\", overrides equip {} unequip {} inventory {}", 
+                 (uintptr_t)apActor, apActor->formID, 
+                 apActor->GetExtension()->IsPlayer(), 
+                 apActor->GetExtension()->IsRemote(),
+                 pName, apItem->formID, apItem->GetName(),
+                 ScopedEquipOverride::IsOverriden(),
+                 ScopedUnequipOverride::IsOverriden(),
+                 ScopedInventoryOverride::IsOverriden());
+
     const auto pExtension = apActor->GetExtension();
     if (pExtension->IsRemote())
     {
-        spdlog::debug("Actor[{:X}]::Unequip(), item form id: {:X}, IsOverridden, equip: {}, inventory: {}", apActor->formID, apItem->formID, ScopedEquipOverride::IsOverriden(), ScopedInventoryOverride::IsOverriden());
+        spdlog::info(__FUNCTION__ ": actor[{:X}]::Unequip(), item form id: {:X}, IsOverridden, equip: {}, inventory: {}", apActor->formID, apItem->formID, ScopedEquipOverride::IsOverriden(), ScopedInventoryOverride::IsOverriden());
         // The ScopedInventoryOverride check is here to allow the item to be unequipped if it is removed
         // Without this check, the game will not accept null as a return, and it'll keep trying to unequip infinitely
         if (!ScopedEquipOverride::IsOverriden() && !ScopedInventoryOverride::IsOverriden())
@@ -213,6 +289,11 @@ void* TP_MAKE_THISCALL(UnEquipHook, EquipManager, Actor* apActor, TESForm* apIte
     }
 
     spdlog::debug("UnEquipHook, actor: {:X}", apActor->formID);
+    spdlog::info(__FUNCTION__ ": RealUnEquip, apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                 (uintptr_t)apActor, apActor->formID, 
+                 apActor->GetExtension()->IsPlayer(), 
+                 apActor->GetExtension()->IsRemote(),
+                 pName);
 
     return TiltedPhoques::ThisCall(RealUnEquip, apThis, apActor, apItem, apData);
 }

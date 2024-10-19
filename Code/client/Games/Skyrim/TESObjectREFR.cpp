@@ -21,6 +21,7 @@
 #include <ExtraData/ExtraWornLeft.h>
 #include <Forms/EnchantmentItem.h>
 #include <Forms/AlchemyItem.h>
+#include <Forms/TESNPC.h>
 #include <EquipManager.h>
 #include <DefaultObjectManager.h>
 
@@ -97,7 +98,7 @@ void TESObjectREFR::RemoveAllItems() noexcept
 
     PAPYRUS_FUNCTION(void, ObjectReference, RemoveAllItems, TESObjectREFR*, bool, bool);
 
-    ScopedEquipOverride equipOverride;
+    ScopedEquipOverride equipOverride;      // Because will trigger Unequip and UnequipHook if items are equipable.
 
     s_pRemoveAllItems(this, nullptr, false, true);
 }
@@ -631,6 +632,22 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
 
 void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner)
 {
+    Actor* pActor = Cast<Actor>(apThis);
+    if (pActor)
+    {
+        auto pNpc = Cast<TESNPC>(pActor->baseForm);
+        auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+        spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\", itemFormId "
+                                  "{:X}, itemName \"{}\", overrides equip {} unequip {} inventory {}", 
+                (uintptr_t)pActor, pActor->formID, 
+                pActor->GetExtension()->IsPlayer(), 
+                pActor->GetExtension()->IsRemote(), 
+                pName, apItem->formID, apItem->GetName(),
+                ScopedEquipOverride::IsOverriden(),
+                ScopedUnequipOverride::IsOverriden(),
+                ScopedInventoryOverride::IsOverriden());
+    }
+
     if (!ScopedInventoryOverride::IsOverriden())
     {
         auto& modSystem = World::Get().GetModSystem();
@@ -653,6 +670,22 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
 BSPointerHandle<TESObjectREFR>*
 TP_MAKE_THISCALL(HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult, TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason, ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc, const NiPoint3* apRotate)
 {
+    Actor* pActor = Cast<Actor>(apThis);
+    if (pActor)
+    {
+        auto pNpc = Cast<TESNPC>(pActor->baseForm);
+        auto pName = pNpc ? static_cast<const char*>(pNpc->fullName.value) : "";
+        spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\", itemFormId "
+                                  "{:X}, itemName \"{}\", overrides equip {} unequip {} inventory {}", 
+                (uintptr_t)pActor, pActor->formID, 
+                pActor->GetExtension()->IsPlayer(), 
+                pActor->GetExtension()->IsRemote(),
+                pName, apItem->formID, apItem->GetName(),
+                ScopedEquipOverride::IsOverriden(),
+                ScopedUnequipOverride::IsOverriden(),
+                ScopedInventoryOverride::IsOverriden());
+    }
+
     if (!ScopedInventoryOverride::IsOverriden())
     {
         auto& modSystem = World::Get().GetModSystem();

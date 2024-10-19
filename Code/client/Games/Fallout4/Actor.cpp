@@ -32,6 +32,13 @@ Actor* TP_MAKE_THISCALL(HookActorContructor, Actor, uint8_t aUnk)
     TP_EMPTY_HOOK_PLACEHOLDER;
 
     const auto pActor = TiltedPhoques::ThisCall(RealActorConstructor, apThis, aUnk);
+    auto pNpc = Cast<TESNPC>(pActor->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)pActor, pActor->formID,
+                pActor->GetExtension()->IsPlayer(), 
+                pActor->GetExtension()->IsRemote(),
+                pName);
 
     return pActor;
 }
@@ -41,6 +48,13 @@ Actor* TP_MAKE_THISCALL(HookActorContructor2, Actor, volatile int** aRefCount, u
     TP_EMPTY_HOOK_PLACEHOLDER;
 
     const auto pActor = TiltedPhoques::ThisCall(RealActorConstructor2, apThis, aRefCount, aUnk);
+    auto pNpc = Cast<TESNPC>(pActor->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)pActor, pActor->formID,
+                pActor->GetExtension()->IsPlayer(), 
+                pActor->GetExtension()->IsRemote(),
+                pName);
 
     return pActor;
 }
@@ -48,12 +62,22 @@ Actor* TP_MAKE_THISCALL(HookActorContructor2, Actor, volatile int** aRefCount, u
 void* TP_MAKE_THISCALL(HookActorDestructor, Actor)
 {
     // TODO: Actor dtor sometimes has garbage actor, causing a crash
+    auto pNpc = Cast<TESNPC>(apThis->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": apActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)apThis, apThis->formID,
+                apThis->GetExtension()->IsPlayer(), 
+                apThis->GetExtension()->IsRemote(),
+                pName);
+
     return TiltedPhoques::ThisCall(RealActorDestructor, apThis);
 }
 
 GamePtr<Actor> Actor::New() noexcept
 {
     const auto pActor = Memory::Allocate<Actor>();
+
+    spdlog::info(__FUNCTION__ ": pActor {:X}", (uintptr_t)pActor);
 
     TiltedPhoques::ThisCall(HookActorContructor, pActor, uint8_t(1));
 
@@ -155,11 +179,27 @@ float Actor::GetActorPermanentValue(uint32_t aId) const noexcept
 
 Inventory Actor::GetActorInventory() const noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)this, this->formID,
+                const_cast<Actor*>(this)->GetExtension()->IsPlayer(), 
+                const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                pName);
+
     return GetInventory();
 }
 
 Inventory Actor::GetEquipment() const noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)this, this->formID,
+                const_cast<Actor*>(this)->GetExtension()->IsPlayer(), 
+                const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                pName);
+
     Inventory inventory = GetInventory();
     inventory.RemoveByFilter([](const auto& entry) { return !entry.IsWorn(); });
     return inventory;
@@ -232,7 +272,13 @@ void Actor::SetFactionRank(const TESFaction* acpFaction, int8_t aRank) noexcept
 
 void Actor::SetActorInventory(const Inventory& acInventory) noexcept
 {
-    spdlog::info("Setting actor inventory, form id: {:X}", formID);
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)this, this->formID,
+                const_cast<Actor*>(this)->GetExtension()->IsPlayer(), 
+                const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                pName);
 
     UnEquipAll();
 
@@ -241,6 +287,14 @@ void Actor::SetActorInventory(const Inventory& acInventory) noexcept
 
 void Actor::UnEquipAll() noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)this, this->formID,
+                const_cast<Actor*>(this)->GetExtension()->IsPlayer(), 
+                const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                pName);
+
     TP_THIS_FUNCTION(TUnEquipAll, void, Actor);
     POINTER_FALLOUT4(TUnEquipAll, s_unequipAll, 1260318);
     TiltedPhoques::ThisCall(s_unequipAll, this);
@@ -266,6 +320,14 @@ void Actor::Kill() noexcept
 
 void Actor::Reset() noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)this, this->formID,
+                const_cast<Actor*>(this)->GetExtension()->IsPlayer(), 
+                const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                pName);
+
     using ObjectReference = TESObjectREFR;
     PAPYRUS_FUNCTION(void, ObjectReference, Reset, int, TESObjectREFR*);
     s_pReset(this, 0, nullptr);
@@ -273,6 +335,14 @@ void Actor::Reset() noexcept
 
 void Actor::Respawn() noexcept
 {
+    auto pNpc = Cast<TESNPC>(this->baseForm);
+    const char* pName = pNpc ? pNpc->fullName.value.AsAscii() : "";
+    spdlog::info(__FUNCTION__ ": pActor {:X}, formID {:X}, IsPlayer() {}, IsRemote() {}, name \"{}\"", 
+                (uintptr_t)this, this->formID,
+                const_cast<Actor*>(this)->GetExtension()->IsPlayer(), 
+                const_cast<Actor*>(this)->GetExtension()->IsRemote(),
+                pName);
+
     Resurrect(false);
     Reset();
 }
