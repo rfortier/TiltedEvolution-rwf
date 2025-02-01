@@ -26,11 +26,15 @@
 #include <PlayerCharacter.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESGlobal.h>
+#include <Games/TES.h>
 #include <Games/Overrides.h>
 #include <Games/References.h>
 #include <AI/AIProcess.h>
 #include <EquipManager.h>
 #include <Forms/TESRace.h>
+#include <ScriptExtender.h>
+#include <Services/PapyrusService.h>
+
 
 PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
@@ -61,9 +65,41 @@ void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
 void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
+    // Kill moves disallowed because they are broken. But, if they have been fixed?
+    // Fixed has two conditions: kill cam zoom-in must be disabled (making all players zoom would be... problematic)
+    // Second condition is a variaty of killcam bugs should/must be fixed by a whitelisted mod.
+    // The only known mod that works is Killmove Fixes, https://www.nexusmods.com/skyrimspecialedition/mods/140398
+    // but others can be whitelisted as they are discovered.
+    // The code to enable kill cams will normally be inert, since the default value of bVATSDisable is false
+    // and a necessary mod is missing.
+    // One other wrinkle: the papyrus GetINIBool function only exists if SKSE is installed,
+    // and the GLOBAL_PAPYRUS_FUNCTION call does not check for error, sets up a null function
+    // pointer and provides no way to test it. So, skip all that if SKSE is not installed. 
+    // If there is a simple way to check ALL the places a Skyrim .ini value might be hiding,
+    // or just get our hands on the global variable, I'd use it. But this is the fix as it 
+    // stands now.
+    bool killMoves = false; 
+    bool bVATSDisable = false;
+    GLOBAL_PAPYRUS_FUNCTION(bool, GetINIBool, const char *);
+    if (IsScriptExtenderLoaded())
+        bVATSDisable = s_pGetINIBool("bVATSDisable:VATS");
+    spdlog::debug(__FUNCTION__ ": bVATSDisable = {}", bVATSDisable);
+
+    auto& modlist = ModManager::Get()->mods;
+    const TiltedPhoques::Vector<TiltedPhoques::String> killMoveFixList = {"EVE - KillMove Fixes.esp"};
+
+    if (bVATSDisable)
+        for (const auto& mod : modlist)
+        {
+            if (killMoves = (killMoves || std::find(killMoveFixList.begin(), killMoveFixList.end(), mod->filename) != killMoveFixList.end()))
+                break;
+        }
+    spdlog::debug(__FUNCTION__ ": killMoves = {}", killMoves);
+
     // TODO: SkyrimTogether.esm
     TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19));
-    pKillMove->f = 0.f;
+    // Possibly reenabled for compatibility testing with new mods. 
+    pKillMove->f = killMoves ? 1.f : 0.f;
 
     TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
     pWorldEncountersEnabled->f = 0.f;
