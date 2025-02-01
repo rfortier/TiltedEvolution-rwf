@@ -26,6 +26,7 @@
 #include <PlayerCharacter.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESGlobal.h>
+#include <Games/TES.h>
 #include <Games/Overrides.h>
 #include <Games/References.h>
 #include <AI/AIProcess.h>
@@ -61,9 +62,21 @@ void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
 void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
+    // Kill moves disallowed because they are broken. But, if they have been fixed?
+    bool killMoves = false;
+    auto& modlist = ModManager::Get()->mods;
+    const TiltedPhoques::Vector<TiltedPhoques::String> killMoveFixList = {"EVE - KillMove Fixes.esp"};
+
+    for (const auto& mod : modlist)
+    {
+        if (killMoves = (killMoves || std::find(killMoveFixList.begin(), killMoveFixList.end(), mod->filename) != killMoveFixList.end()))
+            break;
+    }
+
     // TODO: SkyrimTogether.esm
     TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19));
-    pKillMove->f = 0.f;
+    // Possibly reenabled for compatibility testing with new mods. 
+    pKillMove->f = killMoves ? 1.f : 0.f;
 
     TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
     pWorldEncountersEnabled->f = 0.f;
