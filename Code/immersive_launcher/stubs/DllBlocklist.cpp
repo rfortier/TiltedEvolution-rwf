@@ -47,24 +47,33 @@ const DllGreyEntry kDllGreyList[] =
         L"Data\\SKSE\\Plugins\\EngineFixes.toml",
          "# SKYRIM TOGETHER REBORN marker for EngineFixes required compatibility settings v2, DO NOT CHANGE THIS LINE",
  
-         L"For EngineFixes to be compatible with Skyrim Together Reborn, some settings are required.\n"
-          "OK: make the changes required. Cancel: EngineFixes will not load\n"
-            "    MemoryManager = false\n"
-            "    ScaleformAllocator = false\n\n"
-         "You must make this change manually if you use Animation Limit Crash Fix to avoid a pop-up:\n"     
-            "    AnimationLoadSignedCrash = false",
+        L"For EngineFixes to work with Skyrim Together Reborn, some settings are required:\n"
+            "\tMemoryManager = false\n"
+            "\tScaleformAllocator = false\n"
+            "\tMaxStdio = 8192\n\n"
+
+         "OK:\tMakes the changes for you\n"
+         "Cancel:\tEngineFixes will not load\n\n"
+
+         "If later you get the (harmless) SrtCrashFix64 popup, manually make this EngineFixes configuration change to suppress it:\n"     
+            "\tAnimationLoadSignedCrash = false",
+
+
 
          "# SKYRIM TOGETHER REBORN marker for EngineFixes required compatibility settings v2, DO NOT CHANGE THIS LINE\n"
          "#    MemoryManager = false\n"
          "#    ScaleformAllocator = false\n"
-         "# If you get an SrtCrashFix64 error, it is because you've loaded a mod like Animation Limit Fix\n"
+         "#    MaxStdio = 8192\n"
+         "#\n"
+
+         "# If you get a SrtCrashFix64 popup, it is because you've loaded a mod like Animation Limit Crash Fixe SSE\n"
          "# that is doing the same thing as EngineFixes. Manually set\n"
          "#    AnimationLoadSignedCrash = false\n"
          "# to eliminate the annoying popup.\n\n",
     
          "(^\\s*MemoryManager\\s*=\\s*)(true ?|false)\n$1false\n"
          "(^\\s*ScaleformAllocator\\s*=\\s*)(true ?|false)\n$1false\n"
-         "(^\\s*MaxStdio\\s*=\\s*)([0-9]+)\n$18192\n"       // Only huge builds need this many files, but make EF match what STR sets.
+         "(^\\s*MaxStdio\\s*=\\s*)([0-9]+)\n$018192\n"       // Only huge builds need this many files, but make EF match what STR sets.
     }
 };
 
