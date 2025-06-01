@@ -40,6 +40,9 @@ struct DllGreyEntry
     const char*    m_replacers;         // Regex replacers. Regex & replacement separated by newlines.
 };                                      //     You can have more than one replacer, also separated by newlines
 
+// Data drive this. The intent is make sure we can put this in an external file for easy updates
+// (although the format would probably be updated to something standard like JSON then, it 
+// just isn't worth the additional code while there is only one)
 const DllGreyEntry kDllGreyList[] = 
 {
     {
@@ -57,8 +60,6 @@ const DllGreyEntry kDllGreyList[] =
 
          "If later you get the (harmless) SrtCrashFix64 popup, manually make this EngineFixes configuration change to suppress it:\n"     
             "\tAnimationLoadSignedCrash = false",
-
-
 
          "# SKYRIM TOGETHER REBORN marker for EngineFixes required compatibility settings v2, DO NOT CHANGE THIS LINE\n"
          "#    MemoryManager = false\n"
@@ -85,49 +86,48 @@ enum GreyListDisposition
 };
 
 
-// This is long, lots of error checking, but the comments call out the major steps in the sequence. 
+// This is long, lots of error checking and user interaction, but the comments call out the major steps in the sequence. 
 GreyListDisposition IsConfigOK(const std::filesystem::path& aPath, const DllGreyEntry& aEntry)
 {
-    // Read the entire file into a string buffer.
-    std::string newConfig;
+    std::regex signatureRegex; 
+    std::stringstream configStream;    
+
+    // Read the entire config into a string buffer.
+    // If the config doesn't exist or can't be read, it may be
+    // that the mod isn't installed at all. Or we don't have 
+    // permissions, which means the mod won't be able to read 
+    // the config either and it will be handled there.
+    // Returning Accept keeps everthing quiet (not installed is OK),
+    // and if config is protected it is the mod's job to handle it 
     std::filesystem::path configFile = aPath / aEntry.m_configLocation;
     std::fstream file(configFile, std::ios::in);
-    std::stringstream configStream;
-
-    if (file.good())
-        configStream << file.rdbuf();
-
+    if (!file.good())
+        return kGreyListAccept;
+    configStream << file.rdbuf();
     if (configStream.bad() || file.bad())
     {
         auto msg = fmt::format(__FUNCTION__ L": failed to read {}", aEntry.m_configLocation);
         Die(msg.c_str(), true);
         return kGreyListAbort;
     }
+    // Rewind config stream and prepare to generate newConfig;
+    configStream.clear(); // Clear any EOF flags
+    configStream.seekg(0, std::ios::beg);
+    std::string newConfig;   
 
     // std::regex throws exceeptions
     try
     {
-        // Check for signature regexp, if found then the config file is accepted.
-        std::regex regex_pattern(aEntry.m_sigRegex, std::regex_constants::icase);
-        if (std::regex_search(configStream.str(), regex_pattern))
-            return kGreyListAccept; 
-
-        // Ask user if they want to fix config, or not load the mod.
-        if (MessageBoxW(NULL, aEntry.m_prompt, PRODUCT_NAME L" Requires Configuration Changes", MB_OKCANCEL | MB_ICONWARNING) == IDCANCEL)
-            return kGreyListAbort;
-
-        // Rewind config file
-        file.clear(); // Clear any EOF flags
-        file.seekg(0, std::ios::beg);
-        newConfig = aEntry.m_sigToInsert;
+        // This has to be done inside the try/catch, but will be used outside at the end.
+        std::regex sig_regex(aEntry.m_sigRegex, std::regex_constants::icase);
 
         // Iterate over each line of the config file
         //     Iterate over each replacer, possibly changing the line
-        //     Output upddate line to new config
+        //     Output upddated line to new config
         std::string line;
         std::stringstream replacers(aEntry.m_replacers);
 
-        while (file.good() && std::getline(file, line))
+        while (configStream.good() && std::getline(configStream, line))
         {
             std::string pattern;
             std::string withThat;
@@ -155,20 +155,30 @@ GreyListDisposition IsConfigOK(const std::filesystem::path& aPath, const DllGrey
         return kGreyListAbort;
     }
 
-    // FINALLY, update the config file.
-    // Have to reopen to truncate
-    // New configuration in-hand in a string, rewind the config file stream and write it out.
-    // !file.bad() because file.eof() SHOULD be true.
+    // Check: is the newConfig equal to the original? If so, we're done.
+    if (stricmp(newConfig.c_str(), configStream.str().c_str()) == 0)
+        return kGreyListAccept;
+
+    // Ask user if they want to fix config, or not load the mod.
+    if (MessageBoxW(NULL, aEntry.m_prompt, PRODUCT_NAME L" Requires Configuration Changes", MB_OKCANCEL | MB_ICONWARNING) == IDCANCEL)
+        return kGreyListAbort;
+
+    // Have to update the config file.
+    // If the newConfig doesn't have the signature in it, insert it to the output.
+    // Then save the new configuration
+    if (!std::regex_search(newConfig, signatureRegex))
+        newConfig = aEntry.m_sigToInsert + newConfig;
+    
+    // Have to reopen the stream to truncate it to zero, this also check write permissions
+    file.close();
+    file = std::fstream(configFile, std::ios::in | std::ios::out | std::ios::trunc);
+
     if (!file.bad())
-    {
-        file.close();
-        file = std::fstream(configFile, std::ios::in | std::ios::out | std::ios::trunc);
-        file << newConfig;
-    }
+      file << newConfig;
 
     if (file.bad())
     {
-        auto msg = fmt::format(__FUNCTION__ L": failed to read or rewrite {}", configFile.c_str());
+        auto msg = fmt::format(__FUNCTION__ L": failed to rewrite {}", configFile.c_str());
         Die(msg.c_str(), true);
         return kGreyListAbort;
     }
