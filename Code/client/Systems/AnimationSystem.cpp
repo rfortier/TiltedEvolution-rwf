@@ -28,10 +28,9 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
     const auto it = std::begin(actions);
     if (it != std::end(actions) && it->Tick <= aTick)
     {
-        // Check if animation graph is ready before attempting to play animations
+        // Check if the animation graph is ready before attempting to play animations
         if (!apActor->animationGraphHolder.IsReady())
         {
-            // Animation graph not ready, keep the action in queue and try again later
             return;
         }
 
@@ -46,7 +45,34 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
         apActor->actorState.flags1 = first.State1;
         apActor->actorState.flags2 = first.State2;
 
-        apActor->LoadAnimationVariables(first.Variables);
+        if (aAnimationComponent.ActionDelayCounter > 0)
+        {
+            --aAnimationComponent.ActionDelayCounter;
+            
+            if (aAnimationComponent.ActionDelayCounter > 0)
+            {
+                return;
+            }
+        }
+        else
+        {
+            // We do not need to re-load variables on the update that the delay hits 0
+            apActor->LoadAnimationVariables(first.Variables);
+            
+            // Check if this is a casting start event that needs delay
+            // This is because they need magicbehaviors.hkx to become available
+            const bool bIsSpellEvent = first.EventName.ends_with("ConcentrationStart") || 
+                                       first.EventName.ends_with("SpellAimedStart") || 
+                                       first.EventName.ends_with("SpellSelfStart");
+
+            if (bIsSpellEvent)
+            {
+                // I believe a 5-update delay is optimal
+                // If issues arise, we could adjust it
+                aAnimationComponent.ActionDelayCounter = 5;
+                return;  // Don't process the action yet
+            }
+        }
 
         aAnimationComponent.LastRanAction = first;
 
@@ -59,6 +85,7 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
         const auto result = ActorMediator::Get()->ForceAction(&actionData);
 
         actions.pop_front();
+        aAnimationComponent.ActionDelayCounter = 0;
     }
 }
 
