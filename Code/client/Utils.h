@@ -53,7 +53,7 @@ template <class T> T* GetByServerId(const uint32_t acServerId) noexcept
         }
     }
 
-    spdlog::warn("{}: form not found for server id {:X}", __FUNCTION__, acServerId);
+    spdlog::debug("{}: form not found for server id {:X}", __FUNCTION__, acServerId);
     return nullptr;
 }
 
