@@ -18,7 +18,6 @@ namespace stubs
     // for causing crashes and incompatibility with ST
     const wchar_t* const kDllBlocklist[] = {
         L"EngineFixes.dll",          // Skyrim Engine Fixes, breaks our hooks
-        L"SkyrimSoulsRE.dll",        // Our mod implements this with special handling
         L"crashhandler64.dll",       // Stream crash handler, breaks heap
         L"fraps64.dll",              // Breaks tilted ui
         L"SpecialK64.dll",           // breaks rendering
@@ -53,7 +52,8 @@ const DllGreyEntry kDllGreyList[] =
         L"For EngineFixes to work with Skyrim Together Reborn, some settings are required:\n"
             "\tMemoryManager = false\n"
             "\tScaleformAllocator = false\n"
-            "\tMaxStdio = 8192\n\n"
+            "\tMaxStdio = 8192\n"
+            "\tGlobalTime = true, for game time fixes\n\n"
 
          "OK:\tMakes the changes for you\n"
          "Cancel:\tEngineFixes will not load\n\n"
@@ -66,6 +66,7 @@ const DllGreyEntry kDllGreyList[] =
          "#    MemoryManager = false\n"
          "#    ScaleformAllocator = false\n"
          "#    MaxStdio = 8192\n"
+         "#    GlobalTime = true  # For STR and mods game time fixes\n"
          "#\n"
 
          "# If you get a SrtCrashFix64 popup, it is because you've loaded a mod like Animation Limit Crash Fixe SSE\n"
@@ -76,6 +77,8 @@ const DllGreyEntry kDllGreyList[] =
          "(^\\s*MemoryManager\\s*=\\s*)(true ?|false)\n$1false\n"
          "(^\\s*ScaleformAllocator\\s*=\\s*)(true ?|false)\n$1false\n"
          "(^\\s*MaxStdio\\s*=\\s*)([0-9]+)\n$018192\n"       // Only huge builds need this many files, but make EF match what STR sets.
+         "(^\\s*GlobalTime\\s*=\\s*)(true ?|false)\n$1true \n"
+
     }
 };
 
