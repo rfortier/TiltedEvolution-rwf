@@ -9,4 +9,5 @@ struct RemoteAnimationComponent
     List<ActionEvent> TimePoints;
     ActionEvent LastRanAction;
     ActionEvent LastProcessedAction;
+    uint32_t ActionDelayCounter{0}; // Currently only for magic casting start
 };
