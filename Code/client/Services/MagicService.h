@@ -2,9 +2,11 @@
 
 #include <Games/Events.h>
 #include <Events/EventDispatcher.h>
+#include <Events/AddTargetEvent.h>
 #include <Messages/AddTargetRequest.h>
 #include <Messages/NotifyAddTarget.h>
 #include <Messages/NotifyRemoveSpell.h>
+#include <chrono>
 
 struct World;
 struct TransportService;
@@ -100,9 +102,53 @@ private:
     /**
      * @brief The queued magic effects.
      * @see ApplyQueuedEffects
+     * Tracks effects queued for incompletely constructed actors / targets
+     * There may be multiple. There may be sequencing between the targets
+     * that matters. And, the objects might also be destroyed
+     * before application, so they must time out
      */
-    Map<uint32_t, AddTargetRequest> m_queuedEffects;
-    Map<uint32_t, NotifyAddTarget> m_queuedRemoteEffects;
+    class MagicQueue
+    {
+      public:
+        MagicQueue() = default;
+        MagicQueue(const MagicQueue&) = default;
+        bool Expired() const { return std::chrono::steady_clock::now() > m_expiration; }
+
+      private:
+        const std::chrono::steady_clock::duration   m_queueLimit{std::chrono::seconds(4)};
+        const std::chrono::steady_clock::time_point m_expiration{std::chrono::steady_clock::now() + m_queueLimit};
+    };
+
+    class MagicAddTargetEventQueue : public MagicQueue
+    {
+      public:
+        MagicAddTargetEventQueue() = default;
+        MagicAddTargetEventQueue(const AddTargetEvent& aTarget) : m_TargetEvent(aTarget) {};
+        const AddTargetEvent& Target() const 
+        {
+            return m_TargetEvent;
+        }
+    
+      private:
+        AddTargetEvent m_TargetEvent;
+    };
+
+    class MagicNotifyAddTargetQueue : public MagicQueue
+    {
+      public:
+        MagicNotifyAddTargetQueue() = default;
+        MagicNotifyAddTargetQueue(const NotifyAddTarget& aTarget) : m_NotifyAddTarget(aTarget) {};
+        const NotifyAddTarget& Target() const
+        {
+            return m_NotifyAddTarget;
+        }
+
+      private:
+        NotifyAddTarget m_NotifyAddTarget;
+    };
+
+    std::queue<MagicAddTargetEventQueue>  m_queuedEffects;
+    std::queue<MagicNotifyAddTargetQueue> m_queuedRemoteEffects;
 
     bool m_revealingOtherPlayers = false;
 
