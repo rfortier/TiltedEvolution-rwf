@@ -330,18 +330,21 @@ void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
 
     request.TargetId = serverIdRes.value();
 
-    const auto casterIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.CasterID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (casterIt == std::end(view))
+    if (acEvent.CasterID)
     {
-        spdlog::warn("{}: server entity for caster formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.CasterID);
-        m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));  
-        return;
-    }
+        const auto casterIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.CasterID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
 
-    serverIdRes = Utils::GetServerId(*casterIt);
-    if (serverIdRes.has_value())
-        request.CasterId = serverIdRes.value();
+        if (casterIt == std::end(view))
+        {
+            spdlog::warn("{}: server entity for caster formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.CasterID);
+            m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));  
+            return;
+        }
+
+        serverIdRes = Utils::GetServerId(*casterIt);
+        if (serverIdRes.has_value())
+            request.CasterId = serverIdRes.value();
+    }
 
     request.IsDualCasting = acEvent.IsDualCasting;
     request.ApplyHealPerkBonus = acEvent.ApplyHealPerkBonus;
@@ -385,7 +388,7 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.TargetId);
     if (!pActor)
     {
-        spdlog::warn("{}: could not find targetted Actor for serverID {:X}, queueing", __FUNCTION__, acMessage.TargetId);
+        spdlog::warn("{}: could not find targeted Actor for serverID {:X}, queueing", __FUNCTION__, acMessage.TargetId);
         m_queuedRemoteEffects.push(acMessage);
         return;
     }
@@ -408,7 +411,8 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
     if (pEffect->IsSlowEffect())
         pActor = PlayerCharacter::Get();
 
-    data.pCaster = Utils::GetByServerId<Actor>(acMessage.CasterId);
+    if (acMessage.CasterId)
+        data.pCaster = Utils::GetByServerId<Actor>(acMessage.CasterId);
 
     pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
 
