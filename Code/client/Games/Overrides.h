@@ -6,9 +6,9 @@ template <class T> struct ScopedOverride
 
     ~ScopedOverride() { s_refCount--; }
 
-    TP_NOCOPYMOVE(ScopedOverride);
+    TP_NOCOPYMOVE(ScopedOverride)
 
-    static bool IsOverriden() { return s_refCount > 0; }
+    static bool IsOverriden() noexcept { return s_refCount > 0; }
 
 private:
     static thread_local uint32_t s_refCount;
@@ -43,6 +43,12 @@ struct Quest
 struct SpellCast
 {
 };
+struct ActionProcess
+{
+};
+struct ForceAnimation
+{
+};
 } // namespace details
 
 using ScopedReferencesOverride = ScopedOverride<TESObjectREFR>;
@@ -55,3 +61,5 @@ using ScopedInventoryOverride = ScopedOverride<details::Inventory>;
 using ScopedExtraDataOverride = ScopedOverride<details::ExtraData>;
 using ScopedQuestOverride = ScopedOverride<details::Quest>;
 using ScopedSpellCastOverride = ScopedOverride<details::SpellCast>;
+using ScopedActionProcessOverride = ScopedOverride<details::ActionProcess>;
+using ScopedForceAnimationOverride = ScopedOverride<details::ForceAnimation>;

@@ -7,16 +7,19 @@ struct BGSActionData : ActionInput, ActionOutput
 {
     enum SomeFlag : uint32_t
     {
-        kTransitionNoAnimation = 1,
-        kSkip = 2
+        kDoAnimation = 0,
+        kTransitionNoAnimation = 1 << 0,
+        kSkip = 1 << 1,
+        kSTRControlled = 1 << 30
     };
 
     BGSActionData(uint32_t aParam1, Actor* apActor, BGSAction* apAction, TESObjectREFR* apTarget);
-    virtual ~BGSActionData() {}
+    ~BGSActionData() override {}
 
-    virtual BGSActionData* Clone() { return nullptr; }
-    virtual uintptr_t Perform() { return 0; }
+    virtual BGSActionData* Clone() { return nullptr; } // 04
+    virtual bool Perform() { return false; } // 05
 
     uint32_t someFlag;
-    uint32_t pad5C;
+    // 4 padding bytes
 };
+static_assert(sizeof(BGSActionData) == 0x60);

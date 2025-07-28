@@ -10,7 +10,10 @@ struct BGSAction;
 struct TESActionData final : BGSActionData
 {
     TESActionData(uint32_t aParam1, Actor* apActor, BGSAction* apAction, TESObjectREFR* apTarget); // pass 2 for aParam1
-    ~TESActionData();
+    ~TESActionData() override;
+
+    BGSActionData* Clone() override { return nullptr; } // 04
+    bool Perform() override { return false; } // 05
 
     bool ComputeResult();
 };
