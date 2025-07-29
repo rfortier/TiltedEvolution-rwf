@@ -170,4 +170,4 @@ struct MagicService
 
 // Exposed so we can increase log level of just this tricky code, in debugger or a build.
 // Non-const has to be initialized outside of class.
-spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::debug};
+spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::warn};
