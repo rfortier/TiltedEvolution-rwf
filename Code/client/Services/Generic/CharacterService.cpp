@@ -560,14 +560,56 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
 
 void CharacterService::OnActionEvent(const ActionEvent& acActionEvent) const noexcept
 {
+    if (acActionEvent.ActionId == 0)
+        spdlog::error("Action with event name {} has no action form!", acActionEvent.EventName);
+    
     auto view = m_world.view<LocalAnimationComponent, FormIdComponent>();
 
-    const auto itor = std::find_if(std::begin(view), std::end(view), [id = acActionEvent.ActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (itor != std::end(view))
+    // TODO: if target is regularly an actor, find both in one go?
+    const auto actor_it = std::ranges::find_if(view,
+                                           [id = acActionEvent.ActorId, view](entt::entity entity) {
+                                               return view.get<FormIdComponent>(entity).Id == id;
+                                           });
+    
+    
+    if (actor_it != std::end(view))
     {
-        auto& localComponent = view.get<LocalAnimationComponent>(*itor);
+        auto& localComponent = view.get<LocalAnimationComponent>(*actor_it);
 
+        // TODO: Finish proper handling of formIds
+        //      Idleforms should use modsystem GameId
+        //      Actors should just use entity handle
+        
+        // if (acActionEvent.TargetId != 0)
+        // {
+        //     if (Cast<Actor>(TESForm::GetById(acActionEvent.TargetId)))
+        //     {
+        //         auto target_view = m_world.view<LocalComponent, FormIdComponent>();
+        //         const auto target_it = std::ranges::find_if(view,
+        //                                    [id = acActionEvent.TargetId, view](entt::entity entity) {
+        //                                        return view.get<FormIdComponent>(entity).Id == id;
+        //                                    });
+        //         if (target_it != std::end(view))
+        //         {
+        //             auto& target_localComponent = target_view.get<LocalComponent>(*target_it);
+        //             // TODO: Best way I found was to make it mutable and replace FormId with entity handle
+        //             acActionEvent.TargetId = target_localComponent.Id;
+        //             spdlog::info("OnActionEvent - Action {} has actor target with local entity",
+        //                 acActionEvent.EventName);
+        //         }
+        //         else
+        //         {
+        //             spdlog::error("OnActionEvent - Action {} has actor target 0x{:X} with no local entity - Need to handle this",
+        //                 acActionEvent.EventName, acActionEvent.TargetId);
+        //         }
+        //     }
+        //     else
+        //     {
+        //         spdlog::warn("OnActionEvent - Action {} has non-actor target 0x{:X} - Need to handle this",
+        //             acActionEvent.EventName, acActionEvent.TargetId);
+        //     }
+        // }
+        
         localComponent.Append(acActionEvent);
     }
 }
@@ -1452,7 +1494,7 @@ void CharacterService::RunLocalUpdates() const noexcept
 void CharacterService::RunRemoteUpdates() noexcept
 {
     // Delay by 300ms to let the interpolation system accumulate interpolation points
-    const auto tick = m_transport.GetClock().GetCurrentTick() - 300;
+    const auto tick = m_transport.GetClock().GetCurrentTick()- 300;
 
     // Interpolation has to keep running even if the actor is not in view, otherwise we will never know if we need to spawn it
     auto interpolatedEntities = m_world.view<RemoteComponent, InterpolationComponent>();
