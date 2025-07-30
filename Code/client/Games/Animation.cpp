@@ -77,7 +77,7 @@ static uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData*
 
                 // Weapon equip
                 // TODO: Investigate the interaction between action process rework and weapon draw special-case
-                if(apAction->action->formID == 0x132AF)
+                if (apAction->action && apAction->action->formID == 0x132AF)
                     pExtension->LatestWeapEquipAnimation = Event;
             }
 
