@@ -308,6 +308,15 @@ struct BSScript
         bool MarshallAndDispatch(Variable* apBaseVar, IVirtualMachine* apVm, uint32_t aStackID, Variable* apResult, StackFrame* apStackFrame) override;
     };
 
+    struct IsSkyrimTogetherExeRunningFunc : NativeFunction
+    {
+        using FunctionType = bool();
+
+        IsSkyrimTogetherExeRunningFunc(const char* apFunctionName, const char* apClassName, FunctionType aFunction, Variable::Type aType);
+
+        bool MarshallAndDispatch(Variable* apBaseVar, IVirtualMachine* apVm, uint32_t aStackID, Variable* apResult, StackFrame* apStackFrame) override;
+    };
+
     // Bad PoC code
 #if 0
     template <class... T> struct EventArguments : IFunctionArguments
