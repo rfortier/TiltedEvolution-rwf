@@ -34,8 +34,8 @@ void TP_MAKE_THISCALL(HookRegisterPapyrusFunction, BSScript::IVirtualMachine, Na
 void TP_MAKE_THISCALL(HookBindEverythingToScript, BSScript::IVirtualMachine*)
 {
     (*apThis)->BindNativeMethod(new BSScript::IsRemotePlayerFunc("IsRemotePlayer", "SkyrimTogetherUtils", PapyrusFunctions::IsRemotePlayer, BSScript::Variable::kBoolean));
-
     (*apThis)->BindNativeMethod(new BSScript::IsPlayerFunc("IsPlayer", "SkyrimTogetherUtils", PapyrusFunctions::IsPlayer, BSScript::Variable::kBoolean));
+    (*apThis)->BindNativeMethod(new BSScript::IsSkyrimTogetherExeRunningFunc("IsSkyrimTogetherExeRunning", "SkyrimTogetherVerifyLaunchScript", PapyrusFunctions::IsSkyrimTogetherExeRunning, BSScript::Variable::kBoolean));
 
     TiltedPhoques::ThisCall(RealBindEverythingToScript, apThis);
 }
