@@ -254,7 +254,6 @@ ExPlayerCharacter* Actor::AsExPlayerCharacter() noexcept
     return nullptr;
 }
 
-extern thread_local bool g_forceAnimation;
 
 void Actor::SetWeaponDrawnEx(bool aDraw) noexcept
 {
@@ -267,9 +266,10 @@ void Actor::SetWeaponDrawnEx(bool aDraw) noexcept
         spdlog::debug("Setting weapon drawn after update: {:X}:{}, current state: {}", formID, aDraw, actorState.IsWeaponDrawn());
     }
 
-    g_forceAnimation = true;
-    SetWeaponDrawn(aDraw);
-    g_forceAnimation = false;
+    {
+        ScopedForceAnimationOverride forceAnimation;
+        SetWeaponDrawn(aDraw);
+    }
 }
 
 static thread_local bool s_execInitPackage = false;
@@ -871,8 +871,6 @@ bool Actor::IsVampireLord() const noexcept
     return race && race->formID == 0x200283A;
 }
 
-extern thread_local bool g_forceAnimation;
-
 void Actor::FixVampireLordModel() noexcept
 {
     TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(0x2011a84));
@@ -886,24 +884,24 @@ void Actor::FixVampireLordModel() noexcept
 
     EquipManager::Get()->Equip(this, pObject, nullptr, 1, nullptr, false, true, false, false);
 
-    g_forceAnimation = true;
-
-    BSFixedString str("isLevitating");
-    uint32_t isLevitating = GetAnimationVariableInt(&str);
-    spdlog::critical("isLevitating {}", isLevitating);
-
-    // By default, a loaded vampire lord is not levitating.
-    if (isLevitating)
     {
-        BSFixedString levitation("LevitationToggle");
-        SendAnimationEvent(&levitation);
+        ScopedForceAnimationOverride forceAnimation;
+
+        BSFixedString str("isLevitating");
+        uint32_t isLevitating = GetAnimationVariableInt(&str);
+        spdlog::critical("isLevitating {}", isLevitating);
+
+        // By default, a loaded vampire lord is not levitating.
+        if (isLevitating)
+        {
+            BSFixedString levitation("LevitationToggle");
+            SendAnimationEvent(&levitation);
+        }
+
+        // TODO: weapon draw code does not seem to take care of this
+        //BSFixedString weapEquip("WeapEquip");
+        //SendAnimationEvent(&weapEquip);
     }
-
-    // TODO: weapon draw code does not seem to take care of this
-    //BSFixedString weapEquip("WeapEquip");
-    //SendAnimationEvent(&weapEquip);
-
-    g_forceAnimation = false;
 }
 
 char TP_MAKE_THISCALL(HookSetPosition, Actor, NiPoint3& aPosition)
