@@ -138,6 +138,7 @@ void ExeLoader::LoadImports(const IMAGE_NT_HEADERS* apNtHeader)
     }
 }
 
+#pragma optimize("", off)
 void ExeLoader::LoadSections(const IMAGE_NT_HEADERS* apNtHeader)
 {
     auto* section = IMAGE_FIRST_SECTION(apNtHeader);
@@ -169,18 +170,49 @@ void ExeLoader::LoadTLS(const IMAGE_NT_HEADERS* apNtHeader, const IMAGE_NT_HEADE
 {
     if (apNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size)
     {
-        const auto* sourceTls = GetTargetRVA<IMAGE_TLS_DIRECTORY>(apNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
-        const auto* targetTls = GetTargetRVA<IMAGE_TLS_DIRECTORY>(apSourceNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
+        // Note: source & target refer here to direction of copy, the opposite of use in calling routine.
+        // Rewrite sourceTLS
+        auto sourceTls = GetOffset<IMAGE_TLS_DIRECTORY>(apNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
+        auto sourceVA  = GetOffset<const uint8_t>(sourceTls->StartAddressOfRawData - apNtHeader->OptionalHeader.ImageBase);
+        auto sourceAddressOfIndex = GetOffset<ULONGLONG>(sourceTls->AddressOfIndex - apNtHeader->OptionalHeader.ImageBase);
 
-        *(DWORD*)(sourceTls->AddressOfIndex) = 0;
+        const auto targetTls = reinterpret_cast<IMAGE_TLS_DIRECTORY*>(apSourceNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress + reinterpret_cast<uint8_t*>(GetModuleHandle(NULL)));
+        auto targetVA = reinterpret_cast<uint8_t*>(targetTls->StartAddressOfRawData);
+        const auto sizeOfZeroFill = sourceTls->SizeOfZeroFill;
 
-        LPVOID tlsBase = *(LPVOID*)__readgsqword(0x58);
+        // Note subtlety found in wild: Start > End is a flag for zero.
+        const ULONGLONG sizeOfTemplate = sourceTls->StartAddressOfRawData >= sourceTls->EndAddressOfRawData ? 0 : sourceTls->EndAddressOfRawData - sourceTls->StartAddressOfRawData;
 
-        DWORD oldProtect;
-        VirtualProtect(reinterpret_cast<LPVOID>(targetTls->StartAddressOfRawData), sourceTls->EndAddressOfRawData - sourceTls->StartAddressOfRawData, PAGE_READWRITE, &oldProtect);
+        *(DWORD*)(sourceAddressOfIndex) = 0;   // Should already be zero. Executable gets the first one.
+        uint8_t* pTlsBase = (uint8_t*)(*(LPVOID*)__readgsqword(0x58));
 
-        std::memcpy(tlsBase, reinterpret_cast<void*>(sourceTls->StartAddressOfRawData), sourceTls->EndAddressOfRawData - sourceTls->StartAddressOfRawData);
-        std::memcpy((void*)targetTls->StartAddressOfRawData, reinterpret_cast<void*>(sourceTls->StartAddressOfRawData), sourceTls->EndAddressOfRawData - sourceTls->StartAddressOfRawData);
+        if (sizeOfTemplate + sizeOfZeroFill)
+        {
+            // We're going to overwrite our current TLS. STR's is bigger than SkyrimSE's (today), but just in case.
+            // It's not certain we don't need it; orginal code tried to overwrite, but copied itself to itself.
+            if (sizeOfTemplate + sizeOfZeroFill > (targetTls->EndAddressOfRawData - targetTls->StartAddressOfRawData + targetTls->SizeOfZeroFill))
+                Die(__FUNCTION__ L": SkyrimSE.exe TLS is larger than SkyrimTogether.exe, need a rewrite");
+
+            DWORD oldProtect = 0;
+            auto  pTlsBlock = reinterpret_cast<LPVOID>(targetTls->StartAddressOfRawData);
+            if (!VirtualProtect(pTlsBlock, sizeOfTemplate + sizeOfZeroFill, PAGE_READWRITE, &oldProtect))
+                Die(__FUNCTION__ L"VirtualProtect() failure", true);
+
+            std::memcpy(pTlsBase, sourceVA, sizeOfTemplate);
+            std::memcpy(pTlsBlock, sourceVA, sizeOfTemplate);
+            if (sizeOfZeroFill)
+                memset(pTlsBase + sizeOfTemplate, 0, sizeOfZeroFill);
+        }
+
+        if (*(PIMAGE_TLS_CALLBACK*)sourceAddressOfIndex)
+            Die(__FUNCTION__ L": SkyrimSE has TLS CallBacks, write the code");
+
+        // Relocate the source TLS in case SkyrimTogether isn't at the same ImageBase.
+        auto imageBaseVA = (ULONGLONG)GetModuleHandle(0);
+        sourceTls->StartAddressOfRawData += imageBaseVA - apNtHeader->OptionalHeader.ImageBase;
+        sourceTls->EndAddressOfRawData   += imageBaseVA - apNtHeader->OptionalHeader.ImageBase;
+        sourceTls->AddressOfIndex        += imageBaseVA - apNtHeader->OptionalHeader.ImageBase;
+        sourceTls->AddressOfCallBacks    += imageBaseVA - apNtHeader->OptionalHeader.ImageBase;   
     }
 }
 
@@ -311,6 +343,9 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
     // copy over the offset to the new imports directory
     DWORD oldProtect;
     VirtualProtect(sourceNtHeader, 0x1000, PAGE_EXECUTE_READWRITE, &oldProtect);
+
+    // Update ImageBase in case different.
+    ntHeader->OptionalHeader.ImageBase = (ULONGLONG)m_moduleHandle;
 
     // re-target the import directory to the target's; ours isn't needed anymore.
     sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT] = ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
