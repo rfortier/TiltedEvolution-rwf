@@ -146,7 +146,6 @@ void DebugService::OnMoveActor(const MoveActorEvent& acEvent) noexcept
     moveData.position = acEvent.Position;
 }
 
-extern thread_local bool g_forceAnimation;
 
 void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 {
