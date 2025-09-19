@@ -18,6 +18,7 @@
 #include "steam/SteamCeg.h"
 #include "utils/Error.h"
 #include "utils/NtInternal.h"
+#include <FunctionHook.hpp>
 
 #if defined(_M_AMD64)
 typedef enum _FUNCTION_TABLE_TYPE
@@ -272,6 +273,11 @@ void ExeLoader::DecryptCeg(IMAGE_NT_HEADERS* apSourceNt)
     apSourceNt->OptionalHeader.AddressOfEntryPoint = static_cast<uint32_t>(realEntry);
 }
 
+// _initterm_e is the only hooked function needed by the skse_plugin_preloader.
+// That means it is hooked so early it needs a bit of special case logic, 
+// not least is making sure it is in the IAT so it CAN be hooked. Reference it.
+static volatile void* forceImport_initterm_e = (void*)&_initterm_e;
+
 bool ExeLoader::Load(const uint8_t* apProgramBuffer)
 {
     m_pBinary = apProgramBuffer;
@@ -308,6 +314,11 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
     LoadTLS(ntHeader, sourceNtHeader);
 #endif
 
+    // skse_plugin_preloader (and others?) may hook _initterm_e during LoadImports(), 
+    // so we may have to put it back after copying Skyrim's headers over ours.
+    // SKSE proper also does some more hooking, but we haven't initialized it yet so that "just works"
+    auto source_initterm_e = *TiltedPhoques::GetImportedFunction(nullptr, "api-ms-win-crt-runtime-l1-1-0.dll", "_initterm_e");
+
     // copy over the offset to the new imports directory
     DWORD oldProtect;
     VirtualProtect(sourceNtHeader, 0x1000, PAGE_EXECUTE_READWRITE, &oldProtect);
@@ -325,6 +336,7 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
     sourceNtHeader->OptionalHeader.CheckSum = sourceChecksum;
     sourceNtHeader->FileHeader.TimeDateStamp = sourceTimestamp;
     sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG] = sourceDebugDir;
+    *TiltedPhoques::GetImportedFunction(nullptr, "api-ms-win-crt-runtime-l1-1-0.dll", "_initterm_e") = source_initterm_e;
 
     m_pBinary = nullptr;
     return true;
