@@ -21,45 +21,66 @@
 
 extern thread_local const char* g_animErrorCode;
 
-void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationComponent& aAnimationComponent, const uint64_t aTick) noexcept
+void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationComponent& aAnimationComponent,
+                             const uint64_t aTick) noexcept
 {
     auto& actions = aAnimationComponent.TimePoints;
 
-    const auto it = std::begin(actions);
-    if (it != std::end(actions) && it->Tick <= aTick)
+    if (actions.empty() || !apActor->animationGraphHolder.IsReady())
+        return;
+
+    auto it = actions.begin();
+
+    // Process multiple actions per update
+    // Currently testing without any interpolation
+    while (it != actions.end()) // && it->Tick <= aTick)
     {
-        // Check if animation graph is ready before attempting to play animations
         if (!apActor->animationGraphHolder.IsReady())
-        {
-            // Animation graph not ready, keep the action in queue and try again later
-            return;
-        }
+            break;
 
-        const auto& first = *it;
+        const auto pAction = Cast<BGSAction>(TESForm::GetById(it->ActionId));
+        const auto pTarget = Cast<TESObjectREFR>(TESForm::GetById(it->TargetId));
+        
+        // Load actor state flags (primarily movement state)
+        apActor->actorState.flags1 = it->State1;
+        apActor->actorState.flags2 = it->State2;
 
-        const auto actionId = first.ActionId;
-        const auto targetId = first.TargetId;
+        // Action system functions without this in most if not all vanilla cases
+        // Maybe there was originally a reason why?
+        // Mod compatibility may depend on this now, though
+        apActor->LoadAnimationVariables(it->Variables);
 
-        const auto pAction = Cast<BGSAction>(TESForm::GetById(actionId));
-        const auto pTarget = Cast<TESObjectREFR>(TESForm::GetById(targetId));
+        // TODO: copy after the end of batch processing,
+        //       if multiple actions are processed?
+        aAnimationComponent.LastRanAction = *it;
 
-        apActor->actorState.flags1 = first.State1;
-        apActor->actorState.flags2 = first.State2;
-
-        apActor->LoadAnimationVariables(first.Variables);
-
-        aAnimationComponent.LastRanAction = first;
-
+        // Corresponds to unkInput
+        uint32_t unkInput = it->Type & 0x3;
+        
         // Play the animation
-        TESActionData actionData(first.Type & 0x3, apActor, pAction, pTarget);
-        actionData.eventName = BSFixedString(first.EventName.c_str());
-        actionData.idleForm = Cast<TESIdleForm>(TESForm::GetById(first.IdleId));
-        actionData.someFlag = ((first.Type & 0x4) != 0) ? 1 : 0;
+        TESActionData actionData(unkInput, apActor, pAction, pTarget);
+        actionData.eventName = BSFixedString(it->EventName.c_str());
+        actionData.idleForm = Cast<TESIdleForm>(TESForm::GetById(it->IdleId));
+        actionData.someFlag = ((it->Type & 0x4) != 0) ? 1 : 0;
 
+        // Mark this as an STR-controlled action
+        // This is needed to allow the game's recursive processing calls
+        actionData.someFlag |= BGSActionData::kSTRControlled;
+        
+        // TODO: not sure if we should use PerformAction or ForceAction
+        //const auto result = ActorMediator::Get()->PerformAction(&actionData);
         const auto result = ActorMediator::Get()->ForceAction(&actionData);
+        
+        if (result)
+            spdlog::info("Action {} processed with result: {}", it->EventName, result);
+        else
+            spdlog::warn("Action {} failed with result: {}", it->EventName, result);
 
-        actions.pop_front();
+        ++it;
     }
+
+    // Remove all processed actions
+    actions.erase(actions.begin(), it);
 }
 
 void AnimationSystem::Setup(World& aWorld, const entt::entity aEntity) noexcept
@@ -75,9 +96,6 @@ void AnimationSystem::Clean(World& aWorld, const entt::entity aEntity) noexcept
 
 void AnimationSystem::AddAction(RemoteAnimationComponent& aAnimationComponent, const std::string& acActionDiff) noexcept
 {
-    auto itor = std::begin(aAnimationComponent.TimePoints);
-    const auto end = std::cend(aAnimationComponent.TimePoints);
-
     auto& lastProcessedAction = aAnimationComponent.LastProcessedAction;
 
     TiltedPhoques::ViewBuffer buffer((uint8_t*)acActionDiff.data(), acActionDiff.size());
