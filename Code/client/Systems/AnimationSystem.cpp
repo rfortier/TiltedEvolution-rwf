@@ -29,6 +29,12 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
     if (actions.empty() || !apActor->animationGraphHolder.IsReady())
         return;
 
+    if (aAnimationComponent.ReplayCount > 0 && aAnimationComponent.ResetAnimationGraphForReplay)
+    {
+        apActor->animationGraphHolder.RevertAnimationGraphManager();
+        aAnimationComponent.ResetAnimationGraphForReplay = false;
+    }
+
     auto it = actions.begin();
 
     // Process multiple actions per update
@@ -77,6 +83,9 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
             spdlog::warn("Action {} failed with result: {}", it->EventName, result);
 
         ++it;
+
+        if (aAnimationComponent.ReplayCount > 0)
+            aAnimationComponent.ReplayCount--;
     }
 
     // Remove all processed actions
@@ -92,6 +101,15 @@ void AnimationSystem::Clean(World& aWorld, const entt::entity aEntity) noexcept
 {
     if (aWorld.all_of<RemoteAnimationComponent>(aEntity))
         aWorld.remove<RemoteAnimationComponent>(aEntity);
+}
+
+void AnimationSystem::AddActionsForReplay(RemoteAnimationComponent& aAnimationComponent,
+                                          const ActionReplayChain& acReplay) noexcept
+{
+    aAnimationComponent.TimePoints.insert(aAnimationComponent.TimePoints.end(), acReplay.Actions.begin(),
+                                          acReplay.Actions.end());
+    aAnimationComponent.ReplayCount = acReplay.Actions.size();
+    aAnimationComponent.ResetAnimationGraphForReplay = acReplay.ResetAnimationGraph;
 }
 
 void AnimationSystem::AddAction(RemoteAnimationComponent& aAnimationComponent, const std::string& acActionDiff) noexcept

@@ -71,10 +71,6 @@ static uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData*
             if (pExtension)
             {
                 pExtension->LatestAnimation = Event;
-
-                // Weapon equip special-case
-                if(apAction->action && apAction->action->formID == 0x132AF)
-                    pExtension->LatestWeapEquipAnimation = Event;
             }
 
             // TODO: should we send actions from the game where res == 0, as before?
@@ -122,7 +118,7 @@ bool ActorMediator::ForceAction(TESActionData* apAction) noexcept
     uint8_t result = 0;
 
     auto pActor = static_cast<Actor*>(apAction->actor);
-    if (!pActor || pActor->animationGraphHolder.IsReady())
+    if (pActor)
     {
         result = TiltedPhoques::ThisCall(PerformComplexAction, this, apAction);
 
