@@ -46,6 +46,8 @@ typedef struct _DYNAMIC_FUNCTION_TABLE
 } DYNAMIC_FUNCTION_TABLE, *PDYNAMIC_FUNCTION_TABLE;
 #endif
 
+static bool AddFakeIATEntry(const char* dllName, const char* funcName);
+
 // TODO: move me to wstring util..
 std::wstring ConvertStringToWstring(const std::string_view str)
 {
@@ -273,11 +275,6 @@ void ExeLoader::DecryptCeg(IMAGE_NT_HEADERS* apSourceNt)
     apSourceNt->OptionalHeader.AddressOfEntryPoint = static_cast<uint32_t>(realEntry);
 }
 
-// _initterm_e is the only hooked function needed by the skse_plugin_preloader.
-// That means it is hooked so early it needs a bit of special case logic, 
-// not least is making sure it is in the IAT so it CAN be hooked. Reference it.
-static volatile void* forceImport_initterm_e = (void*)&_initterm_e;
-
 bool ExeLoader::Load(const uint8_t* apProgramBuffer)
 {
     m_pBinary = apProgramBuffer;
@@ -300,6 +297,14 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
 
     // store EP
     m_pEntryPoint = GetTargetRVA<void>(ntHeader->OptionalHeader.AddressOfEntryPoint);
+
+    // skse_plugin_preloader (and others?) may hook _initterm_e during LoadImports(),
+    // so we have to ensure that IAT entry exists if STR doesn't define it, and 
+    // we have to save it before copying Skyrim's headers over ours, and put it
+    // back after we do.
+    // SKSE proper also does some more hooking, but we haven't initialized it yet so that "just works"
+    if (!AddFakeIATEntry("api-ms-win-crt-runtime-l1-1-0.dll", "_initterm_e"))
+        Die(L"Unable to locate or create IAT entry for _initterm_e for hooking", true);
 
     // store these as they will get overridden by the target's header
     // but we really need them in order to not break debugging for cosi.
@@ -339,5 +344,159 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
     *TiltedPhoques::GetImportedFunction(nullptr, "api-ms-win-crt-runtime-l1-1-0.dll", "_initterm_e") = source_initterm_e;
 
     m_pBinary = nullptr;
+    return true;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+//#include <iostream>
+//#include <windows.h>
+
+#pragma optimize("", off)
+
+static int __declspec(noinline) __cdecl FakeStub(_PIFV* pFirst, _PIFV* pLast)
+{
+    auto hModule = GetModuleHandleW(L"api-ms-win-crt-runtime-l1-1-0.dll");
+    auto p_initterm_e = !hModule ? nullptr : reinterpret_cast<int (*)(_PIFV*, _PIFV*)>(GetProcAddress(hModule, "_initterm_e"));
+     
+    return !p_initterm_e ? 1 : _initterm_e(pFirst, pLast);
+}
+
+inline std::size_t get_page_size()
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (std::size_t)si.dwPageSize;
+}
+
+static bool AddFakeIATEntry(const char* dllName, const char* funcName)
+{
+    // If already in the IAT, success, no fake needed.
+    if (TiltedPhoques::GetImportedFunction(nullptr, dllName, funcName) != nullptr)
+        return true;
+
+    // Where are we?
+    HMODULE hModule = GetModuleHandle(nullptr);
+    BYTE* base = (BYTE*)hModule; 
+    
+    // compute RVAs (RVA = allocAddr - moduleBase)
+    auto rva_of = [&](BYTE* ptr) -> DWORD
+    {
+        SIZE_T diff = ptr - base;
+        if (diff > 0xFFFFFFFFull)
+            return 0; // won't fit in 32-bit RVA
+        return (DWORD)diff;
+    };
+
+    // allocate a page for our fake import structures
+    const SIZE_T ALLOC_SIZE = 0x1000;
+    static alignas(ALLOC_SIZE) BYTE mem[ALLOC_SIZE];
+    
+    // Test validity
+
+
+    DWORD oldProtect; 
+    auto addr  = reinterpret_cast<uintptr_t>(mem); 
+    bool valid =   hModule 
+                && (addr % ALLOC_SIZE) == 0 
+                && ALLOC_SIZE >= get_page_size() 
+                && rva_of(mem) != 0 
+                && rva_of(&mem[sizeof(mem) - 1]) != 0 
+                && VirtualProtect(reinterpret_cast<LPVOID>(mem), sizeof(mem), PAGE_READWRITE, &oldProtect);
+
+    if (!valid) 
+        return false;
+
+    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
+    IMAGE_NT_HEADERS64* nt = (IMAGE_NT_HEADERS64*)(base + dos->e_lfanew);
+
+    // Layout within mem:
+    // [0] IMAGE_IMPORT_DESCRIPTOR descriptor
+    // [sizeof(desc)]  -> OriginalFirstThunk (ILT) (IMAGE_THUNK_DATA64 entries)
+    // [after ILT] -> FirstThunk (IAT) (IMAGE_THUNK_DATA64 entries)
+    // [after IAT] -> IMAGE_IMPORT_BY_NAME (hint+name)
+    // [after that] -> DLL name string
+    BYTE* p = mem;
+
+    IMAGE_IMPORT_DESCRIPTOR* desc = (IMAGE_IMPORT_DESCRIPTOR*)p;
+    ZeroMemory(desc, sizeof(*desc));
+    p += sizeof(*desc);
+
+    // ILT: one IMAGE_THUNK_DATA64 for our single function + null terminator
+    IMAGE_THUNK_DATA64* ilt = (IMAGE_THUNK_DATA64*)p;
+    ZeroMemory(ilt, sizeof(IMAGE_THUNK_DATA64) * 2);
+    p += sizeof(IMAGE_THUNK_DATA64) * 2;
+
+    // IAT (FirstThunk): one IMAGE_THUNK_DATA64 for function pointer + null terminator
+    IMAGE_THUNK_DATA64* iat = (IMAGE_THUNK_DATA64*)p;
+    ZeroMemory(iat, sizeof(IMAGE_THUNK_DATA64) * 2);
+    p += sizeof(IMAGE_THUNK_DATA64) * 2;
+
+    // IMAGE_IMPORT_BY_NAME
+    IMAGE_IMPORT_BY_NAME* ibn = (IMAGE_IMPORT_BY_NAME*)p;
+    ibn->Hint = 0;
+    size_t funcNameLen = strlen(funcName);
+    memcpy(ibn->Name, funcName, funcNameLen + 1);
+    p += offsetof(IMAGE_IMPORT_BY_NAME, Name) + (funcNameLen + 1);
+
+    // align for DLL name
+    p = (BYTE*)(((ULONG_PTR)p + 7) & ~7ULL);
+    char* dllNameBuf = (char*)p;
+    strcpy_s(dllNameBuf, ALLOC_SIZE - (p - mem), dllName);
+    p += strlen(dllName) + 1;
+
+    // set up ILT to point to IMAGE_IMPORT_BY_NAME (use RVA)
+    DWORD ibnRva = rva_of((BYTE*)ibn);
+    if (ibnRva == 0)
+        return false;
+    ilt[0].u1.AddressOfData = (ULONGLONG)ibnRva; // as RVA; loader code usually treats it as base+RVA
+
+    // set up IAT (FirstThunk) initial pointer to our stub (absolute pointer).
+    // The hooking DLL can overwrite this pointer with its thunk.
+    iat[0].u1.Function = (ULONGLONG)(VOID*)&FakeStub;
+
+    // fill descriptor fields with RVAs
+    DWORD iltRva = rva_of((BYTE*)ilt);
+    DWORD iatRva = rva_of((BYTE*)iat);
+    DWORD dllNameRva = rva_of((BYTE*)dllNameBuf);
+
+    if (iltRva == 0 || iatRva == 0 || dllNameRva == 0)
+        return false;
+
+    desc->OriginalFirstThunk = iltRva;
+    desc->FirstThunk = iatRva;
+    desc->Name = dllNameRva;
+
+    // make sure we have a null-terminated descriptor array (we already zeroed the next descriptor)
+    // now patch OptionalHeader.DataDirectory[IMPORT] to point to our descriptor (RVA)
+    IMAGE_DATA_DIRECTORY* dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    DWORD newImportRva = rva_of((BYTE*)desc);
+    if (newImportRva == 0)
+        return false;
+
+    // change memory protection for headers to allow writing
+    DWORD oldProt;
+    BYTE* dataDirAddr = (BYTE*)&nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!VirtualProtect(dataDirAddr, sizeof(IMAGE_DATA_DIRECTORY), PAGE_READWRITE, &oldProt))
+        return false;
+
+    // store old value (optional) and write new RVA
+    dir->VirtualAddress = newImportRva;
+    // leave Size alone (could set to (DWORD)(p - mem) ), but not necessary for simple scanning
+    // restore protection
+    VirtualProtect(dataDirAddr, sizeof(IMAGE_DATA_DIRECTORY), oldProt, &oldProt);
+
+    // flush icache (probably not needed here)
+    FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+
     return true;
 }

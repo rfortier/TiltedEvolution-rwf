@@ -55,8 +55,7 @@ local function build_launcher()
         "Powrprof",
         "Cfgmgr32",
         "Propsys",
-        "delayimp",
-        "ucrt")     -- ucrt is here so we can hook _initterm_e
+        "delayimp")
 
     add_packages(
         "tiltedcore",
