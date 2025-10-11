@@ -14,7 +14,7 @@ enum DifferentialFlags
     kType = 1 << 4,
     kEventName = 1 << 5,
     kTargetEventName = 1 << 6,
-    kVariables = 1 << 7
+    kVariables = 1 << 7,
 };
 
 bool ActionEvent::operator==(const ActionEvent& acRhs) const noexcept

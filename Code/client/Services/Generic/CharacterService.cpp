@@ -13,6 +13,7 @@
 #include <Forms/TESNPC.h>
 #include <Forms/TESQuest.h>
 
+#include <BranchInfo.h>
 #include <Components.h>
 
 #include <Systems/InterpolationSystem.h>
@@ -199,6 +200,7 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
         entity = m_world.create();
 
     m_world.emplace_or_replace<FormIdComponent>(entity, acEvent.FormId);
+    m_world.emplace_or_replace<EarlyAnimationBufferComponent>(entity);
 
     ProcessNewEntity(entity);
 }
@@ -218,6 +220,8 @@ void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
 
     auto& formIdComponent = view.get<FormIdComponent>(cId);
     CancelServerAssignment(*entityIt, formIdComponent.Id);
+
+    m_world.remove<EarlyAnimationBufferComponent>(cId);
 
     if (m_world.all_of<FormIdComponent>(cId))
         m_world.remove<FormIdComponent>(cId);
@@ -297,6 +301,9 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     const auto cEntity = *itor;
 
     m_world.remove<WaitingForAssignmentComponent>(cEntity);
+#if (!IS_MASTER)
+    m_world.remove<ReplayedActionsDebugComponent>(cEntity);
+#endif
 
     const auto formIdComponent = m_world.try_get<FormIdComponent>(cEntity);
     if (!formIdComponent)
@@ -327,11 +334,14 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
         pActor->GetExtension()->SetRemote(false);
 
-        if(pActor->GetExtension()->LatestWeapEquipAnimation.ActionId != 0)
+        if (auto* pEarlyAnimComponent = m_world.try_get<EarlyAnimationBufferComponent>(cEntity))
         {
-            localAnimationComponent.Append(pActor->GetExtension()->LatestWeapEquipAnimation);
-            pActor->GetExtension()->LatestWeapEquipAnimation = ActionEvent();
+            for (const auto& action : pEarlyAnimComponent->Actions)
+            {
+                localAnimationComponent.Append(action);
+            }
         }
+        m_world.remove<EarlyAnimationBufferComponent>(cEntity);
     }
     else
     {
@@ -341,8 +351,14 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
         pActor->GetExtension()->SetRemote(true);
 
+        m_world.remove<EarlyAnimationBufferComponent>(cEntity);
         InterpolationSystem::Setup(m_world, cEntity);
         AnimationSystem::Setup(m_world, cEntity);
+        AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(cEntity), acMessage.ActionsToReplay);
+
+#if (!IS_MASTER)
+        m_world.emplace_or_replace<ReplayedActionsDebugComponent>(cEntity, acMessage.ActionsToReplay);
+#endif
 
         pActor->SetActorValues(acMessage.AllActorValues);
         pActor->SetActorInventory(acMessage.CurrentInventory);
@@ -481,7 +497,12 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     m_world.emplace_or_replace<WaitingFor3D>(*entity, acMessage);
 
     auto& remoteAnimationComponent = m_world.get<RemoteAnimationComponent>(*entity);
-    remoteAnimationComponent.TimePoints.push_back(acMessage.LatestAction);
+
+    AnimationSystem::AddActionsForReplay(remoteAnimationComponent, acMessage.ActionsToReplay);
+
+#if (!IS_MASTER)
+    m_world.emplace_or_replace<ReplayedActionsDebugComponent>(*entity, acMessage.ActionsToReplay);
+#endif
 }
 
 void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessage) noexcept
@@ -560,15 +581,69 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
 
 void CharacterService::OnActionEvent(const ActionEvent& acActionEvent) const noexcept
 {
+    if (acActionEvent.ActionId == 0)
+        spdlog::error("Action with event name {} has no action form!", acActionEvent.EventName);
+    
     auto view = m_world.view<LocalAnimationComponent, FormIdComponent>();
 
-    const auto itor = std::find_if(std::begin(view), std::end(view), [id = acActionEvent.ActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (itor != std::end(view))
+    // TODO: if target is regularly an actor, find both in one go?
+    const auto actor_it = std::ranges::find_if(view,
+                                           [id = acActionEvent.ActorId, view](entt::entity entity) {
+                                               return view.get<FormIdComponent>(entity).Id == id;
+                                           });
+    
+    
+    if (actor_it != std::end(view))
     {
-        auto& localComponent = view.get<LocalAnimationComponent>(*itor);
+        auto& localComponent = view.get<LocalAnimationComponent>(*actor_it);
 
+        // TODO: Finish proper handling of formIds
+        //      Idleforms should use modsystem GameId
+        //      Actors should just use entity handle
+        
+        // if (acActionEvent.TargetId != 0)
+        // {
+        //     if (Cast<Actor>(TESForm::GetById(acActionEvent.TargetId)))
+        //     {
+        //         auto target_view = m_world.view<LocalComponent, FormIdComponent>();
+        //         const auto target_it = std::ranges::find_if(view,
+        //                                    [id = acActionEvent.TargetId, view](entt::entity entity) {
+        //                                        return view.get<FormIdComponent>(entity).Id == id;
+        //                                    });
+        //         if (target_it != std::end(view))
+        //         {
+        //             auto& target_localComponent = target_view.get<LocalComponent>(*target_it);
+        //             // TODO: Best way I found was to make it mutable and replace FormId with entity handle
+        //             acActionEvent.TargetId = target_localComponent.Id;
+        //             spdlog::info("OnActionEvent - Action {} has actor target with local entity",
+        //                 acActionEvent.EventName);
+        //         }
+        //         else
+        //         {
+        //             spdlog::error("OnActionEvent - Action {} has actor target 0x{:X} with no local entity - Need to handle this",
+        //                 acActionEvent.EventName, acActionEvent.TargetId);
+        //         }
+        //     }
+        //     else
+        //     {
+        //         spdlog::warn("OnActionEvent - Action {} has non-actor target 0x{:X} - Need to handle this",
+        //             acActionEvent.EventName, acActionEvent.TargetId);
+        //     }
+        // }
+        
         localComponent.Append(acActionEvent);
+    }
+    else if (m_transport.IsOnline())
+    {
+        // A `LocalAnimationComponent` is not attached yet, but the actor already exists and is running animations
+
+        auto view = m_world.view<FormIdComponent, EarlyAnimationBufferComponent>();
+        const auto itor = std::find_if(std::begin(view), std::end(view), [id = acActionEvent.ActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+        if (itor != std::end(view))
+        {
+            view.get<EarlyAnimationBufferComponent>(*itor).Actions.push_back(acActionEvent);
+        }
     }
 }
 
@@ -652,6 +727,8 @@ void CharacterService::OnNotifyRespawn(const NotifyRespawn& acMessage) const noe
 
     auto& formIdComponent = view.get<FormIdComponent>(cId);
     CancelServerAssignment(*entityIt, formIdComponent.Id);
+
+    m_world.remove<EarlyAnimationBufferComponent>(cId);
 
     if (m_world.all_of<FormIdComponent>(cId))
         m_world.remove<FormIdComponent>(cId);
@@ -1458,7 +1535,7 @@ void CharacterService::RunLocalUpdates() const noexcept
 void CharacterService::RunRemoteUpdates() noexcept
 {
     // Delay by 300ms to let the interpolation system accumulate interpolation points
-    const auto tick = m_transport.GetClock().GetCurrentTick() - 300;
+    const auto tick = m_transport.GetClock().GetCurrentTick()- 300;
 
     // Interpolation has to keep running even if the actor is not in view, otherwise we will never know if we need to spawn it
     auto interpolatedEntities = m_world.view<RemoteComponent, InterpolationComponent>();
@@ -1520,9 +1597,16 @@ void CharacterService::RunRemoteUpdates() noexcept
         if (!pActor || !pActor->GetNiNode())
             continue;
 
+        // By now, the actor has materialized in the world and is ready for further setup
+
         pActor->SetActorInventory(waitingFor3D.SpawnRequest.InventoryContent);
         pActor->SetFactions(waitingFor3D.SpawnRequest.FactionsContent);
-        pActor->LoadAnimationVariables(waitingFor3D.SpawnRequest.LatestAction.Variables);
+
+        if (!waitingFor3D.SpawnRequest.ActionsToReplay.Actions.empty())
+        {
+            pActor->LoadAnimationVariables(waitingFor3D.SpawnRequest.ActionsToReplay.Actions[0].Variables);
+        }
+
         m_weaponDrawUpdates[pActor->formID] = {waitingFor3D.SpawnRequest.IsWeaponDrawn};
 
         if (pActor->IsDead() != waitingFor3D.SpawnRequest.IsDead)

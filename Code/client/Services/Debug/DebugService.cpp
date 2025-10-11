@@ -44,6 +44,8 @@
 #include <AI/AIProcess.h>
 
 #include <Messages/RequestRespawn.h>
+#include <Messages/PartyCreateRequest.h>
+#include <Messages/PartyLeaveRequest.h>
 
 #include <Games/Misc/SubtitleManager.h>
 #include <Games/Overrides.h>
@@ -144,7 +146,6 @@ void DebugService::OnMoveActor(const MoveActorEvent& acEvent) noexcept
     moveData.position = acEvent.Position;
 }
 
-extern thread_local bool g_forceAnimation;
 
 void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 {
@@ -189,7 +190,10 @@ void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
         {
             s_f7Pressed = true;
 
-            //
+            if (!m_world.GetPartyService().IsInParty())
+                m_transport.Send(PartyCreateRequest{});
+            else
+                m_transport.Send(PartyLeaveRequest{});
         }
     }
     else
