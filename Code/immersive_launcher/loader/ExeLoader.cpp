@@ -303,7 +303,7 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
 
     LoadSections(ntHeader);
 
-    // skse_plugin_preloader (proxy d3dx9_42_dll and others?) may hook
+    // skse64_plugin_preloader (proxy d3dx9_42_dll and others?) may hook
     // _initterm_e during LoadImports(), so we have to ensure that IAT entry exists.
     // The simplest way to make sure all SkyrimSE IAT entries exist when mods expect 
     // them to is to switch to those headers earlier than we used to
@@ -327,7 +327,11 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
     sourceNtHeader->OptionalHeader.CheckSum = sourceChecksum;
     sourceNtHeader->FileHeader.TimeDateStamp = sourceTimestamp;
     sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG] = sourceDebugDir;
-
     m_pBinary = nullptr;
+
+    // Set a hook to check if anything loaded messes with critical hooks.
+    extern void HookFormAllocateSentinelInit();
+    HookFormAllocateSentinelInit();
+
     return true;
 }
