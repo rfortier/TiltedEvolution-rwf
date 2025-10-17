@@ -219,23 +219,18 @@ static const TiltedPhoques::Vector<uint32_t> nonSyncableQuestIds = {
 
 bool QuestService::IsNonSyncableQuest(TESQuest* apQuest)
 {
+    // Quest type None and quests with no quest stages are never synced.
+    // Most type Miscellaneous quests can sync, but there's a list that must be excluded.
     // Internal quest IDs: Werewolf transformation quest: 0x2BA16, Vampire transformation quest: 0x20071D0,
     // Unknown internal quests causing excessive logging: 0x3AC44, 0xFE014801, 0xF2593
 
-    const auto& stages = apQuest->stages;
+    bool bNonSyncable = apQuest->stages.Empty();
+    if (!bNonSyncable && apQuest->type == TESQuest::Type::Miscellaneous)
+    {
+        bNonSyncable = std::find(nonSyncableQuestIds.begin(), nonSyncableQuestIds.end(), apQuest->formID) != nonSyncableQuestIds.end();
+    }
 
-    if (std::find(nonSyncableQuestIds.begin(), nonSyncableQuestIds.end(), apQuest->formID) != nonSyncableQuestIds.end())
-    {
-        // For specific internal quests, check if they should be blocked from syncing based on their type or empty stages.
-        return apQuest->type == TESQuest::Type::None // Internal event
-               || apQuest->type == TESQuest::Type::Miscellaneous
-               || stages.Empty();
-    }
-    else
-    {
-        // For other quests, only block from syncing if they have no stages.
-        return stages.Empty();
-    }
+    return bNonSyncable;
 }
 
 void QuestService::DebugDumpQuests()

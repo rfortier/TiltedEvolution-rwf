@@ -1,0 +1,13 @@
+git merge 'otsffs/feat/improve-quest-new'
+git merge feat/tweak-quest-scope-plus-server-option-n-logging
+git merge fix/EngineFixes-v7-support
+git merge otsffs/feat/Enable-SkyrimSoulsRE
+git merge miredirex/fix/sliding-actors-replay
+
+
+
+git merge Miredirex/merge/sliding-and-magicwizardman-anim
+git merge MostExcellent-TiltedEvolutionMagic/wip/wip-action-process-rework
+
+# kill moves partial
+git cherry-pick a1401870c9ef6a4dc6685842d4027699e4b8bbd7
