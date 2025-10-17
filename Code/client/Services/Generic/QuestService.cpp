@@ -224,11 +224,10 @@ bool QuestService::IsNonSyncableQuest(TESQuest* apQuest)
     // Internal quest IDs: Werewolf transformation quest: 0x2BA16, Vampire transformation quest: 0x20071D0,
     // Unknown internal quests causing excessive logging: 0x3AC44, 0xFE014801, 0xF2593
 
-    bool bNonSyncable = apQuest->type == TESQuest::Type::None || apQuest->stages.Empty();
+    bool bNonSyncable = apQuest->stages.Empty();
     if (!bNonSyncable && apQuest->type == TESQuest::Type::Miscellaneous)
     {
-        bNonSyncable = std::find(nonSyncableQuestIds.begin(), nonSyncableQuestIds.end(), apQuest->formID) !=
-                       nonSyncableQuestIds.end();
+        bNonSyncable = std::find(nonSyncableQuestIds.begin(), nonSyncableQuestIds.end(), apQuest->formID) != nonSyncableQuestIds.end();
     }
 
     return bNonSyncable;
