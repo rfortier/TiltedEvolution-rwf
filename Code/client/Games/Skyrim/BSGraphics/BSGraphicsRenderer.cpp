@@ -7,6 +7,8 @@
 #include "BSGraphics/BSGraphicsRenderer.h"
 #include "BSRandom/BSRandom.h"
 
+#pragma optimize("", off)
+
 // shared resource by launcher
 extern HICON g_SharedWindowIcon;
 
@@ -60,7 +62,7 @@ void Hook_Renderer_Init(Renderer* self, BSGraphics::RendererInitOSData* aOSData,
     // This how the game does it too
     g_RenderWindow = &self->Data.RenderWindowA[0];
 
-    g_sRs->OnDeviceCreation(self->Data.RenderWindowA[0].pSwapChain);
+    g_sRs->OnDeviceCreation(self->Data.RenderWindowA[0].pSwapChain, self->Data.pDevice);
 }
 
 void (*StopTimer)(int) = nullptr;
@@ -100,3 +102,5 @@ static TiltedPhoques::Initializer s_viewportHooks(
         TP_HOOK_IMMEDIATE(&Renderer_Init, &Hook_Renderer_Init);
     });
 } // namespace BSGraphics
+
+#pragma optimize("", on)

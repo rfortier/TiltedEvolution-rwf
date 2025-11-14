@@ -2,6 +2,7 @@
 
 struct ImguiService;
 struct IDXGISwapChain;
+struct ID3D11Device;
 struct OverlayService;
 
 /**
@@ -18,9 +19,11 @@ struct RenderSystemD3D11
     [[nodiscard]] IDXGISwapChain* GetSwapChain() const;
 
     // to make yamashi mad
-    void OnDeviceCreation(IDXGISwapChain* apSwapChain);
+    void OnDeviceCreation(IDXGISwapChain* apSwapChain, ID3D11Device* apDevice);
     void OnRender();
     void OnReset(IDXGISwapChain* apSwapChain);
+
+    ID3D11Device* m_pDevice; // todo: getter
 
 private:
     IDXGISwapChain* m_pSwapChain;
