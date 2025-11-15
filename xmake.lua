@@ -83,8 +83,8 @@ before_build(function (target)
     bool_to_number[branch == "bluedove"], 
     bool_to_number[branch == "prerel"])
 
-    -- Not compatible with public servers until next update due to PR #831
-    -- content = contents .. "#if !IS_MASTER\n" .. "#define COMPATIBLE_WITH_BUILD_COMMIT \"v1.8.0\"\n" .. "#endif""
+    -- Not compatible with public servers until next update due to PR #831, comment out next line.
+    contents = contents .. "#if !IS_MASTER\n" .. "    #define COMPATIBLE_WITH_BUILD_COMMIT \"v1.8.0\"\n" .. "    #endif"
 
     -- fix always-compiles problem by updating the file only if content has changed.
     local filepath = "build/BranchInfo.h"
