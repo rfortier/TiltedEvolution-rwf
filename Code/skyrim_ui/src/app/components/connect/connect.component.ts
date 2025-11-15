@@ -80,13 +80,14 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
 
   public ngAfterViewInit(): void {
     setTimeout(() => {
-      this.inputRef.nativeElement.focus();
+      this.focus();
     }, 100);
   }
 
   public ngOnDestroy(): void {
     this.connectionSubscription.unsubscribe();
     this.protocolMismatchSubscription.unsubscribe();
+    this.client.textInputFocused(false);
   }
 
   async connect(): Promise<void> {
@@ -127,6 +128,16 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
 
   public openServerList(): void {
     this.uiRepository.openView(View.SERVER_LIST);
+  }
+
+  public focus() : void {
+    this.inputRef.nativeElement.focus();
+    this.client.textInputFocused(true);
+  }
+
+  public blur(): void {
+    this.inputRef.nativeElement.blur();
+    this.client.textInputFocused(false);
   }
 
   @ViewChild('input')
