@@ -90,8 +90,6 @@ bool TESQuest::EnsureQuestStarted(bool& success, bool force)
 
 bool TESQuest::SetStage(uint16_t newStage)
 {
-    ScopedQuestOverride _;
-
     TP_THIS_FUNCTION(TSetStage, bool, TESQuest, uint16_t);
     POINTER_SKYRIMSE(TSetStage, SetStage, 25004);
     return SetStage(this, newStage);
@@ -99,7 +97,7 @@ bool TESQuest::SetStage(uint16_t newStage)
 
 void TESQuest::ScriptSetStage(uint16_t stageIndex, boolean bForce)
 {
-    if ((currentStage == stageIndex || IsStageDone(stageIndex)) && !bForce)
+    if ((currentStage == stageIndex || IsStageDone(stageIndex)) && !bForce) // Not clear this should be suppressed now that server dedups
         return;
 
     using Quest = TESQuest;

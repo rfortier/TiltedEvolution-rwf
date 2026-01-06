@@ -130,6 +130,7 @@ void PartyService::OnPartyCreate(const PacketEvent<PartyCreateRequest>& acPacket
                 {
                     party.Members.push_back(otherPlayer);
                     otherPlayer->GetParty().JoinedPartyId = partyId;
+                    otherPlayer->GetQuestStageDedupHistory().Reset();
 
                     SendPartyJoinedEvent(party, otherPlayer);
                 }

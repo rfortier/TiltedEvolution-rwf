@@ -84,7 +84,7 @@ before_build(function (target)
     bool_to_number[branch == "prerel"])
 
     -- Comment out next line if incompatible with current release, or, fix compatibility version.
-    contents = contents .. "#if !IS_MASTER\n" .. "    #define COMPATIBLE_WITH_BUILD_COMMIT \"v1.8.0\"\n" .. "    #endif"
+    -- contents = contents .. "#if !IS_MASTER\n" .. "    #define COMPATIBLE_WITH_BUILD_COMMIT \"v1.8.0\"\n" .. "    #endif"
 
     -- fix always-compiles problem by updating the file only if content has changed.
     local filepath = "build/BranchInfo.h"
