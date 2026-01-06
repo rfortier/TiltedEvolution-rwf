@@ -41,6 +41,7 @@ struct Player
 
     void Send(const ServerMessage& acServerMessage) const;
 
+
 private:
     uint32_t m_id{0};
     ConnectionId_t m_connectionId;

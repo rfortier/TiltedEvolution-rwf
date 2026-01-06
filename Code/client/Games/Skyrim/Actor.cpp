@@ -1233,10 +1233,15 @@ void Actor::SpeakSound(const char* pFile)
 
 char TP_MAKE_THISCALL(HookActorProcess, Actor, float a2)
 {
-    // Don't process AI if we own the actor
+    // Don't process AI unless we own the actor, or they are playing Scene packages
+    const auto pScene = apThis->GetCurrentScene();
+    const auto isPlaying = pScene && pScene->isPlaying;
 
-    if (apThis->GetExtension()->IsRemote())
+    if (apThis->GetExtension()->IsRemote() && !isPlaying)
             return 0;
+
+    if (apThis->GetExtension()->IsRemote() && isPlaying)
+        spdlog::warn(__FUNCTION__ ": enabling for remote Actor in Scene formId {:X}, name {}", apThis->formID, apThis->baseForm->GetName());
 
     return TiltedPhoques::ThisCall(RealActorProcess, apThis, a2);
 }

@@ -915,6 +915,7 @@ void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMess
     pPlayer->AddSkillExperience(PlayerCharacter::LastUsedCombatSkill, acMessage.Experience);
 }
 
+#pragma optimize("", off)
 void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
 {
     if (!m_transport.IsConnected())
@@ -941,7 +942,7 @@ void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
     auto isRemoteInScene = isRemote && pActor->GetCurrentScene() && pActor->GetCurrentScene()->isPlaying;
     const bool isLeader = m_world.Get().GetPartyService().IsLeader();  // Helps distinguish in 2-party
     if (isRemote)   // If we're forwarding Remote dialog, it should be in-Scene dialog.
-        spdlog::debug(__FUNCTION__ ": remote actor is speaking formId {:X} serverId {:X} isRemote {} isLeader {}, name {}", acEvent.ActorID, serverIdRes.value(), isRemote, isLeader, pActor->baseForm->GetName());
+        spdlog::info(__FUNCTION__ ": remote actor is speaking formId {:X} serverId {:X} isRemote {} isLeader {}, name {}", acEvent.ActorID, serverIdRes.value(), isRemote, isLeader, pActor->baseForm->GetName());
 
     DialogueRequest request{};
     request.ServerId = serverIdRes.value();
@@ -994,7 +995,7 @@ void CharacterService::OnNotifyDialogue(const NotifyDialogue& acMessage) noexcep
     const auto pName = (pActor->baseForm && pActor->baseForm->GetName()) ? pActor->baseForm->GetName() : "";
 
     if (isPlaying)
-        spdlog::debug(__FUNCTION__ ": aborting dialog sync during scene {:X}, Actor {:X}, serverId {:X}, isLeader {}, name {}", 
+        spdlog::info(__FUNCTION__ ": aborting dialog sync during scene {:X}, Actor {:X}, serverId {:X}, isLeader {}, name {}", 
             pScene->formID, pActor->formID, acMessage.ServerId, isLeader, pName);
     else
     {
@@ -1027,10 +1028,6 @@ void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
 
     Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.SpeakerID));
     auto isLocal = pActor->GetExtension()->IsLocal();
-
-    spdlog::debug(
-        __FUNCTION__ ": actor subtitle event formId {:X} serverId {:X} isLocal {} isLeader {}, name {}", acEvent.SpeakerID, serverIdRes.value(), isLocal, isLeader,
-        pActor->baseForm->GetName());
 
     SubtitleRequest request{};
     request.ServerId = serverIdRes.value();
@@ -1072,11 +1069,17 @@ void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcep
     const bool isPlaying = pScene && pScene->isPlaying;
     const auto pName = (pActor->baseForm && pActor->baseForm->GetName()) ? pActor->baseForm->GetName() : "";
     if (isPlaying)
-        spdlog::debug(
-            __FUNCTION__ ": aborting subtitle sync during (likely same) scene {:X}, Actor {:X}, serverId {:X}, isLeader {}, name {}", 
-            pScene->formID, pActor->formID, acMessage.ServerId, isLeader, pName);
+        spdlog::info(
+            __FUNCTION__ ": aborting subtitle sync during (likely same) scene {:X}, Actor {:X}, serverId {:X}, isLeader {}, name {}, message {}", pScene->formID, pActor->formID,
+            acMessage.ServerId, isLeader, pName, acMessage.Text.c_str());
     else
+    {
+        spdlog::info(
+            __FUNCTION__ ": showing subtitle Actor {:X}, serverId {:X}, isLeader {}, name {}, message {}", pActor->formID, acMessage.ServerId, isLeader, pName,
+            acMessage.Text.c_str());
+
         SubtitleManager::Get()->ShowSubtitle(pActor, acMessage.Text.c_str(), pInfo);
+    }
 }
 
 void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& acMessage) noexcept
