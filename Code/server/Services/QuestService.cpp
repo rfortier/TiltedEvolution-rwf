@@ -12,7 +12,7 @@
 namespace
 {
 Console::Setting bEnableMiscQuestSync{"Gameplay:bEnableMiscQuestSync", "(Experimental) Syncs miscellaneous quests when possible", false};
-
+Console::Setting uQuestHistoryExpiration("GameServer:uQuestHistoryExpiration", "Time in milliseconds to retain quest progression changes for deduplication", 30000U);
 }
 
 QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
@@ -176,12 +176,13 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
 
 void inline QuestStageDedupHistory::Expire()
 {
-    const auto expiration = std::chrono::steady_clock::now() - timeout;
-
+    const auto expiration = std::chrono::steady_clock::now() - uQuestHistoryExpiration.value_as<std::chrono::milliseconds>();
 
     while (!m_Cache.empty() && m_Cache.front().timestamp < expiration)
     {
         auto& it = m_Cache.front();
+        spdlog::info("{}: expiring dedup history entry quest: {:X}, stage: {}, by {:X}",
+                     __FUNCTION__, it.questId.LogFormat(), it.questStage, it.playerId);
         m_Cache.pop_front();
     }
 }

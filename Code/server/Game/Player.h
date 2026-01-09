@@ -17,8 +17,6 @@
 */
 struct QuestStageDedupHistory
 {
-    static constexpr std::chrono::seconds timeout{30s};
-
     using QuestId = GameId;
     using QuestStage = uint16_t;
     using PlayerId = uint32_t;

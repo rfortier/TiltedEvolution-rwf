@@ -601,14 +601,13 @@ void GameServer::OnDisconnection(const ConnectionId_t aConnectionId, EDisconnect
     m_adminSessions.erase(aConnectionId);
 
     auto* pPlayer = m_pWorld->GetPlayerManager().GetByConnectionId(aConnectionId);
-    pPlayer->GetQuestStageDedupHistory().Reset();
-
     spdlog::info("Connection ended {:x} - '{}' disconnected", aConnectionId, (pPlayer != NULL ? pPlayer->GetUsername().c_str() : "NULL"));
 
     m_pWorld->GetScriptService().HandlePlayerQuit(aConnectionId, aReason);
 
     if (pPlayer)
     {
+        pPlayer->GetQuestStageDedupHistory().Reset();
         if (const auto& cell = pPlayer->GetCellComponent())
         {
             const auto oldCell = cell.Cell;
