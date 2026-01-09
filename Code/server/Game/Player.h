@@ -1,5 +1,62 @@
 #pragma once
 
+/*  With the introduction of party member (not just leader) quest progression, there are a few challenges:
+    SendToParty() will cause reflections of the same quest updates from all party members.
+    This is because ScopedQuestOverride() doesn't work as intended because QuestServic::OnEvent calls
+    happen later on a different thread. We need to prevent these reflections from sending out dups.
+
+    We want the quest progress to be sent out by the Leader. It has already happened for one Member when
+    members advance the quest and it is theoretically possible more than one sends progress, so SendToParty
+    needs to not send to those who already have it.
+
+    Since we have to track this anyway, if a Member advances quest, we forward it to the Leader for broadcast.
+    This means Leader gets the update in QuestService::OnUpdate(), and when the Leader update reflects back, the
+    Leader does SendToParty() (with the original Member and the Leadre in the cache, so SendToParty doesn't send
+    to them). This enables the Leader to make a centralized decision; it can reject sending out a member update
+    that shouldn't be forwarded; it looks like there are a couple of exceptions like that.
+*/
+struct QuestStageDedupHistory
+{
+    using QuestId = GameId;
+    using QuestStage = uint16_t;
+    using PlayerId = uint32_t;
+    using TimeStamp = std::chrono::time_point<std::chrono::steady_clock>;
+
+    struct Entry
+    {
+        QuestId questId{};
+        QuestStage questStage{};
+        PlayerId playerId{};
+        TimeStamp timestamp{};
+    };
+
+    using Container = std::deque<Entry>;
+    using iterator = Container::iterator;
+    using const_iterator = Container::const_iterator;
+
+    void Add(QuestId aQuestId, QuestStage aQuestStage, PlayerId aPlayerId,
+             TimeStamp aTimeStamp = std::chrono::steady_clock::now());
+
+    const_iterator FindStage(const QuestId& aQuestId, const QuestStage& aQuestStage);
+    const_iterator FindStageWPlayerId(const QuestId& aQuestId, const QuestStage& aQuestStage, const PlayerId& aPlayerId);
+
+    void Reset() noexcept { m_Cache.clear(); }
+    bool FoundStage(const QuestId& aQuestId, const QuestStage& aQuestStage)
+    {
+        return FindStage(aQuestId, aQuestStage) != m_Cache.end();
+    }
+    bool FoundStageWPlayerId(const QuestId& aQuestId, const QuestStage& aQuestStage, const PlayerId& aPlayerId)
+    {
+        return FindStageWPlayerId(aQuestId, aQuestStage, aPlayerId) != m_Cache.end();
+    }
+
+  private:
+    void inline Expire();
+    Container m_Cache; // Short, time-ordered, duplicates valid (do they ever happen?)
+};
+
+
+
 struct ServerMessage;
 struct Player
 {
@@ -40,6 +97,9 @@ struct Player
     void SetCellComponent(const CellIdComponent& aCellComponent) noexcept;
 
     void Send(const ServerMessage& acServerMessage) const;
+    QuestStageDedupHistory m_questStageDedupHistory;
+    QuestStageDedupHistory& GetQuestStageDedupHistory() { return m_questStageDedupHistory; }
+
 
 private:
     uint32_t m_id{0};
