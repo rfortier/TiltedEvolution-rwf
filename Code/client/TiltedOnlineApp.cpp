@@ -39,6 +39,8 @@ TiltedOnlineApp::TiltedOnlineApp()
     console->set_pattern("%^[%H:%M:%S.%e] [%l] [tid %t] %$ %v");
 
     auto logger = std::make_shared<spdlog::logger>("", spdlog::sinks_init_list{console, rotatingLogger});
+    logger->set_pattern("%^[%H:%M:%S.%e] [%l] [tid %t] %$ %v");
+    logger->flush_on(spdlog::level::info);
     set_default_logger(logger);
 }
 
