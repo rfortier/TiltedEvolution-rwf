@@ -160,7 +160,13 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
             bool bFound = dedupHistory.FoundStage(notify.Id, notify.Stage);
             dedupHistory.Add(notify.Id, notify.Stage, pPlayer->GetId());  
 
-            if (bFound)
+            if (notify.Id == GameId{0, 0x2EBA0})
+            {
+                spdlog::info("{}: SendToLeader dropping member progress on blocklist quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__,
+                             notify.Id.LogFormat(), notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
+            }
+
+            else if (bFound)
                 spdlog::info("{}: SendToLeader dropping duplicate quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__,
                              notify.Id.LogFormat(), notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
             else
