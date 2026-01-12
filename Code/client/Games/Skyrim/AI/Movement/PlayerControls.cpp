@@ -32,4 +32,11 @@ void BSInputEnableManager::EnableOtherEvent(int32_t aFlags, bool aEnable, bool a
     TiltedPhoques::ThisCall(setEnabled, this, aFlags, aEnable, aUnk2);
 }
 
+bool PlayerControls::IsMovementControlsEnabled() noexcept
+{
+    using TIsMovementControlsEnabled = bool();
+    POINTER_SKYRIMSE(TIsMovementControlsEnabled, s_isMovementControlsEnabled, 55485);
+    return s_isMovementControlsEnabled.Get()();
+}
+
 // static TiltedPhoques::Initializer s_Init([]() { TiltedPhoques::Put<uint8_t>(0x14072E490, 0xCC); });
