@@ -65,7 +65,7 @@ BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent, cons
     // If we can't get the GameId we can't sync anyway.
     GameId Id;
     auto& modSys = m_world.GetModSystem();
-    if (modSys.GetServerModId(pQuest->formID, Id))
+    if (!modSys.GetServerModId(pQuest->formID, Id))
     {
         spdlog::info(__FUNCTION__ ": can't get gameId for formId {:X}, can't sync quest {} questStage {} questType {} name {}",
                      pQuest->formID, pQuest->IsStopped() ? "stop" : "start", pQuest->currentStage,
@@ -125,7 +125,7 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
     // If we can't get the GameId we can't sync anyway.
     GameId Id;
     auto& modSys = m_world.GetModSystem();
-    if (modSys.GetServerModId(pQuest->formID, Id))
+    if (!modSys.GetServerModId(pQuest->formID, Id))
     {
         spdlog::info(__FUNCTION__ ": can't get gameId for formId {:X}, can't sync questStage {} questType {} name {}",
                      pQuest->formID, pQuest->currentStage,
