@@ -36,7 +36,8 @@ struct PlayerControls
 {
     static PlayerControls* GetInstance();
 
-    void SetBlockPlayerInput(bool abFlag) { bBlockPlayerInput = abFlag; }
+    void SetBlockPlayerInput(bool abFlag)  { bBlockPlayerInput = abFlag; }
+    static bool IsMovementControlsEnabled() noexcept;
 
     void SetEnabled(bool abFlag);
 

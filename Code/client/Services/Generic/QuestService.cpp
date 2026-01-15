@@ -6,6 +6,7 @@
 #include <Services/ImguiService.h>
 
 #include <PlayerCharacter.h>
+#include "AI/Movement/PlayerControls.h"
 #include <Forms/TESQuest.h>
 #include <Games/TES.h>
 #include <Games/Overrides.h>
@@ -57,45 +58,57 @@ BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent, cons
     if (ScopedQuestOverride::IsOverriden() || !m_world.Get().GetPartyService().IsInParty())
         return BSTEventResult::kOk;
 
-    spdlog::info("Quest start/stop event: {:X}", apEvent->formId);
+    TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId));
+    if (pQuest == nullptr)
+        return BSTEventResult::kOk;     // This shouldn't happen...
 
-    if (TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId)))
+    // If we can't get the GameId we can't sync anyway.
+    GameId Id;
+    auto& modSys = m_world.GetModSystem();
+    if (!modSys.GetServerModId(pQuest->formID, Id))
     {
-        if (IsNonSyncableQuest(pQuest))
-            return BSTEventResult::kOk;
-     
-        if (pQuest->type == TESQuest::Type::None || pQuest->type == TESQuest::Type::Miscellaneous)
+        spdlog::info(__FUNCTION__ ": can't get gameId for formId {:X}, can't sync quest {} questStage {} questType {} name {}",
+                     pQuest->formID, pQuest->IsStopped() ? "stop" : "start", pQuest->currentStage,
+                     static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
+                     pQuest->fullName.value.AsAscii());
+        return BSTEventResult::kOk;
+    }
+
+    if (IsNonSyncableQuest(pQuest))
+        return BSTEventResult::kOk;
+
+    if (pQuest->type == TESQuest::Type::None || pQuest->type == TESQuest::Type::Miscellaneous)
+    {
+        spdlog::info(__FUNCTION__ ": queuing type none/misc quest {} gameId {:X} questStage {} "
+                                  "questType {} formId {:X} name {}",
+                     pQuest->IsStopped() ? "stop" : "start", Id.LogFormat(), pQuest->currentStage,
+                     static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->formID,
+                     pQuest->fullName.value.AsAscii());
+    }
+
+
+    spdlog::info(__FUNCTION__ ":  quest {} formId: {:X}, questStage: {}, questType: {}, name: {}",
+                 pQuest->IsStopped() ? "stopped" : "started", 
+                 pQuest->formID,
+                 pQuest->currentStage, 
+                 static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
+                 pQuest->fullName.value.AsAscii());
+
+    m_world.GetRunner().Queue([&, formId = pQuest->formID, stageId = pQuest->currentStage,
+                                stopped = pQuest->IsStopped(), type = pQuest->type]()
         {
-            // Perhaps redundant, but necessary. We need the logging and
-            // the lambda coming up is queued and runs later
             GameId Id;
             auto& modSys = m_world.GetModSystem();
-            if (modSys.GetServerModId(pQuest->formID, Id))
+            if (modSys.GetServerModId(formId, Id))
             {
-                spdlog::info(__FUNCTION__ ": queuing type none/misc quest gameId {:X} questStage {} questStatus {} questType {} formId {:X} name {}",
-                             Id.LogFormat(),  pQuest->currentStage, pQuest->IsStopped() ? RequestQuestUpdate::Stopped : RequestQuestUpdate::Started,
-                             static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), 
-                             pQuest->formID, pQuest->fullName.value.AsAscii());
+                RequestQuestUpdate update;
+                update.Id = Id;
+                update.Stage = stageId;
+                update.Status = stopped ? RequestQuestUpdate::Stopped : RequestQuestUpdate::Started;
+                update.ClientQuestType = static_cast<std::underlying_type_t<TESQuest::Type>>(type); 
+                m_world.GetTransport().Send(update);
             }
-        }
-        
-        m_world.GetRunner().Queue(
-            [&, formId = pQuest->formID, stageId = pQuest->currentStage, stopped = pQuest->IsStopped(), type = pQuest->type]()
-            {
-                GameId Id;
-                auto& modSys = m_world.GetModSystem();
-                if (modSys.GetServerModId(formId, Id))
-                {
-                    RequestQuestUpdate update;
-                    update.Id = Id;
-                    update.Stage = stageId;
-                    update.Status = stopped ? RequestQuestUpdate::Stopped : RequestQuestUpdate::Started;
-                    update.ClientQuestType = static_cast<std::underlying_type_t<TESQuest::Type>>(type); 
-
-                    m_world.GetTransport().Send(update);
-                }
-            });
-    }
+        });
 
     return BSTEventResult::kOk;
 }
@@ -105,47 +118,52 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
     if (ScopedQuestOverride::IsOverriden() || !m_world.Get().GetPartyService().IsInParty())
         return BSTEventResult::kOk;
 
-    spdlog::info("Quest stage event: {:X}, stage: {}", apEvent->formId, apEvent->stageId);
+    TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId));
+    if (pQuest == nullptr)
+        return BSTEventResult::kOk; // This shouldn't happen...
 
-    // there is no reason to even fetch the quest object, since the event provides everything already....
-    if (TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId)))
+    // If we can't get the GameId we can't sync anyway.
+    GameId Id;
+    auto& modSys = m_world.GetModSystem();
+    if (!modSys.GetServerModId(pQuest->formID, Id))
     {
-        if (IsNonSyncableQuest(pQuest))
-            return BSTEventResult::kOk;
+        spdlog::info(__FUNCTION__ ": can't get gameId for formId {:X}, can't sync questStage {} questType {} name {}",
+                     pQuest->formID, pQuest->currentStage,
+                     static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), 
+                     pQuest->fullName.value.AsAscii());
+        return BSTEventResult::kOk;
+    }
 
-        if (pQuest->type == TESQuest::Type::None || pQuest->type == TESQuest::Type::Miscellaneous)
+    if (IsNonSyncableQuest(pQuest))
+        return BSTEventResult::kOk;
+
+    if (pQuest->type == TESQuest::Type::None || pQuest->type == TESQuest::Type::Miscellaneous)
+    {
+        spdlog::info(__FUNCTION__ ": queuing type none/misc quest update gameId {:X} questStage {} "
+                                  "questType {} formId {:X} name {}",
+                                  Id.LogFormat(), pQuest->currentStage,
+                                  static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->formID,
+                                  pQuest->fullName.value.AsAscii());
+    }
+
+    spdlog::info(__FUNCTION__ ":  quest updated formId: {:X}, questStage: {}, questType: {}, name: {}",
+                    pQuest->formID, pQuest->currentStage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->fullName.value.AsAscii());
+
+    m_world.GetRunner().Queue(
+        [&, formId = apEvent->formId, stageId = apEvent->stageId, type = pQuest->type]()
         {
-            // Perhaps redundant, but necessary. We need the logging and
-            // the lambda coming up is queued and runs later
             GameId Id;
             auto& modSys = m_world.GetModSystem();
-            if (modSys.GetServerModId(pQuest->formID, Id))
+            if (modSys.GetServerModId(formId, Id))
             {
-                spdlog::info(__FUNCTION__ ": queuing type none/misc quest gameId {:X} questStage {} questStatus {} questType {} formId {:X} name {}",
-                             Id.LogFormat(), pQuest->currentStage,
-                             RequestQuestUpdate::StageUpdate,
-                             static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
-                             pQuest->formID, pQuest->fullName.value.AsAscii());
+                RequestQuestUpdate update;
+                update.Id = Id;
+                update.Stage = stageId;
+                update.Status = RequestQuestUpdate::StageUpdate;
+                update.ClientQuestType = static_cast<std::underlying_type_t<TESQuest::Type>>(type);
+                m_world.GetTransport().Send(update);
             }
-        }
-
-        m_world.GetRunner().Queue(
-            [&, formId = apEvent->formId, stageId = apEvent->stageId, type = pQuest->type]()
-            {
-                GameId Id;
-                auto& modSys = m_world.GetModSystem();
-                if (modSys.GetServerModId(formId, Id))
-                {
-                    RequestQuestUpdate update;
-                    update.Id = Id;
-                    update.Stage = stageId;
-                    update.Status = RequestQuestUpdate::StageUpdate;
-                    update.ClientQuestType = static_cast<std::underlying_type_t<TESQuest::Type>>(type);
-
-                    m_world.GetTransport().Send(update);
-                }
-            });
-    }
+        });
 
     return BSTEventResult::kOk;
 }
@@ -157,7 +175,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(formId));
     if (!pQuest)
     {
-        spdlog::error("Failed to find quest, base id: {:X}, mod id: {:X}", aUpdate.Id.BaseId, aUpdate.Id.ModId);
+        spdlog::error(__FUNCTION__ ": failed to find quest, gameId: {:X}, stage: {}", aUpdate.Id.LogFormat(), aUpdate.Stage);
         return;
     }
 
@@ -168,31 +186,58 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
                      aUpdate.ClientQuestType, formId, pQuest->fullName.value.AsAscii());
     }
 
+    // Leader does not accept updates during a Scene. 
     bool bResult = false;
+    const bool bRunning     = pQuest->getState() == TESQuest::State::Running;
+    const bool bIsLeader    = m_world.Get().GetPartyService().IsLeader();
+    const bool bQuestUpdate = PlayerControls::IsMovementControlsEnabled() || !bIsLeader;
+
+    if (aUpdate.Status == NotifyQuestUpdate::StageUpdate && !bQuestUpdate)
+    {
+        spdlog::info(__FUNCTION__ ": suppressing quest stage update, playing a scene and IsLeader: gameId: {:X}, questStage: {}, questStatus: {}, questType: {}, formId: {:X}, name: {}",
+                     aUpdate.Id.LogFormat(), aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, formId, pQuest->fullName.value.AsAscii());
+        return;
+    }
+
     switch (aUpdate.Status)
     {
     case NotifyQuestUpdate::Started:
-    {
-        pQuest->ScriptSetStage(aUpdate.Stage);
-        pQuest->SetActive(true);
+        if (bRunning)
+        {
+            spdlog::info(__FUNCTION__ ": suppressing duplicate quest start gameId: {:X}, questStage: {}, questStatus: {}, questType: {}, formId: {:X}, name: {}",
+                         aUpdate.Id.LogFormat(), aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, formId, pQuest->fullName.value.AsAscii());
+        }
+        else
+        {
+            spdlog::info(__FUNCTION__ ":  quest started remotely gameId: {:X}, questStage: {}, questStatus: {}, questType: {}, formId: {:X}, name: {}",
+                         aUpdate.Id.LogFormat(), aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, formId, pQuest->fullName.value.AsAscii());
+            pQuest->ScriptSetStage(aUpdate.Stage);
+            pQuest->SetActive(true);
+        }
         bResult = true;
         spdlog::info("Remote quest started: {:X}, stage: {}", formId, aUpdate.Stage);
         break;
-    }
+
     case NotifyQuestUpdate::StageUpdate:
+        spdlog::info(__FUNCTION__ ":  quest updated remotely gameId: {:X}, questStage: {}, questStatus: {}, questType: {}, formId: {:X}, name: {}",
+                     aUpdate.Id.LogFormat(), aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, formId, pQuest->fullName.value.AsAscii());
+
         pQuest->ScriptSetStage(aUpdate.Stage);
         bResult = true;
-        spdlog::info("Remote quest updated: {:X}, stage: {}", formId, aUpdate.Stage);
         break;
+
     case NotifyQuestUpdate::Stopped:
+        spdlog::info(__FUNCTION__ ":  quest stopped remotely gameId: {:X}, questStage: {}, questStatus: {}, questType: {}, formId: {:X}, name: {}",
+                     aUpdate.Id.LogFormat(), aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, formId, pQuest->fullName.value.AsAscii());
         bResult = StopQuest(formId);
-        spdlog::info("Remote quest stopped: {:X}, stage: {}", formId, aUpdate.Stage);
         break;
+ 
     default: break;
     }
 
     if (!bResult)
-        spdlog::error("Failed to update the client quest state, quest: {:X}, stage: {}, status: {}", formId, aUpdate.Stage, aUpdate.Status);
+        spdlog::error(__FUNCTION__ ": failed to update the client quest state gameId: {:X}, questStage: {}, questStatus: {}, questType: {}, formId: {:X}, name: {}",
+                      aUpdate.Id.LogFormat(), aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, formId, pQuest->fullName.value.AsAscii());
 }
 
 bool QuestService::StopQuest(uint32_t aformId)
@@ -200,8 +245,17 @@ bool QuestService::StopQuest(uint32_t aformId)
     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(aformId));
     if (pQuest)
     {
-        pQuest->SetActive(false);
-        pQuest->SetStopped();
+        if (pQuest->getState() == TESQuest::State::Stopped) // Supress duplicate or loopback quest stop
+        {
+            spdlog::info(__FUNCTION__ ": suppressing duplicate quest stop formId: {:X}, questStage: {}, questFlags: {:X}, questType: {}, formId: {:X}, name: {}",
+                         aformId, pQuest->currentStage, static_cast<uint8_t>(pQuest->flags), static_cast<uint16_t>(pQuest->type), aformId, pQuest->fullName.value.AsAscii());
+        }
+        else
+        {
+            pQuest->SetActive(false);
+            pQuest->SetStopped();
+        }
+
         return true;
     }
 
