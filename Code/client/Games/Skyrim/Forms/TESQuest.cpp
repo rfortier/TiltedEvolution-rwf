@@ -54,13 +54,9 @@ void TESQuest::SetActive(bool toggle)
 
 bool TESQuest::IsStageDone(uint16_t stageIndex)
 {
-    for (Stage* it : stages)
-    {
-        if (it->stageIndex == stageIndex)
-            return it->IsDone();
-    }
-
-    return false;
+    TP_THIS_FUNCTION(TIsStageDone, bool, TESQuest, uint16_t);
+    POINTER_SKYRIMSE(TIsStageDone, IsStageDone, 25011);
+    return IsStageDone(this, stageIndex);
 }
 
 bool TESQuest::Kill()
@@ -117,3 +113,13 @@ static TiltedPhoques::Initializer s_questInitHooks(
         // kill quest init in cold blood
         // TiltedPhoques::Write<uint8_t>(25003, 0xC3);
     });
+
+bool TESQuest::IsAnyCutscenePlaying()
+{
+    for (const auto& scene : scenes)
+    {
+        if (scene->isPlaying)
+            return true;
+    }
+    return false;
+}
