@@ -7,6 +7,7 @@ void RequestQuestUpdate::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) co
     Id.Serialize(aWriter);
     aWriter.WriteBits(Stage, 16);
     aWriter.WriteBits(Status, 8);
+    aWriter.WriteBits(SceneEndFlag, 8);
     aWriter.WriteBits(ClientQuestType, 8);
 }
 
@@ -21,6 +22,9 @@ void RequestQuestUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) 
 
     aReader.ReadBits(tmp, 8);
     Status = tmp & 0xFF;
+
+    aReader.ReadBits(tmp, 8);
+    SceneEndFlag = tmp & 0xFF;
 
     aReader.ReadBits(tmp, 8);
     ClientQuestType = tmp & 0xFF;

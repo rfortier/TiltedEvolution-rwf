@@ -42,6 +42,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
     notify.Id = message.Id;
     notify.Stage = message.Stage;
     // notify.Status = message.Status;  // This was a misleading bug. Was "accidentally correct" code.
+    notify.SceneEndFlag = message.SceneEndFlag;
     notify.ClientQuestType = message.ClientQuestType;
 
     switch (message.Status)
@@ -74,8 +75,8 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
 
     case RequestQuestUpdate::StageUpdate:
         notify.Status = NotifyQuestUpdate::StageUpdate;
-        spdlog::info("{}: updated quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__, message.Id.LogFormat(),
-                     message.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
+        spdlog::info("{}: updated quest: {:X}, stage: {}, sceneEndFlag {}, by {} {:X}", __FUNCTION__, message.Id.LogFormat(),
+                     message.Stage, message.SceneEndFlag != 0, bIsLeader ? "leader" : "player", pPlayer->GetId());
         break;
 
     case RequestQuestUpdate::Stopped:
@@ -112,16 +113,19 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         // the originator was a party member, they are already in the dedup history. SendToParty() skips sending to any 
         // party member who already has this quest+stage change.
         // 
+        // If the SceneEndFlag is set, we want to kick the entire party so don't loop around through Leader,
+        // pretend to be leader if the request came from a party Member.
+        // 
         PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
         Player* pLeader = bIsLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
         auto& dedupHistory = pLeader->GetQuestStageDedupHistory();
 
 
-        if (bIsLeader)
+        if (bIsLeader || notify.SceneEndFlag)
         {
             // Leader originated or party member sent to leader. 
             // SendToParty unless Leader has already done it. 
-            if (dedupHistory.FoundStageWPlayerId(notify.Id, notify.Stage, pPlayer->GetId()))
+            if (notify.SceneEndFlag == false && dedupHistory.FoundStageWPlayerId(notify.Id, notify.Stage, pPlayer->GetId()))
                 spdlog::info("{}: SendToParty dropping duplicate: quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__,
                              notify.Id.LogFormat(), notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
             else
@@ -157,7 +161,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         {
             // Party member advanced quest; forward just to party leader
             // But don't if someone already has!
-            bool bFound = dedupHistory.FoundStage(notify.Id, notify.Stage);
+            bool bFound = notify.SceneEndFlag == 0 && dedupHistory.FoundStage(notify.Id, notify.Stage);
             dedupHistory.Add(notify.Id, notify.Stage, pPlayer->GetId());  
 
             if (bFound)

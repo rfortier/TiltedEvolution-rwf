@@ -83,12 +83,11 @@ BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent, cons
     {
         spdlog::info(__FUNCTION__ ": queuing type none/misc quest {}, gameId {:X}, questStage {}, questType {}, player {}, formId {:X}, name {}",
                      pQuest->IsStopped() ? "stop" : "start", Id.LogFormat(), pQuest->currentStage,
-                     static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->formID,
-                     PlayerId(), pQuest->fullName.value.AsAscii());
+                     static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), PlayerId(), 
+                    pQuest->formID, pQuest->fullName.value.AsAscii());
     }
 
-
-    spdlog::info(__FUNCTION__ ":  quest {} formId: {:X}, questStage: {}, questType: {}, player {},name: {}",
+    spdlog::info(__FUNCTION__ ":  quest {} formId: {:X}, questStage: {}, questType: {}, player {}, name: {}",
                  pQuest->IsStopped() ? "stopped" : "started", 
                  pQuest->formID,
                  pQuest->currentStage, 
@@ -190,6 +189,35 @@ BSTEventResult SceneService::OnEvent(const TESSceneEvent* apEvent, const EventDi
 {
     spdlog::info(__FUNCTION__ ": scene formId: {:X} {}, playerId {}", 
                  apEvent->sceneFormId, apEvent->sceneType ? "END" : "START",  PlayerId());
+    if (apEvent->sceneType != 0)
+    {
+        auto pScene = Cast<BGSScene>(TESForm::GetById(apEvent->sceneFormId));
+        auto pQuest = pScene->parentQuest;
+        spdlog::info(__FUNCTION__ ": scene quest formId: {:X} currentStage {}, playerId {}", 
+                     pQuest->formID, pQuest->currentStage, PlayerId());
+
+        spdlog::info(__FUNCTION__ ":  quest updated formId: {:X}, questStage: {}, questType: {}, sceneEndFlag {}, player {}, name: {}",
+                    pQuest->formID, pQuest->currentStage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), true, PlayerId(), pQuest->fullName.value.AsAscii());
+
+        // Send a stage update in case everyone else is stuck waiting for  the scene to advance
+        // Maybe there were dialog choices in the scene, for example. Either everyone else has already
+        // triggered this stage transition and it will be ignored, or they are stuck and this will catch 
+        // them up.
+        m_world.GetRunner().Queue([&, formId = pQuest->formID, stageId = pQuest->currentStage, type = pQuest->type]() {
+            GameId Id;
+            auto& modSys = m_world.GetModSystem();
+            if (modSys.GetServerModId(formId, Id))
+            {
+                RequestQuestUpdate update;
+                update.Id = Id;
+                update.Stage = stageId;
+                update.Status = RequestQuestUpdate::StageUpdate;
+                update.SceneEndFlag = true;
+                update.ClientQuestType = static_cast<std::underlying_type_t<TESQuest::Type>>(type);
+                m_world.GetTransport().Send(update);
+            }
+        });
+    }
     return BSTEventResult::kOk;
 }
 
@@ -211,18 +239,32 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
                      aUpdate.ClientQuestType, PlayerId(), formId, pQuest->fullName.value.AsAscii());
     }
 
-    // Party all playing a scene firing events in parallel can deliver updates that get through the
-    // server dedup logic due to the network delay. So when playing a scene, reject rewinds
-    // You'd think that would be it, but due to Member playing scenes 2-4x faster than Leader
-    // (unfixed bug), we need the leader to rewind Member to try to stay more in sync.
     bool bResult = false;
     const bool bRunning = pQuest->getState() == TESQuest::State::Running;
     const bool bIsMember = !m_world.Get().GetPartyService().IsLeader();
-    const bool bCanQuestUpdate = !pQuest->IsAnyCutscenePlaying() || aUpdate.Stage > pQuest->currentStage || bIsMember;
+
+    // Quest OnEvent()s send updates to the server where the Leader deduplicates them,
+    // so most remote updates (Quest::OnUpdate) are coming from the Leader (there's an exception
+    // for scene end). But when Party Members are all playing a scene, the scene itself is advancing 
+    // the quest and udpates should be ignored. Either everyone will just complete the scene on their 
+    // own or, everyone except the triggering Player will get stuck, because some player interaction is 
+    // needed to finish the scene. 
+    // 
+    // The odd fix is to have everyone ignore remote updates during a scene. 
+    // They will finish the scene on their own if no interation is required.
+    // 
+    // To unstick them if the scene does require interaction, the first Player to finish a
+    // scene sends a NotifyQuestUpdate flagged as saying it is scene-ending, and those are
+    // accepted in-scene. There is a race condition, but duplicates are ignored.
+    // 
+    // Ignoring in-scene updates also closes a duplicate update window that can happen
+    // with scenes where a remote update arrives just after completing a stage due
+    // to network delays
+    const bool bCanQuestUpdate = !pQuest->IsAnyCutscenePlaying() || aUpdate.SceneEndFlag;
 
     if (aUpdate.Status == NotifyQuestUpdate::StageUpdate && !bCanQuestUpdate)
     {
-        spdlog::info(__FUNCTION__ ": suppressing quest stage update, playing a scene and IsLeader: gameId: {:X}, questStage: {}, questStatus: {}, questType: {}, player {}, formId: {:X}, name: {}",
+        spdlog::info(__FUNCTION__ ": suppressing quest stage update while playing a scene: gameId: {:X}, questStage: {}, questStatus: {}, questType: {}, player {}, formId: {:X}, name: {}",
                      aUpdate.Id.LogFormat(), aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, PlayerId(), formId, pQuest->fullName.value.AsAscii());
         return;
     }
