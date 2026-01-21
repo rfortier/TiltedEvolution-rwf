@@ -141,8 +141,8 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
     {
         spdlog::info(__FUNCTION__ ": queuing type none/misc quest update gameId {:X}, questStage {}, questType {}, player {}, formId {:X}, name {}",
                                   Id.LogFormat(), pQuest->currentStage,
-                                  static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->formID,
-                                  PlayerId(), pQuest->fullName.value.AsAscii());
+                                  static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), 
+                                  PlayerId(), pQuest->formID, pQuest->fullName.value.AsAscii());
     }
 
     spdlog::info(__FUNCTION__ ":  quest updated formId: {:X}, questStage: {}, questType: {}, player {}, name: {}",
@@ -189,15 +189,16 @@ BSTEventResult SceneService::OnEvent(const TESSceneEvent* apEvent, const EventDi
 {
     spdlog::info(__FUNCTION__ ": scene formId: {:X} {}, playerId {}", 
                  apEvent->sceneFormId, apEvent->sceneType ? "END" : "START",  PlayerId());
+    
+    auto pScene = Cast<BGSScene>(TESForm::GetById(apEvent->sceneFormId));
+    auto pQuest = pScene->parentQuest;
+    spdlog::info(__FUNCTION__ ": scene quest formId: {:X} currentStage {}, playerId {}", 
+                 pQuest->formID, pQuest->currentStage, PlayerId());
+
     if (apEvent->sceneType != 0)
     {
-        auto pScene = Cast<BGSScene>(TESForm::GetById(apEvent->sceneFormId));
-        auto pQuest = pScene->parentQuest;
-        spdlog::info(__FUNCTION__ ": scene quest formId: {:X} currentStage {}, playerId {}", 
-                     pQuest->formID, pQuest->currentStage, PlayerId());
-
-        spdlog::info(__FUNCTION__ ":  quest updated formId: {:X}, questStage: {}, questType: {}, sceneEndFlag {}, player {}, name: {}",
-                    pQuest->formID, pQuest->currentStage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), true, PlayerId(), pQuest->fullName.value.AsAscii());
+        spdlog::info(__FUNCTION__ ": quest updated formId: {:X}, questStage: {}, questType: {}, sceneEndFlag {}, player {}, name: {}",
+                     pQuest->formID, pQuest->currentStage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), true, PlayerId(), pQuest->fullName.value.AsAscii());
 
         // Send a stage update in case everyone else is stuck waiting for  the scene to advance
         // Maybe there were dialog choices in the scene, for example. Either everyone else has already
@@ -260,7 +261,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
     // Ignoring in-scene updates also closes a duplicate update window that can happen
     // with scenes where a remote update arrives just after completing a stage due
     // to network delays
-    const bool bCanQuestUpdate = !pQuest->IsAnyCutscenePlaying() || aUpdate.SceneEndFlag;
+    const bool bCanQuestUpdate = !pQuest->IsAnyCutscenePlaying() || aUpdate.SceneEndFlag && aUpdate.Stage > pQuest->currentStage;
 
     if (aUpdate.Status == NotifyQuestUpdate::StageUpdate && !bCanQuestUpdate)
     {
