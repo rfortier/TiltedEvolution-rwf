@@ -63,7 +63,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
             entries.emplace_back(message.Id, message.Stage);
             questIt = std::prev(entries.end());
             spdlog::info("{}: started quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__, message.Id.LogFormat(),
-                         message.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
+                         notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
         }
     }
 
@@ -76,19 +76,19 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
     case RequestQuestUpdate::StageUpdate:
         notify.Status = NotifyQuestUpdate::StageUpdate;
         spdlog::info("{}: updated quest: {:X}, stage: {}, sceneEndFlag {}, by {} {:X}", __FUNCTION__, message.Id.LogFormat(),
-                     message.Stage, message.SceneEndFlag != 0, bIsLeader ? "leader" : "player", pPlayer->GetId());
+                     notify.Stage, notify.SceneEndFlag != 0, bIsLeader ? "leader" : "player", pPlayer->GetId());
         break;
 
     case RequestQuestUpdate::Stopped:
         notify.Status = NotifyQuestUpdate::Stopped;
         spdlog::info("{}: stopped quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__, message.Id.LogFormat(),
-                     message.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
+                     notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
 
         if (questIt != entries.end())
             entries.erase(questIt);
         else
         {
-            spdlog::warn("{}: unable to delete quest object {:X} (already stopped or first update is stopped)", __FUNCTION__, message.Id.LogFormat());
+            spdlog::warn("{}: unable to delete quest object {:X} (already stopped or first update is stopped)", __FUNCTION__, notify.Id.LogFormat());
         } 
         break;
     }
@@ -143,13 +143,13 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
                     {
                         if (dedupHistory.FoundStageWPlayerId(notify.Id, notify.Stage, pPlayer->GetId()))
                         {
-                            spdlog::info("{}: SendToParty skipping duplicate send quest: {:X}, stage: {}, to player {:X}",
-                                         __FUNCTION__, notify.Id.LogFormat(), notify.Stage, pPlayer->GetId());
+                            spdlog::info("{}: SendToParty skipping duplicate send quest: {:X}, stage: {}, sceneEndFlag {}, to player {:X}",
+                                         __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.SceneEndFlag != 0, pPlayer->GetId());
                         }
                         else
                         {
-                            spdlog::info("{}: SendToParty sending quest: {:X}, stage: {}, to player {:X}", 
-                                         __FUNCTION__, notify.Id.LogFormat(), notify.Stage, pPlayer->GetId());
+                            spdlog::info("{}: SendToParty sending quest: {:X}, stage: {}, sceneEndFlag {}, to player {:X}", 
+                                         __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.SceneEndFlag != 0, pPlayer->GetId());
                             pPlayer->Send(notify);
                         }
                     }

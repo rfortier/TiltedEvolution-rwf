@@ -187,24 +187,24 @@ SceneService::SceneService(World& aWorld, entt::dispatcher& aDispatcher) : m_wor
 
 BSTEventResult SceneService::OnEvent(const TESSceneEvent* apEvent, const EventDispatcher<TESSceneEvent>*)
 {
-    spdlog::info(__FUNCTION__ ": scene formId: {:X} {}, playerId {}", 
+    spdlog::info(__FUNCTION__ ": scene formId: {:X}, {}, playerId {}", 
                  apEvent->sceneFormId, apEvent->sceneType ? "END" : "START",  PlayerId());
     
     auto pScene = Cast<BGSScene>(TESForm::GetById(apEvent->sceneFormId));
     auto pQuest = pScene->parentQuest;
-    spdlog::info(__FUNCTION__ ": scene quest formId: {:X} currentStage {}, playerId {}", 
-                 pQuest->formID, pQuest->currentStage, PlayerId());
+    spdlog::info(__FUNCTION__ ": scene quest formId: {:X} currentStage {}, isStopped {}, playerId {}", 
+                 pQuest->formID, pQuest->currentStage, pQuest->IsStopped(), PlayerId());
 
     if (apEvent->sceneType != 0)
     {
-        spdlog::info(__FUNCTION__ ": quest updated formId: {:X}, questStage: {}, questType: {}, sceneEndFlag {}, player {}, name: {}",
-                     pQuest->formID, pQuest->currentStage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), true, PlayerId(), pQuest->fullName.value.AsAscii());
+        spdlog::info(__FUNCTION__ ": quest updated formId: {:X}, questStage: {}, questType: {}, isStopped {}, sceneEndFlag {}, player {}, name: {}",
+                     pQuest->formID, pQuest->currentStage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(), true, PlayerId(), pQuest->fullName.value.AsAscii());
 
         // Send a stage update in case everyone else is stuck waiting for  the scene to advance
         // Maybe there were dialog choices in the scene, for example. Either everyone else has already
         // triggered this stage transition and it will be ignored, or they are stuck and this will catch 
         // them up.
-        m_world.GetRunner().Queue([&, formId = pQuest->formID, stageId = pQuest->currentStage, type = pQuest->type]() {
+        m_world.GetRunner().Queue([&, formId = pQuest->formID, stageId = pQuest->currentStage, type = pQuest->type, bIsStopped = pQuest->IsStopped()]() {
             GameId Id;
             auto& modSys = m_world.GetModSystem();
             if (modSys.GetServerModId(formId, Id))
@@ -212,7 +212,7 @@ BSTEventResult SceneService::OnEvent(const TESSceneEvent* apEvent, const EventDi
                 RequestQuestUpdate update;
                 update.Id = Id;
                 update.Stage = stageId;
-                update.Status = RequestQuestUpdate::StageUpdate;
+                update.Status = bIsStopped ? RequestQuestUpdate::Stopped : RequestQuestUpdate::StageUpdate;
                 update.SceneEndFlag = true;
                 update.ClientQuestType = static_cast<std::underlying_type_t<TESQuest::Type>>(type);
                 m_world.GetTransport().Send(update);
