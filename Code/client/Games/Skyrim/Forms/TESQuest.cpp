@@ -144,11 +144,11 @@ static TiltedPhoques::Initializer s_questInitHooks(
         // TiltedPhoques::Write<uint8_t>(25003, 0xC3);
     });
 
-bool TESQuest::IsAnyCutscenePlaying()
+bool TESQuest::IsAnyCutscenePlaying(const uint32_t aFormId)
 {
     for (const auto& scene : scenes)
     {
-        if (scene->isPlaying)
+        if (scene->isPlaying && scene->parentQuest->formID == aFormId)
             return true;
     }
     return false;

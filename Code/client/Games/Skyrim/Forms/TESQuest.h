@@ -136,7 +136,7 @@ struct TESQuest : BGSStoryManagerTreeForm
     bool SetStage(uint16_t stage);
     bool ScriptSetStage(uint16_t stage, bool bForce = false);
     void SetStopped();
-    bool IsAnyCutscenePlaying();    
+    bool IsAnyCutscenePlaying(const uint32_t aFormId);    
 };
 
 static_assert(sizeof(TESQuest) == 0x268);
