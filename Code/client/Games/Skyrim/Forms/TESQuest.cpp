@@ -54,13 +54,9 @@ void TESQuest::SetActive(bool toggle)
 
 bool TESQuest::IsStageDone(uint16_t stageIndex)
 {
-    for (Stage* it : stages)
-    {
-        if (it->stageIndex == stageIndex)
-            return it->IsDone();
-    }
-
-    return false;
+    TP_THIS_FUNCTION(TIsStageDone, bool, TESQuest, uint16_t);
+    POINTER_SKYRIMSE(TIsStageDone, IsStageDone, 25011);
+    return IsStageDone(this, stageIndex);
 }
 
 bool TESQuest::Kill()
@@ -90,21 +86,49 @@ bool TESQuest::EnsureQuestStarted(bool& success, bool force)
 
 bool TESQuest::SetStage(uint16_t newStage)
 {
-    ScopedQuestOverride _;
-
+    // According to wiki, calling newStage == currentStage does nothing.
+    // Calling with newStage < currentStage, will rerun the stage actions
+    // IFF the target newStage is not marked IsCompleted(). Regardless,
+    // will not reduce currentStage (it stays the same).
+    // Actually reducing currentStage rquires reset() to be called first.
     TP_THIS_FUNCTION(TSetStage, bool, TESQuest, uint16_t);
     POINTER_SKYRIMSE(TSetStage, SetStage, 25004);
-    return SetStage(this, newStage);
+    bool bSuccess = SetStage(this, newStage);
+    if (!bSuccess)
+    {
+        spdlog::warn(__FUNCTION__ ": returned false quest formId {:X}, currentStage {}, newStage {}, name {}", 
+                     formID, currentStage, newStage, fullName.value.AsAscii());
+    }
+    return bSuccess;
 }
 
-void TESQuest::ScriptSetStage(uint16_t stageIndex)
+bool TESQuest::ScriptSetStage(uint16_t stageIndex, bool bForce)
 {
-    if (currentStage == stageIndex || IsStageDone(stageIndex))
-        return;
+    // According to wiki, calling with stageIndex == currentStage does nothing.
+    // Calling with stageIndex < currentStage will rerun the stageIndex actions
+    // IFF the target stageIndex is not marked IsCompleted(). Regardless,
+    // will not reduce currentStage (it stays the same).
+    // Actually reducing currentStage rquires reset() to be called first.
+    // Since this is not well-known and hooks may be confused, filter rewind
+    // according to TESQuest::SetStage rules.
+    bool bSuccess =    stageIndex >  currentStage 
+                    || stageIndex != currentStage && !IsStageDone(stageIndex) 
+                    || bForce;
 
-    using Quest = TESQuest;
-    PAPYRUS_FUNCTION(void, Quest, SetCurrentStageID, int);
-    s_pSetCurrentStageID(this, stageIndex);
+    if (bSuccess)
+    {
+        using Quest = TESQuest;
+        PAPYRUS_FUNCTION(bool, Quest, SetCurrentStageID, int);
+        bSuccess = s_pSetCurrentStageID(this, stageIndex);
+    }
+
+    if (!bSuccess)
+    {
+        spdlog::warn(__FUNCTION__ ": returned false quest formId {:X}, currentStage {}, newStage {}, name {}", 
+                     formID, currentStage, stageIndex, fullName.value.AsAscii());
+    }
+
+    return bSuccess;
 }
 
 void TESQuest::SetStopped()
@@ -119,3 +143,13 @@ static TiltedPhoques::Initializer s_questInitHooks(
         // kill quest init in cold blood
         // TiltedPhoques::Write<uint8_t>(25003, 0xC3);
     });
+
+bool TESQuest::IsAnyCutscenePlaying()
+{
+    for (const auto& scene : scenes)
+    {
+        if (scene->isPlaying)
+            return true;
+    }
+    return false;
+}

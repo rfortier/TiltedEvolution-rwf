@@ -9,7 +9,14 @@ struct BGSScene : TESForm
 {
     GameArray<void*> phases;
     GameArray<uint32_t> actorIds;
+    uint8_t pad0[0x98 - 0x50];
+    TESQuest* parentQuest;
+    uint8_t pad1[0xB0 - 0xA0];
+    bool isPlaying;
 };
+static_assert(offsetof(BGSScene, pad0) == 0x50);
+static_assert(offsetof(BGSScene, parentQuest) == 0x98);
+static_assert(offsetof(BGSScene, isPlaying) == 0xB0);
 
 struct TESQuest : BGSStoryManagerTreeForm
 {
@@ -127,8 +134,9 @@ struct TESQuest : BGSStoryManagerTreeForm
     bool EnsureQuestStarted(bool& succeded, bool force);
 
     bool SetStage(uint16_t stage);
-    void ScriptSetStage(uint16_t stage);
+    bool ScriptSetStage(uint16_t stage, bool bForce = false);
     void SetStopped();
+    bool IsAnyCutscenePlaying();    
 };
 
 static_assert(sizeof(TESQuest) == 0x268);
