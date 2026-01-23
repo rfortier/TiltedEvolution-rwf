@@ -67,6 +67,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         }
     }
 
+    bool bForceSend = true;
     switch (message.Status)
     {
     case RequestQuestUpdate::Started:
@@ -74,6 +75,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         break;
 
     case RequestQuestUpdate::StageUpdate:
+        bForceSend = false;
         notify.Status = NotifyQuestUpdate::StageUpdate;
         spdlog::info("{}: updated quest: {:X}, stage: {}, sceneEndFlag {}, by {} {:X}", __FUNCTION__, message.Id.LogFormat(),
                      notify.Stage, notify.SceneEndFlag != 0, bIsLeader ? "leader" : "player", pPlayer->GetId());
@@ -119,19 +121,20 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
         Player* pLeader = bIsLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
         auto& dedupHistory = pLeader->GetQuestStageDedupHistory();
+        bool bForceSend = bForceSend || notify.SceneEndFlag;
 
 
         if (bIsLeader || notify.SceneEndFlag)
         {
             // Leader originated or party member sent to leader. 
             // SendToParty unless Leader has already done it. 
-            if (notify.SceneEndFlag == false && dedupHistory.FoundStageWPlayerId(notify.Id, notify.Stage, pPlayer->GetId()))
-                spdlog::info("{}: SendToParty dropping duplicate: quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__,
-                             notify.Id.LogFormat(), notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
+            if (!bForceSend && dedupHistory.FoundStageWPlayerId(notify.Id, notify.Stage, pPlayer->GetId()))
+                spdlog::info("{}: SendToParty dropping duplicate: quest: {:X}, stage: {}, status: {}, by {} {:X}", __FUNCTION__,
+                             notify.Id.LogFormat(), notify.Stage, notify.Status, bIsLeader ? "leader" : "player", pPlayer->GetId());
             else
             {
-                spdlog::info("{}: SendToParty: quest: {:X}, stage: {}, by {} {:X}", 
-                             __FUNCTION__, notify.Id.LogFormat(), notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
+                spdlog::info("{}: SendToParty: quest: {:X}, stage: {}, status: {}, by {} {:X}", 
+                             __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status, bIsLeader ? "leader" : "player", pPlayer->GetId());
 
                 dedupHistory.Add(notify.Id, notify.Stage, pPlayer->GetId());
 
@@ -143,13 +146,13 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
                     {
                         if (dedupHistory.FoundStageWPlayerId(notify.Id, notify.Stage, pPlayer->GetId()))
                         {
-                            spdlog::info("{}: SendToParty skipping duplicate send quest: {:X}, stage: {}, sceneEndFlag {}, to player {:X}",
-                                         __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.SceneEndFlag != 0, pPlayer->GetId());
+                            spdlog::info("{}: SendToParty skipping duplicate send quest: {:X}, stage: {}, status: {}, sceneEndFlag {}, to player {:X}",
+                                         __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status, notify.SceneEndFlag != 0, pPlayer->GetId());
                         }
                         else
                         {
-                            spdlog::info("{}: SendToParty sending quest: {:X}, stage: {}, sceneEndFlag {}, to player {:X}", 
-                                         __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.SceneEndFlag != 0, pPlayer->GetId());
+                            spdlog::info("{}: SendToParty sending quest: {:X}, stage: {}, status: {}, sceneEndFlag {}, to player {:X}", 
+                                         __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status, notify.SceneEndFlag != 0, pPlayer->GetId());
                             pPlayer->Send(notify);
                         }
                     }
@@ -161,16 +164,16 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         {
             // Party member advanced quest; forward just to party leader
             // But don't if someone already has!
-            bool bFound = notify.SceneEndFlag == 0 && dedupHistory.FoundStage(notify.Id, notify.Stage);
+            bool bFound = !bForceSend && dedupHistory.FoundStage(notify.Id, notify.Stage);
             dedupHistory.Add(notify.Id, notify.Stage, pPlayer->GetId());  
 
             if (bFound)
-                spdlog::info("{}: SendToLeader dropping duplicate quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__,
-                             notify.Id.LogFormat(), notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
+                spdlog::info("{}: SendToLeader dropping duplicate quest: {:X}, stage: {}, status: {}, by {} {:X}", __FUNCTION__,
+                             notify.Id.LogFormat(), notify.Stage, notify.Status, bIsLeader ? "leader" : "player", pPlayer->GetId());
             else
             {
-                spdlog::info("{}: SendToLeader quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__,
-                             notify.Id.LogFormat(), notify.Stage, bIsLeader ? "leader" : "player", pPlayer->GetId());
+                spdlog::info("{}: SendToLeader quest: {:X}, stage: {}, status: {}, by {} {:X}", __FUNCTION__,
+                             notify.Id.LogFormat(), notify.Stage, notify.Status, bIsLeader ? "leader" : "player", pPlayer->GetId());
 
                 GameServer::Get()->SendToLeader(notify, pPlayer->GetParty(), pLeader);
             }
