@@ -515,7 +515,7 @@ void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessag
         {
             if (auto serverId = Utils::GetServerId(entity))
             {
-                if (*serverId == id)
+                if (serverId.has_value() && serverId.value() == id)
                     return true;
             }
             return false;
@@ -924,14 +924,24 @@ void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
     auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.ActorID](auto entity) { return view.get<FormIdComponent>(entity).Id == formId; });
 
     if (entityIt == view.end())
+    {
+        spdlog::error( __FUNCTION__ ": failed to find speaking Actor's FormIdComponent, formId {:X}",acEvent.ActorID);
         return;
+    }
 
     auto serverIdRes = Utils::GetServerId(*entityIt);
     if (!serverIdRes)
     {
-        spdlog::error("{}: server id not found for form id {:X}", __FUNCTION__, acEvent.ActorID);
+        spdlog::warn(__FUNCTION__ ": server id not found for formId {:X}", acEvent.ActorID);
         return;
     }
+
+    Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.ActorID));
+    auto isRemote = pActor->GetExtension()->IsRemote();
+    auto isRemoteInScene = isRemote && pActor->GetCurrentScene() && pActor->GetCurrentScene()->isPlaying;
+    const bool isLeader = m_world.Get().GetPartyService().IsLeader();  // Helps distinguish in 2-party
+    if (isRemote)   // If we're forwarding Remote dialog, it should be in-Scene dialog.
+        spdlog::debug(__FUNCTION__ ": remote actor is speaking formId {:X} serverId {:X} isRemote {} isLeader {}, name {}", acEvent.ActorID, serverIdRes.value(), isRemote, isLeader, pActor->baseForm->GetName());
 
     DialogueRequest request{};
     request.ServerId = serverIdRes.value();
@@ -942,24 +952,62 @@ void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
 
 void CharacterService::OnNotifyDialogue(const NotifyDialogue& acMessage) noexcept
 {
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ServerId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+    const bool isLeader = m_world.Get().GetPartyService().IsLeader();  
+    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    auto viewIt = std::find_if(
+        view.begin(), view.end(),
+        [view, id = acMessage.ServerId](auto entity)
+        {
+            auto serverId = Utils::GetServerId(entity);
+            return serverId.has_value() && serverId.value() == id;
+        });
 
-    if (remoteIt == std::end(remoteView))
+    if (viewIt == view.end())
     {
-        spdlog::warn("Actor for dialogue with remote id {:X} not found.", acMessage.ServerId);
+        spdlog::warn(__FUNCTION__ ": failed to find speaking Actor's FormIdComponent, serverId {:X}, isLeader {}", acMessage.ServerId, isLeader);
         return;
     }
 
-    auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
-    const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
-    Actor* pActor = Cast<Actor>(pForm);
-
+    Actor* pActor = Cast<Actor>(TESForm::GetById(view.get<FormIdComponent>(*viewIt).Id));
     if (!pActor)
         return;
 
-    pActor->StopCurrentDialogue(true);
-    pActor->SpeakSound(acMessage.SoundFilename.c_str());
+    // If we receive remote dialog for a Local actor, it was sent because 
+    // the remote version is in a cutscene and we should play it. Similarly if
+    // receive dialog for a Remote actor, it's most often from the Leader and we
+    // also should play it.
+    // 
+    // Unless the actor is speaking! If actively talking, the remote dialog interrupts
+    // our lines. That's a problem for Scene Dialog Actions, they often control Scene
+    // timing, aborting them breaks the scene.
+    // 
+    // FIXME: there is no known perfect test for "is talking,"  Papyrus IsTalking() only works
+    // on TaskDialog() (Dialog speak / response trees). It doesn't work on Scene dialog (Dialog 
+    // Actions). The closest test is if a Scene is playing.
+    // 
+    // The compromise is: dialog is rejected if the NPC is playing a scene. 
+    // 
+    // Most quests trigger scenes with Quest Stage changes. That means everyone is playing
+    // the scene, everyone gets their own dialog, and the scene timing stays correct. TaskDialog 
+    // dialog won't play to others that don't participate in the  dialog say&respond. Can't fix it.
+    // 
+    // There are evil scenes that report "IsPlaying" when they are waiting to be triggered, and don't
+    // firew quest stages to make everyone play the scene. Companions C02 (e.g., Brotherhood / 
+    // Induction scene). Whoever triggers gets dialog. Others would also have to trigger to hear
+    // the dialog. It's the best we can do.
+    // 
+    const auto pScene = pActor->GetCurrentScene();
+    const bool isPlaying = pScene && pScene->isPlaying;
+    const auto pName = (pActor->baseForm && pActor->baseForm->GetName()) ? pActor->baseForm->GetName() : "";
+
+    if (isPlaying)
+        spdlog::debug(__FUNCTION__ ": aborting dialog sync during scene {:X}, Actor {:X}, serverId {:X}, isLeader {}, name {}", 
+            pScene->formID, pActor->formID, acMessage.ServerId, isLeader, pName);
+    else
+    {
+        pActor->StopCurrentDialogue(true);
+        pActor->SpeakSound(acMessage.SoundFilename.c_str());
+    }
 }
 
 void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
@@ -969,14 +1017,18 @@ void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
 
     auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.SpeakerID](auto entity) { return view.get<FormIdComponent>(entity).Id == formId; });
+    const bool isLeader = m_world.Get().GetPartyService().IsLeader();
 
     if (entityIt == view.end())
+    {
+        spdlog::error(__FUNCTION__ ": failed to find subtitle Actor's FormIdComponent, formId {:X}, isLeader {}", acEvent.SpeakerID, isLeader);
         return;
+    }
 
     auto serverIdRes = Utils::GetServerId(*entityIt);
     if (!serverIdRes)
     {
-        spdlog::error("{}: server id not found for form id {:X}", __FUNCTION__, acEvent.SpeakerID);
+        spdlog::warn(__FUNCTION__ ": server id not found for formId {:X}", acEvent.SpeakerID);
         return;
     }
 
@@ -990,25 +1042,42 @@ void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
 
 void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcept
 {
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ServerId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+    const bool isLeader = m_world.Get().GetPartyService().IsLeader();
+    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    auto viewIt = std::find_if(
+        view.begin(), view.end(),
+        [view, id = acMessage.ServerId](auto entity)
+        {
+            auto serverId = Utils::GetServerId(entity);
+            return serverId.has_value() && serverId.value() == id;
+        });
 
-    if (remoteIt == std::end(remoteView))
+    if (viewIt == view.end())
     {
-        spdlog::warn("Actor for dialogue with remote id {:X} not found.", acMessage.ServerId);
+        spdlog::warn(__FUNCTION__ ": failed to find subtitle Actor's FormIdComponent, serverId {:X}, isLeader {}", acMessage.ServerId, isLeader);
         return;
     }
 
-    auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
-    const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
-    Actor* pActor = Cast<Actor>(pForm);
-
+    Actor* pActor = Cast<Actor>(TESForm::GetById(view.get<FormIdComponent>(*viewIt).Id));
     if (!pActor)
         return;
 
     // This is only for fallout 4
     TESTopicInfo* pInfo = nullptr;
     pInfo = Cast<TESTopicInfo>(TESForm::GetById(acMessage.TopicFormId));
+
+    // If we receive remote subtitles for a Local actor, it was sent because
+    // the remote version is in a cutscene and we should play it.
+    const auto pScene = pActor->GetCurrentScene();
+    const bool isPlaying = pScene && pScene->isPlaying;
+    const auto pName = (pActor->baseForm && pActor->baseForm->GetName()) ? pActor->baseForm->GetName() : "";
+    if (isPlaying)
+        spdlog::debug(__FUNCTION__ ": subtitle sync during (likely same) scene {:X}, Actor {:X}, serverId {:X}, "
+                                   "isLeader {}, name {}, message: {}",
+                      pScene->formID, pActor->formID, acMessage.ServerId, isLeader, pName, acMessage.Text.c_str());
+    else
+        spdlog::debug(__FUNCTION__ ": showing subtitle Actor {:X}, serverId {:X}, isLeader {}, name {}, message: {}",
+                      pActor->formID, acMessage.ServerId, isLeader, pName, acMessage.Text.c_str());
 
     SubtitleManager::Get()->ShowSubtitle(pActor, acMessage.Text.c_str(), pInfo);
 }

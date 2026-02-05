@@ -4,6 +4,7 @@
 
 #include <TESObjectREFR.h>
 #include <Games/ActorExtension.h>
+#include <Forms/TESQuest.h>
 
 #include <Forms/TESTopicInfo.h>
 #include <Misc/BSFixedString.h>
@@ -31,11 +32,23 @@ void* SubtitleManager::HideSubtitle(TESObjectREFR* apSpeaker) noexcept
 
 void TP_MAKE_THISCALL(HookShowSubtitle, SubtitleManager, TESObjectREFR* apSpeaker, const char* apSubtitleText, bool aIsInDialogue)
 {
-    // spdlog::debug("Subtitle for actor {:X} (bool {}):\n\t{}", apSpeaker ? apSpeaker->formID : 0, aIsInDialogue, apSubtitleText);
-
     Actor* pActor = Cast<Actor>(apSpeaker);
-    if (apSubtitleText && pActor && pActor->GetExtension()->IsLocal() && !pActor->GetExtension()->IsPlayer())
-        World::Get().GetRunner().Trigger(SubtitleEvent(apSpeaker->formID, apSubtitleText));
+    if (pActor)
+    {  
+        auto isLocal = pActor->GetExtension()->IsLocal();
+        auto isLocalPlayer = pActor->GetExtension()->IsLocalPlayer();
+        auto isRemoteInScene = !isLocal && pActor->GetCurrentScene() && pActor->GetCurrentScene()->isPlaying;
+        bool shouldForward = apSubtitleText && (isLocal && !isLocalPlayer || isRemoteInScene);
+        const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish logs in 2-party
+        const auto pname = pActor->baseForm->GetName() ? pActor->baseForm->GetName() : "";
+
+        if (shouldForward && isRemoteInScene)
+            spdlog::debug(__FUNCTION__ ": forwarding subtitles because isRemoteInScene formId {:X} isLeader {} name {} text {}",
+                          pActor->formID, isLeader, pname, apSubtitleText);
+
+        if (shouldForward)
+            World::Get().GetRunner().Trigger(SubtitleEvent(apSpeaker->formID, apSubtitleText));
+    }
 
     TiltedPhoques::ThisCall(RealShowSubtitle, apThis, apSpeaker, apSubtitleText, aIsInDialogue);
 }
