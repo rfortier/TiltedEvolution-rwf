@@ -4,6 +4,7 @@
 
 #include <TESObjectREFR.h>
 #include <Games/ActorExtension.h>
+#include <Forms/TESQuest.h>
 
 #include <Forms/TESTopicInfo.h>
 #include <Misc/BSFixedString.h>
@@ -33,9 +34,17 @@ void TP_MAKE_THISCALL(HookShowSubtitle, SubtitleManager, TESObjectREFR* apSpeake
 {
     // spdlog::debug("Subtitle for actor {:X} (bool {}):\n\t{}", apSpeaker ? apSpeaker->formID : 0, aIsInDialogue, apSubtitleText);
 
+
     Actor* pActor = Cast<Actor>(apSpeaker);
-    if (apSubtitleText && pActor && pActor->GetExtension()->IsLocal() && !pActor->GetExtension()->IsPlayer())
-        World::Get().GetRunner().Trigger(SubtitleEvent(apSpeaker->formID, apSubtitleText));
+    if (pActor)
+    {
+        BGSScene* pScene = pActor->GetCurrentScene();
+        bool shouldForward =
+            pActor->GetExtension()->IsLocal() && !pActor->GetExtension()->IsPlayer() || pScene && pScene->isPlaying;
+
+        if (apSubtitleText && shouldForward)
+            World::Get().GetRunner().Trigger(SubtitleEvent(apSpeaker->formID, apSubtitleText));
+    }
 
     TiltedPhoques::ThisCall(RealShowSubtitle, apThis, apSpeaker, apSubtitleText, aIsInDialogue);
 }
