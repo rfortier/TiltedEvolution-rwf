@@ -4,7 +4,6 @@
 
 #include <Forms/BGSAction.h>
 #include <Forms/TESIdleForm.h>
-#include <Forms/TESQuest.h>
 
 #include <Structs/ActionEvent.h>
 
@@ -28,14 +27,9 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
 {
     auto pActor = apAction->actor;
     const auto pExtension = pActor->GetExtension();
-    const auto pScene = pActor->GetCurrentScene();
-    const bool isPlaying = pScene && pScene->isPlaying;
 
-    if (pExtension->IsLocal() || isPlaying || g_forceAnimation)
+    if (!pExtension->IsRemote() || g_forceAnimation)
     {
-        if (pExtension->IsRemote())
-            spdlog::warn(__FUNCTION__ ": performing actions for remote Actor formId {:X}, name {}", pActor->formID, pActor->baseForm->GetName());
-
         ActionEvent action;
         action.State1 = pActor->actorState.flags1;
         action.State2 = pActor->actorState.flags2;
