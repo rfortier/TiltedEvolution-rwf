@@ -62,6 +62,7 @@
         "TELEPORT": "Işınla",
         "MAKE_LEADER": "Lider yap"
       },
+      "DISABLE_AUTO_JOIN": "Otomatik katılımı devre dışı bırak",
       "LEAVE_PARTY": "Partiden çık"
     },
     "PARTY_LIST": {

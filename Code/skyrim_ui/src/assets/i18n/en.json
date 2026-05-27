@@ -62,6 +62,7 @@
         "TELEPORT": "Teleport",
         "MAKE_LEADER": "Make leader"
       },
+      "DISABLE_AUTO_JOIN": "Disable auto-join",
       "LEAVE_PARTY": "Leave party"
     },
     "PARTY_LIST": {

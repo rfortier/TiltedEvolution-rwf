@@ -18,6 +18,7 @@
 #include <Messages/PartyCreateRequest.h>
 #include <Messages/PartyChangeLeaderRequest.h>
 #include <Messages/PartyKickRequest.h>
+#include <Messages/PartyAutoJoinToggleRequest.h>
 
 #include <OverlayApp.hpp>
 
@@ -80,6 +81,12 @@ void PartyService::ChangePartyLeader(const uint32_t aPlayerId) const noexcept
     m_transport.Send(changeMessage);
 }
 
+void PartyService::ToggleAutoJoinParty() const noexcept
+{
+    PartyAutoJoinToggleRequest request;
+    m_transport.Send(request);
+}
+
 void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
     const auto cCurrentTick = m_transport.GetClock().GetCurrentTick();
@@ -117,6 +124,7 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         m_isLeader = acPartyInfo.IsLeader;
         m_leaderPlayerId = acPartyInfo.LeaderPlayerId;
         m_partyMembers = acPartyInfo.PlayerIds;
+        m_isAutoJoinDisabled = acPartyInfo.IsAutoJoinDisabled;
 
         // TODO: this can be done a bit prettier
         if (m_isLeader)
@@ -133,6 +141,7 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
 
         pArguments->SetList(0, pPlayerIds);
         pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
+        pArguments->SetBool(2, acPartyInfo.IsAutoJoinDisabled);
 
         m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInfo", pArguments);
     }
@@ -174,6 +183,7 @@ void PartyService::DestroyParty() noexcept
 {
     m_inParty = false;
     m_isLeader = false;
+    m_isAutoJoinDisabled = false;
     m_leaderPlayerId = -1;
     m_partyMembers.clear();
 }

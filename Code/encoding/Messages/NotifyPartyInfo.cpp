@@ -5,6 +5,7 @@ void NotifyPartyInfo::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const
 {
     Serialization::WriteBool(aWriter, IsLeader);
     Serialization::WriteVarInt(aWriter, LeaderPlayerId);
+    Serialization::WriteBool(aWriter, IsAutoJoinDisabled);
     aWriter.WriteBits(PlayerIds.size() & 0xFF, 8);
 
     for (auto player : PlayerIds)
@@ -17,6 +18,7 @@ void NotifyPartyInfo::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noe
 {
     IsLeader = Serialization::ReadBool(aReader);
     LeaderPlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    IsAutoJoinDisabled = Serialization::ReadBool(aReader);
 
     uint64_t count = 0;
     aReader.ReadBits(count, 8);

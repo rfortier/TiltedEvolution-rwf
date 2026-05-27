@@ -23,6 +23,7 @@ struct PartyService
 
     [[nodiscard]] bool IsInParty() const noexcept { return m_inParty; }
     [[nodiscard]] bool IsLeader() const noexcept { return m_isLeader; }
+    [[nodiscard]] bool IsAutoJoinDisabled() const noexcept { return m_isAutoJoinDisabled; }
     [[nodiscard]] uint32_t GetLeaderPlayerId() const noexcept { return m_leaderPlayerId; }
 
     const Vector<uint32_t>& GetPartyMembers() const noexcept { return m_partyMembers; }
@@ -35,6 +36,7 @@ struct PartyService
     void AcceptInvite(const uint32_t aInviterId) const noexcept;
     void KickPartyMember(const uint32_t aPlayerId) const noexcept;
     void ChangePartyLeader(const uint32_t aPlayerId) const noexcept;
+    void ToggleAutoJoinParty() const noexcept;
 
 protected:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
@@ -54,6 +56,7 @@ private:
 
     bool m_inParty = false;
     bool m_isLeader = false;
+    bool m_isAutoJoinDisabled = false;
     uint32_t m_leaderPlayerId;
     Vector<uint32_t> m_partyMembers;
 

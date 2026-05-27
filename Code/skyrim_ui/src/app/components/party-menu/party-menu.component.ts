@@ -21,6 +21,7 @@ export class PartyMenuComponent {
   isLaunchPartyDisabled$: Observable<boolean>;
   invitations$: Observable<Player[]>;
   isPartyLeader$: Observable<boolean>;
+  isAutoJoinDisabled$: Observable<boolean>;
 
   constructor(
     private readonly groupService: GroupService,
@@ -41,6 +42,11 @@ export class PartyMenuComponent {
           group =>
             group.isEnabled && group.owner == this.clientService.localPlayerId,
         ),
+      );
+    this.isAutoJoinDisabled$ = this.groupService.group
+      .asObservable()
+      .pipe(
+        map(group => group.isAutoJoinDisabled),
       );
     this.isLaunchPartyDisabled$ = this.groupService
       .selectMembersLength(false)
@@ -69,5 +75,9 @@ export class PartyMenuComponent {
 
   public changeLeader(playerId: number) {
     this.clientService.changePartyLeader(playerId);
+  }
+
+  public toggleAutoJoinParty() {
+    this.groupService.toggleAutoJoinParty();
   }
 }

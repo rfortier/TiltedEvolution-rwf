@@ -60,6 +60,7 @@
         "TELEPORT": "Teleporter",
         "MAKE_LEADER": "Make leader"
       },
+      "DISABLE_AUTO_JOIN": "Deaktiver automatisk deltakelse",
       "LEAVE_PARTY": "Leave party"
     },
     "PARTY_LIST": {

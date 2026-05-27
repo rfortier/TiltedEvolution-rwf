@@ -133,6 +133,7 @@ export class GroupService implements OnDestroy {
 
           group.owner = partyInfo.leaderId;
           group.isEnabled = true;
+          group.isAutoJoinDisabled = partyInfo.isAutoJoinDisabled;
 
           this.updateGroup();
           this.playerListService.updatePlayerList();
@@ -252,9 +253,19 @@ export class GroupService implements OnDestroy {
 
       group.isEnabled = false;
       group.owner = undefined;
+      group.isAutoJoinDisabled = false;
       group.members.splice(0);
 
       this.updateGroup();
+    }
+  }
+
+  public toggleAutoJoinParty() {
+    const group = this.createGroup(this.group.getValue());
+
+    if (group && group.isEnabled && group.owner === this.clientService.localPlayerId) {
+      this.soundService.play(Sound.Ok);
+      this.clientService.toggleAutoJoinParty();
     }
   }
 
@@ -262,6 +273,8 @@ export class GroupService implements OnDestroy {
     this.soundService.play(Sound.Ok);
     this.clientService.createPartyInvite(playerId);
   }
+
+  public selectMembers(): Observable<Player[]> {
 
   async accept(inviterId: number) {
     const group = this.createGroup(this.group.getValue());

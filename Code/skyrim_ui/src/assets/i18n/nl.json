@@ -62,6 +62,7 @@
         "TELEPORT": "Teleporteren",
         "MAKE_LEADER": "Maak leider"
       },
+      "DISABLE_AUTO_JOIN": "Automatisch toetreden uitschakelen",
       "LEAVE_PARTY": "Verlaat groep"
     },
     "PARTY_LIST": {

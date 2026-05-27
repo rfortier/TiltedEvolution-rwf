@@ -61,6 +61,7 @@
         "TELEPORT": "Teleportuj",
         "MAKE_LEADER": "Spraw Liderem"
       },
+      "DISABLE_AUTO_JOIN": "Wyłącz automatyczne dołączanie",
       "LEAVE_PARTY": "Odejdź z grupy"
     },
     "PARTY_LIST": {

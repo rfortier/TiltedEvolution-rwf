@@ -62,6 +62,7 @@
         "TELEPORT": "Переместиться",
         "MAKE_LEADER": "Сделать лидером"
       },
+      "DISABLE_AUTO_JOIN": "Отключить авто-вступление",
       "LEAVE_PARTY": "Покинуть группу"
     },
     "PARTY_LIST": {
