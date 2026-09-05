@@ -4,6 +4,7 @@
 #include <TiltedOnlinePCH.h>
 #include "immersive_launcher/stubs/DllBlocklist.h"
 
+#include <Games/GamePatch.h>
 #include <World.h>
 
 static bool g_RequestUnpauseAll{false};
@@ -121,19 +122,23 @@ void UIMessageQueue__AddMessage(void* a1, const BSFixedString* a2, UIMessage::UI
 static TiltedPhoques::Initializer s_s(
     []()
     {
-        // pray that this doesnt fail!
-        VersionDbPtr<uint8_t> ProcessHook(82082);
-        TiltedPhoques::SwapCall(ProcessHook.Get() + 0x682, UI_AddToActiveQueue, &UI_AddToActiveQueue_Hook);
+        if (auto* pAddToActiveQueue = GamePatch::Anchor(82082, "menu unfreeze"))
+        {
+            GamePatch::SwapCall(GamePatch::At(pAddToActiveQueue, {0x682, 0x6A4}, "menu unfreeze"),
+                                UI_AddToActiveQueue, &UI_AddToActiveQueue_Hook, "menu unfreeze");
+        }
 
         // Ignore startup movie
         // TODO: Move me later.
-        VersionDbPtr<uint8_t> MainInit(36548);
-        TiltedPhoques::Put<uint8_t>(MainInit.Get() + 0xFE, 0xEB);
+        if (auto* pMainInit = GamePatch::Anchor(36548, "skip startup movie"))
+            GamePatch::Put<uint8_t>(GamePatch::At(pMainInit, {0xFE}, "skip startup movie"), 0xEB,
+                                    "skip startup movie");
 
         // Credits to Skyrim Souls RE for this fix.
         // Allows the favorites menu to be numbered during connect.
-        VersionDbPtr<uint8_t> FavoritesCanProcess(51538);
-        TiltedPhoques::Put<uint16_t>(FavoritesCanProcess.Get() + 0x15, 0x9090);
+        if (auto* pFavoritesCanProcess = GamePatch::Anchor(51538, "favorites menu numbering"))
+            GamePatch::Put<uint16_t>(GamePatch::At(pFavoritesCanProcess, {0x15, 0x15}, "favorites menu numbering"),
+                                     0x9090, "favorites menu numbering");
 
         // Some experiments:
         // POINTER_SKYRIMSE(TCallback, s_start, 13631);

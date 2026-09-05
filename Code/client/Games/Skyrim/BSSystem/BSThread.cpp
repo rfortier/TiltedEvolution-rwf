@@ -2,6 +2,8 @@
 #include <Games/Skyrim/BSSystem/BSThread.h>
 #include <base/threading/ThreadUtils.h>
 
+#include <Games/GamePatch.h>
+
 namespace
 {
 void (*BSThread_Initialize)(BSThread*, int, const char*){nullptr};
@@ -75,23 +77,28 @@ HANDLE WINAPI Hook_CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T
 static TiltedPhoques::Initializer s_BSThreadInit(
     []()
     {
-        const VersionDbPtr<uint8_t> threadInit(68261);
-        BSThread_Initialize = static_cast<decltype(BSThread_Initialize)>(threadInit.GetPtr());
-        // need to detour this for now :/
-        TP_HOOK_IMMEDIATE(&BSThread_Initialize, &Hook_BSThread_Initialize);
+        // an unmapped id resolves to the shared unresolved stub, and detouring
+        // or overwriting that stub redirects every other unresolved call in
+        // the client into these hooks - so both sites need a real address.
+        if (auto* pThreadInit = GamePatch::Anchor(68261, "thread names"))
+        {
+            BSThread_Initialize = reinterpret_cast<decltype(BSThread_Initialize)>(pThreadInit);
+            // need to detour this for now :/
+            TP_HOOK_IMMEDIATE(&BSThread_Initialize, &Hook_BSThread_Initialize);
+        }
 
-        const VersionDbPtr<uint8_t> setThreadName(69066);
-        TiltedPhoques::Jump(setThreadName.Get(), &Hook_SetThreadName);
+        if (auto* pSetThreadName = GamePatch::Anchor(69066, "thread naming api"))
+            GamePatch::Jump(pSetThreadName, &Hook_SetThreadName, "thread naming api");
 
 #if 0
-    const VersionDbPtr<uint8_t> createHavokThread(57704);
     // relatively safe to do, since this is unlikely to ever change, as beth wont update havok
-    TiltedPhoques::Nop(createHavokThread.Get() + 0x81, 6);
+    if (auto* pCreateHavokThread = GamePatch::Anchor(57704, "havok thread names"))
+    {
+        GamePatch::Nop(pCreateHavokThread + 0x81, 6, "havok thread names");
+        GamePatch::PutCall(pCreateHavokThread + 0x81, &Hook_RaiseException, "havok thread names");
+    }
 
-    TiltedPhoques::PutCall(createHavokThread.Get() + 0x81, &Hook_RaiseException);
-
-
-    TiltedPhoques::Nop(0x1411F0FD4, 6);
-    TiltedPhoques::PutCall(0x1411F0FD4, &Hook_CreateThread);
+    // Hook_CreateThread went here; it needs an address library id for the
+    // CreateThread call site (it used to be a hardcoded 1.6.x VA).
 #endif
     });

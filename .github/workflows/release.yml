@@ -1,0 +1,109 @@
+name: Release build
+
+# Builds the client/server on a Windows runner and publishes two separate
+# zips as a GitHub Release when a tag is pushed:
+#   SkyrimTogetherNextMod-<version>.zip    -> the client mod (MO2 installable,
+#                                             FOMOD guided installer)
+#   SkyrimTogetherNextServer-<version>.zip -> the dedicated server (windowed
+#                                             control panel on Windows)
+# Can also be triggered manually (workflow_dispatch); the zips are then
+# uploaded as workflow artifacts instead.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      build-mode: 'release'
+      upload-build-for-next-job: true
+
+  package:
+    runs-on: windows-latest
+    needs: build-windows
+    permissions:
+      contents: write
+    steps:
+      - name: Download build and game files
+        uses: actions/download-artifact@v5
+        with:
+          name: internal-job-files
+
+      - name: Assemble the mod package layout
+        run: |
+          # ---- client mod (SkyrimTogetherNextMod-<version>.zip) ----
+          # The zip root mirrors the game's Data folder (SKSE/, scripts/,
+          # meshes/, SkyrimTogether.esp, SkyrimTogetherRebornBehaviors/,
+          # SkyrimTogetherRuntime/), so a DIRECT install - when MO2 does not
+          # run the FOMOD wizard (replace installs, older MO2) or the user
+          # extracts the archive by hand - is already correct. fomod/ holds
+          # the wizard; the optional folders (VerifyScript/, launcher/) sit
+          # at the root as well.
+          New-Item -ItemType Directory -Force -Path mod-pack/fomod,mod-pack/launcher,server-pack | Out-Null
+          Copy-Item -Recurse GameFiles/Skyrim/fomod/* mod-pack/fomod/
+          Get-ChildItem GameFiles/Skyrim -Force | Where-Object { $_.Name -ne 'fomod' } |
+            ForEach-Object { Copy-Item -Recurse $_.FullName mod-pack/ }
+          # the launch verification script is a wizard option: it relies on a
+          # papyrus native that degrades on 1.5.x (would always nag "not
+          # running" there), so 1.5.x players uncheck it
+          New-Item -ItemType Directory -Force -Path mod-pack/VerifyScript/scripts | Out-Null
+          Move-Item mod-pack/scripts/SkyrimTogetherVerifyLaunchScript.pex mod-pack/VerifyScript/scripts/
+          # SKSE bootstrap plugin; on load it deploys the runtime payload
+          # from Data/SkyrimTogetherRuntime/ into the game root
+          New-Item -ItemType Directory -Force -Path mod-pack/SKSE/Plugins | Out-Null
+          Move-Item build/windows/x64/release/SkyrimTogetherSKSE.dll mod-pack/SKSE/Plugins/
+          # self deploying runtime payload: everything the client needs at
+          # the game root (client dll, cef runtime + locales, tp_process,
+          # UI assets). only the launcher/server binaries and build
+          # byproducts are held back
+          New-Item -ItemType Directory -Force -Path mod-pack/SkyrimTogetherRuntime | Out-Null
+          Move-Item -Path build/windows/x64/release/SkyrimTogether.exe,build/windows/x64/release/EarlyLoad.dll -Destination mod-pack/launcher/ -ErrorAction SilentlyContinue
+          Move-Item -Path build/windows/x64/release/SkyrimTogetherServer.exe,build/windows/x64/release/STServer.dll -Destination server-pack/ -ErrorAction SilentlyContinue
+          Get-ChildItem build/windows/x64/release -Exclude *.pdb,*.lib,*.exp,*Tests.exe |
+            Move-Item -Destination mod-pack/SkyrimTogetherRuntime/
+          New-Item -ItemType File -Path mod-pack/SkyrimTogetherRuntime/.str_version | Out-Null
+          # both per-version runtimes have to be in the payload: the SKSE
+          # bootstrap picks one by game version, and a missing one means the
+          # game starts with no Skyrim Together at all
+          foreach ($dll in 'SkyrimTogetherRuntime.dll','SkyrimTogetherRuntime_1_5.dll') {
+            if (!(Test-Path "mod-pack/SkyrimTogetherRuntime/$dll")) { throw "mod package is missing $dll" }
+          }
+
+      - name: Assemble the server package layout
+        run: |
+          # ---- dedicated server (SkyrimTogetherNextServer-<version>.zip) ----
+          # NOTE: the server binaries were already moved out of the build
+          # dir by the mod step; add copies of the shared runtime dlls so
+          # the server stays self contained
+          New-Item -ItemType Directory -Force -Path server-pack | Out-Null
+          Copy-Item mod-pack/SkyrimTogetherRuntime/*.dll server-pack/ -Exclude SkyrimTogetherRuntime*.dll -ErrorAction SilentlyContinue
+          # a starter readme so hosts know how to configure and run it
+          Set-Content server-pack/README.txt "Skyrim Together Next - dedicated server`n`nRun SkyrimTogetherServer.exe to start (a small control panel window opens).`n`n- Press Stop or close the window to shut the server down.`n- Edit config\STServer.ini (button in the window) to change port,`n  passwords, player limits and the mod policy.`n- Default port: UDP 10578 - remember to allow it in your firewall.`n- Add --nogui as a command line argument for the classic terminal mode.`n`nPlayers connect from the in-game menu (F2) to <this machine's ip>:10578.`nLAN/VPN play needs no further setup - see docs/LAN-RADMIN-GUIDE.md."
+
+      - name: Create the release zips
+        run: |
+          $ver = "${{ needs.build-windows.outputs.str-version }}"
+          Compress-Archive -Path mod-pack/* -DestinationPath "SkyrimTogetherNextMod-$ver.zip"
+          Compress-Archive -Path server-pack/* -DestinationPath "SkyrimTogetherNextServer-$ver.zip"
+
+      - name: Upload as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Skyrim Together Next Release ${{ needs.build-windows.outputs.str-version }}
+          path: |
+            SkyrimTogetherNextMod-*.zip
+            SkyrimTogetherNextServer-*.zip
+
+      - name: Publish GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SkyrimTogetherNextMod-*.zip
+            SkyrimTogetherNextServer-*.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

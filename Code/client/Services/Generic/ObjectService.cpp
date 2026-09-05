@@ -43,6 +43,10 @@ ObjectService::ObjectService(World& aWorld, entt::dispatcher& aDispatcher, Trans
 
 bool IsPlayerHome(const TESObjectCELL* pCell) noexcept
 {
+    // The 1.5.x engine does not expose the LoadedCellData layout we model
+    // (no loadedCellData member), so the player-home detection is skipped
+    // there rather than reading a wrong offset.
+#ifndef SKYRIM_TARGET_LEGACY
     if (pCell && pCell->loadedCellData && pCell->loadedCellData->encounterZone)
     {
         // Only return true if cell has the NoResetZone encounter zone
@@ -56,6 +60,7 @@ bool IsPlayerHome(const TESObjectCELL* pCell) noexcept
             }
         }
     }
+#endif
 
     return false;
 }

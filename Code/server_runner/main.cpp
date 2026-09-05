@@ -16,6 +16,10 @@
 #include "DediRunner.h"
 
 #ifdef _WIN32
+#include "gui/ServerGui.h"
+#endif
+
+#ifdef _WIN32
 #include <base/dialogues/win/TaskDialog.h>
 #pragma comment(lib, "Comctl32.lib")
 #elif defined(__linux__)
@@ -215,8 +219,15 @@ int main(int argc, char** argv)
     LogInstance logger;
     (void)logger;
 
+#ifdef _WIN32
+    // windowed control panel unless explicitly disabled; it runs the same
+    // DediRunner loop on a background thread
+    if (server_gui::RequestGuiMode(argc, argv))
+        return server_gui::RunGui(argc, argv);
+#endif
+
     // Note(Vince): This started crashing on 1.7+ lets disable it for now.
-    // RegisterQuitHandler(); 
+    // RegisterQuitHandler();
 
     // Keep stack free.
     const auto cpRunner{std::make_unique<DediRunner>(argc, argv)};

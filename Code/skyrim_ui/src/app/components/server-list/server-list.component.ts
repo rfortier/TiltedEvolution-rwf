@@ -16,6 +16,7 @@ import {
   BehaviorSubject,
   combineLatestWith,
   Observable,
+  of,
   ReplaySubject,
   share,
   startWith,
@@ -227,17 +228,11 @@ export class ServerListComponent {
     this.uiRepository.setHidePasswordProtectedServers(state);
   }
 
+  // geo location lookups removed: the public server list was dropped, so
+  // there is nothing left to enrich (kept as a no-op stub for compatibility
+  // with the commented out pipeline above)
   private getLocationDataByIp(servers: Server[]): Array<Observable<Server>> {
-    return servers.map(server => {
-      return this.serverListService.getInformationForIp(server.ip).pipe(
-        map(data => ({
-          ...server,
-          countryCode: data.countryCode.toLowerCase(),
-          continent: data.continent,
-          country: data.country,
-        })),
-      );
-    });
+    return servers.map(server => of(server));
   }
 
   async saveFavoriteServerList() {

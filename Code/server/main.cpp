@@ -72,6 +72,23 @@ GS_EXPORT bool CheckBuildTag(const char* apBuildTag)
     return std::strcmp(apBuildTag, kBuildTag) == 0;
 }
 
+// telemetry for the runner's control panel; the gui must not reach into
+// GameServer.h directly (it drags the whole server include chain along)
+GS_EXPORT uint32_t QueryServerPlayerCount()
+{
+    auto* pServer = GameServer::Get();
+    if (pServer == nullptr)
+        return 0;
+
+    return static_cast<uint32_t>(pServer->GetWorld().GetPlayerManager().Count());
+}
+
+GS_EXPORT void RequestServerShutdown()
+{
+    if (GameServer::Get() != nullptr)
+        GameServer::Get()->Kill();
+}
+
 GS_EXPORT UniquePtr<IGameServerInstance> CreateGameServer(Console::ConsoleRegistry& aConReg, const std::function<void()>& aCallback)
 {
     BASE_ASSERT(aCallback, "CreateGameServer(): Callback was not provided");

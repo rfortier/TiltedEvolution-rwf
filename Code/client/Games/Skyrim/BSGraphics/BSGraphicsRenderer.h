@@ -35,6 +35,13 @@ struct RendererWindow
     bool IsForeground();
 };
 
+// These offsets also hold on 1.5.x: the pre-AE BGSRenderer model this code
+// base used before the AE migration put the window at +0x48 and the swapchain
+// at +0x60 from the same struct base, which is what RendererData computes
+// below (RenderWindowA at 0x48, plus 0x18 for pSwapChain).
+static_assert(offsetof(RendererWindow, uiWindowWidth) == 0x10);
+static_assert(offsetof(RendererWindow, pSwapChain) == 0x18);
+
 RendererWindow* GetMainWindow();
 
 struct DepthStencilTarget

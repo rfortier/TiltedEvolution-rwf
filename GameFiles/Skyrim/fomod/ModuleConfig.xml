@@ -1,0 +1,59 @@
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+    <moduleName>Skyrim Together Next</moduleName>
+
+    <requiredInstallFiles>
+        <folder source="SKSE" destination="SKSE" />
+        <folder source="SkyrimTogetherRuntime" destination="SkyrimTogetherRuntime" />
+        <folder source="scripts" destination="scripts" />
+        <folder source="meshes" destination="meshes" />
+        <folder source="SkyrimTogetherRebornBehaviors" destination="SkyrimTogetherRebornBehaviors" />
+        <file source="SkyrimTogether.esp" destination="SkyrimTogether.esp" />
+    </requiredInstallFiles>
+
+    <installSteps order="Explicit">
+        <step name="欢迎">
+            <optional>
+                <group name="安装选项">
+                    <plugin name="客户端联机组件(必装)" desc="SKSE 插件、自部署运行时、界面与脚本。&#13;&#10;安装后通过 SKSE(MO2 中启动 skse64_loader.exe)启动游戏即可,首次启动自动部署运行时,无需手动复制文件。&#13;&#10;全部游戏版本的地址库已随包安装,客户端启动时按真实游戏版本自动选择。" preSelected="yes">
+                        <condition type="Always" />
+                    </plugin>
+                    <plugin name="启动校验脚本" desc="进游戏时检测是否通过 Skyrim Together 启动,未通过则弹窗提醒(仅 1.6.x 有效)。&#13;&#10;1.5.x 玩家请取消勾选:该检测在 1.5.x 上会误报&#8220;Skyrim Together is not running&#8221;。" preSelected="yes">
+                        <condition type="Always" />
+                        <files>
+                            <folder source="VerifyScript" destination="scripts" />
+                        </files>
+                    </plugin>
+                </group>
+            </optional>
+        </step>
+
+        <step name="联机方式">
+            <optional>
+                <group name="如何与朋友联机?(仅说明,任选其一)">
+                    <plugin name="局域网 / Radmin LAN(推荐)" desc="房主运行服务器程序(另一个压缩包 SkyrimTogetherNextServer),&#13;&#10;其他玩家在游戏内按 F2 填写房主 IP:10578 连接。&#13;&#10;详细图文见仓库 docs/LAN-RADMIN-GUIDE.md。" preSelected="yes">
+                        <condition type="Always" />
+                    </plugin>
+                    <plugin name="公网服务器" desc="在 VPS 上用官方 Docker 镜像搭建专用服务器,&#13;&#10;玩家填写公网 IP 连接,需放行 UDP 10578。" preSelected="no">
+                        <condition type="Always" />
+                    </plugin>
+                </group>
+            </optional>
+        </step>
+
+        <step name="启动方式">
+            <optional>
+                <group name="选择启动方式">
+                    <plugin name="SKSE 启动(推荐)" desc="无需额外操作,MO2 中启动 SKSE 即可。推荐所有 MO2 用户选择此项。" preSelected="yes">
+                        <condition type="Always" />
+                    </plugin>
+                    <plugin name="附带独立启动器(可选)" desc="额外安装 SkyrimTogether.exe 独立启动器到 Data\SkyrimTogetherLauncher\。&#13;&#10;使用方法:把该文件夹里的文件复制到游戏根目录后运行 SkyrimTogether.exe。&#13;&#10;通过 MO2 启动 SKSE 的玩家无需此项。" preSelected="no">
+                        <condition type="Always" />
+                        <files>
+                            <folder source="launcher" destination="SkyrimTogetherLauncher" />
+                        </files>
+                    </plugin>
+                </group>
+            </optional>
+        </step>
+    </installSteps>
+</config>

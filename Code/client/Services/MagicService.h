@@ -169,5 +169,6 @@ struct MagicService
 };
 
 // Exposed so we can increase log level of just this tricky code, in debugger or a build.
-// Non-const has to be initialized outside of class.
-spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::debug};
+// inline: this header is included by several translation units; an
+// out-of-class definition here produced duplicate symbols at link time.
+inline spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::debug};

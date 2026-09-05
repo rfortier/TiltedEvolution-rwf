@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - master
+      - main
       - prerel
   workflow_call:
     inputs:
@@ -25,7 +25,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest]
+        os: [windows-2022]
         arch: [x64]
 
     runs-on: ${{ matrix.os }}
@@ -45,16 +45,39 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --force --recursive --depth=1
 
-      - name: Checkout master on tag push
+      - name: Verify GitHub-hosted runner
+        shell: pwsh
+        run: |
+          Write-Host "Runner name: $env:RUNNER_NAME"
+          Write-Host "Runner environment: ${{ runner.environment }}"
+          if ("${{ runner.environment }}" -ne "github-hosted") {
+            Write-Error "Self-hosted runner detected. Please use the GitHub-hosted windows-latest runner."
+          }
+
+      - name: Checkout main on tag push
         if: github.ref_type == 'tag'
-        # Checkout only if the tag was pushed to master
-        run: (git rev-parse HEAD) -eq (git rev-parse origin/master) -and (git checkout master)
+        # Checkout only if the tag was pushed to main; repos without a main
+        # branch build the tagged commit directly
+        run: |
+          git rev-parse --verify --quiet origin/main
+          if ($LASTEXITCODE -eq 0) {
+            (git rev-parse HEAD) -eq (git rev-parse origin/main) -and (git checkout main)
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+            Write-Output "origin/main not found; building the tagged commit as-is"
+            exit 0
+          }
 
       - name: Cache xmake dependencies
         uses: actions/cache@v4
         with:
           path: ~/AppData/Local/.xmake/packages
           key: ${{ runner.os }}-xmake-${{ hashFiles('**/xmake.lua') }}
+          # Fall back to the last warm package cache when the key changes
+          # (e.g. an unrelated xmake.lua edit), so tiltedcore + friends are
+          # reused instead of a fresh fetch/build that can flake.
+          restore-keys: |
+            ${{ runner.os }}-xmake-
 
       # Install xmake
       - name: Setup xmake
@@ -64,14 +87,51 @@ jobs:
           actions-cache-folder: '.xmake-cache' # This doesn't cache dependencies, only xmake itself
           actions-cache-key: ${{ matrix.os }}
 
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Point xmake to Visual Studio
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vsPath = & $vswhere -latest -property installationPath
+            Write-Host "Visual Studio found: $vsPath"
+            xmake g --vs="$vsPath"
+          } else {
+            Write-Error "vswhere.exe not found - Visual Studio is not installed on this runner"
+          }
+
       - name: Configure xmake and install dependencies
-        run: xmake config --arch=${{ matrix.arch }} --mode=${{ inputs.build-mode }} --yes -vD
+        run: xmake config --arch=${{ matrix.arch }} --mode=${{ inputs.build-mode }} --toolchain=msvc --yes -vD
+
+      - name: Show run identity
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== HEAD: $(git rev-parse HEAD) ==="
+          Write-Host "=== tiltedcore requirement ==="
+          Select-String -Path xmake.lua -Pattern 'tiltedcore'
+
 
       # Build the client
       - name: Build with xmake
         run: |
           xmake -y
           echo "STR_BUILD_DIR=build/windows/${{ matrix.arch }}/${{ inputs.build-mode }}/" >> $env:GITHUB_ENV
+
+      # The 1.5.x runtime is a second client DLL built from the same sources
+      # with the legacy struct layouts. It is built explicitly (Build.bat does
+      # the same) and then checked, because a package without it leaves 1.5.x
+      # players with a game that starts and never opens the multiplayer menu.
+      - name: Build the legacy 1.5.x client runtime
+        run: |
+          xmake build SkyrimTogetherClientDllLegacy
+          foreach ($dll in 'SkyrimTogetherRuntime.dll','SkyrimTogetherRuntime_1_5.dll') {
+            $path = Join-Path $env:STR_BUILD_DIR $dll
+            if (!(Test-Path $path)) { throw "$dll was not produced by the build" }
+            Write-Host "$dll $((Get-Item $path).Length) bytes"
+          }
 
       # Create distrib
       - name: Output distrib binaries via xmake

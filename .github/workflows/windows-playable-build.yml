@@ -7,8 +7,7 @@ on:
     - cron: '0 13 * * 5'
   push:
     branches:
-      - master
-      - features-integration
+      - main
       - dev
     tags:
       - 'v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-.*)?'
@@ -32,13 +31,28 @@ jobs:
 
       - name: Package build and organize directories
         run: |
-          mkdir -p str-build/SkyrimTogetherReborn
+          New-Item -ItemType Directory -Force -Path str-build/SkyrimTogetherReborn | Out-Null
           mv build/windows/x64/release/* str-build/SkyrimTogetherReborn
           cp -r GameFiles/Skyrim/* str-build/
+          # SKSE bootstrap plugin goes into Data/SKSE/Plugins; on load it
+          # deploys the runtime payload from Data/SkyrimTogetherRuntime/
+          # into the game root (self installing SKSE launch path)
+          New-Item -ItemType Directory -Force -Path str-build/SKSE/Plugins | Out-Null
+          mv str-build/SkyrimTogetherReborn/SkyrimTogetherSKSE.dll str-build/SKSE/Plugins/
+          # everything the client needs at runtime travels in the payload
+          # dir: the client dll plus ALL runtime dlls (libcef etc. are flat
+          # in the build output) and the UI assets; the launcher exe and
+          # server stay in SkyrimTogetherReborn for the manual install path
+          New-Item -ItemType Directory -Force -Path str-build/SkyrimTogetherRuntime | Out-Null
+          Get-ChildItem str-build/SkyrimTogetherReborn/*.dll |
+            Where-Object { $_.Name -ne 'STServer.dll' } |
+            Move-Item -Destination str-build/SkyrimTogetherRuntime/
+          if (Test-Path str-build/SkyrimTogetherReborn/UI) { Move-Item str-build/SkyrimTogetherReborn/UI str-build/SkyrimTogetherRuntime/UI }
+          New-Item -ItemType File -Path str-build/SkyrimTogetherRuntime/.str_version | Out-Null
 
       - name: Remove unnecessary build files, keep .pdb
         run: |
-          mkdir str-pdb
+          New-Item -ItemType Directory -Force -Path str-pdb | Out-Null
           mv str-build/SkyrimTogetherReborn/SkyrimTogether.pdb, str-build/SkyrimTogetherReborn/SkyrimTogetherServer.pdb str-pdb
           rm str-build/SkyrimTogetherReborn/*.pdb, str-build/SkyrimTogetherReborn/*.lib, str-build/SkyrimTogetherReborn/*.exp
           rm str-build/SkyrimTogetherReborn/*Tests.exe

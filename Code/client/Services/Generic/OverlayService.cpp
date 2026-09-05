@@ -206,6 +206,9 @@ void OverlayService::SetInGame(bool aInGame) noexcept
         return;
     m_inGame = aInGame;
 
+    // the F2 toggle is ignored until this flips, so it is worth a line
+    spdlog::info("overlay in-game state: {}", m_inGame);
+
     if (m_inGame)
     {
         SetVersion(BUILD_COMMIT);

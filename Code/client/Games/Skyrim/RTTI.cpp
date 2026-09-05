@@ -6,7 +6,10 @@ namespace internal
 {
 template <class T> RttiLocator<T>::RttiLocator(uint32_t aId)
 {
-    m_pRtti = TiltedPhoques::MakeUnique<VersionDbPtr<void*>>(aId);
+    // rtti pointers are passed into the game's dynamic cast which walks the
+    // structure; a stub fallback would crash there, so they stay null and
+    // Cast() guards against it
+    m_pRtti = TiltedPhoques::MakeUnique<VersionDbPtr<void*>>(aId, false);
 }
 
 template <class T> const void* RttiLocator<T>::Get()

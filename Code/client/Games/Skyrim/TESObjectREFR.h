@@ -226,5 +226,12 @@ struct TESObjectREFR : TESForm
     uint16_t referenceFlags;
 };
 
+#ifdef SKYRIM_TARGET_LEGACY
+// 1.5.x: the embedded ExtraDataList has no vtable, so TESObjectREFR is 8
+// bytes smaller; fields after extraData (refLock, scale, referenceFlags)
+// sit 8 bytes earlier than on 1.6.x/1.7.x.
+static_assert(sizeof(TESObjectREFR) == 0x98);
+#else
 static_assert(sizeof(TESObjectREFR) == 0xA0);
+#endif
 static_assert(offsetof(TESObjectREFR, loadedState) == 0x68);

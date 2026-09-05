@@ -6,7 +6,7 @@ local function build_launcher()
     set_symbols("debug", "hidden")
 
     add_ldflags(
-        "/FORCE:MULTIPLE",
+        "/LTCG",
         "/IGNORE:4254,4006",
         "/DYNAMICBASE:NO",
         "/SAFESEH:NO",
