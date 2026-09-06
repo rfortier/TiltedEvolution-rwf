@@ -2,6 +2,7 @@
 
 #include <Events/PapyrusFunctionRegisterEvent.h>
 
+#include <HookAudit.h>
 #include <Services/PapyrusService.h>
 
 PapyrusService::PapyrusService(entt::dispatcher& aDispatcher) noexcept
@@ -23,6 +24,16 @@ const void* PapyrusService::Get(const String& acNamespace, const String& acFunct
     // large number means only this one is absent.
     spdlog::warn("papyrus function {} is not registered, {} natives were captured; calls to it are skipped",
                  key.c_str(), m_functions.size());
+
+    // Nothing captured at all means the registration hook itself never ran, and
+    // the usual reason for that is another mod patching the same function after
+    // us. Re-check the hooks once so the log says which ones went missing.
+    static bool s_hooksRechecked = false;
+    if (m_functions.empty() && !s_hooksRechecked)
+    {
+        s_hooksRechecked = true;
+        HookAudit::Verify("no papyrus native was ever captured");
+    }
 
     return nullptr;
 }

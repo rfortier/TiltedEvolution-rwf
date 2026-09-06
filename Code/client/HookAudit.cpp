@@ -52,7 +52,12 @@ static uintptr_t RelativeJumpTarget(const uint8_t* acpCode, const uintptr_t aFro
 void HookAudit::Record(void** appTargetSlot) noexcept
 {
     if (!appTargetSlot || !*appTargetSlot)
+    {
+        // A null target means the address behind the hook never resolved, so
+        // MinHook has nothing to patch and the hook is lost without a word
+        spdlog::error("hook has no target to install on: the resolved address is null");
         return;
+    }
 
     RecordedHook recorded{};
     recorded.pTarget = *appTargetSlot;
@@ -108,3 +113,36 @@ void HookAudit::Report() noexcept
 
     spdlog::info("hooks: {} recorded, {} did not land, {} shared with another mod", Recorded().size(), missing, shared);
 }
+
+void HookAudit::Verify(const char* acpWhen) noexcept
+{
+    size_t gone = 0;
+
+    for (const auto& recorded : Recorded())
+    {
+        const auto target = reinterpret_cast<uintptr_t>(recorded.pTarget);
+
+        uint8_t now[8]{};
+        SafeReadCode(now, recorded.pTarget, sizeof(now));
+
+        if (now[0] == 0xE9)
+            continue;
+
+        gone++;
+
+        char where[MAX_PATH + 48];
+        FormatModuleOffset(target, where);
+
+        char leadsTo[MAX_PATH + 48];
+        strcpy_s(leadsTo, "no relative jump to follow");
+        if (const auto destination = RelativeJumpTarget(now, target))
+            FormatModuleOffset(destination, leadsTo);
+
+        spdlog::error("hook on {} ({:#x}) is gone: the bytes there are now {:02x} {:02x} {:02x} {:02x} {:02x} "
+                      "(leading to {}), so ours has not run since whoever wrote them",
+                      where, target, now[0], now[1], now[2], now[3], now[4], leadsTo);
+    }
+
+    spdlog::info("hooks re-checked ({}): {} of {} no longer carry our jump", acpWhen, gone, Recorded().size());
+}
+

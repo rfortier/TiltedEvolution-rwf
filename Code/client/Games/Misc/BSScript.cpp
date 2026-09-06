@@ -9,6 +9,7 @@
 #include <PlayerCharacter.h>
 #include <Games/ActorExtension.h>
 #include <Games/PapyrusFunctions.h>
+#include <Services/PapyrusService.h>
 
 TP_THIS_FUNCTION(TRegisterPapyrusFunction, void, BSScript::IVirtualMachine, NativeFunction*);
 TP_THIS_FUNCTION(TBindEverythingToScript, void, BSScript::IVirtualMachine*);
@@ -24,6 +25,18 @@ void TP_MAKE_THISCALL(HookRegisterPapyrusFunction, BSScript::IVirtualMachine, Na
 {
     auto& runner = World::Get().GetRunner();
 
+    // Every papyrus call this client makes goes through a name captured here, so
+    // whether this hook runs at all decides whether any of them work. Say it
+    // once: a log with no such line and no captured natives means the hook, not
+    // the delivery, is the problem.
+    static bool s_firstRegistration = true;
+    if (s_firstRegistration)
+    {
+        s_firstRegistration = false;
+        spdlog::info("papyrus native registration hook is running, first one is {}::{}",
+                     apFunction->typeName.AsAscii(), apFunction->functionName.AsAscii());
+    }
+
     PapyrusFunctionRegisterEvent event(apFunction->functionName.AsAscii(), apFunction->typeName.AsAscii(), apFunction->functionAddress);
 
     runner.Trigger(std::move(event));
@@ -38,6 +51,11 @@ void TP_MAKE_THISCALL(HookBindEverythingToScript, BSScript::IVirtualMachine*)
     (*apThis)->BindNativeMethod(new BSScript::DidLaunchSkyrimTogetherFunc("DidLaunchSkyrimTogether", "SkyrimTogetherVerifyLaunchScript", PapyrusFunctions::DidLaunchSkyrimTogether, BSScript::Variable::kBoolean));
 
     TiltedPhoques::ThisCall(RealBindEverythingToScript, apThis);
+
+    // The game binds its whole native library in the call above, so this is the
+    // moment the capture is either complete or empty
+    spdlog::info("papyrus natives captured after the game bound its own: {}",
+                 World::Get().ctx().at<PapyrusService>().GetCapturedCount());
 }
 
 bool TP_MAKE_THISCALL(HookSignaturesMatch, BSScript::NativeFunction, BSScript::NativeFunction* apOther)

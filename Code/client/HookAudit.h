@@ -19,6 +19,11 @@ void Record(void** appTargetSlot) noexcept;
 // been committed.
 void Report() noexcept;
 
+// Re-check the recorded targets later in the run: a hook can be installed
+// correctly and then be overwritten by a mod that patches the same function
+// afterwards, which silently stops it from ever running again.
+void Verify(const char* acpWhen) noexcept;
+
 template <class T, class U> void Add(T** appTargetSlot, U* apHookFunction) noexcept
 {
     Record(reinterpret_cast<void**>(appTargetSlot));

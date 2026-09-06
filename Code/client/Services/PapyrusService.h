@@ -20,6 +20,10 @@ struct PapyrusService
 
     const void* Get(const String& acNamespace, const String& acFunction) const noexcept;
 
+    // How many natives the registration hook has captured; zero means no
+    // papyrus call this client makes can work.
+    size_t GetCapturedCount() const noexcept { return m_functions.size(); }
+
     void HandlePapyrusFunctionEvent(const PapyrusFunctionRegisterEvent&) noexcept;
 
 private:
