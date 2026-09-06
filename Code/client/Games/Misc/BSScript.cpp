@@ -9,7 +9,24 @@
 #include <PlayerCharacter.h>
 #include <Games/ActorExtension.h>
 #include <Games/PapyrusFunctions.h>
+#include <CrashHandler.h>
 #include <Services/PapyrusService.h>
+
+// Reading through a game pointer that may not be what we think must not be able
+// to kill the process; kept free of C++ objects so the __try stays legal.
+static size_t SafeReadGameMemory(void* apDst, const void* acpSrc, size_t aLen) noexcept
+{
+    size_t read = 0;
+    __try
+    {
+        memcpy(apDst, acpSrc, aLen);
+        read = aLen;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    return read;
+}
 
 TP_THIS_FUNCTION(TRegisterPapyrusFunction, void, BSScript::IVirtualMachine, NativeFunction*);
 TP_THIS_FUNCTION(TBindEverythingToScript, void, BSScript::IVirtualMachine*);
@@ -56,6 +73,63 @@ void TP_MAKE_THISCALL(HookBindEverythingToScript, BSScript::IVirtualMachine*)
     // moment the capture is either complete or empty
     spdlog::info("papyrus natives captured after the game bound its own: {}",
                  World::Get().ctx().at<PapyrusService>().GetCapturedCount());
+}
+
+void PapyrusDetail::ReportRegistrationTarget() noexcept
+{
+    POINTER_SKYRIMSE(TRegisterPapyrusFunction, s_registerPapyrusFunction, 104788);
+    POINTER_SKYRIMSE(TBindEverythingToScript, s_bindEverythingToScript, 55739);
+
+    char registerAt[MAX_PATH + 48];
+    FormatModuleOffset(reinterpret_cast<uintptr_t>(s_registerPapyrusFunction.GetPtr()), registerAt);
+
+    char bindAt[MAX_PATH + 48];
+    FormatModuleOffset(reinterpret_cast<uintptr_t>(s_bindEverythingToScript.GetPtr()), bindAt);
+
+    spdlog::error("papyrus hooks sit on register {} and bind {}, and neither has run", registerAt, bindAt);
+
+    auto* pGameVM = GameVM::Get();
+
+    BSScript::IVirtualMachine* pVirtualMachine = nullptr;
+    if (pGameVM)
+        SafeReadGameMemory(&pVirtualMachine, &pGameVM->virtualMachine, sizeof(pVirtualMachine));
+
+    if (!pVirtualMachine)
+    {
+        spdlog::error("the papyrus vm is not there, so the register target cannot be compared against it");
+        return;
+    }
+
+    void* pVTable = nullptr;
+    SafeReadGameMemory(&pVTable, pVirtualMachine, sizeof(pVTable));
+
+    if (!pVTable)
+    {
+        spdlog::error("the papyrus vm at {:#x} has no readable vtable", reinterpret_cast<uintptr_t>(pVirtualMachine));
+        return;
+    }
+
+    char vtableAt[MAX_PATH + 48];
+    FormatModuleOffset(reinterpret_cast<uintptr_t>(pVTable), vtableAt);
+
+    // The game reaches RegisterFunction through this table, so the register
+    // target above has to be one of the entries below. If it is not, the id
+    // resolves to the wrong function and the hook can never fire.
+    spdlog::error("the papyrus vm is at {:#x} with vtable {}, its entries follow",
+                  reinterpret_cast<uintptr_t>(pVirtualMachine), vtableAt);
+
+    void* entries[48]{};
+    const size_t got = SafeReadGameMemory(entries, pVTable, sizeof(entries));
+
+    for (size_t i = 0; i < got / sizeof(void*); i++)
+    {
+        if (!entries[i])
+            continue;
+
+        char entryAt[MAX_PATH + 48];
+        FormatModuleOffset(reinterpret_cast<uintptr_t>(entries[i]), entryAt);
+        spdlog::error("  vtable[{:02}] {}", i, entryAt);
+    }
 }
 
 bool TP_MAKE_THISCALL(HookSignaturesMatch, BSScript::NativeFunction, BSScript::NativeFunction* apOther)

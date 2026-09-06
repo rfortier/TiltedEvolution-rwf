@@ -33,6 +33,7 @@ const void* PapyrusService::Get(const String& acNamespace, const String& acFunct
     {
         s_hooksRechecked = true;
         HookAudit::Verify("no papyrus native was ever captured");
+        PapyrusDetail::ReportRegistrationTarget();
     }
 
     return nullptr;

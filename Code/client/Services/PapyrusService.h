@@ -39,6 +39,12 @@ namespace PapyrusDetail
 // the function. Say which one it was, once, and let the call degrade instead.
 void ReportMissing(const char* acpName, bool& aReported) noexcept;
 
+// Where the registration hook sits, checked against the virtual machine that
+// is supposed to call it: the game reaches RegisterFunction through the VM's
+// vtable, so if our target is not one of its entries then it is the wrong
+// function and no amount of waiting will make the hook fire.
+void ReportRegistrationTarget() noexcept;
+
 template <class Return> Return Missing(const char* acpName, bool& aReported) noexcept
 {
     ReportMissing(acpName, aReported);
