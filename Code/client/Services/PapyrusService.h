@@ -34,24 +34,25 @@ private:
 
 namespace PapyrusDetail
 {
-// A native the game never registered leaves the wrapper below holding a null
-// pointer, and calling that is an instant crash with nothing in the log to name
-// the function. Say which one it was, once, and let the call degrade instead.
-void ReportMissing(const char* acpName, bool& aReported) noexcept;
+// A native the game never registered, or a call made before the virtual machine
+// exists, leaves the wrapper below with nothing to call. Doing it anyway is an
+// instant crash with nothing in the log to name the function, so say which one
+// it was and why, once, and let the call degrade instead.
+void ReportUnavailable(const char* acpName, const char* acpReason, bool& aReported) noexcept;
+
+template <class Return> Return Unavailable(const char* acpName, const char* acpReason, bool& aReported) noexcept
+{
+    ReportUnavailable(acpName, acpReason, aReported);
+
+    if constexpr (!std::is_void_v<Return>)
+        return Return{};
+}
 
 // Where the registration hook sits, checked against the virtual machine that
 // is supposed to call it: the game reaches RegisterFunction through the VM's
 // vtable, so if our target is not one of its entries then it is the wrong
 // function and no amount of waiting will make the hook fire.
 void ReportRegistrationTarget() noexcept;
-
-template <class Return> Return Missing(const char* acpName, bool& aReported) noexcept
-{
-    ReportMissing(acpName, aReported);
-
-    if constexpr (!std::is_void_v<Return>)
-        return Return{};
-}
 } // namespace PapyrusDetail
 
 template <class Return, class Type, class... Args> struct PapyrusFunction
@@ -67,9 +68,13 @@ template <class Return, class Type, class... Args> struct PapyrusFunction
     Return operator()(const Type* apThis, Args... args) const noexcept
     {
         if (!m_pFunction)
-            return PapyrusDetail::Missing<Return>(m_pName, m_reported);
+            return PapyrusDetail::Unavailable<Return>(m_pName, "the game never registered it", m_reported);
 
-        return m_pFunction(GameVM::Get()->virtualMachine, 0, apThis, std::forward<Args>(args)...);
+        auto* pVirtualMachine = GameVM::GetVirtualMachine();
+        if (!pVirtualMachine)
+            return PapyrusDetail::Unavailable<Return>(m_pName, "the papyrus vm does not exist yet", m_reported);
+
+        return m_pFunction(pVirtualMachine, 0, apThis, std::forward<Args>(args)...);
     }
 
 private:
@@ -91,9 +96,13 @@ template <class Return, class... Args> struct GlobalPapyrusFunction
     Return operator()(Args... args) const noexcept
     {
         if (!m_pFunction)
-            return PapyrusDetail::Missing<Return>(m_pName, m_reported);
+            return PapyrusDetail::Unavailable<Return>(m_pName, "the game never registered it", m_reported);
 
-        return m_pFunction(GameVM::Get()->virtualMachine, std::forward<Args>(args)...);
+        auto* pVirtualMachine = GameVM::GetVirtualMachine();
+        if (!pVirtualMachine)
+            return PapyrusDetail::Unavailable<Return>(m_pName, "the papyrus vm does not exist yet", m_reported);
+
+        return m_pFunction(pVirtualMachine, std::forward<Args>(args)...);
     }
 
 private:
@@ -122,11 +131,15 @@ template <class Return, class Type, class... Args> struct LatentPapyrusFunction
     Return operator()(const Type* apThis, Args... args) const noexcept
     {
         if (!m_pFunction)
-            return PapyrusDetail::Missing<Return>(m_pName, m_reported);
+            return PapyrusDetail::Unavailable<Return>(m_pName, "the game never registered it", m_reported);
+
+        auto* pVirtualMachine = GameVM::GetVirtualMachine();
+        if (!pVirtualMachine)
+            return PapyrusDetail::Unavailable<Return>(m_pName, "the papyrus vm does not exist yet", m_reported);
 
         RefrOrInventoryObj self{apThis, nullptr, 0};
 
-        return m_pFunction(GameVM::Get()->virtualMachine, 0, self, std::forward<Args>(args)...);
+        return m_pFunction(pVirtualMachine, 0, self, std::forward<Args>(args)...);
     }
 
 private:

@@ -88,15 +88,11 @@ void PapyrusDetail::ReportRegistrationTarget() noexcept
 
     spdlog::error("papyrus hooks sit on register {} and bind {}, and neither has run", registerAt, bindAt);
 
-    auto* pGameVM = GameVM::Get();
-
-    BSScript::IVirtualMachine* pVirtualMachine = nullptr;
-    if (pGameVM)
-        SafeReadGameMemory(&pVirtualMachine, &pGameVM->virtualMachine, sizeof(pVirtualMachine));
+    auto* pVirtualMachine = GameVM::GetVirtualMachine();
 
     if (!pVirtualMachine)
     {
-        spdlog::error("the papyrus vm is not there, so the register target cannot be compared against it");
+        spdlog::error("the papyrus vm does not exist yet, so the register target cannot be compared against it");
         return;
     }
 
@@ -155,7 +151,11 @@ int64_t TP_MAKE_THISCALL(HookCompareVariables, void, BSScript::Variable* apVar1,
     uint64_t handle1 = pObject1->GetHandle();
     uint64_t handle2 = pObject2->GetHandle();
 
-    auto* pPolicy = GameVM::Get()->virtualMachine->GetObjectHandlePolicy();
+    auto* pVirtualMachine = GameVM::GetVirtualMachine();
+    if (!pVirtualMachine)
+        return TiltedPhoques::ThisCall(RealCompareVariables, apThis, apVar1, apVar2);
+
+    auto* pPolicy = pVirtualMachine->GetObjectHandlePolicy();
 
     if (!pPolicy || !handle1 || !handle2 || !pPolicy->HandleIsType((uint32_t)Actor::Type, handle1) || !pPolicy->HandleIsType((uint32_t)Actor::Type, handle2) || !pPolicy->IsHandleObjectAvailable(handle1) || !pPolicy->IsHandleObjectAvailable(handle2))
     {

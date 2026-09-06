@@ -8,3 +8,12 @@ SkyrimVM* SkyrimVM::Get()
 
     return *s_instance.Get();
 }
+
+BSScript::IVirtualMachine* SkyrimVM::GetVirtualMachine() noexcept
+{
+    auto* pInstance = Get();
+    if (!pInstance)
+        return nullptr;
+
+    return pInstance->virtualMachine;
+}

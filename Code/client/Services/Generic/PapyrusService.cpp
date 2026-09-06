@@ -44,13 +44,13 @@ void PapyrusService::HandlePapyrusFunctionEvent(const PapyrusFunctionRegisterEve
     m_functions[acEvent.Namespace + "::" + acEvent.Name] = acEvent.Function;
 }
 
-void PapyrusDetail::ReportMissing(const char* acpName, bool& aReported) noexcept
+void PapyrusDetail::ReportUnavailable(const char* acpName, const char* acpReason, bool& aReported) noexcept
 {
     if (aReported)
         return;
 
     aReported = true;
-    spdlog::error("papyrus function {} was needed but never registered; the call is skipped, so whatever depends on "
-                  "it does not happen",
-                  acpName);
+    spdlog::error("papyrus function {} was needed but {}; the call is skipped, so whatever depends on it does not "
+                  "happen",
+                  acpName, acpReason);
 }
