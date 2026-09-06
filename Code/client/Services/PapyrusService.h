@@ -2,34 +2,36 @@
 
 #include <Misc/GameVM.h>
 
+#include <mutex>
 #include <type_traits>
 
 struct TESForm;
 struct TESObjectREFR;
-struct PapyrusFunctionRegisterEvent;
 
 /**
  * @brief Handles registering and executing Papyrus functions.
  */
 struct PapyrusService
 {
-    PapyrusService(entt::dispatcher& aDispatcher) noexcept;
+    PapyrusService() noexcept = default;
     ~PapyrusService() noexcept = default;
 
     TP_NOCOPYMOVE(PapyrusService);
 
     const void* Get(const String& acNamespace, const String& acFunction) const noexcept;
 
+    // Remembers a native the game just registered. Called straight from the
+    // registration hook, which runs on the script extender's papyrus thread
+    // while the game keeps rendering, so the store is locked.
+    void Capture(const char* acpNamespace, const char* acpName, void* apFunction) noexcept;
+
     // How many natives the registration hook has captured; zero means no
     // papyrus call this client makes can work.
-    size_t GetCapturedCount() const noexcept { return m_functions.size(); }
-
-    void HandlePapyrusFunctionEvent(const PapyrusFunctionRegisterEvent&) noexcept;
+    size_t GetCapturedCount() const noexcept;
 
 private:
+    mutable std::mutex m_lock;
     Map<String, void*> m_functions;
-
-    entt::scoped_connection m_papyrusFunctionRegisterConnection;
 };
 
 namespace PapyrusDetail

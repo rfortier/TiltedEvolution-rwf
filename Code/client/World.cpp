@@ -39,7 +39,7 @@ World::World()
     ctx().emplace<InputService>(ctx().at<OverlayService>());
     ctx().emplace<CharacterService>(*this, m_dispatcher, m_transport);
     ctx().emplace<DebugService>(m_dispatcher, *this, m_transport, ctx().at<ImguiService>());
-    ctx().emplace<PapyrusService>(m_dispatcher);
+    ctx().emplace<PapyrusService>();
     ctx().emplace<DiscordService>(m_dispatcher);
     ctx().emplace<ObjectService>(*this, m_dispatcher, m_transport);
     ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);

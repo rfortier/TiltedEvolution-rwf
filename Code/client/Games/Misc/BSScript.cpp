@@ -2,7 +2,6 @@
 #include <Misc/NativeFunction.h>
 
 #include <World.h>
-#include <Events/PapyrusFunctionRegisterEvent.h>
 #include <Forms/TESForm.h>
 #include <Misc/GameVM.h>
 #include <Actor.h>
@@ -11,6 +10,8 @@
 #include <Games/PapyrusFunctions.h>
 #include <CrashHandler.h>
 #include <Services/PapyrusService.h>
+
+#include <atomic>
 
 // Reading through a game pointer that may not be what we think must not be able
 // to kill the process; kept free of C++ objects so the __try stays legal.
@@ -38,31 +39,47 @@ TBindEverythingToScript* RealBindEverythingToScript = nullptr;
 TSignaturesMatch* RealSignaturesMatch = nullptr;
 TCompareVariables* RealCompareVariables = nullptr;
 
+// What the two hooks below have actually seen. The log used to assert that
+// neither had run, which was a guess dressed up as a fact; these are the counts
+// that decide whether a missing native is a hook problem or a capture problem.
+static std::atomic<size_t> s_registrationsSeen{0};
+static std::atomic<size_t> s_bindsSeen{0};
+
 void TP_MAKE_THISCALL(HookRegisterPapyrusFunction, BSScript::IVirtualMachine, NativeFunction* apFunction)
 {
-    auto& runner = World::Get().GetRunner();
+    // The game passes the vm as the subject of this call, which is the only way
+    // to get hold of it that does not depend on a struct offset being right.
+    GameVM::SetVirtualMachine(apThis);
 
     // Every papyrus call this client makes goes through a name captured here, so
     // whether this hook runs at all decides whether any of them work. Say it
     // once: a log with no such line and no captured natives means the hook, not
     // the delivery, is the problem.
-    static bool s_firstRegistration = true;
-    if (s_firstRegistration)
+    if (s_registrationsSeen.fetch_add(1) == 0)
     {
-        s_firstRegistration = false;
         spdlog::info("papyrus native registration hook is running, first one is {}::{}",
                      apFunction->typeName.AsAscii(), apFunction->functionName.AsAscii());
     }
 
-    PapyrusFunctionRegisterEvent event(apFunction->functionName.AsAscii(), apFunction->typeName.AsAscii(), apFunction->functionAddress);
-
-    runner.Trigger(std::move(event));
+    // Straight into the store, not through the frame queue: this runs on the
+    // script extender's papyrus thread, and the queue is only drained by the
+    // per-frame update, so anything left there is invisible to a caller that
+    // asks for a native before the next drain - or forever, if the update pump
+    // is not running at all.
+    World::Get().ctx().at<PapyrusService>().Capture(apFunction->typeName.AsAscii(), apFunction->functionName.AsAscii(),
+                                                   apFunction->functionAddress);
 
     TiltedPhoques::ThisCall(RealRegisterPapyrusFunction, apThis, apFunction);
 }
 
 void TP_MAKE_THISCALL(HookBindEverythingToScript, BSScript::IVirtualMachine*)
 {
+    // Take the vm before building the natives below, because their parameter
+    // types have to be looked up through it.
+    GameVM::SetVirtualMachine(*apThis);
+
+    s_bindsSeen.fetch_add(1);
+
     (*apThis)->BindNativeMethod(new BSScript::IsRemotePlayerFunc("IsRemotePlayer", "SkyrimTogetherUtils", PapyrusFunctions::IsRemotePlayer, BSScript::Variable::kBoolean));
     (*apThis)->BindNativeMethod(new BSScript::IsPlayerFunc("IsPlayer", "SkyrimTogetherUtils", PapyrusFunctions::IsPlayer, BSScript::Variable::kBoolean));
     (*apThis)->BindNativeMethod(new BSScript::DidLaunchSkyrimTogetherFunc("DidLaunchSkyrimTogether", "SkyrimTogetherVerifyLaunchScript", PapyrusFunctions::DidLaunchSkyrimTogether, BSScript::Variable::kBoolean));
@@ -86,7 +103,9 @@ void PapyrusDetail::ReportRegistrationTarget() noexcept
     char bindAt[MAX_PATH + 48];
     FormatModuleOffset(reinterpret_cast<uintptr_t>(s_bindEverythingToScript.GetPtr()), bindAt);
 
-    spdlog::error("papyrus hooks sit on register {} and bind {}, and neither has run", registerAt, bindAt);
+    spdlog::error("papyrus hooks sit on register {} and bind {}; the register hook has run {} times and the bind hook "
+                  "{} times",
+                  registerAt, bindAt, s_registrationsSeen.load(), s_bindsSeen.load());
 
     auto* pVirtualMachine = GameVM::GetVirtualMachine();
 
