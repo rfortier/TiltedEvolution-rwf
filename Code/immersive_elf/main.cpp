@@ -14,7 +14,14 @@ bool g_WasUSVFSActive = false;
 
 ELF_EXP bool EarlyInstallSucceeded()
 {
-    return !g_WasUSVFSActive;
+    // running under MO2 usvfs is fine, we just report it so the
+    // launcher can take the usvfs-specific code paths into account
+    return true;
+}
+
+ELF_EXP bool WasUSVFSActive()
+{
+    return g_WasUSVFSActive;
 }
 
 #undef ELF_EXP

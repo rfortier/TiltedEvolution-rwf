@@ -4,6 +4,7 @@
 #include <Games/Skyrim/Forms/TESAmmo.h>
 #include <Actor.h>
 #include <Games/ActorExtension.h>
+#include <Games/GamePatch.h>
 #include <World.h>
 #include <Events/ProjectileLaunchedEvent.h>
 #include <Games/Skyrim/Forms/TESObjectCELL.h>
@@ -120,7 +121,9 @@ static TiltedPhoques::Initializer s_projectileHooks(
 
         TP_HOOK(&RealLaunch, HookLaunch);
 
-        VersionDbPtr<uint8_t> hookLoc(34452);
+        auto* pHookLoc = GamePatch::Anchor(34452, "projectile null check");
+        if (!pHookLoc)
+            return;
 
         struct C : TiltedPhoques::CodeGenerator
         {
@@ -149,6 +152,7 @@ static TiltedPhoques::Initializer s_projectileHooks(
                 pop(rbp);
                 ret();
             }
-        } gen(hookLoc.Get());
-        TiltedPhoques::Jump(hookLoc.Get() + 0x374, gen.getCode());
+        } gen(pHookLoc);
+        GamePatch::Jump(GamePatch::At(pHookLoc, {0x374}, "projectile null check"), gen.getCode(),
+                        "projectile null check");
     });

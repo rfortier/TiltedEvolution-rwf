@@ -1,0 +1,746 @@
+[
+ {
+  "ae_id": 11612,
+  "var": "setWornData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:112",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 11616,
+  "var": "setHealth",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:126",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 11619,
+  "var": "setChargeData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:104",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 11620,
+  "var": "setSoulData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:97",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 11822,
+  "var": "setPoison",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:119",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 12060,
+  "var": "setEnchantmentData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:133",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 14953,
+  "var": "s_constructor",
+  "callsite": "Games/Skyrim/Components/TESTexture.cpp:9",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 16005,
+  "var": "s_isQuestObject",
+  "callsite": "Games/Skyrim/ExtraData/ExtraContainerChanges.cpp:27",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 18518,
+  "var": "getModifiedDistance",
+  "callsite": "Services/Debug/Views/CombatView.cpp:84",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 18563,
+  "var": "s_clearImageSpaceModifier",
+  "callsite": "Games/Skyrim/NetImmerse/ImageSpaceModifierInstance.h:24",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 19075,
+  "var": "s_getCOCPlacementInfo",
+  "callsite": "Games/Skyrim/Forms/TESObjectCELL.cpp:30",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 19708,
+  "var": "s_addInventoryItem",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:1107",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 19784,
+  "var": "refrGetWorldLocation",
+  "callsite": "Services/Debug/Views/CombatView.cpp:77",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 19846,
+  "var": "s_getHandle",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:123",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 20203,
+  "var": "getLocationEncounterZone",
+  "callsite": "Services/Debug/Views/CombatView.cpp:36",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 20460,
+  "var": "s_loadCell",
+  "callsite": "Games/Skyrim/Forms/TESWorldSpace.cpp:6",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 21600,
+  "var": "isFirstPerson",
+  "callsite": "Games/Skyrim/Camera/PlayerCamera.cpp:15",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 21622,
+  "var": "hasPerk",
+  "callsite": "Games/Skyrim/Magic/MagicTarget.cpp:234",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 25011,
+  "var": "IsStageDone",
+  "callsite": "Games/Skyrim/Forms/TESQuest.cpp:58",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 26231,
+  "var": "updateWeather",
+  "callsite": "Games/Skyrim/Sky/Sky.cpp:93",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 26244,
+  "var": "releaseWeatherOverride",
+  "callsite": "Games/Skyrim/Sky/Sky.cpp:33",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 26503,
+  "var": "s_getDifficultyMultiplier",
+  "callsite": "Games/References.cpp:56",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 27244,
+  "var": "s_calculateExperience",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:251",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 32883,
+  "var": "InternalRevertAnimationGraphManager",
+  "callsite": "Games/IAnimationGraphManagerHolder.cpp:34",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 33235,
+  "var": "setTarget",
+  "callsite": "Games/Skyrim/Combat/CombatController.cpp:73",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 33236,
+  "var": "s_updateTarget",
+  "callsite": "Games/Skyrim/Combat/CombatController.cpp:81",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 33261,
+  "var": "checkMovement",
+  "callsite": "Services/Debug/Views/CombatView.cpp:97",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 33282,
+  "var": "sortTargetSelectors",
+  "callsite": "Games/Skyrim/Combat/CombatController.cpp:11",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 33285,
+  "var": "arrayQuickSort",
+  "callsite": "Games/Skyrim/Combat/CombatController.cpp:8",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 34053,
+  "var": "adjustForPerks",
+  "callsite": "Games/Skyrim/Magic/MagicTarget.cpp:233",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 34370,
+  "var": "s_finish",
+  "callsite": "Games/Skyrim/Effects/InvisibilityEffect.cpp:27",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 34512,
+  "var": "dispelAllSpells",
+  "callsite": "Games/Skyrim/Magic/MagicTarget.cpp:41",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 34529,
+  "var": "getTargetAsActor",
+  "callsite": "Games/Skyrim/Magic/MagicTarget.cpp:77",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 34989,
+  "var": "s_start",
+  "callsite": "Games/Skyrim/Effects/SummonCreatureEffect.h:30",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 35269,
+  "var": "s_playDialogueOption",
+  "callsite": "Games/Misc/MenuTopicManager.cpp:40",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 36035,
+  "var": "ctor",
+  "callsite": "Games/SaveLoad.cpp:20",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37198,
+  "var": "addDeathItems",
+  "callsite": "Games/Skyrim/Actor.cpp:1387",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37266,
+  "var": "s_IsTalking",
+  "callsite": "Games/Skyrim/Actor.cpp:1285",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37511,
+  "var": "s_payGoldToContainer",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:369",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37521,
+  "var": "s_pickUpObject",
+  "callsite": "Games/Skyrim/Actor.cpp:1380",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37527,
+  "var": "s_getGoldAmount",
+  "callsite": "Games/Skyrim/Actor.cpp:726",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37542,
+  "var": "s_speakSoundFunction",
+  "callsite": "Games/Skyrim/Actor.cpp:1386",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37577,
+  "var": "func",
+  "callsite": "Services/Debug/Views/CombatView.cpp:111",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37577,
+  "var": "isFleeing",
+  "callsite": "Games/Skyrim/Actor.cpp:1388",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37717,
+  "var": "setPlayerTeammate",
+  "callsite": "Games/Skyrim/Actor.cpp:823",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37757,
+  "var": "getDetectionState",
+  "callsite": "Services/Debug/Views/CombatView.cpp:51",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37905,
+  "var": "s_initiateMountPackage",
+  "callsite": "Games/Skyrim/Actor.cpp:1384",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 37975,
+  "var": "s_unequipObject",
+  "callsite": "Games/Skyrim/Actor.cpp:1385",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 38533,
+  "var": "s_setNoBleedoutRecovery",
+  "callsite": "Games/Skyrim/Actor.cpp:311",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 38896,
+  "var": "s_equipFunc",
+  "callsite": "Games/Skyrim/EquipManager.cpp:97",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 38899,
+  "var": "s_unequipAll",
+  "callsite": "Games/Skyrim/EquipManager.cpp:137",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 38903,
+  "var": "s_unequipFunc",
+  "callsite": "Games/Skyrim/EquipManager.cpp:107",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 38903,
+  "var": "s_unequipFunc",
+  "callsite": "Games/Skyrim/EquipManager.cpp:127",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 38959,
+  "var": "s_initFromPackage",
+  "callsite": "Games/References.cpp:137",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 38979,
+  "var": "setWeaponState",
+  "callsite": "Games/Skyrim/Misc/ActorState.cpp:6",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 39114,
+  "var": "s_checkForNewPackage",
+  "callsite": "Games/References.cpp:136",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 39643,
+  "var": "s_processResponse",
+  "callsite": "Games/Skyrim/Actor.cpp:1383",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 40454,
+  "var": "s_dropObject",
+  "callsite": "Games/Skyrim/Actor.cpp:1381",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 40533,
+  "var": "s_pickUpObject",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:248",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 40535,
+  "var": "s_setWaypoint",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:252",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 40536,
+  "var": "s_removeWaypoint",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:253",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 42345,
+  "var": "setEnabled",
+  "callsite": "Games/Skyrim/AI/Movement/PlayerControls.cpp:13",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 42704,
+  "var": "s_updateDetectionState",
+  "callsite": "Games/Skyrim/Actor.cpp:1382",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 47196,
+  "var": "isValidTarget",
+  "callsite": "Services/Debug/Views/CombatView.cpp:44",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 47303,
+  "var": "actorHasEquippedRangedWeapon_m",
+  "callsite": "Services/Debug/Views/CombatView.cpp:70",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 47307,
+  "var": "func",
+  "callsite": "Services/Debug/Views/CombatView.cpp:104",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 52626,
+  "var": "s_showSubtitle",
+  "callsite": "Games/Misc/SubtitleManager.cpp:45",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 52627,
+  "var": "s_hideSubtitle",
+  "callsite": "Games/Misc/SubtitleManager.cpp:29",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 52847,
+  "var": "fadeOutGame",
+  "callsite": "Games/References.cpp:77",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 55485,
+  "var": "s_isMovementControlsEnabled",
+  "callsite": "Games/Skyrim/AI/Movement/PlayerControls.cpp:25",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 55497,
+  "var": "s_setBeastForm",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:249",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 55739,
+  "var": "s_bindEverythingToScript",
+  "callsite": "Games/Misc/BSScript.cpp:99",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 56205,
+  "var": "s_playAnimation",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:1110",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 56206,
+  "var": "s_playAnimationAndWait",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:1109",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 68545,
+  "var": "setEnabled",
+  "callsite": "Games/Skyrim/AI/Movement/PlayerControls.cpp:38",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 70639,
+  "var": "s_w2s",
+  "callsite": "Games/Skyrim/NetImmerse/NiCamera.cpp:10",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 82088,
+  "var": "s_CloseAll",
+  "callsite": "Games/Skyrim/Interface/UI.cpp:31",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 104359,
+  "var": "s_signaturesMatch",
+  "callsite": "Games/Misc/BSScript.cpp:100",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 104483,
+  "var": "getPageForFrame",
+  "callsite": "Games/Skyrim/Misc/BSScript.h:122",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 104653,
+  "var": "ctor",
+  "callsite": "Games/Skyrim/Misc/BSScript.h:284",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 104655,
+  "var": "dtor",
+  "callsite": "Games/Skyrim/Misc/BSScript.h:274",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 105220,
+  "var": "s_compareVariables",
+  "callsite": "Games/Misc/BSScript.cpp:102",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 370892,
+  "var": "s_greetDistance",
+  "callsite": "Games/References.cpp:44",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 381472,
+  "var": "s_difficulty",
+  "callsite": "Games/References.cpp:38",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 382393,
+  "var": "s_value",
+  "callsite": "Services/Debug/Views/CombatView.cpp:57",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 382400,
+  "var": "s_value",
+  "callsite": "Services/Debug/Views/CombatView.cpp:63",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 400180,
+  "var": "rtti",
+  "callsite": "Games/Skyrim/RTTI.cpp:5620",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 404125,
+  "var": "s_value",
+  "callsite": "Games/Skyrim/AI/AITimer.h:7",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 405282,
+  "var": "s_value",
+  "callsite": "Services/Debug/Views/CombatView.cpp:90",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 406126,
+  "var": "s_matrix",
+  "callsite": "Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:19",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 406160,
+  "var": "s_port",
+  "callsite": "Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:20",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 410506,
+  "var": "NiCameraRTTI",
+  "callsite": "Games/Skyrim/Camera/TESCamera.cpp:8",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ },
+ {
+  "ae_id": 414391,
+  "var": "s_policy",
+  "callsite": "Games/Skyrim/Misc/BSScript.cpp:108",
+  "ae_rva_1170": null,
+  "lo_1597": null,
+  "hi_1597": null
+ }
+]

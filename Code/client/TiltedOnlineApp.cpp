@@ -39,6 +39,11 @@ TiltedOnlineApp::TiltedOnlineApp()
     auto logger = std::make_shared<spdlog::logger>("", spdlog::sinks_init_list{console, rotatingLogger});
     logger->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%l] [tid %t] %$ %v");
     spdlog::flush_every(std::chrono::seconds(1));
+    // A crash inside a hook loses everything logged in the last second, which
+    // is exactly the second worth reading. Warnings and worse go to disk
+    // immediately; the info stream stays buffered so per-frame logging does
+    // not turn into per-frame file I/O.
+    logger->flush_on(spdlog::level::warn);
     set_default_logger(logger);
 }
 

@@ -152,7 +152,9 @@ extern thread_local bool g_forceAnimation;
 
 void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 {
-    if (!BSGraphics::GetMainWindow()->IsForeground())
+    // null until the renderer hook has run, and this update can tick first
+    auto* pWindow = BSGraphics::GetMainWindow();
+    if (!pWindow || !pWindow->IsForeground())
         return;
 
     if (moveData.pActor)

@@ -7,8 +7,7 @@ on:
     - cron: '0 13 * * 5'
   push:
     branches:
-      - master
-      - features-integration
+      - main
       - dev
     tags:
       - 'v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-.*)?'
@@ -32,16 +31,49 @@ jobs:
 
       - name: Package build and organize directories
         run: |
-          mkdir -p str-build/SkyrimTogetherReborn
+          New-Item -ItemType Directory -Force -Path str-build/SkyrimTogetherReborn | Out-Null
           mv build/windows/x64/release/* str-build/SkyrimTogetherReborn
           cp -r GameFiles/Skyrim/* str-build/
+          # SKSE bootstrap plugin goes into Data/SKSE/Plugins; on load it
+          # deploys the runtime payload from Data/SkyrimTogetherRuntime/
+          # into the game root (self installing SKSE launch path)
+          New-Item -ItemType Directory -Force -Path str-build/SKSE/Plugins | Out-Null
+          mv str-build/SkyrimTogetherReborn/SkyrimTogetherSKSE.dll str-build/SKSE/Plugins/
+          # Everything the client needs at the game root travels in the
+          # payload dir, which the bootstrap deploys on load. That is more
+          # than the dlls: cef also needs its resources (icudtl.dat, the .pak
+          # files, locales/, swiftshader/) and the TPProcess.exe subprocess,
+          # and none of those match a *.dll glob - leaving them behind gave a
+          # payload that deployed cleanly and then failed to start the
+          # overlay. Only the launcher, the server and the build byproducts
+          # stay behind, for the manual install path.
+          New-Item -ItemType Directory -Force -Path str-build/SkyrimTogetherRuntime | Out-Null
+          Get-ChildItem str-build/SkyrimTogetherReborn -Exclude `
+            SkyrimTogether.exe,EarlyLoad.dll,SkyrimTogetherServer.exe,STServer.dll,`
+            *.pdb,*.lib,*.exp,*Tests.exe |
+            Move-Item -Destination str-build/SkyrimTogetherRuntime/
+          New-Item -ItemType File -Path str-build/SkyrimTogetherRuntime/.str_version | Out-Null
 
-      - name: Remove unnecessary build files, keep .pdb
+      - name: Verify the self-deploy payload is complete
         run: |
-          mkdir str-pdb
-          mv str-build/SkyrimTogetherReborn/SkyrimTogether.pdb, str-build/SkyrimTogetherReborn/SkyrimTogetherServer.pdb str-pdb
-          rm str-build/SkyrimTogetherReborn/*.pdb, str-build/SkyrimTogetherReborn/*.lib, str-build/SkyrimTogetherReborn/*.exp
-          rm str-build/SkyrimTogetherReborn/*Tests.exe
+          # the bootstrap deploys this dir into the game root, so anything
+          # missing here is missing at runtime - and the symptom is a game
+          # that starts and never opens the multiplayer menu
+          # both per-version client runtimes, plus the cef pieces that are not
+          # dlls and were silently left out of the payload before
+          foreach ($item in 'SkyrimTogetherRuntime.dll','SkyrimTogetherRuntime_1_5.dll',`
+                            'libcef.dll','TPProcess.exe','icudtl.dat','resources.pak','locales','UI') {
+            $path = "str-build/SkyrimTogetherRuntime/$item"
+            if (!(Test-Path $path)) { throw "playable build payload is missing $item" }
+            Write-Host "payload ok: $item"
+          }
+
+      - name: Split the debug symbols out of the build
+        run: |
+          New-Item -ItemType Directory -Force -Path str-pdb | Out-Null
+          Move-Item -Path str-build/SkyrimTogetherReborn/*.pdb -Destination str-pdb -ErrorAction SilentlyContinue
+          Remove-Item -Path str-build/SkyrimTogetherReborn/*.lib,str-build/SkyrimTogetherReborn/*.exp,`
+                            str-build/SkyrimTogetherReborn/*Tests.exe -ErrorAction SilentlyContinue
 
       - name: Upload playable build
         uses: actions/upload-artifact@v4

@@ -17,3 +17,6 @@
 
 # Custom for the project to build
 *.sh text eol=lf
+
+# Batch files must stay CRLF for cmd.exe
+*.bat text eol=crlf

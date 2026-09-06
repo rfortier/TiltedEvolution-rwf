@@ -82,7 +82,11 @@ BSScript::Object* BSScript::Variable::GetObject() const noexcept
 
 template <class T> T* BSScript::Variable::ExtractComplexType() noexcept
 {
-    auto* pPolicy = GameVM::Get()->virtualMachine->GetObjectHandlePolicy();
+    auto* pVirtualMachine = GameVM::GetVirtualMachine();
+    if (!pVirtualMachine)
+        return nullptr;
+
+    auto* pPolicy = pVirtualMachine->GetObjectHandlePolicy();
     BSScript::Object* pBaseObject = GetObject();
 
     if (!pBaseObject || !pPolicy)
@@ -232,6 +236,29 @@ void BSScript::NativeFunctionBase::SetCallableFromTasklets(bool aCallable)
     isCallableFromTask = aCallable;
 }
 
+// The Actor script type has to come from the virtual machine, which does not
+// exist yet when these natives are bound on this runtime: the bind hook runs
+// from the script extender's papyrus init, before the game creates the vm.
+// Reading the type through that null pointer is a crash before the main menu,
+// so bind without the type instead and say so.
+static void* LookUpActorParameterType(const char* acpClassName, const char* acpFunctionName) noexcept
+{
+    auto* pVirtualMachine = GameVM::GetVirtualMachine();
+    if (!pVirtualMachine)
+    {
+        spdlog::error("papyrus native {}::{} is being bound before the vm exists, so its Actor parameter type stays "
+                      "unset and calls into it will not match",
+                      acpClassName, acpFunctionName);
+        return nullptr;
+    }
+
+    BSFixedString actorType("Actor");
+    void* pType = nullptr;
+    pVirtualMachine->GetScriptObjectType1(&actorType, &pType);
+
+    return pType;
+}
+
 BSScript::IsRemotePlayerFunc::IsRemotePlayerFunc(const char* apFunctionName, const char* apClassName, FunctionType aFunction, Variable::Type aType)
     : NativeFunction(apFunctionName, apClassName, true, 1)
 {
@@ -239,10 +266,7 @@ BSScript::IsRemotePlayerFunc::IsRemotePlayerFunc(const char* apFunctionName, con
 
     returnType = aType;
 
-    BSFixedString arg1Name("Actor");
-    void* ptr = nullptr;
-    GameVM::Get()->virtualMachine->GetScriptObjectType1(&arg1Name, &ptr);
-    parameters.data[0].pType = ptr;
+    parameters.data[0].pType = LookUpActorParameterType(apClassName, apFunctionName);
 }
 
 bool BSScript::IsRemotePlayerFunc::MarshallAndDispatch(Variable* apBaseVar, IVirtualMachine* apVm, uint32_t aStackID, Variable* apResult, StackFrame* apStackFrame)
@@ -268,10 +292,7 @@ BSScript::IsPlayerFunc::IsPlayerFunc(const char* apFunctionName, const char* apC
 
     returnType = aType;
 
-    BSFixedString arg1Name("Actor");
-    void* ptr = nullptr;
-    GameVM::Get()->virtualMachine->GetScriptObjectType1(&arg1Name, &ptr);
-    parameters.data[0].pType = ptr;
+    parameters.data[0].pType = LookUpActorParameterType(apClassName, apFunctionName);
 }
 
 bool BSScript::IsPlayerFunc::MarshallAndDispatch(Variable* apBaseVar, IVirtualMachine* apVm, uint32_t aStackID, Variable* apResult, StackFrame* apStackFrame)

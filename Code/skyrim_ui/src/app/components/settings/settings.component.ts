@@ -1,7 +1,6 @@
 import { Component, EventEmitter, HostListener, Output } from '@angular/core';
 import { TranslocoService } from '@ngneat/transloco';
-import { lastValueFrom, map, Observable } from 'rxjs';
-import { Tag } from 'src/app/models/tag';
+import { map, Observable, of } from 'rxjs';
 import {
   autoHideTimerLengths,
   FontSize,
@@ -9,8 +8,6 @@ import {
   SettingService,
 } from 'src/app/services/setting.service';
 import { Sound, SoundService } from '../../services/sound.service';
-import { environment } from 'src/environments/environment';
-import { HttpClient } from '@angular/common/http';
 import { ClientService } from 'src/app/services/client.service';
 
 @Component({
@@ -57,7 +54,9 @@ export class SettingsComponent {
   public minFontSize = 0;
 
   clientVersion$: Observable<string>;
-  isVersionOutdated: Promise<boolean>;
+  // version freshness is no longer checked against an online source; the
+  // dedicated server validates build compatibility on connect anyway
+  isVersionOutdated: Observable<boolean> = of(false);
 
   @Output() public done = new EventEmitter<void>();
   @Output() public settingsUpdated = new EventEmitter<void>();
@@ -66,34 +65,17 @@ export class SettingsComponent {
     private readonly settingService: SettingService,
     private readonly sound: SoundService,
     private readonly translocoService: TranslocoService,
-    private readonly http: HttpClient,
     private readonly client: ClientService,
   ) {
     this.clientVersion$ = this.client.versionSet.pipe(map(version => version.split('-')[0]));
   }
 
   ngOnInit(): void {
-    this.isVersionOutdated = this.isGameVersionOutdated();
   }
 
   close() {
     this.done.next();
     this.sound.play(Sound.Ok);
-  }
-
-  private getVersionTagList(): Promise<Tag[]> {
-    return lastValueFrom(
-      this.http
-        .get<Tag[]>(`${ environment.githubUrl }`));
-  }
-
-  async isGameVersionOutdated(): Promise<boolean> {
-    let usedVersion = this.client.getVersion();
-
-    const tags = await this.getVersionTagList();
-    const usedVersionIndex = tags.findIndex(tag => tag.name === usedVersion);
-
-    return usedVersionIndex > 0 || usedVersionIndex === -1;
   }
 
   @HostListener('window:keydown.escape', ['$event'])

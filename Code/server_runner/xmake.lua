@@ -7,12 +7,16 @@ local function build_runner()
     add_includedirs(
         ".",
         "../",
+        "../server/",
         "../../Libraries/")
     add_headerfiles("**.h")
     add_files(
-        "**.cpp")
+        "**.cpp|gui/**.cpp")
     if is_plat("windows") then
         add_files("server_runner.rc")
+        -- windowed control panel (pure win32, no extra deps)
+        add_files("gui/ServerGui.cpp")
+        add_syslinks("gdi32")
     end
     add_deps(
         "CommonLib",

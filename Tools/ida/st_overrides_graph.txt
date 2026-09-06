@@ -1,0 +1,49 @@
+# 1.5.97 RVAs recovered by Tools/ida/recover_1597.py
+#
+# These are the ids bracket interpolation could not reach: either their
+# neighbourhood in the address library holds no mapped anchor, or they are data
+# statics whose referencing functions are all unmapped. The tool identifies the
+# 1.6.1170 function on its own terms - referenced string literals, position in
+# the call graph, globals it touches - and then aligns the two function bodies
+# to name the counterpart of a data reference.
+#
+# Evidence per line. "aligned refs" counts independently located referencing
+# functions that agree; every accepted value is also present in
+# version-1-5-97-0.bin, i.e. it is a real symbol address rather than an
+# arbitrary offset.
+#
+# ae_id 0xRVA
+
+# --- functions -------------------------------------------------------------
+34452 0x5506c0   # projectile null check; sim 0.87, single candidate
+# 36548 was rejected: the only 1.5.97 candidate shares one literal
+# (TESInitThread) but its body diverges from 1.6 0x641190 within eight
+# instructions, so the match is not demonstrable. Left unmapped.
+37717 0x5fa750   # Actor::SetPlayerTeammate; hand verified instruction by
+                 # instruction against 1.6 0x68d690: same prologue, same
+                 # player-pointer compare, flags1 0xe8->0xe0 and flags2
+                 # 0x204->0x1fc (the documented 1.5.x 8-byte shift), bit 26
+                 # and bit 7 written with or/and instead of bts/btr
+51538 0x8781c0   # favorites menu; token similarity 1.00
+52510 0x8bf360   # stats menu; string-anchored, agrees with match_capstone.py
+52518 0x8c0b80   # stats menu controls; similarity 1.00, two tools agree
+53112 0x8e6cf0   # map menu; string-anchored, two tools agree
+68261 0xc07de0   # BSThread::Initialize; two tools agree
+68781 0xc1a060   # dinput cooperative level; similarity 1.00, two tools agree
+69066 0xc26240   # BSThread thread naming api; similarity 1.00
+82082 0xebe630   # UI::AddToActiveQueue caller; string-anchored (Cursor/Top Menu)
+
+# --- data statics ----------------------------------------------------------
+370892 0x1dd9988 # fAIMinGreetingDistance; both builds hold the float 150.0 here
+381472 0x1df0668 # difficulty; 4/4 aligned refs
+382393 0x1df3058 # combat debug value; 1/1 aligned ref
+382400 0x1df3074 # combat debug value; 1/1 aligned ref
+404125 0x2f3a644 # AI timer; 435/459 aligned refs across 191 located functions
+405282 0x2f4aeb8 # combat debug value; 1/1 aligned ref
+406126 0x2f4c910 # camera worldToCam matrix; confirmed independently from the
+                 # NiCamera::WorldPtToScreenPt3 call site, where the six lea
+                 # arguments line up one for one with the 1.6 caller
+406160 0x2f4ded0 # camera viewport; confirmed from the same call site
+410506 0x3012598 # NiCamera RTTI descriptor; 3/3 aligned refs
+414391 0x31d07a8 # BSScript object handle policy; 263/263 aligned refs across
+                 # 140 located functions

@@ -88,3 +88,9 @@ distrib_releasedbg/
 new_addresses.txt
 
 packaged/*
+
+.zcode/
+
+# 文件名含控制字符的垃圾文件(禁止再次加入)
+*.garbage
+[0-1]S@@*

@@ -25,6 +25,13 @@ add_vectorexts("neon")
 -- build configurations
 add_rules("mode.debug", "mode.releasedbg", "mode.release")
 
+-- TiltedHooks/TiltedReverse compile with /GL in release mode; every link
+-- that pulls their objects must use /LTCG or the linker's auto-restart
+-- fails the build. Set it once globally instead of per target.
+if is_mode("release") and is_plat("windows") then
+    add_ldflags("/LTCG", { force = true })
+end
+
 if has_config("unitybuild") then
     add_rules("c.unity_build")
     add_rules("c++.unity_build", {batchsize = 12})
@@ -32,15 +39,14 @@ end
 
 -- direct dependencies version pinning 
 add_requires(
-    "entt v3.10.0", 
-    "recastnavigation v1.6.0", 
-    "tiltedcore 0.2.8", 
-    "cryptopp 8.9.0", 
-    "spdlog v1.13.0", 
-    "cpp-httplib 0.14.0",
-    "gtest v1.14.0", 
-    "mem 1.0.0", 
-    "glm 0.9.9+8", 
+    "entt v3.10.0",
+    "recastnavigation v1.6.0",
+    "tiltedcore 0.2.9",
+    "cryptopp 8.9.0",
+    "spdlog v1.13.0",
+    "gtest v1.14.0",
+    "mem 1.0.0",
+    "glm 0.9.9+8",
     "zlib v1.3.1"
 )
 if is_plat("windows") then
@@ -59,7 +65,6 @@ if is_plat("linux") then
     add_requireconfs("*.libcurl", { version = "8.7.1", override = true })
 end
 
-add_requireconfs("cpp-httplib", {configs = {ssl = true}})
 --[[
 add_requireconfs("magnum", { configs = { sdl2 = true }})
 add_requireconfs("magnum-integration",  { configs = { imgui = true }})
@@ -76,9 +81,9 @@ before_build(function (target)
     #define IS_MASTER %d
     #define IS_BRANCH_BETA %d
     #define IS_BRANCH_PREREL %d
-    ]], 
-    bool_to_number[branch == "master"], 
-    bool_to_number[branch == "bluedove"], 
+    ]],
+    bool_to_number[branch == "master" or branch == "main"],
+    bool_to_number[branch == "bluedove"],
     bool_to_number[branch == "prerel"])
 
     -- fix always-compiles problem by updating the file only if content has changed.
@@ -104,3 +109,14 @@ end
 -- add projects
 includes("Libraries")
 includes("Code")
+
+-- TiltedHooks/TiltedReverse/TiltedUI compile their release objects with /GL;
+-- any link pulling them then dies in the linker's /LTCG auto-restart.
+-- Re-open the targets here and negate /GL so the objects stay plain COFF
+-- (the -fPIC style warnings these three emit are theirs, not ours).
+if is_mode("release") and is_plat("windows") then
+    for _, name in ipairs({"TiltedHooks", "TiltedReverse", "TiltedUi"}) do
+        target(name)
+            add_cxflags("/GL-", { force = true })
+    end
+end

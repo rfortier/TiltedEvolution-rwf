@@ -28,5 +28,13 @@ void TESObjectCELL::GetCOCPlacementInfo(NiPoint3* aOutPos, NiPoint3* aOutRot, bo
 {
     TP_THIS_FUNCTION(TGetCOCPlacementInfo, void, TESObjectCELL, NiPoint3*, NiPoint3*, bool);
     POINTER_SKYRIMSE(TGetCOCPlacementInfo, s_getCOCPlacementInfo, 19075);
+    if (!s_getCOCPlacementInfo.Get()) // unmapped on legacy game versions, fall back to the cell origin
+    {
+        if (aOutPos)
+            aOutPos->x = aOutPos->y = aOutPos->z = 0.f;
+        if (aOutRot)
+            aOutRot->x = aOutRot->y = aOutRot->z = 0.f;
+        return;
+    }
     TiltedPhoques::ThisCall(s_getCOCPlacementInfo, this, aOutPos, aOutRot, aAllowCellLoad);
 }

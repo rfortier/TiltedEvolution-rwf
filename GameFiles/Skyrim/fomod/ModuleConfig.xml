@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+    <moduleName>Skyrim Together Next</moduleName>
+
+    <requiredInstallFiles>
+        <folder source="SKSE" destination="SKSE" />
+        <folder source="SkyrimTogetherRuntime" destination="SkyrimTogetherRuntime" />
+        <folder source="scripts" destination="scripts" />
+        <folder source="meshes" destination="meshes" />
+        <folder source="SkyrimTogetherRebornBehaviors" destination="SkyrimTogetherRebornBehaviors" />
+        <file source="SkyrimTogether.esp" destination="SkyrimTogether.esp" />
+    </requiredInstallFiles>
+
+    <installSteps order="Explicit">
+        <installStep name="可选组件">
+            <optionalFileGroups order="Explicit">
+                <group name="按需勾选(联机所需的文件已自动安装)" type="SelectAny">
+
+                    <plugins order="Explicit">
+                        <plugin name="启动校验脚本(仅 1.6.x 勾选)">
+                            <description>进游戏时检测是否通过 Skyrim Together 启动,未通过则弹窗提醒。
+
+该检测依赖的接口在 1.5.x 上无法工作,会一直误报“Skyrim Together is not running”,所以默认不安装。玩 1.6.x 且希望有这个提醒的,再勾选。</description>
+                            <files>
+                                <folder source="VerifyScript" destination="scripts" />
+                            </files>
+                            <typeDescriptor>
+                                <type name="Optional" />
+                            </typeDescriptor>
+                        </plugin>
+
+                        <plugin name="独立启动器(不用 MO2 启动 SKSE 时才需要)">
+                            <description>把 SkyrimTogether.exe 独立启动器装到 Data\SkyrimTogetherLauncher\。
+
+用法:安装后把该文件夹里的文件复制到游戏根目录,再运行 SkyrimTogether.exe。
+
+通过 MO2 启动 skse64_loader.exe 的玩家不需要这一项——SKSE 插件会在首次启动时自动部署运行时。</description>
+                            <files>
+                                <folder source="launcher" destination="SkyrimTogetherLauncher" />
+                            </files>
+                            <typeDescriptor>
+                                <type name="Optional" />
+                            </typeDescriptor>
+                        </plugin>
+                    </plugins>
+
+                </group>
+            </optionalFileGroups>
+        </installStep>
+    </installSteps>
+</config>

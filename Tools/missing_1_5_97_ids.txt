@@ -1,0 +1,42 @@
+# Skyrim Together Next - 1.5.97 missing address manifest (9 ids)
+#
+# Coverage 3066/3075 codebase ids (99.7%), and all 3699 map entries validate
+# against version-1-5-97-0.bin. Tools/ida/recover_1597.py closed 20 of the
+# previous 29 by identifying the 1.6.1170 function on its own terms (referenced
+# string literals, call-graph position, globals it touches) instead of
+# interpolating between mapped neighbours; see Tools/ida/st_overrides_graph.txt
+# for the per-id evidence.
+#
+# What the remaining 9 cost, in order of how much anyone would notice:
+#
+#   32883  animation graph revert. AnimationSystem only calls it when a remote
+#          player's animation is replayed with ResetAnimationGraphForReplay, so
+#          the graph is not reverted and a replayed animation can look wrong.
+#          The only entry here with real gameplay effect.
+#   21600  PlayerCamera::IsFirstPerson. Read once, from the optional animation
+#          mod compat path (ModCompat/BehaviorVar.cpp), and only for the local
+#          player; degrades to "third person".
+#   82088  UI::CloseAllMenus, reached only from a debug view.
+#   69554  tasklet thread names - thread labels in a debugger, nothing else.
+#   400180 RTTI descriptor for BSWin32GameDataSystemUtility; nothing casts to it.
+#   36548  startup movie skip. One candidate exists and shares a literal, but
+#          its body diverges from the 1.6 function within eight instructions,
+#          so it was rejected rather than shipped on a guess.
+#   57704  havok thread names, inside an #if 0 block.
+#   14774  BSRandom generator accessor  } the module has no callers at all
+#   68276  BSRandom unsigned int        }
+#
+# 21600, 32883 and 82088 are near twins of large sibling families with no
+# string references and no mapped call-graph neighbours, which is what defeats
+# every automated signal; Tools/missing_1_5_97_analysis.md records the
+# structural fingerprints and the candidates already ruled out.
+#
+# ae=14774 | call/data | getGenerator | Games/Skyrim/BSRandom/BSRandom.cpp:20
+# ae=21600 | call/data | isFirstPerson | Games/Skyrim/Camera/PlayerCamera.cpp:15
+# ae=32883 | call/data | InternalRevertAnimationGraphManager | Games/IAnimationGraphManagerHolder.cpp:34
+# ae=36548 | patch anchor | skip startup movie | Games/Skyrim/Interface/UI.cpp:133
+# ae=57704 | patch anchor | havok thread names (#if 0) | Games/Skyrim/BSSystem/BSThread.cpp:94
+# ae=68276 | call/data | unsignedInt | Games/Skyrim/BSRandom/BSRandom.cpp:17
+# ae=69554 | patch anchor | tasklet thread names | Games/Skyrim/BSSystem/BSTaskletManager.cpp:35
+# ae=82088 | call/data | s_CloseAll | Games/Skyrim/Interface/UI.cpp:32
+# ae=400180 | rtti | BSWin32GameDataSystemUtility | Games/Skyrim/RTTI.cpp:5620

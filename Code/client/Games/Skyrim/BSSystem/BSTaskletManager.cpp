@@ -1,6 +1,8 @@
 
 #include <base/threading/ThreadUtils.h>
 
+#include <Games/GamePatch.h>
+
 namespace
 {
 struct BSTaskletManager
@@ -29,8 +31,11 @@ static void Hook_Construct_TaskletManager(BSTaskletManager* apSelf)
 static TiltedPhoques::Initializer s_BSThreadInit(
     []()
     {
-        const VersionDbPtr<uint8_t> getTaskletManagerInstance(69554);
-
         // tasklet naming
-        TiltedPhoques::SwapCall(getTaskletManagerInstance.Get() + 0x63, Construct_TaskletManager, &Hook_Construct_TaskletManager);
+        if (auto* pGetTaskletManagerInstance = GamePatch::Anchor(69554, "tasklet thread names"))
+        {
+            GamePatch::SwapCall(GamePatch::At(pGetTaskletManagerInstance, {0x63}, "tasklet thread names"),
+                                Construct_TaskletManager, &Hook_Construct_TaskletManager,
+                                "tasklet thread names");
+        }
     });

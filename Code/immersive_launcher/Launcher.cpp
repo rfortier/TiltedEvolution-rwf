@@ -17,6 +17,8 @@
 #include "base/dialogues/win/TaskDialog.h"
 #include "utils/Registry.h"
 
+#include <spdlog/spdlog.h>
+
 #include <BranchInfo.h>
 
 // These symbols are defined within the client code skyrimtogetherclient
@@ -26,6 +28,7 @@ extern void RunTiltedInit(const std::filesystem::path& acGamePath, const TiltedP
 
 // Defined in EarlyLoad.dll
 bool __declspec(dllimport) EarlyInstallSucceeded();
+bool __declspec(dllimport) WasUSVFSActive();
 
 HICON g_SharedWindowIcon = nullptr;
 
@@ -85,6 +88,9 @@ int StartUp(int argc, char** argv)
 
     if (!EarlyInstallSucceeded())
         DIE_NOW(L"Early load install failed. Tell Force about this.");
+
+    if (WasUSVFSActive())
+        spdlog::info("Running under Mod Organizer 2 (usvfs), mod files will be resolved through MO2's virtual file system");
 
     auto LC = std::make_unique<LaunchContext>();
     g_context = LC.get();

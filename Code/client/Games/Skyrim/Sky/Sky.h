@@ -22,6 +22,8 @@ struct Sky
     uint8_t unk50[0x2C8 - 0x50];
 };
 
-bool Sky::s_shouldUpdateWeather = true;
+// inline: this header is included by several translation units; an
+// out-of-class definition here produced duplicate symbols at link time
+inline bool Sky::s_shouldUpdateWeather = true;
 
 static_assert(sizeof(Sky) == 0x2C8);

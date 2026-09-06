@@ -27,7 +27,7 @@
 //        a limit of 64 boolean vars that can be synced. Remove the limit.
 //
 
-#include <immersive_launcher/launcher.h>
+#include <GameRoot.h>
 #include <BSAnimationGraphManager.h>
 #include <Games/ActorExtension.h>
 #include "BehaviorVar.h"
@@ -687,7 +687,7 @@ void BehaviorVar::Init()
 
     // Check if the behaviors folder exists
     std::filesystem::path pBehaviorsPath;
-    pBehaviorsPath = launcher::GetLaunchContext()->gamePath / L"Data" / L"SkyrimTogetherRebornBehaviors";
+    pBehaviorsPath = GetGameRoot() / L"Data" / L"SkyrimTogetherRebornBehaviors";
 
     if (!std::filesystem::is_directory(pBehaviorsPath))
         return;
