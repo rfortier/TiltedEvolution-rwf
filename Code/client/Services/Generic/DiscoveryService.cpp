@@ -6,6 +6,7 @@
 #include <Games/References.h>
 
 #include <Forms/TESObjectCELL.h>
+#include <Forms/TESForm.h>
 #include <Forms/TESWorldSpace.h>
 #include <Forms/TESNPC.h>
 
@@ -19,6 +20,31 @@
 #include <Events/ConnectionErrorEvent.h>
 
 #include <World.h>
+
+namespace
+{
+bool IsDefaultModlist(GameList<Mod>& aCurrentModlist) noexcept
+{
+    static const auto s_defaultModlist = std::to_array<TiltedPhoques::String>(
+        {"Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", 
+        "Dragonborn.esm", "_ResourcePack.esl", "SkyrimTogether.esp", "SkyrimTogetherQuestPatches.esp"}
+    );
+
+    if (aCurrentModlist.Size() != s_defaultModlist.size())
+        return false;
+
+    auto expectedMod = s_defaultModlist.begin();
+    for (const auto* pCurrentMod : aCurrentModlist)
+    {
+        if (pCurrentMod->filename != *expectedMod)
+            return false;
+
+        ++expectedMod;
+    }
+
+    return true;
+}
+} // namespace
 
 DiscoveryService::DiscoveryService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -38,14 +64,22 @@ void DiscoveryService::VisitCell(bool aForceTrigger) noexcept
 
     if (pPlayer->GetWorldSpace())
         VisitExteriorCell(aForceTrigger);
-    else if (pPlayer->GetParentCell())
+    else if (pPlayer->GetParentCellEx())
         VisitInteriorCell(aForceTrigger);
 
     // exactly how the game does it too
-    if (m_pLocation != pPlayer->locationForm)
+    // Only compare/forward a location that is actually a live form: right after
+    // a load the slot can still hold garbage, and the LocationChangeEvent
+    // subscribers dereference it.
+    TESForm* pLocation = pPlayer->locationForm;
+    if (!IsPlausibleFormPointer(pLocation))
+        pLocation = nullptr;
+
+    if (m_pLocation != pLocation)
     {
-        m_dispatcher.trigger(LocationChangeEvent());
-        m_pLocation = pPlayer->locationForm;
+        m_pLocation = pLocation;
+        if (pLocation)
+            m_dispatcher.trigger(LocationChangeEvent());
     }
 }
 
@@ -86,6 +120,11 @@ void DiscoveryService::VisitExteriorCell(bool aForceTrigger) noexcept
         if (!pCell)
             pCell = ModManager::Get()->GetCellFromCoordinates(gameCurrentGrid.X, gameCurrentGrid.Y, pWorldSpace, false);
 
+        // The fallback walk can come back empty for a cell that is not attached
+        // yet, which is exactly the state a load leaves behind.
+        if (!pCell)
+            return;
+
         if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
         {
             spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
@@ -104,7 +143,15 @@ void DiscoveryService::VisitInteriorCell(bool aForceTrigger) noexcept
 {
     ResetCachedCellData();
 
-    const uint32_t cellId = PlayerCharacter::Get()->GetParentCell()->formID;
+    // The player is between cells during a load, and the interior cell is then
+    // null while the exterior walk above still succeeds. VisitCell() only checks
+    // that this call is reached, not that the cell exists.
+    const auto* pPlayer = PlayerCharacter::Get();
+    const auto* pParentCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
+    if (!pParentCell)
+        return;
+
+    const uint32_t cellId = pParentCell->formID;
     if (m_interiorCellId != cellId || aForceTrigger)
     {
         CellChangeEvent cellChangeEvent{};
@@ -161,9 +208,20 @@ void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNe
         }
     }
 
-    TESObjectCELL* pCell = PlayerCharacter::Get()->GetParentCellEx();
+    // The player pointer itself is nullable early in a load, the parent cell is
+    // nullable by definition, and the coordinate fallback is nullable too - the
+    // same call is checked two other times in this file. Without this the formID
+    // read below is the third null dereference on one line.
+    auto* pPlayer = PlayerCharacter::Get();
+    TESObjectCELL* pCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
     if (!pCell)
         pCell = ModManager::Get()->GetCellFromCoordinates(pTES->currentGridX, pTES->currentGridY, aWorldSpace, false);
+
+    if (!pCell)
+    {
+        spdlog::warn("Grid cell change for worldspace {:X} has no player cell to report", aWorldSpace->formID);
+        return;
+    }
 
     if (!m_world.GetModSystem().GetServerModId(pCell->formID, changeEvent.PlayerCell))
     {
@@ -213,12 +271,31 @@ void DiscoveryService::VisitForms() noexcept
         }
     }
 
-    // Not in actor holder
-    visitor(PlayerCharacter::Get());
+    // Not in actor holder. The visitor dereferences the reference immediately
+    // (its formID), and the player does not exist at the main menu or before a
+    // save is loaded, so this call must be guarded like VisitCell() above.
+    if (auto* pPlayer = PlayerCharacter::Get())
+        visitor(pPlayer);
 
     // We dispatch removal events first to prevent needless reallocations
     for (uint32_t formId : s_previousForms)
     {
+        // A conform can remove both the 3D and the high-process handle. Keep the
+        // existing discovery entry so rebuilding it does not cancel its assignment.
+        // TODO: GetById performance in loop?
+        if (auto* pActor = Cast<Actor>(TESForm::GetById(formId)); pActor && !pActor->IsDeleted())
+        {
+            using ReconciliationStage = ActorExtension::ReconciliationStage;
+            const auto cStage = pActor->GetExtension()->Reconciliation;
+            const auto* pCell = pActor->GetParentCellEx();
+            // Finish the disable/enable pair even if the cell starts unloading.
+            // Once enabled, an unloaded cell is a real removal.
+            if (cStage == ReconciliationStage::WaitingForDisable || (cStage == ReconciliationStage::WaitingFor3D && pCell && pCell->IsAttached()))
+            {
+                continue;
+            }
+        }
+
         m_dispatcher.trigger(ActorRemovedEvent(formId));
         m_forms.erase(formId);
     }
@@ -254,30 +331,7 @@ BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDis
 {
     spdlog::info("Finished loading, triggering visit cell");
 
-    const TiltedPhoques::String defaultModlist[7] = {"Skyrim.esm",        "Update.esm",     "Dawnguard.esm",
-                                                    "HearthFires.esm",   "Dragonborn.esm", "_ResourcePack.esl",
-                                                    "SkyrimTogether.esp"};
-
-    auto& currentModlist = ModManager::Get()->mods;
-
-    bool isModlistEqual = currentModlist.Size() == 7;
-
-    if (isModlistEqual)
-    {
-        int i = 0;
-        for (const auto& currentMod : currentModlist)
-        {
-            if (currentMod->filename != defaultModlist[i])
-            {
-                isModlistEqual = false;
-                break;
-            }
-
-            i++;
-        }
-    }
-
-    if (!isModlistEqual)
+    if (!IsDefaultModlist(ModManager::Get()->mods))
     {
         ConnectionErrorEvent errorEvent{};
         errorEvent.ErrorDetail = "{\"error\": \"non_default_install\"}";

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>STR Plugin Messaging API</moduleName>
+  <installSteps order="Explicit">
+    <installStep name="Installation Type">
+      <optionalFileGroups order="Explicit">
+        <group name="Choose where STRPM should be installed" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Client + Server">
+              <description>Recommended for the player hosting the Skyrim Together Reborn server. Installs the STRPM SKSE client components and the STRPM server relay into Data\SkyrimTogetherReborn\resources.</description>
+              <files>
+                <folder source="Data\SKSE\Plugins" destination="SKSE\Plugins" priority="0" />
+                <folder source="Server\SkyrimTogetherReborn" destination="SkyrimTogetherReborn" priority="0" />
+              </files>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Client Only">
+              <description>For players joining a server hosted elsewhere. Installs only the STRPM SKSE client components.</description>
+              <files>
+                <folder source="Data\SKSE\Plugins" destination="SKSE\Plugins" priority="0" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Server Files Only">
+              <description>Installs only the STRPM server relay into Data\SkyrimTogetherReborn\resources. Use this when the client components are already installed separately.</description>
+              <files>
+                <folder source="Server\SkyrimTogetherReborn" destination="SkyrimTogetherReborn" priority="0" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>

@@ -3,7 +3,9 @@
     "CHAT": {
       "SEND": "送信",
       "MESSAGE": "メッセージ",
-      "MESSAGE_TOO_LONG": "{{chatMessageLengthLimit}}字以上のメッセージは送信不可能。"
+      "MESSAGE_TOO_LONG": "{{chatMessageLengthLimit}}字以上のメッセージは送信不可能。",
+      "SET_TIME_ARGUMENT_COUNT": "引数が正しくありません。使用法: /settime HH MM、例: /settime 15 32",
+      "SET_TIME_INVALID_ARGUMENTS": "時間は0〜23、分は0〜59の範囲で指定してください。"
     },
     "CONNECT": {
       "INFO": {
@@ -21,6 +23,10 @@
         "CONNECTION": "接続できませんでした。 IPアドレスとネットワークの安定を確認してから再度お試しください。",
         "VERSION_MISMATCH": "サーバーの「Skyrim Together」バージョンが違う為、接続することができません。",
         "INVALID_ADDRESS": "アドレスの形式が無効です。"
+      },
+      "SUCCESS": {
+        "TITLE": "接続完了",
+        "MESSAGE": "{{address}} に接続しました。F2を押すといつでもこのメニューとチャットを開けます。"
       }
     },
     "DISCONNECT": {
@@ -79,10 +85,16 @@
     "ROOT": {
       "CONNECT": "接続",
       "DISCONNECT": "切断",
+      "REVEAL_PLAYERS": "プレイヤーを表示",
       "RECONNECT": "再接続",
       "PLAYER_MANAGER": "プレイヤーの管理",
       "SETTINGS": "設定",
-      "CONNECTION_IN_PROGRESS": "接続しています…"
+      "CONNECTION_IN_PROGRESS": "接続しています…",
+      "STATUS": {
+        "OFFLINE": "未接続",
+        "CONNECTING": "接続中...",
+        "ONLINE": "{{address}} に接続中"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "検索",
@@ -148,7 +160,8 @@
     },
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "使用できるコマンド: {{cmds}}",
-      "COMMAND_NOT_FOUND": "'{{cmd}}' はコマンドではありません."
+      "COMMAND_NOT_FOUND": "'{{cmd}}' はコマンドではありません.",
+      "NOT_ADMIN": "このコマンドを使用するには管理者権限が必要です。"
     },
     "GROUP": {
       "LEVEL_UP": "{{name}}がLv.{{level}}になりました。",
@@ -167,7 +180,7 @@
         "NO_REASON": "接続出来ませんでした。",
         "SERVER_FULL": "このサーバーは満員です。",
         "BAD_UGRIDSTOLOAD": "Skyrim.iniの「uGridsToLoad」値がデフォルトではないようです。これはイケマセン。「Skyrim Together」が故障してしまいます。この値をデフォルト（５）に戻すか、Skyrim.iniを削除し１回バニラで起動し新しいファイルをジェネレートしてください。「uExterior Cell Buffer」と「uInterior Cell Buffer」もデフォルトの値のままであったほうがマシです。やり方が分からない場合はSkyrim TogetherのRedditやDiscordをご参考にしてください。",
-        "NON_DEFAULT_INSTALL": "スカイリムが純粋なバニラではないようです［CCコンテンツなど］。\nMODSを使わなかったほうがマシ。\nAEのCCコンテンツコンテンツも含めて、インストールしたMODSを削除し無効にすることをお勧めします［詳細はWIKIに。］\n\n有効な順番はこの通り：<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp</strong>"
+        "NON_DEFAULT_INSTALL": "スカイリムが純粋なバニラではないようです［CCコンテンツなど］。\nMODSを使わなかったほうがマシ。\nAEのCCコンテンツコンテンツも含めて、インストールしたMODSを削除し無効にすることをお勧めします［詳細はWIKIに。］\n\n有効な順番はこの通り：<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>"
       }
     },
     "PLAYER_LIST": {

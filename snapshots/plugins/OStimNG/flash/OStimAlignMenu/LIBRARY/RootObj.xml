@@ -1,0 +1,46 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="RootObj" itemID="6435b528-000001fb" linkageExportForAS="true" linkageIdentifier="RootObj" lastModified="1692022057" lastUniqueIdentifier="2">
+  <timeline>
+    <DOMTimeline name="RootObj">
+      <layers>
+        <DOMLayer name="Layer 1" color="#AB927F" autoNamed="false">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMComponentInstance libraryItemName="AlignmentInfo" name="alignmentInfo" centerPoint3DX="10.05" centerPoint3DY="367.3" uniqueID="2">
+                  <matrix>
+                    <Matrix a="1.00138854980469" d="1.00656127929688" tx="-140.05" ty="170"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                  <dataBindingXML><![CDATA[<component metaDataFetched='true' schemaUrl='' schemaOperation='' sceneRootLabel='root' oldCopiedComponentPath='1.2'>
+</component>
+]]></dataBindingXML>
+                </DOMComponentInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="Layer 2" color="#7894DB" current="true" isSelected="true" autoNamed="false">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMComponentInstance libraryItemName="SceneInfo" name="sceneInfo" centerPoint3DX="21.25" centerPoint3DY="-130" uniqueID="1">
+                  <matrix>
+                    <Matrix a="1.0037841796875" d="0.998825073242188" tx="-175" ty="-315.05"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                  <dataBindingXML><![CDATA[<component metaDataFetched='true' schemaUrl='' schemaOperation='' sceneRootLabel='root' oldCopiedComponentPath='1.1'>
+</component>
+]]></dataBindingXML>
+                </DOMComponentInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

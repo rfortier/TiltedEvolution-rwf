@@ -1,0 +1,29 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Option_Box_Container_MC" itemID="64525e94-0000020b" linkageExportForAS="true" linkageIdentifier="Option_Box_Container_MC" linkageClassName="Option_Box_Container_MC" lastModified="1697532272" lastUniqueIdentifier="2">
+  <timeline>
+    <DOMTimeline name="Option_Box_Container_MC">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Option_Box_MC" name="optionBoxes" centerPoint3DX="225.6" centerPoint3DY="-152.9">
+                  <matrix>
+                    <Matrix tx="154"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point y="428.1"/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Settings/MenuSelector_MC" name="menuselector_mc" selected="true">
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

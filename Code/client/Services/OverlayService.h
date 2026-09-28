@@ -86,6 +86,10 @@ private:
     void RunDebugDataUpdates() noexcept;
     void RunPlayerHealthUpdates() noexcept;
 
+    // Closes the UI and releases input without the m_inGame guard, for the
+    // case where the game leaves the world while the UI is still open.
+    void ForceDeactivate() noexcept;
+
     CefRefPtr<OverlayApp> m_pOverlay{nullptr};
     TiltedPhoques::UniquePtr<D3D11RenderProvider> m_pProvider;
 

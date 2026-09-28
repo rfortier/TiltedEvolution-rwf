@@ -183,6 +183,19 @@ int __cdecl Hook_initterm_e(_PIFV* apFirst, _PIFV* apLast)
     return retval;
 }
 
+// Installed from immersive_launcher/loader/ExeLoader.cpp, i.e. only when the
+// game is started through our own launcher. On that path our hooks are in
+// before the game's CRT init, so EngineFixes loads afterwards and can overwrite
+// the allocator hook above - which is exactly what this sentinel repairs.
+//
+// The SKSE plugin path has no equivalent call site, and needs none: there SKSE
+// has already loaded EngineFixes (and its preloader) before STClient_Bootstrap
+// runs, so the ff 25 thunk is in place when our hook is installed and ours
+// lands on top of it, chaining into EF's allocator through the trampoline. That
+// ordering is checked at runtime rather than assumed: HookAudit reports this
+// target as "already held a branch" and names the module it leads to, which is
+// how the EF conflict in docs/PITFALLS.md §17.2 was diagnosed. Adding a
+// sentinel here would re-hook an address that already carries our own jump.
 void HookFormAllocateSentinelInit()
 {
     TP_HOOK_IAT(_initterm_e, "api-ms-win-crt-runtime-l1-1-0.dll");

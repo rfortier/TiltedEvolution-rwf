@@ -4,6 +4,7 @@
 #include <Games/Skyrim/Forms/TESAmmo.h>
 #include <Actor.h>
 #include <Games/ActorExtension.h>
+#include <Games/GamePatch.h>
 #include <World.h>
 #include <Events/ProjectileLaunchedEvent.h>
 #include <Games/Skyrim/Forms/TESObjectCELL.h>
@@ -120,25 +121,53 @@ static TiltedPhoques::Initializer s_projectileHooks(
 
         TP_HOOK(&RealLaunch, HookLaunch);
 
-        VersionDbPtr<uint8_t> hookLoc(34452);
+        auto* pHookLoc = GamePatch::Anchor(34452, "projectile null check");
+        if (!pHookLoc)
+            return;
+
+        // Everything the spliced null check needs to know about the frame it
+        // lands in. Measured on 1.6.1170; the 1.5.97 row was aligned against
+        // it instruction by instruction - same eight pushed registers in the
+        // same order, same `mov rbx,[rsp+slot] / mov eax,[rip+..] / cmp
+        // [rbx+x],eax / jne / test r12b,r12b / je` run, and the two numbers
+        // that move are the ones the 1.5.x layout explains: the slot shifts
+        // 0x50 -> 0x58 with the larger frame (0x138 -> 0x158), and the field
+        // under test is 8 bytes earlier (0x12c -> 0x124).
+        struct NullCheck
+        {
+            uint32_t jumpOut;   // five-byte slot overwritten with the jmp
+            uint32_t jumpBack;  // first instruction after it
+            uint32_t slot;      // [rsp + slot] holds the pointer under test
+            uint32_t frame;     // add rsp, frame on the early-out path
+        };
+
+        static constexpr NullCheck kModern{0x374, 0x379, 0x50, 0x138};
+        static constexpr NullCheck kLegacy1597{0x397, 0x39C, 0x58, 0x158};
+
+        const NullCheck& site = GamePatch::IsMeasuredFor("1.5.97") ? kLegacy1597 : kModern;
+
+        auto* pJumpSite = GamePatch::At(pHookLoc, {kModern.jumpOut, kLegacy1597.jumpOut, "1.5.97"},
+                                        "projectile null check");
+        if (!pJumpSite)
+            return;
 
         struct C : TiltedPhoques::CodeGenerator
         {
-            C(uint8_t* apLoc)
+            C(uint8_t* apLoc, const NullCheck& acSite)
             {
                 // replicate
-                mov(rbx, ptr[rsp + 0x50]);
+                mov(rbx, ptr[rsp + acSite.slot]);
 
                 // nullptr check
                 cmp(rbx, 0);
                 jz("exit");
                 // jump back
-                jmp_S(apLoc + 0x379);
+                jmp_S(apLoc + acSite.jumpBack);
 
                 L("exit");
                 // return false; scratch space from the registers
                 mov(al, 0);
-                add(rsp, 0x138);
+                add(rsp, acSite.frame);
                 pop(r15);
                 pop(r14);
                 pop(r13);
@@ -149,6 +178,6 @@ static TiltedPhoques::Initializer s_projectileHooks(
                 pop(rbp);
                 ret();
             }
-        } gen(hookLoc.Get());
-        TiltedPhoques::Jump(hookLoc.Get() + 0x374, gen.getCode());
+        } gen(pHookLoc, site);
+        GamePatch::Jump(pJumpSite, gen.getCode(), "projectile null check");
     });

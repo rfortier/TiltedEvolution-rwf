@@ -5,7 +5,9 @@
     "CHAT": {
       "SEND": "Verzenden",
       "MESSAGE": "Bericht",
-      "MESSAGE_TOO_LONG": "Je kan geen bericht langer dan {{chatMessageLengthLimit}} verzenden."
+      "MESSAGE_TOO_LONG": "Je kan geen bericht langer dan {{chatMessageLengthLimit}} verzenden.",
+      "SET_TIME_ARGUMENT_COUNT": "Onjuiste argumenten, gebruik: /settime UU MM, voorbeeld: /settime 15 32.",
+      "SET_TIME_INVALID_ARGUMENTS": "De uren moeten tussen 0 en 23 liggen, en de minuten tussen 0 en 59."
     },
     "CONNECT": {
       "INFO": {
@@ -22,6 +24,11 @@
         "CONNECTION": "Kan niet verbinden met de desbetreffende server. Wees er zeker van dat je het juiste adres hebt ingevuld en dat je geen netwerkproblemen ondervind.",
         "VERSION_MISMATCH": "Kan niet verbinden met de desbetreffende server omdat het niet dezelfde versie heeft van Skyrim Together als jij.",
         "INVALID_ADDRESS": "Het adres is in een ongeldig formaat."
+      },
+      "HIDE_PASSWORD": "Wachtwoord verbergen?",
+      "SUCCESS": {
+        "TITLE": "Verbonden",
+        "MESSAGE": "Je bent nu verbonden met {{address}}. Druk op elk moment op F2 om dit menu te openen en te chatten."
       }
     },
     "DISCONNECT": {
@@ -38,7 +45,9 @@
       "OK": "Oke"
     },
     "NOTIFICATIONS": {
-      "MESSAGE_FROM": "Bericht van"
+      "MESSAGE_FROM": "Bericht van",
+      "ACCEPT": "Accepteren",
+      "DECLINE": "Weigeren"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "Accepteer uitnodiging van {{name}}",
@@ -62,7 +71,9 @@
         "TELEPORT": "Teleporteren",
         "MAKE_LEADER": "Maak leider"
       },
-      "LEAVE_PARTY": "Verlaat groep"
+      "LEAVE_PARTY": "Verlaat groep",
+      "INVITES": "Uitnodigingen",
+      "NO_INVITES": "Je hebt geen uitnodigingen"
     },
     "PARTY_LIST": {
       "NO_OTHER_PLAYERS": "Niemand aanwezig in de groep.",
@@ -84,7 +95,13 @@
       "RECONNECT": "Opnieuw verbinden",
       "PLAYER_MANAGER": "Speler beheerder",
       "SETTINGS": "Instellingen",
-      "CONNECTION_IN_PROGRESS": "Verbinden"
+      "CONNECTION_IN_PROGRESS": "Verbinden",
+      "REVEAL_PLAYERS": "Spelers onthullen",
+      "STATUS": {
+        "OFFLINE": "Niet verbonden",
+        "CONNECTING": "Verbinden...",
+        "ONLINE": "Verbonden met {{address}}"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "Zoeken...",
@@ -99,7 +116,11 @@
         "COUNTRY": "Land",
         "FAVORITE": "Favoriet"
       },
-      "JOIN": "Meedoen"
+      "JOIN": "Meedoen",
+      "HIDE_MISMATCHED_SERVERS": "Servers met een incompatibele versie verbergen",
+      "HIDE_FULL_SERVERS": "Volle servers verbergen",
+      "HIDE_PASSWORD_PROTECTED_SERVERS": "Met wachtwoord beveiligde servers verbergen",
+      "SERVER_COUNT": "{{filteredCount}} van {{count}} servers worden weergegeven"
     },
     "SETTINGS": {
       "AUDIO": "Audio",
@@ -121,12 +142,29 @@
       "LENGTH": "{{length}}s",
       "DEBUG": "Debug",
       "SHOW_DEBUG_INFO": "Debug informatie weergeven",
-      "BACK": "Terug"
+      "BACK": "Terug",
+      "VERSION": {
+        "HEADER": "Versie",
+        "INFO": "Momenteel geïnstalleerd:",
+        "OUTDATED": "De versie is verouderd. Werk deze bij."
+      },
+      "UI": "Gebruikersinterface",
+      "LANGUAGE": "Taal",
+      "FONT_SIZE": "Lettergrootte",
+      "FONT_SIZES": {
+        "XS": "Extra klein",
+        "S": "Klein",
+        "M": "Normaal",
+        "L": "Groot",
+        "XL": "Extra groot"
+      }
     }
   },
   "SERVICE": {
     "CLIENT": {
-      "CONNECTION_LOST": "Verbinding verbroken, proberen opnieuw te verbinden. {{remainingReconnectionAttempt } pogingen over."
+      "CONNECTION_LOST": "Verbinding verbroken, proberen opnieuw te verbinden. {{remainingReconnectionAttempt}} pogingen over.",
+      "CONNECTED": "Succesvol verbonden met de server.",
+      "DISCONNECTED": "Verbinding met de server verbroken."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}} heeft level {{level}} bereikt.",
@@ -142,11 +180,19 @@
         "MODS_MISMATCH_INSTALL": "Installeer de volgende mods om deel te nemen:\n{{mods}}.",
         "CLIENT_MODS_DISALLOWED": "Deze server staat de volgende mods niet toe {{mods}}. Verwijder ze om deel te nemen.",
         "WRONG_PASSWORD": "Het ingevoerde wachtwoord is incorrect.",
-        "NO_REASON": "De server heeft de verbinding zonder reden geweigerd."
+        "NO_REASON": "De server heeft de verbinding zonder reden geweigerd.",
+        "SERVER_FULL": "Deze server is vol.",
+        "BAD_UGRIDSTOLOAD": "Het lijkt erop dat je Skyrim.ini-bestand een niet-standaardwaarde heeft voor ‘uGridsToLoad’. DIT IS EEN HEEL SLECHT IDEE en zal het waarschijnlijk het mod laten vastlopen. Zet deze instelling terug naar de standaardwaarde (5), of verwijder het Skyrim.ini-bestand en start Skyrim één keer zonder mods om een nieuw bestand te genereren. De instellingen ‘uExterior Cell Buffer’ en ‘uInterior Cell Buffer’ moeten ook op de standaardwaarde blijven staan. Als je niet weet hoe je dit moet doen, raadpleeg dan onze wiki of vraag om hulp op onze Discord-server of subreddit.",
+        "NON_DEFAULT_INSTALL": "Het lijkt erop dat je installatie niet puur vanille is, dat wil zeggen dat deze Creation Club-inhoud (Anniversary Update of anderszins) of andere mods bevat.\nWe raden het spelen met mods NIET aan.\nWe raden je aan deze mods te verwijderen en uit te schakelen (instructies vind je op de wiki).\n\nVoor de beste ervaring zou je de volgende modlijst moeten hebben:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>\n"
       }
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}} heeft je uitgenodigd voor een groep"
+    },
+    "COMMANDS": {
+      "AVAILABLE_COMMANDS": "Beschikbare chatopdrachten: {{cmds}}",
+      "COMMAND_NOT_FOUND": "‘{{cmd}}’ is geen bekende opdracht.",
+      "NOT_ADMIN": "Je moet beheerder zijn om die opdracht te gebruiken."
     }
   }
 }

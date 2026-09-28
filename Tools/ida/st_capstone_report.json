@@ -1,0 +1,639 @@
+{
+  "11612": {
+    "ae": 11612,
+    "var": "setWornData",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "11616": {
+    "ae": 11616,
+    "var": "setHealth",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "11619": {
+    "ae": 11619,
+    "var": "setChargeData",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.84 vs 0.80 @ 0x10e800",
+    "se_rva": null
+  },
+  "11620": {
+    "ae": 11620,
+    "var": "setSoulData",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.81 vs 0.75 @ 0x110140",
+    "se_rva": null
+  },
+  "11822": {
+    "ae": 11822,
+    "var": "setPoison",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.84 vs 0.81 @ 0x119890",
+    "se_rva": null
+  },
+  "12060": {
+    "ae": 12060,
+    "var": "setEnchantmentData",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "14953": {
+    "ae": 14953,
+    "var": "s_constructor",
+    "kind": "function/data ptr",
+    "status": "low similarity 0.62",
+    "se_rva": null
+  },
+  "16005": {
+    "ae": 16005,
+    "var": "s_isQuestObject",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=1 sc=0",
+    "se_rva": 1928096
+  },
+  "18518": {
+    "ae": 18518,
+    "var": "getModifiedDistance",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 2400480
+  },
+  "18563": {
+    "ae": 18563,
+    "var": "s_clearImageSpaceModifier",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.84 cc=0 sc=0",
+    "se_rva": 2409280
+  },
+  "19075": {
+    "ae": 19075,
+    "var": "s_getCOCPlacementInfo",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.97 cc=0 sc=0",
+    "se_rva": 2526960
+  },
+  "19708": {
+    "ae": 19708,
+    "var": "s_addInventoryItem",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.98 cc=4 sc=0",
+    "se_rva": 2680448
+  },
+  "19784": {
+    "ae": 19784,
+    "var": "refrGetWorldLocation",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.83 cc=0 sc=0",
+    "se_rva": 2712736
+  },
+  "19846": {
+    "ae": 19846,
+    "var": "s_getHandle",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=1 sc=0",
+    "se_rva": 2734464
+  },
+  "20203": {
+    "ae": 20203,
+    "var": "getLocationEncounterZone",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 2780432
+  },
+  "20460": {
+    "ae": 20460,
+    "var": "s_loadCell",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.92 cc=4 sc=0",
+    "se_rva": 2826464
+  },
+  "21600": {
+    "ae": 21600,
+    "var": "isFirstPerson",
+    "kind": "function/data ptr",
+    "status": "low similarity 0.64",
+    "se_rva": null
+  },
+  "21622": {
+    "ae": 21622,
+    "var": "hasPerk",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.91 vs 0.90 @ 0x2dabe0",
+    "se_rva": null
+  },
+  "25011": {
+    "ae": 25011,
+    "var": "IsStageDone",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.91 cc=0 sc=0",
+    "se_rva": 3607328
+  },
+  "26231": {
+    "ae": 26231,
+    "var": "updateWeather",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.89 cc=1 sc=0",
+    "se_rva": 3873920
+  },
+  "26244": {
+    "ae": 26244,
+    "var": "releaseWeatherOverride",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 3885904
+  },
+  "26503": {
+    "ae": 26503,
+    "var": "s_getDifficultyMultiplier",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 3936768
+  },
+  "27244": {
+    "ae": 27244,
+    "var": "s_calculateExperience",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 4077120
+  },
+  "32883": {
+    "ae": 32883,
+    "var": "InternalRevertAnimationGraphManager",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.74 vs 0.74 @ 0x4f1f90",
+    "se_rva": null
+  },
+  "33235": {
+    "ae": 33235,
+    "var": "setTarget",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.74 cc=4 sc=0",
+    "se_rva": 5234656
+  },
+  "33236": {
+    "ae": 33236,
+    "var": "s_updateTarget",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.74 cc=0 sc=0",
+    "se_rva": 5235456
+  },
+  "33261": {
+    "ae": 33261,
+    "var": "checkMovement",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.96 cc=0 sc=0",
+    "se_rva": 5241440
+  },
+  "33282": {
+    "ae": 33282,
+    "var": "sortTargetSelectors",
+    "kind": "function/data ptr",
+    "status": "low similarity 0.12",
+    "se_rva": null
+  },
+  "33285": {
+    "ae": 33285,
+    "var": "arrayQuickSort",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "34053": {
+    "ae": 34053,
+    "var": "adjustForPerks",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "34370": {
+    "ae": 34370,
+    "var": "s_finish",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.86 vs 0.82 @ 0x54b210",
+    "se_rva": null
+  },
+  "34512": {
+    "ae": 34512,
+    "var": "dispelAllSpells",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 5582352
+  },
+  "34529": {
+    "ae": 34529,
+    "var": "getTargetAsActor",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "34989": {
+    "ae": 34989,
+    "var": "s_start",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.79 vs 0.74 @ 0x5672c0",
+    "se_rva": null
+  },
+  "35269": {
+    "ae": 35269,
+    "var": "s_playDialogueOption",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.90 cc=0 sc=0",
+    "se_rva": 5694960
+  },
+  "36035": {
+    "ae": 36035,
+    "var": "ctor",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 5870656
+  },
+  "37198": {
+    "ae": 37198,
+    "var": "addDeathItems",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.99 cc=5 sc=0",
+    "se_rva": 6093504
+  },
+  "37266": {
+    "ae": 37266,
+    "var": "s_IsTalking",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.91 cc=0 sc=0",
+    "se_rva": 6103856
+  },
+  "37511": {
+    "ae": 37511,
+    "var": "s_payGoldToContainer",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.82 cc=0 sc=0",
+    "se_rva": 6175312
+  },
+  "37521": {
+    "ae": 37521,
+    "var": "s_pickUpObject",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "37527": {
+    "ae": 37527,
+    "var": "s_getGoldAmount",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "37542": {
+    "ae": 37542,
+    "var": "s_speakSoundFunction",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.76 cc=8 sc=1",
+    "se_rva": 6194944
+  },
+  "37577": {
+    "ae": 37577,
+    "var": "isFleeing",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.94 cc=0 sc=0",
+    "se_rva": 6212464
+  },
+  "37717": {
+    "ae": 37717,
+    "var": "setPlayerTeammate",
+    "kind": "function/data ptr",
+    "status": "low similarity 0.70",
+    "se_rva": null
+  },
+  "37757": {
+    "ae": 37757,
+    "var": "getDetectionState",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.95 cc=0 sc=0",
+    "se_rva": 6276928
+  },
+  "37905": {
+    "ae": 37905,
+    "var": "s_initiateMountPackage",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.78 cc=3 sc=0",
+    "se_rva": 6314768
+  },
+  "37975": {
+    "ae": 37975,
+    "var": "s_unequipObject",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.99 cc=4 sc=0",
+    "se_rva": 6330464
+  },
+  "38533": {
+    "ae": 38533,
+    "var": "s_setNoBleedoutRecovery",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.75 vs 0.71 @ 0x625ee0",
+    "se_rva": null
+  },
+  "38896": {
+    "ae": 38896,
+    "var": "s_equipFunc",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=1 sc=0",
+    "se_rva": 6519856
+  },
+  "38899": {
+    "ae": 38899,
+    "var": "s_unequipAll",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.97 cc=1 sc=0",
+    "se_rva": 6520608
+  },
+  "38903": {
+    "ae": 38903,
+    "var": "s_unequipFunc",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 6521776
+  },
+  "38959": {
+    "ae": 38959,
+    "var": "s_initFromPackage",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.77 cc=1 sc=0",
+    "se_rva": 6534304
+  },
+  "38979": {
+    "ae": 38979,
+    "var": "setWeaponState",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.84 cc=0 sc=0",
+    "se_rva": 6537680
+  },
+  "39114": {
+    "ae": 39114,
+    "var": "s_checkForNewPackage",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 6565408
+  },
+  "39643": {
+    "ae": 39643,
+    "var": "s_processResponse",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.95 cc=2 sc=0",
+    "se_rva": 6703616
+  },
+  "40454": {
+    "ae": 40454,
+    "var": "s_dropObject",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.98 cc=9 sc=0",
+    "se_rva": 6945040
+  },
+  "40533": {
+    "ae": 40533,
+    "var": "s_pickUpObject",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.97 cc=14 sc=0",
+    "se_rva": 6968064
+  },
+  "40535": {
+    "ae": 40535,
+    "var": "s_setWaypoint",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.94 cc=2 sc=0",
+    "se_rva": 6969808
+  },
+  "40536": {
+    "ae": 40536,
+    "var": "s_removeWaypoint",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.83 cc=0 sc=0",
+    "se_rva": 6970160
+  },
+  "42345": {
+    "ae": 42345,
+    "var": "setEnabled",
+    "kind": "function/data ptr",
+    "status": "ambiguous 0.83 vs 0.82 @ 0x709ca0",
+    "se_rva": null
+  },
+  "42704": {
+    "ae": 42704,
+    "var": "s_updateDetectionState",
+    "kind": "function/data ptr",
+    "status": "low similarity 0.70",
+    "se_rva": null
+  },
+  "47196": {
+    "ae": 47196,
+    "var": "isValidTarget",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "47303": {
+    "ae": 47303,
+    "var": "actorHasEquippedRangedWeapon_m",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.74 cc=0 sc=0",
+    "se_rva": 8112880
+  },
+  "47307": {
+    "ae": 47307,
+    "var": "func",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "52626": {
+    "ae": 52626,
+    "var": "s_showSubtitle",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.78 cc=1 sc=0",
+    "se_rva": 9227184
+  },
+  "52627": {
+    "ae": 52627,
+    "var": "s_hideSubtitle",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.74 cc=1 sc=0",
+    "se_rva": 9227760
+  },
+  "52847": {
+    "ae": 52847,
+    "var": "fadeOutGame",
+    "kind": "function/data ptr",
+    "status": "low similarity 0.68",
+    "se_rva": null
+  },
+  "55485": {
+    "ae": 55485,
+    "var": "s_isMovementControlsEnabled",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "55497": {
+    "ae": 55497,
+    "var": "s_setBeastForm",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "55739": {
+    "ae": 55739,
+    "var": "s_bindEverythingToScript",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 9961872
+  },
+  "56205": {
+    "ae": 56205,
+    "var": "s_playAnimation",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "56206": {
+    "ae": 56206,
+    "var": "s_playAnimationAndWait",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "68545": {
+    "ae": 68545,
+    "var": "setEnabled",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.74 cc=0 sc=0",
+    "se_rva": 12655712
+  },
+  "70639": {
+    "ae": 70639,
+    "var": "s_w2s",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.76 cc=0 sc=0",
+    "se_rva": 13001584
+  },
+  "82088": {
+    "ae": 82088,
+    "var": "s_CloseAll",
+    "kind": "function/data ptr",
+    "status": "low similarity 0.57",
+    "se_rva": null
+  },
+  "104359": {
+    "ae": 104359,
+    "var": "s_signaturesMatch",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.88 cc=0 sc=0",
+    "se_rva": 19123456
+  },
+  "104483": {
+    "ae": 104483,
+    "var": "getPageForFrame",
+    "kind": "function/data ptr",
+    "status": "ok sim=0.78 cc=0 sc=0",
+    "se_rva": 19155312
+  },
+  "104653": {
+    "ae": 104653,
+    "var": "ctor",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=1 sc=0",
+    "se_rva": 19205248
+  },
+  "104655": {
+    "ae": 104655,
+    "var": "dtor",
+    "kind": "function/data ptr",
+    "status": "ok sim=1.00 cc=0 sc=0",
+    "se_rva": 19205840
+  },
+  "105220": {
+    "ae": 105220,
+    "var": "s_compareVariables",
+    "kind": "function/data ptr",
+    "status": "no bracket",
+    "se_rva": null
+  },
+  "370892": {
+    "ae": 370892,
+    "var": "s_greetDistance",
+    "kind": "function/data ptr",
+    "status": "no 1.6 xrefs",
+    "se_rva": null
+  },
+  "381472": {
+    "ae": 381472,
+    "var": "s_difficulty",
+    "kind": "function/data ptr",
+    "status": "no aligned xref function",
+    "se_rva": null
+  },
+  "382393": {
+    "ae": 382393,
+    "var": "s_value",
+    "kind": "function/data ptr",
+    "status": "no 1.6 xrefs",
+    "se_rva": null
+  },
+  "382400": {
+    "ae": 382400,
+    "var": "s_value",
+    "kind": "function/data ptr",
+    "status": "no 1.6 xrefs",
+    "se_rva": null
+  },
+  "400180": {
+    "ae": 400180,
+    "var": "rtti",
+    "kind": "RTTI locator",
+    "status": "no 1.6 xrefs",
+    "se_rva": null
+  },
+  "404125": {
+    "ae": 404125,
+    "var": "s_value",
+    "kind": "function/data ptr",
+    "status": "no aligned xref function",
+    "se_rva": null
+  },
+  "405282": {
+    "ae": 405282,
+    "var": "s_value",
+    "kind": "function/data ptr",
+    "status": "no 1.6 xrefs",
+    "se_rva": null
+  },
+  "406126": {
+    "ae": 406126,
+    "var": "s_matrix",
+    "kind": "function/data ptr",
+    "status": "no 1.6 xrefs",
+    "se_rva": null
+  },
+  "406160": {
+    "ae": 406160,
+    "var": "s_port",
+    "kind": "function/data ptr",
+    "status": "no 1.6 xrefs",
+    "se_rva": null
+  },
+  "410506": {
+    "ae": 410506,
+    "var": "NiCameraRTTI",
+    "kind": "function/data ptr",
+    "status": "no aligned xref function",
+    "se_rva": null
+  },
+  "414391": {
+    "ae": 414391,
+    "var": "s_policy",
+    "kind": "function/data ptr",
+    "status": "no 1.6 xrefs",
+    "se_rva": null
+  }
+}

@@ -1,0 +1,29 @@
+@import 'env';
+@import 'functions/mod';
+
+.alert-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.alert-title {
+  margin: 0;
+}
+
+.alert-message {
+  margin: 0;
+  color: mod($-color-background, 0.7);
+}
+
+.alert-content.is-error {
+  .alert-title {
+    color: #e06a6a;
+  }
+}
+
+.alert-content.is-success {
+  .alert-title {
+    color: #6ec06e;
+  }
+}

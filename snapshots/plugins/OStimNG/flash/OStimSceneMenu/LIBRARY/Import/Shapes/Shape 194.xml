@@ -1,0 +1,30 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Import/Shapes/Shape 194" itemID="4ee20824-000000ce" symbolType="graphic" lastModified="1323436068">
+  <timeline>
+    <DOMTimeline name="Shape 194">
+      <layers>
+        <DOMLayer name="Shape Sublayer 1" color="#4F80FF" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="8704">
+              <elements>
+                <DOMShape isFloating="true">
+                  <fills>
+                    <FillStyle index="1">
+                      <SolidColor color="#231F20"/>
+                    </FillStyle>
+                    <FillStyle index="2">
+                      <SolidColor color="#BBBDBF"/>
+                    </FillStyle>
+                  </fills>
+                  <edges>
+                    <Edge fillStyle0="1" edges="!14 473|307 473!307 473|318 305!318 305|159 1!159 1|1 305!1 305|14 473"/>
+                    <Edge fillStyle0="1" fillStyle1="2" edges="!41 304|158 78!158 78|274 304!274 304|268 436!268 436|50 436!50 436|41 304!101 393|214 393!214 393|233 308!233 308|158 160!158 160|82 308!82 308|101 393"/>
+                  </edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

@@ -21,6 +21,8 @@
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESWorldSpace.h>
 #include <Forms/BGSEncounterZone.h>
+#include <Forms/TESFaction.h>
+#include <Games/TES.h>
 
 #include <inttypes.h>
 
@@ -43,6 +45,10 @@ ObjectService::ObjectService(World& aWorld, entt::dispatcher& aDispatcher, Trans
 
 bool IsPlayerHome(const TESObjectCELL* pCell) noexcept
 {
+    // The 1.5.x engine does not expose the LoadedCellData layout we model
+    // (no loadedCellData member), so the player-home detection is skipped
+    // there rather than reading a wrong offset.
+#ifndef SKYRIM_TARGET_LEGACY
     if (pCell && pCell->loadedCellData && pCell->loadedCellData->encounterZone)
     {
         // Only return true if cell has the NoResetZone encounter zone
@@ -56,15 +62,46 @@ bool IsPlayerHome(const TESObjectCELL* pCell) noexcept
             }
         }
     }
+#endif
 
     return false;
 }
 
-bool ShouldSyncObject(const TESObjectREFR* apObject) noexcept
+// Find each loaded faction's containers for a jailed player's belongings and stolen items.
+// Do not sync them: each player's items must stay separate (#700).
+// Only compare the container pointers; never read through them.
+Set<const TESObjectREFR*> GetPlayerStashContainers() noexcept
+{
+    Set<const TESObjectREFR*> containers{};
+
+    ModManager* pModManager = ModManager::Get();
+    if (!pModManager)
+        return containers;
+
+    for (const TESFaction* pFaction : pModManager->factions)
+    {
+        if (!pFaction)
+            continue;
+
+        if (pFaction->crimeData.playerInventoryContainer)
+            containers.insert(pFaction->crimeData.playerInventoryContainer);
+
+        if (pFaction->crimeData.stolenGoodsContainer)
+            containers.insert(pFaction->crimeData.stolenGoodsContainer);
+    }
+
+    return containers;
+}
+
+bool ShouldSyncObject(const TESObjectREFR* apObject, const Set<const TESObjectREFR*>& acPlayerStashContainers) noexcept
 {
     if (!apObject)
         return false;
 
+    if (acPlayerStashContainers.contains(apObject))
+        return false;
+
+    // Quest chests that take the player's whole inventory without going through faction crime data.
     switch (apObject->formID)
     {
     case 0x39CF1: // Don't sync the chest in the "Diplomatic Immunity" quest
@@ -117,9 +154,11 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
 
     AssignObjectsRequest request{};
 
+    const Set<const TESObjectREFR*> playerStashContainers = GetPlayerStashContainers();
+
     for (TESObjectREFR* pObject : objects)
     {
-        if (!ShouldSyncObject(pObject))
+        if (!ShouldSyncObject(pObject, playerStashContainers))
         {
             spdlog::warn("Excluding sync for {:X}", pObject->formID);
             continue;
@@ -142,7 +181,7 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
             objectData.CurrentLockData.LockLevel = pLock->lockLevel;
         }
 
-        if (pObject->baseForm->formType == FormType::Container)
+        if (pObject->baseForm && pObject->baseForm->formType == FormType::Container)
             objectData.CurrentInventory = pObject->GetInventory();
 
         request.Objects.push_back(objectData);
@@ -184,7 +223,7 @@ void ObjectService::OnAssignObjectsResponse(const AssignObjectsResponse& acMessa
             pObject->LockChange();
         }
 
-        if (pObject->baseForm->formType == FormType::Container)
+        if (pObject->baseForm && pObject->baseForm->formType == FormType::Container)
         {
             Inventory currentInventory = pObject->GetInventory();
 
@@ -247,7 +286,7 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
 
     if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
     {
-        spdlog::error("Server cell id not found for cell form id {:X}", acEvent.pObject->parentCell->formID);
+        spdlog::error("Server cell id not found for cell form id {:X}", pCell->formID);
         return;
     }
 
@@ -287,7 +326,7 @@ void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
         return;
     }
 
-    if (pObject->baseForm->formType == FormType::Door)
+    if (pObject->baseForm && pObject->baseForm->formType == FormType::Door)
     {
         auto remotePreActivationState = static_cast<TESObjectREFR::OpenState>(acMessage.PreActivationOpenState);
         TESObjectREFR::OpenState localState = pObject->GetOpenState();
@@ -320,6 +359,15 @@ void ObjectService::OnLockChange(const LockChangeEvent& acEvent) noexcept
 
     const auto* const pObject = Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId));
 
+    // The object can be gone by the time the queued lock change runs: the form
+    // id comes off an event, not off a live reference. The cell lookup below
+    // used to dereference the result unconditionally.
+    if (!pObject)
+    {
+        spdlog::error("Activated object no longer exists: {:X}", acEvent.FormId);
+        return;
+    }
+
     TESObjectCELL* pCell = pObject->GetParentCellEx();
     if (!pCell)
     {
@@ -329,7 +377,7 @@ void ObjectService::OnLockChange(const LockChangeEvent& acEvent) noexcept
 
     if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
     {
-        spdlog::error("Server cell id for cell not found, cell form id: {:X}", pObject->parentCell->formID);
+        spdlog::error("Server cell id for cell not found, cell form id: {:X}", pCell->formID);
         return;
     }
 

@@ -1,0 +1,9 @@
+OStim Together v0.18.7a
+
+Compile-only fix over v0.18.7.
+
+Fixed OStimBridge.cpp MIRROR STATE logging:
+- stale variable `anchoredSelf` -> `authoritativeSelfApplied`
+- this also fixes the fmt compile-time argument-count error
+
+No behavior change to one-shot SELF positioning.

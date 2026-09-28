@@ -1,0 +1,48 @@
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" backgroundColor="#666666" width="1920" height="1080" currentTimeline="1" xflVersion="2.2" creatorInfo="Adobe Flash Professional CS6" platform="Windows" versionInfo="Saved by Adobe Flash Windows 12.0 build 481" majorVersion="12" buildNumber="481" rulerVisible="true" viewAngle3D="122.353661987282" sharedLibraryURL="OstimShared.swf" nextSceneIdentifier="6" playOptionsPlayLoop="false" playOptionsPlayPages="false" playOptionsPlayFrameActions="false" autoSaveHasPrompted="true">
+     <folders>
+          <DOMFolderItem name="Shapes" itemID="645115bb-0000070a" isExpanded="true"/>
+     </folders>
+     <media>
+          <DOMBitmapItem name="Bitmap 1" itemID="6451175e-00000730" sourceExternalFilepath="./LIBRARY/Bitmap 1.png" sourceLastImported="1683035837" externalFileCRC32="3565128283" externalFileSize="2220" allowSmoothing="true" useImportedJPEGData="false" compressionType="lossless" originalCompressionType="lossless" quality="50" href="Bitmap 1.png" bitmapDataHRef="M 1 1683035837.dat" frameRight="1480" frameBottom="660"/>
+     </media>
+     <symbols>
+          <Include href="Bar_Fill.xml" loadImmediate="false" itemID="64510f28-00000495" lastModified="1683035829"/>
+          <Include href="BAR_MC.xml" itemID="645104ad-0000025f" lastModified="1683036014"/>
+          <Include href="BG_MC.xml" itemID="6343e0e9-00000393" lastModified="1683032190"/>
+          <Include href="Shapes/HealthMeterBarBackground.xml" itemIcon="1" loadImmediate="false" itemID="6220d0ee-00000254" lastModified="1683035627"/>
+          <Include href="Shapes/MeterFrame.xml" itemIcon="1" loadImmediate="false" itemID="6220d0f4-00000258" lastModified="1683035436"/>
+     </symbols>
+     <timelines>
+          <DOMTimeline name="Scene 1">
+               <layers>
+                    <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+                         <frames>
+                              <DOMFrame index="0" keyMode="9728">
+                                   <elements/>
+                              </DOMFrame>
+                         </frames>
+                    </DOMLayer>
+               </layers>
+          </DOMTimeline>
+     </timelines>
+     <PrinterSettings/>
+     <publishHistory>
+          <PublishItem publishSize="2230" publishTime="1683033699"/>
+          <PublishItem publishSize="2230" publishTime="1683032670"/>
+          <PublishItem publishSize="2225" publishTime="1683032449"/>
+          <PublishItem publishSize="2146" publishTime="1683032180"/>
+          <PublishItem publishSize="2210" publishTime="1683031436"/>
+          <PublishItem publishSize="2126" publishTime="1683031302"/>
+          <PublishItem publishSize="1583" publishTime="1681287581"/>
+          <PublishItem publishSize="518" publishTime="1681287339"/>
+          <PublishItem publishSize="519" publishTime="1681287299"/>
+          <PublishItem publishSize="3247" publishTime="1681287217"/>
+          <PublishItem publishSize="518" publishTime="1681287212"/>
+          <PublishItem publishSize="1580" publishTime="1681287173"/>
+          <PublishItem publishSize="1582" publishTime="1681287097"/>
+          <PublishItem publishSize="3244" publishTime="1681287091"/>
+          <PublishItem publishSize="1575" publishTime="1681287052"/>
+          <PublishItem publishSize="1574" publishTime="1681286931"/>
+          <PublishItem publishSize="3243" publishTime="1681286855"/>
+     </publishHistory>
+</DOMDocument>

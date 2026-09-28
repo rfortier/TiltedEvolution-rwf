@@ -15,24 +15,6 @@
 
 namespace
 {
-#if 0
-constexpr float fFloatQuestMarkerMaxDistance = 2000.f;
-constexpr float fFloatQuestMarkerMinDistance = 1000.f;
-
-float CalculateFloatingQuestMarkerAlpha()
-{
-    float v1 = fsqrt((__m128)LODWORD(this->fDistanceToPlayerSqr)).m128_f32[0] -
-                         fFloatQuestMarkerMaxDistance) /
-                         (fFloatQuestMarkerMinDistance - fFloatQuestMarkerMaxDistance)) * 100.0;
-    if (v1 > 100.0)
-        return FLOAT_100_0;
-    result = 0.0;
-    if (v1 >= 0.0)
-        return v1;
-    return result;
-}
-#endif
-
 static __declspec(noinline) bool DrawInWorldSpace(TESObjectREFR* apRefr, ImVec2& outViewPos)
 {
     // Attach at the head ish.

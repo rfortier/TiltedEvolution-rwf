@@ -1,0 +1,101 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build -A x64
+          -DSTRPM_ENABLE_UDP_BACKEND=OFF
+          -DSTRPM_BUILD_STR180_BRIDGE_PROBE=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Verify outputs
+        shell: pwsh
+        run: |
+          $required = @(
+            "build/Release/STRPluginMessagingAPI.dll",
+            "build/Release/STRPluginMessagingBridge.dll",
+            "build/Release/STRPluginMessagingDiagnostic.dll",
+            "package/fomod/info.xml",
+            "package/fomod/ModuleConfig.xml",
+            "extras/str-server-resources/strpm-chat-relay/main.lua",
+            "extras/str-server-resources/strpm-chat-relay/strpm-chat-relay.manifest"
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing build/package input: $path"
+            }
+          }
+          [xml](Get-Content -LiteralPath "package/fomod/info.xml" -Raw) | Out-Null
+          [xml](Get-Content -LiteralPath "package/fomod/ModuleConfig.xml" -Raw) | Out-Null
+
+      - name: Package release FOMOD archive
+        shell: pwsh
+        run: |
+          $root = "artifact-release"
+          $zip = "STRPluginMessagingAPI-v0.9.3.zip"
+          $pluginDir = "$root/Data/SKSE/Plugins"
+          $serverResources = "$root/Server/SkyrimTogetherReborn/resources"
+          New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $serverResources | Out-Null
+
+          Copy-Item "package/fomod" "$root/fomod" -Recurse -Force
+          Copy-Item "build/Release/STRPluginMessagingAPI.dll" "$pluginDir/STRPluginMessagingAPI.dll"
+          Copy-Item "build/Release/STRPluginMessagingBridge.dll" "$pluginDir/STRPluginMessagingBridge.dll"
+          Copy-Item "package/Data/SKSE/Plugins/STRPluginMessagingAPI.ini" "$pluginDir/STRPluginMessagingAPI.ini"
+          Copy-Item "extras/str-server-resources/strpm-chat-relay" $serverResources -Recurse -Force
+
+          Compress-Archive -Path "$root/*" -DestinationPath $zip -Force
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+            $required = @(
+              "fomod/info.xml",
+              "fomod/ModuleConfig.xml",
+              "Data/SKSE/Plugins/STRPluginMessagingAPI.dll",
+              "Data/SKSE/Plugins/STRPluginMessagingBridge.dll",
+              "Data/SKSE/Plugins/STRPluginMessagingAPI.ini",
+              "Server/SkyrimTogetherReborn/resources/strpm-chat-relay/main.lua",
+              "Server/SkyrimTogetherReborn/resources/strpm-chat-relay/strpm-chat-relay.manifest"
+            )
+            foreach ($entry in $required) {
+              if ($entries -notcontains $entry) {
+                throw "Missing archive entry: $entry"
+              }
+            }
+            if ($entries -contains "Data/SKSE/Plugins/STRPluginMessagingDiagnostic.dll") {
+              throw "Diagnostic DLL must not be included in the public release archive."
+            }
+          } finally {
+            $archive.Dispose()
+          }
+
+      - name: Upload DLLs
+        uses: actions/upload-artifact@v4
+        with:
+          name: STRPluginMessagingAPI-windows
+          path: |
+            build/Release/STRPluginMessagingAPI.dll
+            build/Release/STRPluginMessagingBridge.dll
+            build/Release/STRPluginMessagingDiagnostic.dll
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: STRPluginMessagingAPI-v0.9.3
+          path: STRPluginMessagingAPI-v0.9.3.zip

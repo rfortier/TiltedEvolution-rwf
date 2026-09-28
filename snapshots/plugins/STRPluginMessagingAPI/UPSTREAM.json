@@ -1,0 +1,8 @@
+{
+  "id": "STRPluginMessagingAPI",
+  "upstream": "https://github.com/Caelvanost/STRPluginMessagingAPI.git",
+  "commit": "62143fd463f305d9da6c5284b58d571e8671d7c5",
+  "files": 41,
+  "contentSha256": "9925474b875277d1a77fe4aa11ef87ac7e8e0d6b15539a2925f4ae659c131322",
+  "why": "Durability copy of the pinned commit. Not a build input: the submodule builds. Kept so the code survives the upstream repository disappearing."
+}

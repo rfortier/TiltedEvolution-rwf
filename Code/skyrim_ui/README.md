@@ -1,5 +1,3 @@
 # Skyrim Together UI
 
-Check the wiki for information, such as requirements and how to use/build it.
-
-https://wiki.tiltedphoques.com/tilted-online/technical-documentation/build-guide#building-the-together-ui
+Source of the in-game multiplayer overlay (Angular/TypeScript, rendered via CEF). Built automatically by CI.

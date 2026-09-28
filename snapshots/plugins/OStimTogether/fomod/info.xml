@@ -1,0 +1,6 @@
+<fomod>
+  <Name>OStim Together</Name>
+  <Author>OStim Together project</Author>
+  <Version>0.37.7</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.7 keeps the OStim Standalone 7.5c / OStim.dll 7.5.0.3 compatibility added in v0.37.6 and fixes Threads interface version handling: OStim 7.5c reports a packed plugin version token rather than a raw ABI ordinal, so OStim Together now normalizes that value to the validated Threads ABI before applying capability checks. Core scene synchronization, PPA support and OCum RaceMenu overlay support are unchanged. OCum's 3D vaginal and anal equip-object meshes remain intentionally unsupported on remote STR player proxies.</Description>
+</fomod>

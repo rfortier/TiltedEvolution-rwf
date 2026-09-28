@@ -4,6 +4,7 @@ struct World;
 struct TransportService;
 struct SetTimeCommandEvent;
 struct TeleportCommandResponse;
+struct NotifySetTimeResult;
 
 /**
  * @brief Responsible for processing, sending and receiving chat commands.
@@ -22,6 +23,10 @@ public:
 protected:
     void OnSetTimeCommand(const SetTimeCommandEvent&) const noexcept;
     /**
+     * @brief Processes the server's answer to /settime, including refusals.
+     */
+    void OnSetTimeResult(const NotifySetTimeResult&) noexcept;
+    /**
      * @brief Processes result of teleport command.
      */
     void OnTeleportCommandResponse(const TeleportCommandResponse&) noexcept;
@@ -31,5 +36,6 @@ private:
     TransportService& m_transport;
 
     entt::scoped_connection m_setTimeConnection;
+    entt::scoped_connection m_setTimeResultConnection;
     entt::scoped_connection m_teleportConnection;
 };

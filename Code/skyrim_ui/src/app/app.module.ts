@@ -8,6 +8,7 @@ import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { FontAwesomeModule } from '@fortawesome/angular-fontawesome';
 import { environment } from '../environments/environment';
 import { ActionButtonsComponent } from './components/action-buttons/action-buttons.component';
+import { AlertComponent } from './components/alert/alert.component';
 import { ChatComponent } from './components/chat/chat.component';
 import { ConnectComponent } from './components/connect/connect.component';
 import { ConnectPasswordComponent } from './components/connect-password/connect-password.component';
@@ -48,6 +49,7 @@ import { TranslocoRootModule } from './transloco-root.module';
 
 @NgModule({
   declarations: [
+    AlertComponent,
     ChatComponent,
     ConnectComponent,
     ConnectPasswordComponent,

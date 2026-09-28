@@ -1,0 +1,62 @@
+--- a/src/STRPluginMessagingAPIRuntime.cpp
++++ b/src/STRPluginMessagingAPIRuntime.cpp
+@@ -825,6 +825,32 @@
+             _nextSequence.store(1);
+         }
+ 
++        // Inside Skyrim Together Next the framework runtime exports the same
++        // four entry points as this facade and answers them over its own
++        // session. Every companion plugin loads this facade by name, so probing
++        // for the framework here is what puts them on a transport that can
++        // actually receive: the configured bridge's receive resolver scans
++        // SkyrimSE.exe's own allocation only, while this framework's
++        // TransportService lives in a separate module, so the bridge stays
++        // permanently unready and every send() returns kNotConnected.
++        //
++        // GetModuleHandleW only, never LoadLibraryW. The runtime has one name
++        // per game-version family and the two are different ABIs, so loading a
++        // name that is merely present on disk would pull a cross-ABI image into
++        // the process. A runtime that is not already loaded is not ours to use.
++        static HMODULE GetLoadedFrameworkRuntime()
++        {
++            for (const auto* name : { L"SkyrimTogetherRuntime.dll",
++                                      L"SkyrimTogetherRuntime_1_5.dll" }) {
++                if (const auto module = GetModuleHandleW(name);
++                    module != nullptr) {
++                    return module;
++                }
++            }
++
++            return nullptr;
++        }
++
+         static HMODULE LoadStrBridgeModule(const std::wstring& modulePath)
+         {
+             if (modulePath.empty()) {
+@@ -874,7 +900,14 @@
+         {
+             _strBridgeAvailable.store(false);
+ 
+-            const auto module = LoadStrBridgeModule(_config.strBridgeModule);
++            // The framework runtime wins over the configured module: it is the
++            // only transport that can receive here, and it is already loaded,
++            // so this is a handle lookup rather than a load.
++            const auto frameworkRuntime = GetLoadedFrameworkRuntime();
++
++            const auto module = frameworkRuntime != nullptr ?
++                frameworkRuntime :
++                LoadStrBridgeModule(_config.strBridgeModule);
+             if (module == nullptr) {
+                 return false;
+             }
+@@ -924,7 +957,9 @@
+                 }
+             }
+ 
+-            Log("STR bridge transport active");
++            Log(frameworkRuntime != nullptr ?
++                "framework runtime transport active" :
++                "STR bridge transport active");
+             return true;
+         }
+ 

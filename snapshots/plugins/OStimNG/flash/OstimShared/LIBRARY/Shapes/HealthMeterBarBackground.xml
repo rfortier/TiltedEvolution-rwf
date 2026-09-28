@@ -1,0 +1,33 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Shapes/HealthMeterBarBackground" itemID="6220d0ee-00000254" symbolType="graphic" lastModified="1683035627">
+  <timeline>
+    <DOMTimeline name="HealthMeterBarBackground">
+      <layers>
+        <DOMLayer name="Shape Sublayer 1" color="#4F80FF" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="8704">
+              <elements>
+                <DOMShape>
+                  <fills>
+                    <FillStyle index="1">
+                      <LinearGradient>
+                        <matrix>
+                          <Matrix a="0.224365234375" d="0.0103912353515625" tx="1.6" ty="-2.8"/>
+                        </matrix>
+                        <GradientEntry color="#194056" ratio="0"/>
+                        <GradientEntry color="#51CBCB" ratio="0.537254901960784"/>
+                        <GradientEntry color="#194056" ratio="1"/>
+                      </LinearGradient>
+                    </FillStyle>
+                  </fills>
+                  <edges>
+                    <Edge fillStyle1="1" edges="!3652 -174|3652 166!3652 166|-3634 166!-3634 166|-3634 -174!-3634 -174|3652 -174"/>
+                  </edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

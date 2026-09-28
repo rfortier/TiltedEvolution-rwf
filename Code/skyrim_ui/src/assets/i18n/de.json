@@ -3,7 +3,9 @@
     "CHAT": {
       "SEND": "Senden",
       "MESSAGE": "Nachricht",
-      "MESSAGE_TOO_LONG": "Du kannst keine Nachricht senden, die mehr als {{chatMessageLengthLimit}} Zeichen hat."
+      "MESSAGE_TOO_LONG": "Du kannst keine Nachricht senden, die mehr als {{chatMessageLengthLimit}} Zeichen hat.",
+      "SET_TIME_ARGUMENT_COUNT": "Falsche Argumente, Verwendung: /settime HH MM, Beispiel: /settime 15 32.",
+      "SET_TIME_INVALID_ARGUMENTS": "Die Stunden müssen zwischen 0 und 23 und die Minuten zwischen 0 und 59 liegen."
     },
     "CONNECT": {
       "INFO": {
@@ -21,6 +23,10 @@
         "CONNECTION": "Es konnte keine Verbindung mit dem angegebenen Server hergestellt werden. Bitte vergewissere dich, dass du die richtige Adresse eingegeben hast und dass keine Netzwerkprobleme vorliegen.",
         "VERSION_MISMATCH": "Es konnte keine Verbindung mit dem Server hergestellt werden, weil dieser eine andere Version von Skyrim Together verwendet.",
         "INVALID_ADDRESS": "Die Adresse hat ein ungültiges Format."
+      },
+      "SUCCESS": {
+        "TITLE": "Verbunden",
+        "MESSAGE": "Du bist jetzt mit {{address}} verbunden. Drücke jederzeit F2, um dieses Menü und den Chat zu öffnen."
       }
     },
     "DISCONNECT": {
@@ -83,7 +89,12 @@
       "RECONNECT": "Neuverbinden",
       "PLAYER_MANAGER": "Spielerverwaltung",
       "SETTINGS": "Einstellungen",
-      "CONNECTION_IN_PROGRESS": "Verbindungsaufbau läuft..."
+      "CONNECTION_IN_PROGRESS": "Verbindungsaufbau läuft...",
+      "STATUS": {
+        "OFFLINE": "Nicht verbunden",
+        "CONNECTING": "Verbindung wird hergestellt...",
+        "ONLINE": "Verbunden mit {{address}}"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "Suche...",
@@ -143,13 +154,14 @@
   },
   "SERVICE": {
     "CLIENT": {
-      "CONNECTION_LOST": "Verbindung verloren, versuche erneut zu verbinden. {{remainingReconnectionAttempt } Versuche verbleibend.",
+      "CONNECTION_LOST": "Verbindung verloren, versuche erneut zu verbinden. {{remainingReconnectionAttempt}} Versuche verbleibend.",
       "CONNECTED": "Erfolreich dem Server beigetreten.",
       "DISCONNECTED": "Verbindung zum Server getrennt."
     },
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "Verfügbare Chatbefehle: {{cmds}}",
-      "COMMAND_NOT_FOUND": "'{{cmd}}' ist kein bekannter Chatbefehl."
+      "COMMAND_NOT_FOUND": "'{{cmd}}' ist kein bekannter Chatbefehl.",
+      "NOT_ADMIN": "Du musst Administrator sein, um diesen Befehl zu verwenden."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}} hat Level {{level}} erreicht.",
@@ -166,7 +178,9 @@
         "CLIENT_MODS_DISALLOWED": "Dieser Server verbietet folgende Mods {{mods}}. Bitte entferne diese, um beitreten zu können.",
         "WRONG_PASSWORD": "Das eingegebene Passwort ist falsch.",
         "NO_REASON": "Der Server hat die Verbindung ohne Angabe von Gründen verweigert.",
-        "SERVER_FULL": "Dieser Server ist voll."
+        "SERVER_FULL": "Dieser Server ist voll.",
+        "BAD_UGRIDSTOLOAD": "Es scheint, dass deine Skyrim.ini einen Nicht-Standardwert für 'uGridsToLoad' hat. DAS IST EINE SEHR SCHLECHTE IDEE und wird die Mod höchstwahrscheinlich beschädigen. Bitte setze diese Einstellung auf den Standardwert (5) zurück oder lösche die Skyrim.ini und starte Skyrim einmal im Vanilla-Zustand, um eine neue Datei zu erzeugen. Auch die Einstellungen 'uExterior Cell Buffer' und 'uInterior Cell Buffer' sollten auf dem Standardwert bleiben. Wenn du nicht weißt, wie das geht, schau in unser Wiki oder frag auf unserem Discord-Server bzw. im Reddit-Sub nach Hilfe.",
+        "NON_DEFAULT_INSTALL": "Es scheint, dass deine Installation nicht rein vanilla ist, d. h. sie enthält Creation-Club-Inhalte (Anniversary Update oder andere) oder andere Mods.\nWir empfehlen NICHT, mit Mods zu spielen.\nWir empfehlen, diese Mods zu deinstallieren und zu deaktivieren (Anleitungen findest du im Wiki).\n\nFür das beste Erlebnis solltest du die folgende Mod-Liste haben:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>"
       }
     },
     "PLAYER_LIST": {

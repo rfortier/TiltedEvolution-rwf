@@ -27,7 +27,7 @@
 //        a limit of 64 boolean vars that can be synced. Remove the limit.
 //
 
-#include <immersive_launcher/launcher.h>
+#include <GameRoot.h>
 #include <BSAnimationGraphManager.h>
 #include <Games/ActorExtension.h>
 #include "BehaviorVar.h"
@@ -364,12 +364,22 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
     // Get all animation variables for this actor, then create a acReverseMap to go from strings to animation enum.
     auto pDumpVar = apManager->DumpAnimationVariables(false);
     TiltedPhoques::Map<TiltedPhoques::String, uint32_t> reverseMap;
-    spdlog::info("Known behavior variables for formID {:x}:", hexFormID);
+
+    // The per-variable list is debug-level only. It used to be info, and this
+    // runs once per modded creature rather than per creature type: a cell full
+    // of modded creatures put hundreds of lines into a single second while the
+    // game was loading, on the thread that has to finish the load. The count is
+    // accumulated here rather than taken from pDumpVar because SortedMap::size
+    // is not used anywhere else in this code base.
+    size_t varCount = 0;
     for (auto& item : pDumpVar)
     {
-        spdlog::info("    {}:{}", item.first, item.second);
+        spdlog::debug("    {}:{}", item.first, item.second);
         reverseMap.insert({item.second, item.first});
+        ++varCount;
     }
+
+    spdlog::debug("Known behavior variables for formID {:x}: {} vars", hexFormID, varCount);
 
     // See if these animation variables include a signature for one of the replacers.
     // Since some of the original behaviors don't have a single variable name that is completely
@@ -687,7 +697,7 @@ void BehaviorVar::Init()
 
     // Check if the behaviors folder exists
     std::filesystem::path pBehaviorsPath;
-    pBehaviorsPath = launcher::GetLaunchContext()->gamePath / L"Data" / L"SkyrimTogetherRebornBehaviors";
+    pBehaviorsPath = GetGameRoot() / L"Data" / L"SkyrimTogetherRebornBehaviors";
 
     if (!std::filesystem::is_directory(pBehaviorsPath))
         return;

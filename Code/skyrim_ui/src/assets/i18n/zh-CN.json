@@ -1,11 +1,12 @@
 {
   "INFO": "DO NOT MODIFY THIS FILE! USE THE overwrite.json FILE TO TRANSLATE THE UI!",
-
   "COMPONENT": {
     "CHAT": {
       "SEND": "发送",
       "MESSAGE": "消息",
-      "MESSAGE_TOO_LONG": "您发送的消息长度不得超过{{chatMessageLengthLimit}}字符。"
+      "MESSAGE_TOO_LONG": "您发送的消息长度不得超过{{chatMessageLengthLimit}}字符。",
+      "SET_TIME_ARGUMENT_COUNT": "参数错误，用法：/settime 时 分，例如：/settime 15 32。",
+      "SET_TIME_INVALID_ARGUMENTS": "小时必须在 0 到 23 之间，分钟必须在 0 到 59 之间。"
     },
     "CONNECT": {
       "INFO": {
@@ -22,7 +23,12 @@
         "CONNECTION": "无法连接至指定的服务器。请确认输入了正确的地址，且没有网络问题。",
         "VERSION_MISMATCH": "无法连接至服务器。服务器的Skyrim Together版本与您的不同。",
         "INVALID_ADDRESS": "地址格式无效。"
-      }
+      },
+      "SUCCESS": {
+        "TITLE": "连接成功",
+        "MESSAGE": "已连接到 {{address}}。随时按 F2 打开此菜单查看状态并聊天。"
+      },
+      "HIDE_PASSWORD": "隐藏密码？"
     },
     "DISCONNECT": {
       "PROMPT": "您确定要断开连接吗？",
@@ -83,7 +89,13 @@
       "RECONNECT": "重新连接",
       "PLAYER_MANAGER": "玩家管理",
       "SETTINGS": "设置",
-      "CONNECTION_IN_PROGRESS": "连接中"
+      "CONNECTION_IN_PROGRESS": "连接中",
+      "STATUS": {
+        "OFFLINE": "未连接",
+        "CONNECTING": "正在连接…",
+        "ONLINE": "已连接到 {{address}}"
+      },
+      "REVEAL_PLAYERS": "显示玩家"
     },
     "SERVER_LIST": {
       "SEARCH": "搜索...",
@@ -100,7 +112,9 @@
         "COUNTRY": "国家/地区",
         "FAVORITE": "已收藏"
       },
-      "JOIN": "加入"
+      "JOIN": "加入",
+      "HIDE_MISMATCHED_SERVERS": "隐藏版本不兼容的服务器",
+      "HIDE_PASSWORD_PROTECTED_SERVERS": "隐藏有密码保护的服务器"
     },
     "SETTINGS": {
       "AUDIO": "声音",
@@ -132,7 +146,12 @@
         "L": "大",
         "XL": "特大"
       },
-      "BACK": "返回"
+      "BACK": "返回",
+      "VERSION": {
+        "HEADER": "版本",
+        "INFO": "当前已安装：",
+        "OUTDATED": "版本已过时，请更新。"
+      }
     }
   },
   "SERVICE": {
@@ -143,7 +162,8 @@
     },
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "可用的聊天指令：{{cmds}}",
-      "COMMAND_NOT_FOUND": "未能识别指令：“{{cmd}}”"
+      "COMMAND_NOT_FOUND": "未能识别指令：“{{cmd}}”",
+      "NOT_ADMIN": "你必须是管理员才能使用该命令。"
     },
     "GROUP": {
       "LEVEL_UP": "{{name}}升级至{{level}}级。",
@@ -160,7 +180,9 @@
         "CLIENT_MODS_DISALLOWED": "该服务器禁止以下模组：{{mods}}。将其移除以加入服务器。",
         "WRONG_PASSWORD": "您输入的密码不正确。",
         "NO_REASON": "服务器无故拒绝了连接。",
-        "SERVER_FULL": "服务器已满。"
+        "SERVER_FULL": "服务器已满。",
+        "BAD_UGRIDSTOLOAD": "看起来你的 Skyrim.ini 文件中 “uGridsToLoad” 的值不是默认值。这是一个非常糟糕的主意，很可能会导致模组崩溃。请将该设置改回默认值（5），或删除 Skyrim.ini 文件并以原版启动一次 Skyrim 以生成新文件。“uExterior Cell Buffer” 和 “uInterior Cell Buffer” 也应保持默认设置。如果你不知道如何操作，请参阅我们的 wiki，或在我们的 Discord 服务器/Reddit 专区提问。",
+        "NON_DEFAULT_INSTALL": "看起来你的安装并非纯原版，也就是说它包含 Creation Club 内容（周年更新或其他）或其他模组。\n我们不建议安装模组游玩。\n我们建议你卸载并禁用这些模组（说明可在 wiki 中找到）。\n\n为了获得最佳体验，你应该使用以下模组列表：<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>\n"
       }
     },
     "PLAYER_LIST": {

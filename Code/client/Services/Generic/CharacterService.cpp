@@ -11,6 +11,7 @@
 #include <Games/Misc/SubtitleManager.h>
 
 #include <Forms/TESNPC.h>
+#include <Interface/UI.h>
 #include <Forms/TESQuest.h>
 
 #include <BranchInfo.h>
@@ -20,6 +21,7 @@
 #include <Systems/AnimationSystem.h>
 #include <Systems/CacheSystem.h>
 #include <Systems/FaceGenSystem.h>
+#include <Systems/LeveledNpcSystem.h>
 
 #include <Events/ActorAddedEvent.h>
 #include <Events/ActorRemovedEvent.h>
@@ -36,7 +38,6 @@
 #include <Events/PartyJoinedEvent.h>
 
 #include <Structs/ActionEvent.h>
-#include <Messages/CancelAssignmentRequest.h>
 #include <Messages/AssignCharacterRequest.h>
 #include <Messages/AssignCharacterResponse.h>
 #include <Messages/ServerReferencesMoveRequest.h>
@@ -45,7 +46,6 @@
 #include <Messages/RequestFactionsChanges.h>
 #include <Messages/NotifyFactionsChanges.h>
 #include <Messages/NotifyRemoveCharacter.h>
-#include <Messages/NotifySpawnData.h>
 #include <Messages/RequestOwnershipTransfer.h>
 #include <Messages/NotifyOwnershipTransfer.h>
 #include <Messages/RequestOwnershipClaim.h>
@@ -62,7 +62,6 @@
 #include <Messages/SubtitleRequest.h>
 #include <Messages/NotifySubtitle.h>
 #include <Messages/NotifyActorTeleport.h>
-#include <Messages/NotifyRelinquishControl.h>
 
 #include <World.h>
 #include <Games/TES.h>
@@ -87,7 +86,6 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher,
     m_factionsConnection = m_dispatcher.sink<NotifyFactionsChanges>().connect<&CharacterService::OnFactionsChanges>(this);
     m_ownershipTransferConnection = m_dispatcher.sink<NotifyOwnershipTransfer>().connect<&CharacterService::OnOwnershipTransfer>(this);
     m_removeCharacterConnection = m_dispatcher.sink<NotifyRemoveCharacter>().connect<&CharacterService::OnRemoveCharacter>(this);
-    m_remoteSpawnDataReceivedConnection = m_dispatcher.sink<NotifySpawnData>().connect<&CharacterService::OnRemoteSpawnDataReceived>(this);
 
     m_mountConnection = m_dispatcher.sink<MountEvent>().connect<&CharacterService::OnMountEvent>(this);
     m_notifyMountConnection = m_dispatcher.sink<NotifyMount>().connect<&CharacterService::OnNotifyMount>(this);
@@ -109,8 +107,6 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher,
 
     m_actorTeleportConnection = m_dispatcher.sink<NotifyActorTeleport>().connect<&CharacterService::OnNotifyActorTeleport>(this);
 
-    m_relinquishConnection = m_dispatcher.sink<NotifyRelinquishControl>().connect<&CharacterService::OnNotifyRelinquishControl>(this);
-
     m_partyJoinedConnection = aDispatcher.sink<PartyJoinedEvent>().connect<&CharacterService::OnPartyJoinedEvent>(this);
 }
 
@@ -119,43 +115,86 @@ void CharacterService::DeleteRemoteEntityComponents(entt::entity aEntity) const 
     m_world.remove<FaceGenComponent, InterpolationComponent, RemoteAnimationComponent, RemoteComponent, CacheComponent, WaitingFor3D, PlayerComponent>(aEntity);
 }
 
-bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity) const noexcept
+void CharacterService::DeclineOwnership(const uint32_t aServerId, const uint32_t aOwnershipEpoch) const noexcept
 {
-    Actor* pActor = Cast<Actor>(TESForm::GetById(acFormId));
+    RequestOwnershipTransfer request{};
+    request.ServerId = aServerId;
+    request.OwnershipEpoch = aOwnershipEpoch;
+    request.Reason = OwnershipReleaseReason::DeclineGrant;
+    m_transport.Send(request);
+}
+
+void CharacterService::ReconcileActorData(
+    const entt::entity aEntity, Actor* apActor, const uint32_t aOwnershipEpoch, const ActorData& acActorData, const bool aApplyInventory, const bool aIsLocalOwner) noexcept
+{
+    if (auto* pWaitingFor3D = m_world.try_get<WaitingFor3D>(aEntity))
+    {
+        pWaitingFor3D->SpawnRequest.InitialActorValues = acActorData.InitialActorValues;
+        pWaitingFor3D->SpawnRequest.InventoryContent = acActorData.InitialInventory;
+        pWaitingFor3D->SpawnRequest.IsDead = acActorData.IsDead;
+        pWaitingFor3D->SpawnRequest.IsWeaponDrawn = acActorData.IsWeaponDrawn;
+        pWaitingFor3D->SpawnRequest.OwnershipEpoch = aOwnershipEpoch;
+    }
+
+    if (!apActor)
+        return;
+
+    apActor->SetActorValues(acActorData.InitialActorValues);
+
+    if (aApplyInventory)
+    {
+        const Inventory currentInventory = apActor->GetActorInventory();
+        if (currentInventory.Entries != acActorData.InitialInventory.Entries || currentInventory.CurrentMagicEquipment != acActorData.InitialInventory.CurrentMagicEquipment)
+            apActor->SetActorInventory(acActorData.InitialInventory);
+    }
+
+    if (apActor->IsDead() != acActorData.IsDead)
+        acActorData.IsDead ? apActor->Kill() : apActor->Respawn();
+
+    if (aIsLocalOwner)
+    {
+        // A remote draw correction may still be queued when an ownership grant arrives.
+        m_weaponDrawUpdates.erase(apActor->formID);
+
+        if (apActor->actorState.IsWeaponDrawn() != acActorData.IsWeaponDrawn)
+            apActor->SetWeaponDrawnEx(acActorData.IsWeaponDrawn);
+    }
+    else
+        m_weaponDrawUpdates[apActor->formID] = {acActorData.IsWeaponDrawn};
+}
+
+bool CharacterService::RequestOwnership(const uint32_t aFormId, const uint32_t aServerId, const entt::entity aEntity) const noexcept
+{
+    Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
     if (!pActor)
     {
-        spdlog::error("Cannot find actor to take control over, form id: {:X}, server id: {:X}", acFormId, acServerId);
+        spdlog::warn("Cannot request ownership of actor {:X} because its form {:X} is unavailable", aServerId, aFormId);
         return false;
     }
 
     ActorExtension* pExtension = pActor->GetExtension();
     if (pExtension->IsRemotePlayer())
     {
-        spdlog::error("Cannot take control over remote player actor, form id: {:X}, server id: {:X}", acFormId, acServerId);
+        spdlog::warn("Cannot request ownership of remote player actor {:X}", aServerId);
         return false;
     }
 
     if (pActor->IsPlayerSummon())
     {
-        spdlog::error("Cannot take control over remote player summon, form id: {:X}, server id: {:X}", acFormId, acServerId);
+        spdlog::warn("Cannot request ownership of remote player summon {:X}", aServerId);
         return false;
     }
 
-    pExtension->SetRemote(false);
-    pExtension->SetNakedDeadline();
-
-    // TODO(cosideci): this should be done differently.
-    // Send an ownership claim request, and have the server broadcast the result.
-    // Only then should components be added or removed.
-    m_world.emplace_or_replace<LocalComponent>(acEntity, acServerId);
-    m_world.emplace_or_replace<LocalAnimationComponent>(acEntity);
-    DeleteRemoteEntityComponents(acEntity);
+    const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity);
+    if (!pRemoteComponent || pRemoteComponent->Id != aServerId || pRemoteComponent->OwnershipEpoch == 0)
+        return false;
 
     RequestOwnershipClaim request;
-    request.ServerId = acServerId;
-    request.NewActorData = BuildActorData(pActor);
+    request.ServerId = aServerId;
+    request.ExpectedOwnershipEpoch = pRemoteComponent->OwnershipEpoch;
 
-    m_transport.Send(request);
+    if (!m_transport.Send(request))
+        return false;
 
     return true;
 }
@@ -173,6 +212,13 @@ void CharacterService::DeleteTempActor(const uint32_t aFormId) noexcept
 void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
 {
     Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.FormId));
+
+    // The discovery sweep can report a form id that no longer resolves: an actor
+    // unloaded between the sweep and this call, or a temporary reference the
+    // engine already recycled. The player branch used to dereference the result
+    // unconditionally, which is a null write on exactly that race.
+    if (!pActor)
+        return;
 
     if (acEvent.FormId == 0x14)
     {
@@ -192,7 +238,8 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
 
     if (it != std::end(view))
     {
-        Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.FormId));
+        // Same actor the check above already resolved; re-fetching it here only
+        // gave the compiler a second chance to lose that proof.
         pActor->GetExtension()->SetRemote(true);
 
         entity = *it;
@@ -208,6 +255,11 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
 
 void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
 {
+    if (auto* pActor = Cast<Actor>(TESForm::GetById(acEvent.FormId)))
+        pActor->GetExtension()->Reconciliation = ActorExtension::ReconciliationStage::None;
+
+    m_pendingLeveledConforms.erase(acEvent.FormId);
+
     auto view = m_world.view<FormIdComponent>();
     const auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.FormId](auto aEntity) { return view.get<FormIdComponent>(aEntity).Id == formId; });
 
@@ -235,12 +287,14 @@ void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
 
 void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 {
+    UpdateRemoteFaceGenWindow();
     RunSpawnUpdates();
     RunLocalUpdates();
     RunFactionsUpdates();
     RunRemoteUpdates();
     RunExperienceUpdates();
     ApplyCachedWeaponDraws(acUpdateEvent);
+    ProcessLeveledConforms();
 }
 
 void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) const noexcept
@@ -284,6 +338,21 @@ void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEve
     }
 
     m_world.clear<WaitingForAssignmentComponent, LocalComponent, RemoteComponent>();
+
+    for (const auto& [formId, pickFormId] : m_pendingLeveledConforms)
+    {
+        if (auto* pActor = Cast<Actor>(TESForm::GetById(formId)))
+        {
+            auto& stage = pActor->GetExtension()->Reconciliation;
+            // Don't leave the actor disabled if we disconnect before re-enabling it.
+            if (stage == ActorExtension::ReconciliationStage::WaitingForDisable && !pActor->IsDeleted())
+                pActor->EnableImpl();
+
+            stage = ActorExtension::ReconciliationStage::None;
+        }
+    }
+
+    m_pendingLeveledConforms.clear();
 }
 
 void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessage) noexcept
@@ -300,23 +369,50 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     }
 
     const auto cEntity = *itor;
+    const bool isCancelled = view.get<WaitingForAssignmentComponent>(cEntity).Cancelled;
 
     m_world.remove<WaitingForAssignmentComponent>(cEntity);
 #if (!IS_MASTER)
     m_world.remove<ReplayedActionsDebugComponent>(cEntity);
 #endif
 
+    if (isCancelled)
+    {
+        if (acMessage.Owner)
+            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+
+        if (m_world.valid(cEntity))
+            m_world.destroy(cEntity);
+
+        return;
+    }
+
+    if (acMessage.OwnershipEpoch == 0)
+    {
+        spdlog::warn("Ignored assignment for actor {:X} because the server returned an invalid ownership epoch", acMessage.ServerId);
+        return;
+    }
+
     const auto formIdComponent = m_world.try_get<FormIdComponent>(cEntity);
     if (!formIdComponent)
     {
-        spdlog::error(__FUNCTION__ ": form id component doesn't exist, cookie: {:X}", acMessage.Cookie);
+        if (acMessage.Owner)
+            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+
+        if (m_world.valid(cEntity))
+            m_world.destroy(cEntity);
+
+        spdlog::warn("Discarded assignment for actor {:X} because the local entity no longer has a form", acMessage.ServerId);
         return;
     }
 
     Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent->Id));
     if (!pActor)
     {
-        spdlog::error(__FUNCTION__ ": actor not found, form id: {:X}", formIdComponent->Id);
+        if (acMessage.Owner)
+            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+
+        spdlog::warn("Discarded assignment for actor {:X} because form {:X} is unavailable", acMessage.ServerId, formIdComponent->Id);
         m_world.destroy(cEntity);
         return;
     }
@@ -326,14 +422,20 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     if (acMessage.PlayerId != 0)
         m_world.emplace_or_replace<PlayerComponent>(cEntity, acMessage.PlayerId);
 
+    ActorData actorData{};
+    actorData.InitialActorValues = acMessage.AllActorValues;
+    actorData.InitialInventory = acMessage.CurrentInventory;
+    actorData.IsDead = acMessage.IsDead;
+    actorData.IsWeaponDrawn = acMessage.IsWeaponDrawn;
+
     if (acMessage.Owner)
     {
-        spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm->GetName());
+        spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
 
-        m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId);
+        pActor->GetExtension()->SetRemote(true);
+        ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, actorData, true, true);
+
         auto& localAnimationComponent = m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
-
-        pActor->GetExtension()->SetRemote(false);
 
         if (auto* pEarlyAnimComponent = m_world.try_get<EarlyAnimationBufferComponent>(cEntity))
         {
@@ -343,12 +445,17 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             }
         }
         m_world.remove<EarlyAnimationBufferComponent>(cEntity);
+
+        auto& localComponent = m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
+        localComponent.IsDead = acMessage.IsDead;
+        localComponent.IsWeaponDrawn = acMessage.IsWeaponDrawn;
+        pActor->GetExtension()->SetRemote(false);
     }
     else
     {
-        spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm->GetName());
+        spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
 
-        m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id);
+        m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id, acMessage.OwnershipEpoch);
 
         pActor->GetExtension()->SetRemote(true);
 
@@ -361,27 +468,42 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         m_world.emplace_or_replace<ReplayedActionsDebugComponent>(cEntity, acMessage.ActionsToReplay);
 #endif
 
-        pActor->SetActorValues(acMessage.AllActorValues);
-        pActor->SetActorInventory(acMessage.CurrentInventory);
-
-        if (pActor->IsDead() != acMessage.IsDead)
-            acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
-
-        m_weaponDrawUpdates[pActor->formID] = {acMessage.IsWeaponDrawn};
+        ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, actorData, true, false);
 
         MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
+
+        // The owner's leveled pick rides the assignment response for actors we discovered ourselves
+        ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
     }
     pActor->GetExtension()->SetNakedDeadline();
 }
 
 void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) const noexcept
 {
+    if (acMessage.OwnershipEpoch == 0)
+    {
+        spdlog::warn("Ignored spawn for actor {:X} because the ownership epoch is invalid", acMessage.ServerId);
+        return;
+    }
+
     auto remoteView = m_world.view<RemoteComponent>();
     const auto remoteItor = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ServerId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
 
     if (remoteItor != std::end(remoteView))
     {
         spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+        return;
+    }
+
+    // Same for an actor this client already owns. Re-adding it as a remote spawn
+    // puts a second actor in the world for one server id, which is the state the
+    // engine crashes on.
+    auto localView = m_world.view<LocalComponent>();
+    const auto localItor = std::find_if(std::begin(localView), std::end(localView), [localView, Id = acMessage.ServerId](auto entity) { return localView.get<LocalComponent>(entity).Id == Id; });
+
+    if (localItor != std::end(localView))
+    {
+        spdlog::warn("Character with remote id {:X} is already owned locally.", acMessage.ServerId);
         return;
     }
 
@@ -398,14 +520,19 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
         if (acMessage.BaseId != GameId{})
         {
-            const auto cNpcId = World::Get().GetModSystem().GetGameId(acMessage.BaseId);
-            if (cNpcId == 0)
+            // Prefer the owner's resolved leveled pick over the lossy template base
+            if (acMessage.LeveledNpcPickId != GameId{})
+                pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.LeveledNpcPickId)));
+
+            if (!pNpc)
+                pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.BaseId)));
+
+            if (!pNpc)
             {
                 spdlog::error("Failed to retrieve NPC, it will not be spawned, possibly missing mod, base: {:X}:{:X}, form: {:X}:{:X}", acMessage.BaseId.BaseId, acMessage.BaseId.ModId, acMessage.FormId.BaseId, acMessage.FormId.ModId);
                 return;
             }
 
-            pNpc = Cast<TESNPC>(TESForm::GetById(cNpcId));
             pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
         }
         else
@@ -414,6 +541,10 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             pNpc = TESNPC::Create(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
             FaceGenSystem::Setup(m_world, *entity, acMessage.FaceTints);
         }
+
+        // The engine builds this body on a later tick, and SetRemoteFaceGenForce has
+        // to be in effect before it does.
+        SetRemoteFaceGenForce(true);
 
         pActor = Actor::Create(pNpc);
     }
@@ -457,7 +588,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     spdlog::info("CharacterSpawnRequest, server id: {:X}, form id: {:X}", acMessage.ServerId, pActor->formID);
 
-    if (pActor->IsDisabled())
+    // Pending reconciliation re-enables the actor after applying the owner's pick.
+    if (pActor->IsDisabled() && pActor->GetExtension()->Reconciliation != ActorExtension::ReconciliationStage::WaitingForDisable)
     {
         spdlog::warn("Disabled actor is being re-enabled: {:X}", pActor->formID);
         pActor->EnableImpl();
@@ -489,7 +621,11 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
         pActor->SetCommandingActor(PlayerCharacter::Get()->GetHandle());
     }
 
-    auto& remoteComponent = m_world.emplace_or_replace<RemoteComponent>(*entity, acMessage.ServerId, pActor->formID);
+    // Static references arrive with their own locally rolled leveled pick; conform to the owner's.
+    if (acMessage.FormId != GameId{})
+        ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+
+    m_world.emplace_or_replace<RemoteComponent>(*entity, acMessage.ServerId, pActor->formID, acMessage.OwnershipEpoch);
 
     auto& interpolationComponent = InterpolationSystem::Setup(m_world, *entity);
     interpolationComponent.Position = acMessage.Position;
@@ -507,62 +643,30 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 #endif
 }
 
-void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessage) noexcept
-{
-    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
-
-    const auto itor = std::find_if(
-        std::begin(view), std::end(view),
-        [view, id = acMessage.Id](auto entity)
-        {
-            if (auto serverId = Utils::GetServerId(entity))
-            {
-                if (serverId.has_value() && serverId.value() == id)
-                    return true;
-            }
-            return false;
-        });
-
-    if (itor == std::end(view))
-        return;
-
-    if (auto* pWaitingFor3D = m_world.try_get<WaitingFor3D>(*itor))
-    {
-        pWaitingFor3D->SpawnRequest.InitialActorValues = acMessage.NewActorData.InitialActorValues;
-        pWaitingFor3D->SpawnRequest.InventoryContent = acMessage.NewActorData.InitialInventory;
-        pWaitingFor3D->SpawnRequest.IsDead = acMessage.NewActorData.IsDead;
-        pWaitingFor3D->SpawnRequest.IsWeaponDrawn = acMessage.NewActorData.IsWeaponDrawn;
-    }
-
-    auto& formIdComponent = view.get<FormIdComponent>(*itor);
-    Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-
-    if (!pActor)
-        return;
-
-    pActor->SetActorValues(acMessage.NewActorData.InitialActorValues);
-    pActor->SetActorInventory(acMessage.NewActorData.InitialInventory);
-    m_weaponDrawUpdates[pActor->formID] = {acMessage.NewActorData.IsWeaponDrawn};
-
-    if (pActor->IsDead() != acMessage.NewActorData.IsDead)
-        acMessage.NewActorData.IsDead ? pActor->Kill() : pActor->Respawn();
-
-    spdlog::info("Applied remote spawn data, actor form id: {:X}", pActor->formID);
-}
-
 void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest& acMessage) const noexcept
 {
+    if (acMessage.Updates.empty())
+        return;
+
     auto view = m_world.view<RemoteComponent, InterpolationComponent, RemoteAnimationComponent>();
+
+    // Index the view once instead of scanning it per entry. The scan made this
+    // O(updates x entities) on the movement path, and a busy cell puts one entry
+    // per actor in range into every packet.
+    TiltedPhoques::Map<uint32_t, entt::entity> byServerId;
+    for (auto entity : view)
+        byServerId[view.get<RemoteComponent>(entity).Id] = entity;
 
     for (const auto& [serverId, update] : acMessage.Updates)
     {
-        auto itor = std::find_if(std::begin(view), std::end(view), [serverId = serverId, view](entt::entity entity) { return view.get<RemoteComponent>(entity).Id == serverId; });
+        const auto itor = byServerId.find(serverId);
 
-        if (itor == std::end(view))
+        if (itor == std::end(byServerId))
             continue;
 
-        auto& interpolationComponent = view.get<InterpolationComponent>(*itor);
-        auto& animationComponent = view.get<RemoteAnimationComponent>(*itor);
+        const auto entity = itor->second;
+        auto& interpolationComponent = view.get<InterpolationComponent>(entity);
+        auto& animationComponent = view.get<RemoteAnimationComponent>(entity);
         const auto& movement = update.UpdatedMovement;
 
         InterpolationComponent::TimePoint point;
@@ -630,30 +734,119 @@ void CharacterService::OnFactionsChanges(const NotifyFactionsChanges& acEvent) c
     }
 }
 
-void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMessage) const noexcept
+void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMessage) noexcept
 {
-    // TODO(cosideci): handle case if no one has it, therefore no RemoteComponent
-    auto view = m_world.view<RemoteComponent, FormIdComponent>();
-
-    const auto itor = std::find_if(std::begin(view), std::end(view), [&acMessage, &view](auto entity) { return view.get<RemoteComponent>(entity).Id == acMessage.ServerId; });
-
-    if (itor != std::end(view))
+    if (acMessage.OwnershipEpoch == 0)
     {
-        auto& formIdComponent = view.get<FormIdComponent>(*itor);
-
-        if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, *itor))
-        {
-            spdlog::info("Ownership claimed {:X}", acMessage.ServerId);
-            return;
-        }
+        spdlog::warn("Ignored ownership update for actor {:X} because the epoch is invalid", acMessage.ServerId);
+        return;
     }
 
-    spdlog::warn("Actor for ownership transfer not found {:X}", acMessage.ServerId);
+    auto entity = Utils::FindEntityByServerId(acMessage.ServerId);
+    if (entity && !m_world.any_of<LocalComponent, RemoteComponent>(*entity))
+        entity.reset();
 
-    RequestOwnershipTransfer request{};
-    request.ServerId = acMessage.ServerId;
+    uint32_t currentEpoch = 0;
+    if (entity)
+    {
+        if (const auto* pLocalComponent = m_world.try_get<LocalComponent>(*entity))
+            currentEpoch = pLocalComponent->OwnershipEpoch;
+        else if (const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(*entity))
+            currentEpoch = pRemoteComponent->OwnershipEpoch;
+    }
 
-    m_transport.Send(request);
+    if (currentEpoch != 0 && acMessage.OwnershipEpoch <= currentEpoch)
+    {
+        spdlog::debug("Ignored stale ownership update for actor {:X} at epoch {}; current epoch is {}", acMessage.ServerId, acMessage.OwnershipEpoch, currentEpoch);
+        return;
+    }
+
+    const bool isLocalOwner = acMessage.OwnerPlayerId == m_transport.GetLocalPlayerId();
+    if (!entity)
+    {
+        // A transfer does not contain enough form data to recreate an unknown actor. Decline so the server can try another loaded client.
+        if (isLocalOwner)
+            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+        else
+            spdlog::debug("Ignored ownership update for unknown actor {:X} at epoch {}", acMessage.ServerId, acMessage.OwnershipEpoch);
+        return;
+    }
+
+    const entt::entity cEntity = *entity;
+    const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(cEntity);
+    Actor* pActor = pFormIdComponent ? Cast<Actor>(TESForm::GetById(pFormIdComponent->Id)) : nullptr;
+
+    // Preserve the accepted epoch's pick for actors that still need to be created.
+    if (auto* pWaitingFor3D = m_world.try_get<WaitingFor3D>(cEntity))
+        pWaitingFor3D->SpawnRequest.LeveledNpcPickId = acMessage.LeveledNpcPickId;
+
+    if (isLocalOwner)
+    {
+        if (!pFormIdComponent || !pActor || !pActor->GetNiNode())
+        {
+            uint32_t cachedRefId = pFormIdComponent ? pFormIdComponent->Id : 0;
+            if (const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(cEntity))
+                cachedRefId = pRemoteComponent->CachedRefId;
+
+            if (pActor)
+                pActor->GetExtension()->SetRemote(true);
+
+            m_world.remove<LocalAnimationComponent, LocalComponent>(cEntity);
+            if (m_world.all_of<RemoteComponent>(cEntity))
+                m_world.get<RemoteComponent>(cEntity).OwnershipEpoch = acMessage.OwnershipEpoch;
+            else if (cachedRefId != 0)
+                m_world.emplace<RemoteComponent>(cEntity, acMessage.ServerId, cachedRefId, acMessage.OwnershipEpoch);
+
+            spdlog::warn("Declined ownership of actor {:X} at epoch {} because the actor is not ready", acMessage.ServerId, acMessage.OwnershipEpoch);
+            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+            return;
+        }
+
+        // Reconcile while hooks still treat the actor as remote/non-authoritative.
+        pActor->GetExtension()->SetRemote(true);
+        m_world.remove<LocalAnimationComponent, LocalComponent>(cEntity);
+        m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, pFormIdComponent->Id, acMessage.OwnershipEpoch);
+
+        ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, acMessage.CurrentActorData, true, true);
+        ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+
+        DeleteRemoteEntityComponents(cEntity);
+        CacheSystem::Setup(m_world, cEntity, pActor);
+        m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
+        auto& localComponent = m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
+        localComponent.IsDead = acMessage.CurrentActorData.IsDead;
+        localComponent.IsWeaponDrawn = acMessage.CurrentActorData.IsWeaponDrawn;
+
+        // LocalComponent is installed only after canonical reconciliation is complete.
+        pActor->GetExtension()->SetRemote(false);
+        spdlog::info("Gained ownership of actor {:X} at epoch {}", acMessage.ServerId, acMessage.OwnershipEpoch);
+        return;
+    }
+
+    if (pActor)
+        pActor->GetExtension()->SetRemote(true);
+
+    m_world.remove<LocalAnimationComponent, LocalComponent>(cEntity);
+
+    if (pFormIdComponent)
+    {
+        m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, pFormIdComponent->Id, acMessage.OwnershipEpoch);
+
+        if (!m_world.all_of<InterpolationComponent>(cEntity))
+            InterpolationSystem::Setup(m_world, cEntity);
+        if (!m_world.all_of<RemoteAnimationComponent>(cEntity))
+            AnimationSystem::Setup(m_world, cEntity);
+    }
+    else if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(cEntity))
+    {
+        pRemoteComponent->OwnershipEpoch = acMessage.OwnershipEpoch;
+    }
+
+    ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, acMessage.CurrentActorData, pActor && pActor->GetNiNode(), false);
+    if (pActor)
+        ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+
+    spdlog::info("Actor {:X} is now owned by player {:X} at epoch {}", acMessage.ServerId, acMessage.OwnerPlayerId, acMessage.OwnershipEpoch);
 }
 
 void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage) const noexcept
@@ -665,7 +858,13 @@ void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage)
     if (itor != std::end(view))
     {
         if (auto* pFormIdComponent = m_world.try_get<FormIdComponent>(*itor))
-            CharacterService::DeleteTempActor(pFormIdComponent->Id);
+        {
+            Actor* pActor = Cast<Actor>(TESForm::GetById(pFormIdComponent->Id));
+            if (pActor && pActor->IsTemporary())
+                CharacterService::DeleteTempActor(pFormIdComponent->Id);
+            else if (pActor)
+                pActor->GetExtension()->SetRemote(false);
+        }
 
         DeleteRemoteEntityComponents(*itor);
     }
@@ -752,13 +951,9 @@ void CharacterService::OnMountEvent(const MountEvent& acEvent) const noexcept
     }
 
     const entt::entity cRiderEntity = *riderIt;
-
-    std::optional<uint32_t> riderServerIdRes = Utils::GetServerId(cRiderEntity);
-    if (!riderServerIdRes.has_value())
-    {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
+    const auto* pRiderLocalComponent = m_world.try_get<LocalComponent>(cRiderEntity);
+    if (!pRiderLocalComponent)
         return;
-    }
 
     const auto mountIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.MountID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
 
@@ -770,19 +965,26 @@ void CharacterService::OnMountEvent(const MountEvent& acEvent) const noexcept
 
     const entt::entity cMountEntity = *mountIt;
 
-    std::optional<uint32_t> mountServerIdRes = Utils::GetServerId(cMountEntity);
-    if (!mountServerIdRes.has_value())
+    uint32_t mountServerId = 0;
+    uint32_t mountOwnershipEpoch = 0;
+    if (const auto* pMountLocalComponent = m_world.try_get<LocalComponent>(cMountEntity))
     {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
-        return;
+        mountServerId = pMountLocalComponent->Id;
+        mountOwnershipEpoch = pMountLocalComponent->OwnershipEpoch;
     }
+    else if (const auto* pMountRemoteComponent = m_world.try_get<RemoteComponent>(cMountEntity))
+    {
+        mountServerId = pMountRemoteComponent->Id;
+        mountOwnershipEpoch = pMountRemoteComponent->OwnershipEpoch;
+    }
+    else
+        return;
 
-    if (m_world.try_get<RemoteComponent>(cMountEntity))
-        TakeOwnership(acEvent.MountID, *mountServerIdRes, cMountEntity);
-
-    MountRequest request;
-    request.MountId = mountServerIdRes.value();
-    request.RiderId = riderServerIdRes.value();
+    MountRequest request{};
+    request.RiderId = pRiderLocalComponent->Id;
+    request.RiderOwnershipEpoch = pRiderLocalComponent->OwnershipEpoch;
+    request.MountId = mountServerId;
+    request.MountOwnershipEpoch = mountOwnershipEpoch;
 
     m_transport.Send(request);
 }
@@ -802,44 +1004,20 @@ void CharacterService::OnNotifyMount(const NotifyMount& acMessage) const noexcep
     auto& riderFormIdComponent = remoteView.get<FormIdComponent>(*riderIt);
     TESForm* pRiderForm = TESForm::GetById(riderFormIdComponent.Id);
     Actor* pRider = Cast<Actor>(pRiderForm);
+    if (!pRider)
+        return;
 
-    Actor* pMount = nullptr;
-
-    auto formView = m_world.view<FormIdComponent>();
-    Vector<entt::entity> entities(formView.begin(), formView.end());
-
-    // TODO(cosideci): remove this, cause of NotifyRelinquishControl?
-    for (auto entity : entities)
+    const auto mountIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.MountId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+    if (mountIt == std::end(remoteView))
     {
-        std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
-        if (!serverIdRes.has_value())
-        {
-            spdlog::error("{}: failed to find server id", __FUNCTION__);
-            continue;
-        }
-
-        uint32_t serverId = serverIdRes.value();
-
-        if (serverId == acMessage.MountId)
-        {
-            auto& mountFormIdComponent = m_world.get<FormIdComponent>(entity);
-
-            if (m_world.all_of<LocalComponent>(entity))
-            {
-                m_world.remove<LocalAnimationComponent, LocalComponent>(entity);
-                m_world.emplace_or_replace<RemoteComponent>(entity, acMessage.MountId, mountFormIdComponent.Id);
-            }
-
-            TESForm* pMountForm = TESForm::GetById(mountFormIdComponent.Id);
-            pMount = Cast<Actor>(pMountForm);
-            pMount->GetExtension()->SetRemote(true);
-
-            InterpolationSystem::Setup(m_world, entity);
-            AnimationSystem::Setup(m_world, entity);
-
-            break;
-        }
+        spdlog::warn("Cannot apply mount update because mount {:X} is unavailable", acMessage.MountId);
+        return;
     }
+
+    const auto& mountFormIdComponent = remoteView.get<FormIdComponent>(*mountIt);
+    Actor* pMount = Cast<Actor>(TESForm::GetById(mountFormIdComponent.Id));
+    if (!pMount)
+        return;
 
     pRider->InitiateMountPackage(pMount);
 }
@@ -956,8 +1134,8 @@ void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
     spdlog::debug(
         __FUNCTION__ ": isLocal {}, isInScene {}, isSpeakingInScene {}, isTaskDialogue {}, willSync {}, scene {:X}, Actor "
                      "{:X}, serverId {:X}, isLeader {}, name {}, soundFile {}",
-        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader, pActor->baseForm->GetName(),
-        acEvent.VoiceFile);
+        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader,
+        pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>", acEvent.VoiceFile);
 
     if (willSync)
     {
@@ -971,23 +1149,9 @@ void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
 
 void CharacterService::OnNotifyDialogue(const NotifyDialogue& acMessage) noexcept
 {
+    // A member can initiate dialogue with an NPC owned by this client.
     const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
-    auto viewIt = std::find_if(
-        view.begin(), view.end(),
-        [view, id = acMessage.ServerId](auto entity)
-        {
-            auto serverId = Utils::GetServerId(entity);
-            return serverId.has_value() && serverId.value() == id;
-        });
-
-    if (viewIt == view.end())
-    {
-        spdlog::debug(__FUNCTION__ ": failed to find speaking Actor's FormIdComponent, serverId {:X}, isLeader {}", acMessage.ServerId, isLeader);
-        return;
-    }
-
-    Actor* pActor = Cast<Actor>(TESForm::GetById(view.get<FormIdComponent>(*viewIt).Id));
+    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
     if (!pActor)
         return;
 
@@ -1036,8 +1200,8 @@ void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
     spdlog::debug(
         __FUNCTION__ ": isLocal {}, isInScene {}, isSpeakingInScene {}, isTaskDialogue {}, willSync {}, scene {:X}, Actor "
                      "{:X}, serverId {:X}, isLeader {}, name {}, subtitle {}",
-        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader, pActor->baseForm->GetName(),
-        acEvent.Text);
+        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader,
+        pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>", acEvent.Text);
 
     if (willSync)
     {
@@ -1051,23 +1215,8 @@ void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
 
 void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcept
 {
-    const bool isLeader = m_world.Get().GetPartyService().IsLeader();
-    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
-    auto viewIt = std::find_if(
-        view.begin(), view.end(),
-        [view, id = acMessage.ServerId](auto entity)
-        {
-            auto serverId = Utils::GetServerId(entity);
-            return serverId.has_value() && serverId.value() == id;
-        });
-
-    if (viewIt == view.end())
-    {
-        spdlog::debug(__FUNCTION__ ": failed to find subtitle Actor's FormIdComponent, serverId {:X}, isLeader {}", acMessage.ServerId, isLeader);
-        return;
-    }
-
-    Actor* pActor = Cast<Actor>(TESForm::GetById(view.get<FormIdComponent>(*viewIt).Id));
+    const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
+    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
     if (!pActor)
         return;
 
@@ -1076,59 +1225,11 @@ void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcep
     pInfo = Cast<TESTopicInfo>(TESForm::GetById(acMessage.TopicFormId));
 
     spdlog::debug(__FUNCTION__ ": showing subtitle Actor {:X}, serverId {:X}, isLeader {}, name {}, message: {}",
-                     pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm->GetName(), acMessage.Text);
+                  pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>",
+                  acMessage.Text);
 
     SubtitleManager::Get()->HideSubtitle(pActor);   // Subtitle conflicts can hang, this makes it beter at least.
     SubtitleManager::Get()->ShowSubtitle(pActor, acMessage.Text.c_str(), pInfo);
-}
-
-void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& acMessage) noexcept
-{
-    auto formView = m_world.view<FormIdComponent>();
-    Vector<entt::entity> entities(formView.begin(), formView.end());
-
-    // TODO(cosideci): this entity iteration shouldn't technically be necessary, just look for the local component
-    for (auto entity : entities)
-    {
-        std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
-        if (!serverIdRes.has_value())
-        {
-            spdlog::error(__FUNCTION__ ": failed to find server id for entity");
-            continue;
-        }
-
-        uint32_t serverId = serverIdRes.value();
-
-        if (serverId == acMessage.ServerId)
-        {
-            auto& formIdComponent = m_world.get<FormIdComponent>(entity);
-
-            if (m_world.all_of<LocalComponent>(entity))
-            {
-                m_world.remove<LocalAnimationComponent, LocalComponent>(entity);
-                m_world.emplace_or_replace<RemoteComponent>(entity, acMessage.ServerId, formIdComponent.Id);
-            }
-
-            Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-            if (!pActor)
-            {
-                // Probably left the room and/or temporary.
-                spdlog::info(__FUNCTION__ ": no local Actor for serverId {:X} to relinquish", serverId);
-                continue;
-            }
-
-            pActor->GetExtension()->SetRemote(true);
-
-            InterpolationSystem::Setup(m_world, entity);
-            AnimationSystem::Setup(m_world, entity);
-
-            spdlog::info(__FUNCTION__ ": relinquished control of actor {:X} with server id {:X}", pActor->formID, acMessage.ServerId);
-
-            return;
-        }
-    }
-
-    spdlog::error("Did not find actor to relinquish control of, server id {:X}", acMessage.ServerId);
 }
 
 void CharacterService::OnNotifyActorTeleport(const NotifyActorTeleport& acMessage) noexcept
@@ -1212,10 +1313,10 @@ void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
         {
             spdlog::info("Sending ownership claim for actor {:X} with server id {:X}", pActor->formID, pRemoteComponent->Id);
 
-            TakeOwnership(pActor->formID, pRemoteComponent->Id, aEntity);
+            RequestOwnership(pActor->formID, pRemoteComponent->Id, aEntity);
         }
         else
-            spdlog::info("New entity remotely managed, form id: {:X}, server id: {:X}", pActor->formID, pRemoteComponent->Id);
+            spdlog::debug("New entity remotely managed, form id: {:X}, server id: {:X}", pActor->formID, pRemoteComponent->Id);
 
         return;
     }
@@ -1343,6 +1444,19 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
     message.IsMount = pActor->IsMount();
     message.IsPlayerSummon = pActor->GetCommandingActor() && pActor->GetCommandingActor()->formID == 0x14;
 
+    if (const TESNPC* pPick = pActor->GetLeveledPick())
+    {
+        const uint32_t pickFormId = pPick->formID;
+        if (m_world.GetModSystem().GetServerModId(pickFormId, message.LeveledNpcPickId))
+            spdlog::info("Captured leveled NPC pick {:X} for actor {:X} (base {:X})", pickFormId, pActor->formID, pNpc->formID);
+        else
+            spdlog::warn("Leveled NPC pick {:X} has no server id, identity sync skipped", pickFormId);
+    }
+    else if (pNpc->IsTemporary())
+    {
+        spdlog::info("No leveled pick recoverable for temp base {:X} (actor {:X}), identity sync unavailable", pNpc->formID, pActor->formID);
+    }
+
     if (pNpc->IsTemporary())
         pNpc = pNpc->GetTemplateBase();
 
@@ -1375,7 +1489,7 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 void CharacterService::CancelServerAssignment(const entt::entity aEntity, const uint32_t aFormId) const noexcept
 {
     Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
-    const char* pName = !pActor ? "" : pActor->baseForm->GetName();
+    const char* pName = (pActor && pActor->baseForm) ? pActor->baseForm->GetName() : "";
 
     if (m_world.all_of<RemoteComponent>(aEntity))
     {
@@ -1395,17 +1509,12 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
         DeleteRemoteEntityComponents(aEntity);
     }
 
-    // In the event we were waiting for assignment, drop it
+    // Keep the cookie until the server response arrives so awarded ownership can be relinquished.
     if (m_world.all_of<WaitingForAssignmentComponent>(aEntity))
     {
         auto& waitingComponent = m_world.get<WaitingForAssignmentComponent>(aEntity);
-
-        CancelAssignmentRequest message;
-        message.Cookie = waitingComponent.Cookie;
-
-        m_transport.Send(message);
-
-        m_world.remove<WaitingForAssignmentComponent>(aEntity);
+        waitingComponent.Cancelled = true;
+        return;
     }
 
     if (m_world.all_of<LocalComponent>(aEntity))
@@ -1414,6 +1523,8 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
 
         RequestOwnershipTransfer request{};
         request.ServerId = localComponent.Id;
+        request.OwnershipEpoch = localComponent.OwnershipEpoch;
+        request.Reason = OwnershipReleaseReason::Relinquish;
 
         if (pActor)
         {
@@ -1427,7 +1538,7 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
                         spdlog::error("World space id not found, despite having a world space, {:X}", pWorldSpace->formID);
                 }
 
-                if (TESObjectCELL* pCell = pActor->GetParentCell())
+                if (TESObjectCELL* pCell = pActor->GetParentCellEx())
                 {
                     if (!modSystem.GetServerModId(pCell->formID, request.CellId))
                         spdlog::error("Cell id not found, despite having a cell, {:X}", pCell->formID);
@@ -1439,9 +1550,9 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
 
 
         spdlog::info(
-            __FUNCTION__ ": transferring ownership of local actor, formId: {:X}, server id: {:X}, worldspace: {:X}, cell: {:X}, position: "
-                         "({}, {}, {}), name: {}",
-            aFormId, request.ServerId, request.WorldSpaceId.BaseId, request.CellId.BaseId, request.Position.x, request.Position.y, request.Position.z, pName);
+            "Transferring ownership of local actor, server id: {:X}, epoch: {}, worldspace: {:X}, cell: {:X}, position: "
+            "({}, {}, {})",
+            request.ServerId, request.OwnershipEpoch, request.WorldSpaceId.BaseId, request.CellId.BaseId, request.Position.x, request.Position.y, request.Position.z);
 
         m_transport.Send(request);
 
@@ -1474,14 +1585,19 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
 
         if (acMessage.BaseId != GameId{})
         {
-            const uint32_t cNpcId = World::Get().GetModSystem().GetGameId(acMessage.BaseId);
-            if (cNpcId == 0)
+            // Prefer the owner's resolved leveled pick over the lossy template base
+            if (acMessage.LeveledNpcPickId != GameId{})
+                pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.LeveledNpcPickId)));
+
+            if (!pNpc)
+                pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.BaseId)));
+
+            if (!pNpc)
             {
                 spdlog::error("Failed to retrieve NPC, it will not be spawned, possibly missing mod");
                 return nullptr;
             }
 
-            pNpc = Cast<TESNPC>(TESForm::GetById(cNpcId));
             pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
         }
         else
@@ -1489,6 +1605,10 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
             pNpc = TESNPC::Create(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
             FaceGenSystem::Setup(m_world, aEntity, acMessage.FaceTints);
         }
+
+        // As in OnCharacterSpawn: this base came off the wire, so the head has to be
+        // generated at runtime once the engine builds the body.
+        SetRemoteFaceGenForce(true);
 
         pActor = Actor::Create(pNpc);
     }
@@ -1534,6 +1654,185 @@ ActorData CharacterService::BuildActorData(Actor* apActor) const noexcept
     return actorData;
 }
 
+void CharacterService::ApplyLeveledNpcPick(Actor* apActor, const GameId& acPickId) const noexcept
+{
+    if (acPickId == GameId{})
+        return;
+
+    TESNPC* pBase = Cast<TESNPC>(apActor->baseForm);
+    if (!pBase)
+        return;
+
+    // The rebuild needs the placed NPC this actor came from; without one there
+    // is nothing to copy the pick onto, and overwriting the base would throw
+    // away data the pick does not carry (a hold guard's name and outfit).
+    if (!LeveledNpcSystem::GetOriginalBase(apActor))
+    {
+        spdlog::warn("Leveled pick {:x}:{:x} received for actor {:X} without an original leveled base, keeping local base", acPickId.ModId, acPickId.BaseId, apActor->formID);
+        return;
+    }
+
+    const uint32_t cPickId = World::Get().GetModSystem().GetGameId(acPickId);
+    if (cPickId == 0)
+    {
+        spdlog::warn("Leveled NPC pick {:X}:{:X} not resolvable, possibly missing mod, keeping local pick", acPickId.ModId, acPickId.BaseId);
+        return;
+    }
+
+    TESNPC* pPick = Cast<TESNPC>(TESForm::GetById(cPickId));
+    if (!pPick)
+    {
+        spdlog::warn("Leveled NPC pick {:X} is not an NPC, keeping local pick", cPickId);
+        return;
+    }
+
+    const TESNPC* pLocalPick = apActor->GetLeveledPick();
+    const uint32_t localPickId = pLocalPick ? pLocalPick->formID : 0;
+
+    // Even a pick matching the current base must supersede pending work.
+    if (pBase->IsTemporary() && localPickId == cPickId && m_pendingLeveledConforms.find(apActor->formID) == m_pendingLeveledConforms.end())
+    {
+        spdlog::info("Leveled actor {:X} already matches owner's pick {:X}", apActor->formID, cPickId);
+        return;
+    }
+
+    spdlog::info("Queued leveled NPC reconciliation for actor {:X}, base: {:X}, local pick: {:X}, owner's pick: {:X}",
+        apActor->formID, pBase->formID, localPickId, cPickId);
+
+    // Defer reference changes to the service update: cell attach may still own the actor here.
+    // Queueing to the runner from a drained task would re-lock its drain mutex.
+    // Preserve the stage when a newer pick arrives during a disable or rebuild.
+    m_pendingLeveledConforms[apActor->formID] = cPickId;
+}
+
+void CharacterService::ProcessLeveledConforms() noexcept
+{
+    using ReconciliationStage = ActorExtension::ReconciliationStage;
+
+    if (m_pendingLeveledConforms.empty())
+        return;
+
+    // Never touch references while the loading screen is up - the cell attach
+    // owns them and mutating mid-stream crashes the loader
+    UI* pUI = UI::Get();
+    if (pUI && pUI->GetMenuOpen(BSFixedString("Loading Menu")))
+        return;
+
+    for (auto it = m_pendingLeveledConforms.begin(); it != m_pendingLeveledConforms.end();)
+    {
+        const uint32_t cPickFormId = it->second;
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(it->first));
+        TESNPC* pPick = Cast<TESNPC>(TESForm::GetById(cPickFormId));
+        if (!pActor || pActor->IsDeleted() || !pPick)
+        {
+            if (pActor)
+                pActor->GetExtension()->Reconciliation = ReconciliationStage::None;
+
+            it = m_pendingLeveledConforms.erase(it);
+            continue;
+        }
+
+        auto& stage = pActor->GetExtension()->Reconciliation;
+        if (stage == ReconciliationStage::WaitingFor3D)
+        {
+            const auto* pCell = pActor->GetParentCellEx();
+            if (!pCell || !pCell->IsAttached())
+            {
+                spdlog::info("Abandoning leveled NPC reconciliation for actor {:X} because its cell is not attached, pick: {:X}, cell state: {}, disabled: {}",
+                    it->first, cPickFormId, pCell ? static_cast<int>(pCell->cellState) : -1, pActor->IsDisabled());
+                stage = ReconciliationStage::None;
+                it = m_pendingLeveledConforms.erase(it);
+                continue;
+            }
+
+            if (pActor->IsDisabled() || !pActor->GetNiNode())
+            {
+                ++it;
+                continue;
+            }
+
+            // Completion is read from the extra data the rebuild wrote, which
+            // only exists where the pick write is mapped. Without it the
+            // fallback path below sets the base to the pick itself, and the
+            // base is then the thing to compare - comparing the recorded pick
+            // there would never match and re-disable the actor every update.
+            const bool cMatchesPick = LeveledNpcSystem::CanRecordPick()
+                ? (pActor->baseForm && pActor->baseForm->IsTemporary() && pActor->GetLeveledPick() == pPick)
+                : (pActor->baseForm == pPick);
+
+            if (cMatchesPick)
+            {
+                spdlog::info("Completed leveled NPC reconciliation for actor {:X}, base: {:X}, pick: {:X}", it->first, pActor->baseForm->formID, cPickFormId);
+                stage = ReconciliationStage::None;
+                it = m_pendingLeveledConforms.erase(it);
+                continue;
+            }
+
+            // A newer pick arrived during the rebuild; start its disable now.
+            stage = ReconciliationStage::None;
+        }
+
+        if (stage == ReconciliationStage::WaitingForDisable)
+        {
+            if (!pActor->IsDisabled() || pActor->GetNiNode())
+            {
+                spdlog::debug("Waiting for leveled actor {:X} to finish disabling before applying pick {:X}, disabled: {}, has 3D: {}",
+                    it->first, cPickFormId, pActor->IsDisabled(), pActor->GetNiNode() != nullptr);
+                ++it;
+                continue;
+            }
+
+            // Disable and 3D teardown have completed; rebuild from the original base and the pick.
+            if (LeveledNpcSystem::CanRecordPick())
+            {
+                if (!LeveledNpcSystem::ApplyPick(pActor, pPick))
+                {
+                    spdlog::warn("Could not rebuild leveled actor {:X} from its original base and pick {:X}, keeping local base", it->first, cPickFormId);
+                    pActor->EnableImpl();
+                    stage = ReconciliationStage::None;
+                    it = m_pendingLeveledConforms.erase(it);
+                    continue;
+                }
+            }
+            else
+            {
+                // 1.5.x: the engine call that records the chosen pick has no
+                // address-library mapping, so a rebuild through it could not be
+                // recognised as finished. Keep the pre-1.8.2 path there - the
+                // base becomes the pick, which is what the completion check
+                // above is paired with.
+                pActor->baseForm = pPick;
+            }
+
+            // Recompute the graph descriptor after changing picks; stale variable indices can cause out-of-bounds writes.
+            pActor->GetExtension()->GraphDescriptorHash = 0;
+
+            // Enable can return before the rebuilt 3D is available to discovery.
+            stage = ReconciliationStage::WaitingFor3D;
+            pActor->EnableImpl();
+            spdlog::info("Re-enabled conformed leveled actor {:X}, base: {:X}, pick: {:X}, waiting for 3D",
+                it->first, pActor->baseForm ? pActor->baseForm->formID : 0, cPickFormId);
+            ++it;
+            continue;
+        }
+
+        if (!pActor->loadedState && !LeveledNpcSystem::IsLeveledNpcBase(Cast<TESNPC>(pActor->baseForm)))
+        {
+            // Wait for distant actors to load 3D; newer picks replace pending work and disconnects clear it.
+            // Unresolved shells bypass this wait because they need a pick before they can load a model.
+            ++it;
+            continue;
+        }
+
+        // DisableImpl() is asynchronous: it only queues a request to disable this actor.
+        // Wait for the disabled flag and old 3D removal before changing the base.
+        pActor->DisableImpl();
+        stage = ReconciliationStage::WaitingForDisable;
+        ++it;
+    }
+}
+
 void CharacterService::RunLocalUpdates() const noexcept
 {
     static std::chrono::steady_clock::time_point lastSendTimePoint;
@@ -1560,6 +1859,72 @@ void CharacterService::RunLocalUpdates() const noexcept
     }
 
     m_transport.Send(message);
+}
+
+void CharacterService::SetRemoteFaceGenForce(const bool aForce) const noexcept
+{
+    // bUseFaceGenPreprocessedHeads decides whether the engine loads a head that was
+    // baked to disk or generates one at runtime. It is cleared only while this
+    // client is building an actor whose appearance arrived over the wire, because
+    // no baked head can match a face that was never generated here: the lookup
+    // finds nothing and the head comes up empty, which is the invisible head a
+    // custom race reports - a custom race ships its head as a .nif/.tri and never
+    // as FaceGenData. Upstream #764 removed the unconditional per-frame clear this
+    // fork used to run, and that clear was the only thing asking for runtime
+    // generation; keeping it scoped to wire-built actors is what lets locally
+    // generated characters keep the baked head the flag is wanted for (see the
+    // comment in TiltedOnlineApp::Update).
+    if (m_faceGenForced == aForce)
+        return;
+
+    auto* pSetting = INISettingCollection::Get()->GetSetting("bUseFaceGenPreprocessedHeads:General");
+    if (!pSetting)
+        return; // nothing to force, and leaving the state alone keeps the next call honest
+
+    if (aForce)
+        m_faceGenPreprocessedBackup = pSetting->data;
+
+    pSetting->data = aForce ? 0 : m_faceGenPreprocessedBackup;
+    m_faceGenForced = aForce;
+
+    spdlog::debug("{}: bUseFaceGenPreprocessedHeads = {} (was {})", __FUNCTION__, pSetting->data, m_faceGenPreprocessedBackup);
+}
+
+void CharacterService::UpdateRemoteFaceGenWindow() noexcept
+{
+    // The window stays open only while such an actor is still waiting for its body.
+    // Deriving it from the components every frame instead of counting opens and
+    // closes is deliberate: the actor stops matching the moment its 3D arrives, and
+    // a disconnect clears RemoteComponent, so the flag restores itself without
+    // anyone having to remember to close it.
+    bool needsRuntimeFaceGen = false;
+
+    // RemoteComponent belongs in the predicate: disconnecting clears it without
+    // touching WaitingFor3D, so without it the window would stay open past the
+    // session that needed it and put every later actor back on runtime generation.
+    const auto waitingView = m_world.view<WaitingFor3D, RemoteComponent>();
+
+    for (auto entity : waitingView)
+    {
+        // An empty FormId is the wire-built path: the base was rebuilt here from the
+        // appearance buffer rather than resolved out of the local load order, so its
+        // face is not the face those baked assets were generated for.
+        if (waitingView.get<WaitingFor3D>(entity).SpawnRequest.FormId == GameId{})
+        {
+            needsRuntimeFaceGen = true;
+            break;
+        }
+    }
+
+    // There is deliberately no timeout on this. A timer armed when the window opens
+    // would already have expired for a second actor that starts waiting later, and
+    // closing the window on that actor's first frame is the invisible head again.
+    // The state this can leave behind - a body that never materializes keeps the
+    // flag cleared - is exactly what shipped as 1.7.1, which is the build this
+    // report calls working. RunSpawnUpdates below waits on the same component and
+    // has no timeout either.
+
+    SetRemoteFaceGenForce(needsRuntimeFaceGen);
 }
 
 void CharacterService::RunRemoteUpdates() noexcept
@@ -1617,7 +1982,7 @@ void CharacterService::RunRemoteUpdates() noexcept
 
     auto waitingView = m_world.view<FormIdComponent, WaitingFor3D>();
 
-    Vector<entt::entity> toRemove;
+    Vector<entt::entity> readyEntities;
     for (auto entity : waitingView)
     {
         auto& formIdComponent = waitingView.get<FormIdComponent>(entity);
@@ -1645,16 +2010,23 @@ void CharacterService::RunRemoteUpdates() noexcept
         if (pActor->IsVampireLord())
             pActor->FixVampireLordModel();
 
-        // (Re)start naked NPC deadline. Actor MUST be fully constructed before check clock starts.
+        // (Re)start naked NPC deadline. Actor MUST be fully constructed before
+        // check clock starts. This line is fork-only; upstream's side of the
+        // merge had only the readyEntities push below.
         pActor->GetExtension()->SetNakedDeadline();
 
-        toRemove.push_back(entity);
+        readyEntities.push_back(entity);
 
-        spdlog::info(__FUNCTION__ ": applied 3D for actor, form id: {:X}, name {}", pActor->formID, pActor->baseForm->GetName());
+        spdlog::debug(__FUNCTION__ ": applied 3D for actor, form id: {:X}, name {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
     }
 
-    for (auto entity : toRemove)
+    for (auto entity : readyEntities)
+    {
         m_world.remove<WaitingFor3D>(entity);
+
+        // Reprocess the remote actor now that an ownership grant can be accepted without immediately declining it.
+        ProcessNewEntity(entity);
+    }
 }
 
 void CharacterService::RunFactionsUpdates() const noexcept
@@ -1719,9 +2091,21 @@ void CharacterService::RunSpawnUpdates() const noexcept
             // TODO(cosideci): IsDragon probably shouldn't be straight up false here.
             if (GridCellCoords::IsCellInGridCell(characterCoords, playerCoords, false))
             {
+                // A server id that already carries a ref id must never grow a second
+                // actor. The create below used to run whenever the lookup failed, and
+                // the lookup legitimately fails for a tick or two while the engine
+                // finishes registering a freshly created reference. That produced two
+                // live actors for one remote player - both then had their 3D updated
+                // back to back and the game dereferenced a null in its own reference
+                // update (SkyrimSE.exe+0x23d000, rcx=0). Only the first create, the one
+                // with no ref id yet, may spawn; a lost actor is replaced through the
+                // server's own spawn request instead.
                 auto* pActor = Cast<Actor>(TESForm::GetById(remoteComponent.CachedRefId));
                 if (!pActor)
                 {
+                    if (remoteComponent.CachedRefId != 0)
+                        continue;
+
                     pActor = CreateCharacterForEntity(entity);
                     if (!pActor)
                         continue;
@@ -1772,14 +2156,17 @@ void CharacterService::ApplyCachedWeaponDraws(const UpdateEvent& acUpdateEvent) 
 
         data.m_timer += acUpdateEvent.Delta;
 
-        // We do 2 passes because Skyrim's weapon drawing is the most finnicky thing in existence
+        // Remote actors get 2 passes because Skyrim's weapon drawing is the most finnicky thing in existence.
         double maxTime = data.m_isFirstPass ? 0.5 : 2.0;
         if (data.m_timer <= maxTime)
             continue;
 
         Actor* pActor = Cast<Actor>(TESForm::GetById(cId));
-        if (!pActor)
+        if (!pActor || !pActor->GetExtension()->IsRemote())
+        {
+            toRemove.push_back(cId);
             continue;
+        }
 
         pActor->SetWeaponDrawnEx(data.m_drawWeapon);
 

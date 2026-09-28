@@ -9,6 +9,13 @@
 #include <Messages/TeleportCommandRequest.h>
 #include <Messages/TeleportCommandResponse.h>
 
+#include <Setting.h>
+
+namespace
+{
+Console::Setting bAnnounceServer{"LiveServices:bAnnounceServer", "Whether to list the server on the public server list", false};
+}
+
 CommandService::CommandService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
 {
@@ -22,10 +29,30 @@ void CommandService::OnSetTimeCommand(const PacketEvent<SetTimeCommandRequest>& 
 
     const auto cPlayerId = static_cast<uint32_t>(acMessage.Packet.PlayerId);
 
-    // Only set time if player is an admin
+    // Admin override: always allowed.
+    //
+    // GetByConnectionId answers null for a session that has no player row, and
+    // an admin session is not guaranteed to have one. The connection id is
+    // inserted at GameServer.cpp:896, the row is only created at :977, and the
+    // authentication path has three ways to leave without the pair matching: a
+    // mod-policy mismatch returns at :947 (no row was ever made), a duplicate
+    // authentication returns at :983, and a script that cancels the join removes
+    // the row again at :999. None of them goes back to clean up the set, which
+    // is only ever erased on disconnect (GameServer.cpp:612).
+    //
+    // The rest of this codebase already treats that as reachable rather than
+    // theoretical - the sibling readers of the same set all guard, and one of
+    // them logs it by name ("Admin session not found", GameServer.cpp:496-502);
+    // GetAdminByUsername guards too (:1096, :1110). This loop was the only
+    // reader that did not, and dereferencing the null here killed the whole
+    // server from any player's /settime chat command, not just an admin's.
     for (const auto session : GameServer::Get()->GetAdminSessions())
     {
-        if (PlayerManager::Get()->GetByConnectionId(session)->GetId() == cPlayerId)
+        const auto* pAdmin = PlayerManager::Get()->GetByConnectionId(session);
+        if (!pAdmin)
+            continue;
+
+        if (pAdmin->GetId() == cPlayerId)
         {
             const auto cHours = static_cast<int>(acMessage.Packet.Hours);
             const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
@@ -37,6 +64,21 @@ void CommandService::OnSetTimeCommand(const PacketEvent<SetTimeCommandRequest>& 
 
             return;
         }
+    }
+
+    // Party leader allowed on private servers only
+    const auto* pPartyService = &m_world.GetPartyService();
+    if (pPartyService->IsPlayerLeader(acMessage.pPlayer) && !bAnnounceServer)
+    {
+        const auto cHours = static_cast<int>(acMessage.Packet.Hours);
+        const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
+
+        m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale());
+
+        response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
+        acMessage.pPlayer->Send(response);
+
+        return;
     }
 
     response.Result = NotifySetTimeResult::SetTimeResult::kNoPermission;

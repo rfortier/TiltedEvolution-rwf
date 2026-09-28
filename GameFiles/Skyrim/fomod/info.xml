@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Metadata MO2 shows at the top of the FOMOD wizard (name, author, version,
+    website). Without this file those fields come up empty, which is why the
+    author and version were blank in the installer.
+
+    The Version element is stamped from the release tag while the release zip
+    is assembled (release.yml); the number below is only what a hand-made
+    package shows. Keep it in step with the newest tag.
+-->
+<fomod>
+    <Name>Skyrim Together Next</Name>
+    <Author>komAAmok</Author>
+    <Version>1.1.5</Version>
+    <Website>https://github.com/komAAmok/SkyrimTogetherNext</Website>
+    <Description>Skyrim Together 的联机 mod(1.5.x / 1.6.x / 1.7.x)。装上后从 MO2 启动 skse64_loader.exe 即可,SKSE 插件会自动部署运行时。联机:房主开服务器,其他玩家游戏内按 F2 输入房主 IP:10578。
+
+Multiplayer mod for Skyrim (1.5.x / 1.6.x / 1.7.x). Launch skse64_loader.exe through MO2 - the SKSE plugin deploys the runtime on first start. To play: the host runs the server, everyone else presses F2 in game and enters the host IP:10578.</Description>
+</fomod>

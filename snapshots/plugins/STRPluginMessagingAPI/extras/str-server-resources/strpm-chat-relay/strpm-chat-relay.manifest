@@ -1,0 +1,10 @@
+[Resource]
+name = "STR Plugin Messaging Chat Relay"
+version = 0.4.0
+apiset = 1.0.0
+description = "Private STRPM relay using the official Skyrim Together server scripting API with authenticated ProxyResolver identity payloads"
+keywords = ["strpm", "plugin-messaging", "relay", "proxy-resolver"]
+license = "MIT"
+repository = "https://github.com/Caelvanost/STRPluginMessagingAPI"
+homepage = "https://github.com/Caelvanost/STRPluginMessagingAPI"
+entrypoint = "main.lua"

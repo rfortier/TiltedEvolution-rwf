@@ -59,6 +59,8 @@ private:
     /**
     * Checks whether an NPC's (local or remote) equipment is bugged (i.e. naked NPCS)
     * and resets their inventory.
+    * fork-only: upstream removed this self-heal, the merge dropped both the
+    * declaration and the call, they are restored here.
     */
     void RunNakedNPCBugChecks() noexcept;
 

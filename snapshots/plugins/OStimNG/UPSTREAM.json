@@ -1,0 +1,11 @@
+{
+  "id": "OStimNG",
+  "upstream": "https://github.com/VersuchDrei/OStimNG.git",
+  "commit": "3954683bbdfcd34b2f9157012ed0c446d6eefd1e",
+  "files": 703,
+  "contentSha256": "545d8e3247896a0b043afd340c01b408a05f23160b5e88619043ef859f5fb360",
+  "why": "Durability copy of the pinned commit. Not a build input: the submodule builds. Kept so the code survives the upstream repository disappearing.",
+  "ignoredRulesOverridden": [
+    "snapshots/plugins/OStimNG/flash/gfxfontlib.swf  (snapshots/plugins/OStimNG/.gitignore:553:gfxfontlib.swf)"
+  ]
+}

@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - master
+      - main
       - prerel
   workflow_call:
     inputs:
@@ -25,7 +25,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest]
+        os: [windows-2022]
         arch: [x64]
 
     runs-on: ${{ matrix.os }}
@@ -45,33 +45,597 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --force --recursive --depth=1
 
-      - name: Checkout master on tag push
-        if: github.ref_type == 'tag'
-        # Checkout only if the tag was pushed to master
-        run: (git rev-parse HEAD) -eq (git rev-parse origin/master) -and (git checkout master)
+      - name: Verify GitHub-hosted runner
+        shell: pwsh
+        run: |
+          Write-Host "Runner name: $env:RUNNER_NAME"
+          Write-Host "Runner environment: ${{ runner.environment }}"
+          if ("${{ runner.environment }}" -ne "github-hosted") {
+            Write-Error "Self-hosted runner detected. Please use the GitHub-hosted windows-latest runner."
+          }
 
+      - name: Checkout main on tag push
+        if: github.ref_type == 'tag'
+        # Checkout only if the tag was pushed to main; repos without a main
+        # branch build the tagged commit directly
+        run: |
+          git rev-parse --verify --quiet origin/main
+          if ($LASTEXITCODE -eq 0) {
+            (git rev-parse HEAD) -eq (git rev-parse origin/main) -and (git checkout main)
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+            Write-Output "origin/main not found; building the tagged commit as-is"
+            exit 0
+          }
+
+      # Must come before the plugin builds: vcpkg resolves the x64-windows
+      # triplet through Visual Studio and refuses to configure without one.
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # Companion plugins are CMake + vcpkg projects, pinned as submodules. The
+      # step is skipped, not failed, when a fork drops the submodules: the
+      # framework still builds, and packaging then fails loudly on the missing
+      # plugin payload rather than shipping a wizard option that installs nothing.
+      - name: Check companion plugin submodules
+        id: plugins
+        shell: pwsh
+        run: |
+          $ids = (Get-Content Code/plugins/plugins.json -Raw | ConvertFrom-Json).plugins.id
+          $missing = @($ids | Where-Object { -not (Test-Path "plugins/$_/CMakeLists.txt") })
+          if ($missing.Count -gt 0) {
+            Write-Host "::warning::companion plugin submodules not checked out: $($missing -join ', ')"
+            "present=false" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "companion plugins present: $($ids -join ', ')"
+            "present=true" >> $env:GITHUB_OUTPUT
+          }
+
+      # vcpkg is not installed on the runner and the plugin projects need it, so
+      # it is checked out here rather than assumed. The cache key covers the
+      # bootstrap commit and the manifests: commonlibsse-ng comes from a
+      # third-party registry and is compiled from source on a cold cache, which
+      # is the difference between a few minutes and most of an hour.
+      - name: Cache vcpkg
+        if: steps.plugins.outputs.present == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.vcpkg/downloads
+            ${{ github.workspace }}/.vcpkg-cache/binary
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('plugins/**/vcpkg.json', 'plugins/**/vcpkg-configuration.json') }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-
+
+      - name: Set up vcpkg
+        if: steps.plugins.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:GITHUB_WORKSPACE '.vcpkg'
+          # The cache restores .vcpkg/downloads, so this directory can exist
+          # without being a checkout - and it did: testing the directory made a
+          # cache hit skip the clone, so bootstrap-vcpkg.bat was never there and
+          # the step died on the line below it. The checkout is what this guard
+          # has to test for, not the directory.
+          if (Test-Path (Join-Path $vcpkg 'bootstrap-vcpkg.bat')) {
+            Write-Host "vcpkg restored from cache: $vcpkg"
+          } else {
+            # Cloned to a scratch directory and merged in, because git clone
+            # refuses a destination that already holds the restored downloads -
+            # and keeping those downloads is the entire point of the cache.
+            $scratch = Join-Path $env:RUNNER_TEMP 'vcpkg-clone'
+            if (Test-Path $scratch) { Remove-Item -Recurse -Force $scratch }
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git $scratch
+            if ($LASTEXITCODE -ne 0) { throw 'vcpkg clone failed' }
+            New-Item -ItemType Directory -Force -Path $vcpkg | Out-Null
+            Get-ChildItem -Force -LiteralPath $scratch | Move-Item -Destination $vcpkg -Force
+          }
+
+          # vcpkg resolves a manifest's `builtin-baseline` by running
+          # `git show <sha>:versions/baseline.json` inside its own checkout. That
+          # path has no fetch fallback - unlike a git registry, which fetches the
+          # baseline on demand - so in the --depth 1 clone above a pinned baseline
+          # that is not the tip is simply absent, and every port lookup dies with
+          # 'failed to `git show` versions/baseline.json'.
+          #
+          # Derived from the plugin manifests rather than listed here, so a
+          # plugin that re-pins its baseline cannot leave this stale. Only the
+          # builtin registry needs it: a git registry (the colorglass ports) is
+          # fetched by vcpkg itself.
+          if (Test-Path (Join-Path $vcpkg '.git')) {
+            $baselines = @()
+            # Recursive on purpose. A plugin's vcpkg project is not always at
+            # plugins/<id>/vcpkg.json: OStimNG's is at plugins/OStimNG/skse/,
+            # beside its CMakeLists.txt. Searching one level deep missed it, so
+            # its pinned baseline was never fetched and the configure died with
+            # 'failed to `git show` versions/baseline.json' - the same
+            # "assume the layout" mistake as the is_checked_out() one, in a
+            # different tool. The overlay ports under cmake/ports/ have no
+            # builtin-baseline, so the guard below skips them.
+            foreach ($manifest in Get-ChildItem -Path 'plugins' -Recurse -Filter 'vcpkg.json' -File -ErrorAction SilentlyContinue) {
+              $pinned = (Get-Content -LiteralPath $manifest.FullName -Raw | ConvertFrom-Json).PSObject.Properties['builtin-baseline']
+              if ($pinned -and $pinned.Value) { $baselines += $pinned.Value }
+            }
+            foreach ($sha in ($baselines | Sort-Object -Unique)) {
+              git -C $vcpkg fetch --quiet --depth 1 origin $sha
+              if ($LASTEXITCODE -ne 0) { throw "failed to fetch the vcpkg baseline pinned by a plugin manifest: $sha" }
+              Write-Host "fetched pinned vcpkg baseline $sha"
+            }
+          }
+
+          & "$vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
+          if (!(Test-Path "$vcpkg/scripts/buildsystems/vcpkg.cmake")) {
+            throw "vcpkg toolchain missing at $vcpkg/scripts/buildsystems/vcpkg.cmake"
+          }
+          # vcpkg aborts when VCPKG_DEFAULT_BINARY_CACHE names a directory that
+          # does not exist, and on a cold cache key the cache action restores
+          # nothing - so the directory is created here rather than assumed.
+          $binaryCache = Join-Path $env:GITHUB_WORKSPACE '.vcpkg-cache/binary'
+          New-Item -ItemType Directory -Force -Path $binaryCache | Out-Null
+
+          "VCPKG_ROOT=$vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" >> $env:GITHUB_ENV
+          Write-Host "VCPKG_ROOT=$vcpkg"
+          Write-Host "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache"
+
+      # STRPM is built first: it is small, it fails fast if the interface header
+      # and the bridge do not compile, and the consumers below link against the
+      # ABI it defines.
+      - name: Build STRPluginMessagingAPI
+        if: steps.plugins.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          cmake -S plugins/STRPluginMessagingAPI -B plugins/STRPluginMessagingAPI/build -A x64 -DSTRPM_ENABLE_UDP_BACKEND=OFF -DSTRPM_BUILD_STR180_BRIDGE_PROBE=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build plugins/STRPluginMessagingAPI/build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The six consumers share the vcpkg toolchain and the STRPM headers.
+      # They are otherwise independent: one failing consumer must not hide the
+      # state of the others, so each is built and reported, and the job fails
+      # once at the end if any of them did not build.
+      # Several companion plugins have bugs this project has to fix but cannot
+      # fix upstream: the submodules point at repositories it does not own and
+      # cannot push to, and the checkout above runs with --force, so a fix left
+      # in the working tree is discarded before anything is built. The fixes
+      # live in Code/plugins/patches/ instead and are applied here, immediately
+      # before the plugins are configured and built, so they reach the package.
+      - name: Apply this repository's plugin patches
+        if: steps.plugins.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          python Code/plugins/tools/plugin_patches.py apply
+          if ($LASTEXITCODE -ne 0) { throw 'a plugin patch did not apply; the submodule pin probably moved' }
+
+      # OStimNG is the prerequisite OStim Together drives, and this repository
+      # patches it (Code/plugins/patches/OStimNG/). Nothing else compiles that
+      # patch: the plugin build below only covers plugins/, and an unbuilt patch
+      # is a fix that reaches no player. It is configured through vcpkg like the
+      # plugins, so it runs after the vcpkg setup and shares its binary cache.
+      #
+      # Build only, no artifact: OStim is installed by the player and is not
+      # staged into the archive, so nothing here is collected. What this proves
+      # is that the pinned OStimNG plus this repository's patches still compile.
+      - name: Build the OStimNG prerequisite
+        id: ostimng
+        if: steps.plugins.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'plugins/OStimNG/skse/CMakeLists.txt')) {
+            Write-Host '::warning::plugins/OStimNG is not checked out; skipping the prerequisite build'
+            "built=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if (-not $env:VCPKG_ROOT) { throw 'VCPKG_ROOT is not set; the vcpkg setup step did not run' }
+
+          # OStimNG's CMakeLists asserts COMMONLIB_SSE_FOLDER and then add_subdirectory()s
+          # it, so this needs a CommonLibSSE-NG SOURCE checkout - not the vcpkg package the
+          # companion plugins link. It used to be OStimNG's own
+          # skse/extern/CommonLibSSE-NG gitlink, which the recursive checkout above
+          # supplied. OStimNG commit f20db82 ("updated compiler") deleted that gitlink
+          # when OStimNG moved to vcpkg, so the path no longer exists in the pinned tree
+          # and this step could never configure. The revision is pinned in
+          # Code/plugins/plugins.json instead, beside the OStimNG pin it has to match.
+          $manifest = Get-Content Code/plugins/plugins.json -Raw | ConvertFrom-Json
+          $prerequisite = $manifest.prerequisites | Where-Object { $_.id -eq 'OStimNG' }
+          if (-not $prerequisite) { throw 'Code/plugins/plugins.json no longer declares the OStimNG prerequisite' }
+          $commonlibPin = $prerequisite.commonLibSseNg
+          if (-not $commonlibPin -or -not $commonlibPin.commit -or -not $commonlibPin.repository) {
+            throw 'the OStimNG prerequisite declares no commonLibSseNg commit/repository to build against'
+          }
+
+          $commonlib = 'plugins/OStimNG/skse/extern/CommonLibSSE-NG'
+          if (-not (Test-Path (Join-Path $commonlib 'CMakeLists.txt'))) {
+            Write-Host "fetching CommonLibSSE-NG $($commonlibPin.commit.Substring(0, 12)) from $($commonlibPin.repository)"
+            New-Item -ItemType Directory -Force -Path $commonlib | Out-Null
+            git -C $commonlib init --quiet
+            git -C $commonlib remote add origin $commonlibPin.repository
+            git -C $commonlib fetch --depth 1 --quiet origin $commonlibPin.commit
+            if ($LASTEXITCODE -ne 0) { throw "failed to fetch the pinned CommonLibSSE-NG commit $($commonlibPin.commit)" }
+            git -C $commonlib checkout --quiet --detach FETCH_HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'failed to check out the pinned CommonLibSSE-NG commit' }
+            # The tree has its own extern/openvr submodule. Its CMakeLists puts
+            # extern/openvr/headers on the include path and links
+            # extern/openvr/lib/win64/openvr_api.lib whenever VR support is enabled, and
+            # OStimNG forces all three runtimes on, so an unpopulated submodule fails the
+            # build at link time rather than at configure.
+            #
+            # Fetched through the gitlink rather than with `submodule update`:
+            # this checkout was created by `git init` plus a single-commit fetch,
+            # so there is no recorded submodule URL for update to resolve - it
+            # fails with 'no url found for submodule path'. Reading the pinned sha
+            # and the URL out of the tree itself is the same information, without
+            # depending on how the superproject was cloned.
+            $openvr = Join-Path $commonlib 'extern/openvr'
+            if (-not (Test-Path (Join-Path $openvr 'headers/openvr.h'))) {
+              $openvrSha = ((git -C $commonlib ls-tree HEAD extern/openvr) -split '\s+')[2]
+              $openvrUrl = (git -C $commonlib config --file .gitmodules --get submodule.openvr.url)
+              if (-not $openvrSha -or -not $openvrUrl) {
+                throw 'CommonLibSSE-NG no longer pins an extern/openvr submodule this step can resolve'
+              }
+              Write-Host "fetching openvr $($openvrSha.Substring(0, 12)) from $openvrUrl"
+              New-Item -ItemType Directory -Force -Path $openvr | Out-Null
+              git -C $openvr init --quiet
+              git -C $openvr remote add origin $openvrUrl
+              git -C $openvr fetch --depth 1 --quiet origin $openvrSha
+              if ($LASTEXITCODE -ne 0) { throw "failed to fetch openvr $openvrSha" }
+              git -C $openvr checkout --quiet --detach FETCH_HEAD
+              if ($LASTEXITCODE -ne 0) { throw 'failed to check out the pinned openvr commit' }
+            }
+            if (-not (Test-Path (Join-Path $openvr 'headers/openvr.h'))) {
+              throw "openvr headers are missing at $openvr; the link would fail on openvr_api.lib"
+            }
+          }
+          if (-not (Test-Path (Join-Path $commonlib 'CMakeLists.txt'))) {
+            throw "CommonLibSSE-NG is missing at $commonlib after the fetch"
+          }
+          $env:COMMONLIB_SSE_FOLDER = (Resolve-Path $commonlib).Path
+          Write-Host "COMMONLIB_SSE_FOLDER=$env:COMMONLIB_SSE_FOLDER"
+
+          # Configured through OStimNG's own preset, not with a hand-written -A/-D line.
+          # The preset is what supplies the Ninja generator, the x64-windows-static
+          # triplet, the static CRT the plugin is built with, and - critically -
+          # VCPKG_OVERLAY_PORTS pointing at OStimNG's cmake/ports/, which is where its
+          # clib-util dependency comes from. That port does not exist in upstream vcpkg,
+          # so a configure without the overlay cannot resolve the manifest at all.
+          $source = 'plugins/OStimNG/skse'
+          $configureLog = & cmake -S $source --preset release 2>&1
+          $configureCode = $LASTEXITCODE
+          $configureLog | ForEach-Object { Write-Host $_ }
+          if ($configureCode -ne 0) {
+            $tail = ($configureLog | Where-Object { $_ -match 'error|Error|CMake Error|not found|Could not|Unable' } | Select-Object -Last 6)
+            if (-not $tail) { $tail = ($configureLog | Select-Object -Last 6) }
+            $detail = ($tail -join ' | ') -replace '%', '%25' -replace '\r', '' -replace '\n', '%0A'
+            Write-Host "::error title=OStimNG configure failed::$detail"
+            throw 'OStimNG configure failed'
+          }
+
+          # The preset's binaryDir is ${sourceDir}/build/${presetName}, resolved against
+          # the source directory - so the tree to build is skse/build/release, not the
+          # plugins/OStimNG/build a -B argument would have produced.
+          $binaryDir = Join-Path $source 'build/release'
+          if (-not (Test-Path (Join-Path $binaryDir 'CMakeCache.txt'))) {
+            throw "the preset did not produce a build tree at $binaryDir"
+          }
+          $buildLog = & cmake --build $binaryDir --parallel 2>&1
+          $buildCode = $LASTEXITCODE
+          $buildLog | ForEach-Object { Write-Host $_ }
+          if ($buildCode -ne 0) {
+            $tail = ($buildLog | Where-Object { $_ -match 'error|Error' } | Select-Object -Last 6)
+            if (-not $tail) { $tail = ($buildLog | Select-Object -Last 6) }
+            $detail = ($tail -join ' | ') -replace '%', '%25' -replace '\r', '' -replace '\n', '%0A'
+            Write-Host "::error title=OStimNG build failed::$detail"
+            throw 'OStimNG build failed'
+          }
+          "built=true" >> $env:GITHUB_OUTPUT
+      - name: Build companion plugins
+        id: companion
+        if: steps.plugins.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          # VCPKG_ROOT and VCPKG_DEFAULT_BINARY_CACHE both come from the setup
+          # step through GITHUB_ENV, so there is one place that defines them.
+          if (-not $env:VCPKG_ROOT) { throw 'VCPKG_ROOT is not set; the vcpkg setup step did not run' }
+          if (-not (Test-Path $env:VCPKG_DEFAULT_BINARY_CACHE)) { throw "binary cache dir missing: $env:VCPKG_DEFAULT_BINARY_CACHE" }
+
+          $specs = @(
+            @{ Id = 'OStimTogether';     Dir = 'plugins/OStimTogether' },
+            @{ Id = 'MorphSyncTogether'; Dir = 'plugins/MorphSyncTogether' },
+            @{ Id = 'IEDSyncTogether';   Dir = 'plugins/IEDSyncTogether' },
+            @{ Id = 'AnimSyncTogether';  Dir = 'plugins/AnimSyncTogether' },
+            @{ Id = 'DAVSyncTogether';   Dir = 'plugins/DAVSyncTogether' },
+            @{ Id = 'TradeTogether';     Dir = 'plugins/TradeTogether' }
+          )
+          $failed = @()
+          foreach ($spec in $specs) {
+            Write-Host "::group::Build $($spec.Id)"
+            # The contract gate already verifies that each vendored header agrees
+            # with the authoritative one on every symbol the consumer uses and on
+            # every shared constant value. Overwriting the file here as well was a
+            # mistake: a consumer may legitimately vendor a header whose helper
+            # functions are defined inline rather than declared, because it does
+            # not link the STRPM client library. IEDSyncTogether does exactly
+            # that, and replacing its header with the declaration-only canonical
+            # copy turned a working build into LNK2019 on STRPM::ResultToString.
+            #
+            # So the header is left as the consumer ships it, and the gate is what
+            # keeps it honest.
+            $vendored = Get-ChildItem -Path $spec.Dir -Recurse -Filter 'STRPluginMessagingAPI.h' -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notmatch '\\build\\' } | Select-Object -First 1
+            if ($vendored) {
+              $inline = Select-String -Path $vendored.FullName -Pattern 'inline const char\* ResultToString' -Quiet
+              Write-Host "vendored header: $($vendored.FullName) (helpers inline: $inline)"
+            }
+
+            # Quoted interpolation matters here: passed bare, CMake receives the
+            # literal text "$toolchain" and reports "Could not find toolchain
+            # file: $toolchain". Asserting existence first turns that class of
+            # mistake into a message that names the path it actually looked for.
+            $toolchain = Join-Path $env:VCPKG_ROOT 'scripts/buildsystems/vcpkg.cmake'
+            if (-not (Test-Path -LiteralPath $toolchain)) { throw "vcpkg toolchain not found at $toolchain" }
+            Write-Host "toolchain: $toolchain"
+
+            # The configure output is captured so a failure can be reported as a
+            # GitHub annotation. Annotations are readable without signing in,
+            # and the step log is not, so a bare "configure failed" would leave
+            # the actual reason visible only to whoever has an account.
+            $configureLog = & cmake -S $spec.Dir -B "$($spec.Dir)/build" -A x64 "-DCMAKE_TOOLCHAIN_FILE=$toolchain" 2>&1
+            $configureCode = $LASTEXITCODE
+            $configureLog | ForEach-Object { Write-Host $_ }
+            if ($configureCode -ne 0) {
+              $tail = ($configureLog | Where-Object { $_ -match 'error|Error|CMake Error|not found|Could not|Unable' } | Select-Object -Last 6)
+              if (-not $tail) { $tail = ($configureLog | Select-Object -Last 6) }
+              $detail = ($tail -join ' | ') -replace '%', '%25' -replace '\r', '' -replace '\n', '%0A'
+              Write-Host "::error title=$($spec.Id) configure failed::$detail"
+              $failed += "$($spec.Id) (configure)"
+              Write-Host "::endgroup::"
+              continue
+            }
+
+            # add_commonlibsse_plugin generates __<Project>Plugin.cpp during
+            # configure, and that file uses "..."sv literals without bringing
+            # std::literals into scope, so it fails with C3688 as soon as the
+            # compiler reaches line 4. Every plugin repository works around this
+            # in its own build script by prepending the using-directive between
+            # configure and build. Building through CMake directly skips that,
+            # which is why this step exists rather than being left to them.
+            $generated = Get-ChildItem -Path "$($spec.Dir)/build" -Filter '__*Plugin.cpp' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($generated) {
+              $content = Get-Content -LiteralPath $generated.FullName -Raw
+              if ($content -notmatch 'using namespace std::literals') {
+                [System.IO.File]::WriteAllText($generated.FullName, "using namespace std::literals;`r`n" + $content)
+                Write-Host "applied CommonLibSSE generated-file workaround: $($generated.Name)"
+              }
+            }
+            else {
+              Write-Host 'note: no __*Plugin.cpp generated for this project'
+            }
+
+            $buildLog = & cmake --build "$($spec.Dir)/build" --config Release --parallel 2>&1
+            $buildCode = $LASTEXITCODE
+            $buildLog | ForEach-Object { Write-Host $_ }
+            if ($buildCode -ne 0) {
+              $tail = ($buildLog | Where-Object { $_ -match 'error|Error' } | Select-Object -Last 6)
+              if (-not $tail) { $tail = ($buildLog | Select-Object -Last 6) }
+              $detail = ($tail -join ' | ') -replace '%', '%25' -replace '\r', '' -replace '\n', '%0A'
+              Write-Host "::error title=$($spec.Id) build failed::$detail"
+              $failed += "$($spec.Id) (build)"
+            }
+
+            Write-Host "::endgroup::"
+          }
+
+          # Recorded rather than thrown. A plugin failure used to end the job
+          # here, which meant a broken plugin hid whether the framework itself
+          # compiled - two problems, one visible. The job still fails, at the
+          # end, once everything that can be checked has been.
+          if ($failed.Count -gt 0) {
+            Write-Host "::error::companion plugin build failed: $($failed -join ', ')"
+            "failed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "failed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      # The two OStim consent scripts are Papyrus, not C++, so CMake never builds
+      # them, and the plugin's own compile-ui-consent.ps1 needs PapyrusCompiler.exe
+      # from an installed Skyrim, which no runner has. This uses the open-source
+      # russo-2025/papyrus-compiler instead and writes into the plugin's build
+      # tree, which is what the collection step below already scans - so the two
+      # scripts ride the existing artifact path to the packaging manifest.
+      #
+      # Deliberately after the plugin builds: it shares plugins/OStimTogether/build
+      # with CMake, and running it last means nothing can clean it away afterwards.
+      - name: Compile the OStim Papyrus consent scripts
+        if: steps.plugins.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          $out = 'plugins/OStimTogether/build/papyrus'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & Code/plugins/papyrus/Compile-OStimConsentScripts.ps1 -OutputDir $out
+          if ($LASTEXITCODE -ne 0) { throw 'Papyrus compilation failed' }
+
+          # The optional OCum Ascended option ships a quest esp whose VMAD names
+          # OStimTogetherOCum, so the esp is inert without its .pex. The plugin's
+          # own build-fomod.ps1 throws when it is missing, but this repository
+          # stages package/Data directly and never runs that script - which is how
+          # the esp came to ship without its script and nothing reported it.
+          & Code/plugins/papyrus/Compile-OCumIntegrationScript.ps1 -OutputDir $out
+          if ($LASTEXITCODE -ne 0) { throw 'OCum Papyrus compilation failed' }
+
+      # The ten scripts under GameFiles/Skyrim/scripts/source ship as .pex and
+      # are staged into the package, but nothing used to compile them: the .pex
+      # were committed and the .psc were the only record of what they came from.
+      # This builds them with the same pinned compiler and writes to a scratch
+      # directory rather than over GameFiles, so the step proves the sources
+      # still compile without letting CI silently rewrite what ships.
+      - name: Compile the shipping Papyrus scripts
+        shell: pwsh
+        run: |
+          & Code/plugins/papyrus/Compile-ShippingScripts.ps1 -OutputDir "$env:RUNNER_TEMP/papyrus-shipping"
+          if ($LASTEXITCODE -ne 0) { throw 'shipping Papyrus compilation failed' }
+
+      # Flattens each plugin's own build tree into <out>/<pluginId>/ so the
+      # packaging script finds artifacts without knowing each project's output
+      # directory convention.
+      - name: Collect plugin artifacts
+        if: steps.plugins.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          $root = 'plugin-artifacts'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          foreach ($id in (Get-Content Code/plugins/plugins.json -Raw | ConvertFrom-Json).plugins.id) {
+            $from = "plugins/$id/build"
+            if (-not (Test-Path $from)) { Write-Host "  $id : no build tree"; continue }
+            New-Item -ItemType Directory -Force -Path "$root/$id" | Out-Null
+            Get-ChildItem $from -Recurse -File -Include *.dll,*.pex,*.esp |
+              Where-Object { $_.FullName -notmatch '\\CMakeFiles\\' } |
+              ForEach-Object { Copy-Item $_.FullName "$root/$id/" -Force }
+            Write-Host "  $id : $((Get-ChildItem "$root/$id" -File).Count) artifact(s)"
+          }
+
+      - name: Upload plugin artifacts
+        if: steps.plugins.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-artifacts
+          path: plugin-artifacts/**
       - name: Cache xmake dependencies
         uses: actions/cache@v4
         with:
           path: ~/AppData/Local/.xmake/packages
           key: ${{ runner.os }}-xmake-${{ hashFiles('**/xmake.lua') }}
+          # Fall back to the last warm package cache when the key changes
+          # (e.g. an unrelated xmake.lua edit), so tiltedcore + friends are
+          # reused instead of a fresh fetch/build that can flake.
+          restore-keys: |
+            ${{ runner.os }}-xmake-
 
       # Install xmake
       - name: Setup xmake
         uses: xmake-io/github-action-setup-xmake@v1
         with:
-          xmake-version: 2.9.8
+          xmake-version: 3.1.0
           actions-cache-folder: '.xmake-cache' # This doesn't cache dependencies, only xmake itself
           actions-cache-key: ${{ matrix.os }}
 
+      - name: Point xmake to Visual Studio
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vsPath = & $vswhere -latest -property installationPath
+            Write-Host "Visual Studio found: $vsPath"
+            xmake g --vs="$vsPath"
+          } else {
+            Write-Error "vswhere.exe not found - Visual Studio is not installed on this runner"
+          }
+
       - name: Configure xmake and install dependencies
-        run: xmake config --arch=${{ matrix.arch }} --mode=${{ inputs.build-mode }} --yes -vD
+        run: xmake config --arch=${{ matrix.arch }} --mode=${{ inputs.build-mode }} --toolchain=msvc --yes -vD
+
+      - name: Show run identity
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== HEAD: $(git rev-parse HEAD) ==="
+          Write-Host "=== tiltedcore requirement ==="
+          Select-String -Path xmake.lua -Pattern 'tiltedcore'
+
 
       # Build the client
       - name: Build with xmake
+        shell: pwsh
         run: |
-          xmake -y
-          echo "STR_BUILD_DIR=build/windows/${{ matrix.arch }}/${{ inputs.build-mode }}/" >> $env:GITHUB_ENV
+          # The step log needs a signed-in account to read; an annotation does
+          # not. Capturing the output lets a compile failure name its own cause
+          # to anyone who can see the run, instead of a bare exit code.
+          $log = & xmake -y 2>&1
+          $code = $LASTEXITCODE
+          $log | ForEach-Object { Write-Host $_ }
+          if ($code -ne 0) {
+            $errors = @($log | Where-Object { $_ -match 'error [A-Z]+\d+|error:|fatal error' })
+            if ($errors.Count -eq 0) { $errors = @($log | Select-Object -Last 40) }
+
+            # The job summary renders on the run page and needs no account to
+            # read, unlike the step log. The whole error list goes there, so a
+            # failure can be diagnosed from outside GitHub entirely.
+            $summary = @('## xmake build failed', '', '```', ($errors | Select-Object -First 200), '```') -join "`n"
+            $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+            $detail = (($errors | Select-Object -First 6) -join ' || ') -replace '%', '%25' -replace '\r', '' -replace '\n', '%0A'
+            Write-Host "::error title=xmake build failed ($($errors.Count) error line(s), see the job summary)::$detail"
+            exit 1
+          }
+          "STR_BUILD_DIR=build/windows/${{ matrix.arch }}/${{ inputs.build-mode }}/" >> $env:GITHUB_ENV
+
+      # The 1.5.x runtime is a second client DLL built from the same sources
+      # with the legacy struct layouts. It is built explicitly (Build.bat does
+      # the same) and then checked, because a package without it leaves 1.5.x
+      # players with a game that starts and never opens the multiplayer menu.
+      - name: Build the legacy 1.5.x client runtime
+        run: |
+          xmake build SkyrimTogetherClientDllLegacy
+          foreach ($dll in 'SkyrimTogetherRuntime.dll','SkyrimTogetherRuntime_1_5.dll') {
+            $path = Join-Path $env:STR_BUILD_DIR $dll
+            if (!(Test-Path $path)) { throw "$dll was not produced by the build" }
+            Write-Host "$dll $((Get-Item $path).Length) bytes"
+          }
+
+      # The encoding tests have been built on every run since they were written
+      # and executed on none: the build job only ever compiled them, and the
+      # playable-build workflow deliberately strips *Tests.exe from the payload.
+      # A test that never runs is a test that is already broken, so run it here -
+      # after the last C++ compile, before anything is packaged.
+      #
+      # Blocking on purpose. A gate that only warns is the same as no gate, and
+      # these cover the serialisation the whole protocol depends on: a message
+      # that round-trips wrong is a desync, not a compile error.
+      - name: Run the encoding tests
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:STR_BUILD_DIR 'TPTests.exe'
+          if (!(Test-Path $exe)) { throw "test binary not built: $exe" }
+          Write-Host "running $exe"
+
+          # Captured with & and read from $LASTEXITCODE, like the xmake step
+          # above. Deliberately not Start-Process: I could only characterise its
+          # .ExitCode on Windows PowerShell 5.1, where it came back empty for
+          # both a passing and a failing child - and "empty -ne 0" is true in
+          # PowerShell, so that form would have failed the step even when every
+          # test passed. $LASTEXITCODE is the form this file already trusts.
+          $log = & $exe 2>&1
+          $code = $LASTEXITCODE
+          $log | ForEach-Object { Write-Host $_ }
+
+          # An exit code of 0 is not by itself evidence that anything ran: catch2
+          # exits 0 and prints "No tests ran" when no test case matches, so a
+          # suite that was emptied, mis-built or filtered to nothing looks exactly
+          # like one that passed. The success line is the only thing that
+          # distinguishes them, and a gate that cannot tell those apart is the
+          # very failure this step exists to prevent.
+          $joined = $log -join "`n"
+          if ($code -eq 0 -and $joined -notmatch 'All tests passed') {
+            $summary = @('## encoding tests produced no result', '', '```', ($log | Select-Object -First 60), '```') -join "`n"
+            $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Write-Host '::error title=encoding tests produced no result::the binary exited 0 but never reported "All tests passed"; catch2 prints "No tests ran" when nothing matched'
+            exit 1
+          }
+
+          # The step log needs a signed-in account; an annotation does not.
+          # Report the assertion lines, not a bare exit code, so a failure is
+          # readable from outside GitHub - the same reason the xmake step above
+          # annotates rather than just exiting.
+          if ($code -ne 0) {
+            $fails = @($log | Where-Object { $_ -match 'FAILED|failed|error:|unexpected exception' })
+            if ($fails.Count -eq 0) { $fails = @($log | Select-Object -Last 25) }
+            $summary = @('## encoding tests failed', '', '```', ($fails | Select-Object -First 100), '```') -join "`n"
+            $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            $detail = (($fails | Select-Object -First 6) -join ' || ') -replace '%', '%25' -replace '`r', '' -replace '`n', '%0A'
+            Write-Host "::error title=encoding tests failed (exit $code)::$detail"
+            exit 1
+          }
+          Write-Host 'encoding tests passed'
 
       # Create distrib
       - name: Output distrib binaries via xmake
@@ -102,6 +666,15 @@ jobs:
       - id: output-version
         run: echo "version=$(git describe --tags)" >> $env:GITHUB_OUTPUT
 
+      # The last step of the job, so it runs after everything else has had a
+      # chance to report. This is where a deferred plugin failure lands.
+      - name: Fail if the companion plugins did not build
+        if: always() && steps.companion.outputs.failed == 'true'
+        shell: pwsh
+        run: |
+          Write-Host '::error::companion plugin build failed earlier in this job; see the annotation above'
+          exit 1
+
       - name: Upload build files for the next job
         if: ${{ inputs.upload-build-for-next-job }}
         uses: actions/upload-artifact@v4
@@ -111,3 +684,45 @@ jobs:
           path: |
             ${{ env.STR_BUILD_DIR }}
             GameFiles/Skyrim/
+
+      # release.yml runs only on a tag, and releases are frozen, so without this
+      # the packaging pipeline would never be exercised - the first time it ran
+      # would be the release it was supposed to produce. That is the worst place
+      # to discover a staging bug, and this repository has already shipped one
+      # (a wizard entry pointing at a folder the build never staged).
+      #
+      # Deliberately last: the packaging script moves files out of the build
+      # directory, so the artifact for the next job must already be uploaded.
+      - name: Verify the packaging pipeline (dry run)
+        # Skipped, not failed, when the companion plugin submodules are absent: the
+        # packaging script stages them and would throw for a reason that has nothing
+        # to do with packaging. The job already warns about the missing submodules.
+        if: steps.plugins.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          # A missing build output would make the packaging script throw, which is
+          # the point - but it must not read as a packaging bug when the real
+          # cause is an incomplete build.
+          foreach ($needed in 'SkyrimTogetherSKSE.dll','SkyrimTogetherRuntime.dll','SkyrimTogetherRuntime_1_5.dll') {
+            $path = Join-Path $env:STR_BUILD_DIR $needed
+            if (!(Test-Path $path)) { throw "build output missing before packaging: $needed" }
+          }
+
+          # Not $args: that is a reserved automatic variable in PowerShell.
+          # And not $LASTEXITCODE: the script is invoked with &, so a script
+          # failure is reported through $? rather than the exit code of the
+          # last native command.
+          $packArgs = @{
+            Stage = 'mod-pack-dryrun'
+            Dist = 'dist-dryrun'
+            BuildDir = $env:STR_BUILD_DIR
+            Version = 'v0.0.0-dryrun'
+          }
+          if (Test-Path 'plugin-artifacts') { $packArgs['ArtifactsRoot'] = 'plugin-artifacts' }
+          & Tools/Packaging/New-STNModPackage.ps1 @packArgs
+          if (-not $?) { throw 'packaging dry run failed; see the output above' }
+
+          # The archive is the deliverable; prove it exists and is not empty.
+          $zip = Get-ChildItem 'dist-dryrun' -Filter '*.zip' | Select-Object -First 1
+          if (-not $zip) { throw 'packaging produced no archive' }
+          Write-Host "dry run produced $($zip.Name) ($([math]::Round($zip.Length/1MB,1)) MB)"

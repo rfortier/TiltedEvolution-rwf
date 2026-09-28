@@ -55,6 +55,9 @@ void DebugService::DrawContainerDebugView()
                         uint32_t itemId = modSystem.GetGameId(entry.BaseId);
                         TESForm* pItem = TESForm::GetById(itemId);
                         Actor* pActor = Cast<Actor>(TESForm::GetById(actorId));
+                        if (!pActor || !pItem)
+                            return;
+
                         EquipManager::Get()->Equip(pActor, pItem, nullptr, entry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false);
                     });
             }
@@ -67,6 +70,9 @@ void DebugService::DrawContainerDebugView()
                         uint32_t itemId = modSystem.GetGameId(entry.BaseId);
                         TESForm* pItem = TESForm::GetById(itemId);
                         Actor* pActor = Cast<Actor>(TESForm::GetById(actorId));
+                        if (!pActor || !pItem)
+                            return;
+
                         EquipManager::Get()->UnEquip(pActor, pItem, nullptr, entry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false, nullptr);
                     });
             }

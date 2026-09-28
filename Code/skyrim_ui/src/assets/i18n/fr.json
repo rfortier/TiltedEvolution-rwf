@@ -5,7 +5,9 @@
     "CHAT": {
       "SEND": "Envoyer",
       "MESSAGE": "Message",
-      "MESSAGE_TOO_LONG": "Vous ne pouvez pas envoyer un message d'une longueur supérieure à  {{chatMessageLengthLimit}} caractères."
+      "MESSAGE_TOO_LONG": "Vous ne pouvez pas envoyer un message d'une longueur supérieure à  {{chatMessageLengthLimit}} caractères.",
+      "SET_TIME_ARGUMENT_COUNT": "Arguments incorrects, utilisation : /settime HH MM, exemple : /settime 15 32.",
+      "SET_TIME_INVALID_ARGUMENTS": "Les heures doivent être comprises entre 0 et 23, et les minutes entre 0 et 59."
     },
     "CONNECT": {
       "INFO": {
@@ -22,6 +24,11 @@
         "CONNECTION": "Impossible de se connecter au serveur spécifié. Veuillez vous assurer que vous avez correctement entré l'adresse et que vous ne rencontrez pas de problèmes de réseau.",
         "VERSION_MISMATCH": "Vous ne pouvez pas vous connecter au serveur car il ne dispose pas de la même version de Skyrim Together que vous.",
         "INVALID_ADDRESS": "Le format de l'adresse est invalide. [Adresse:Port]"
+      },
+      "HIDE_PASSWORD": "Masquer le mot de passe ?",
+      "SUCCESS": {
+        "TITLE": "Connecté",
+        "MESSAGE": "Vous êtes maintenant connecté à {{address}}. Appuyez sur F2 à tout moment pour ouvrir ce menu et discuter."
       }
     },
     "DISCONNECT": {
@@ -84,7 +91,12 @@
       "RECONNECT": "Reconnexion",
       "PLAYER_MANAGER": "Gestion des joueurs",
       "SETTINGS": "Paramètres",
-      "CONNECTION_IN_PROGRESS": "Connexion en cours"
+      "CONNECTION_IN_PROGRESS": "Connexion en cours",
+      "STATUS": {
+        "OFFLINE": "Non connecté",
+        "CONNECTING": "Connexion...",
+        "ONLINE": "Connecté à {{address}}"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "Recherche...",
@@ -94,14 +106,15 @@
       "NO_SERVERS": "Aucun serveur public disponible",
       "HIDE_MISMATCHED_SERVERS": "Masquer les serveurs dont la version est incompatible",
       "HIDE_FULL_SERVERS": "Masquer les serveurs pleins",
-      "SERVER_COUNT": "Affichage de {{filteredCount}} sur {{count} serveurs",
+      "SERVER_COUNT": "Affichage de {{filteredCount}} sur {{count}} serveurs",
       "TABLE_HEADERS": {
         "NAME": "Nom du serveur",
         "PLAYERS": "Joueurs / Max.",
         "COUNTRY": "Pays",
         "FAVORITE": "Favoris"
       },
-      "JOIN": "Rejoindre"
+      "JOIN": "Rejoindre",
+      "HIDE_PASSWORD_PROTECTED_SERVERS": "Masquer les serveurs protégés par mot de passe"
     },
     "SETTINGS": {
       "AUDIO": "Audio",
@@ -133,7 +146,12 @@
         "L": "Grande",
         "XL": "Très grande"
       },
-      "BACK": "Retour"
+      "BACK": "Retour",
+      "VERSION": {
+        "HEADER": "Version",
+        "INFO": "Actuellement installée :",
+        "OUTDATED": "La version est obsolète. Veuillez mettre à jour."
+      }
     }
   },
   "SERVICE": {
@@ -144,7 +162,8 @@
     },
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "Commandes de chat disponibles : {{cmds}}",
-      "COMMAND_NOT_FOUND": "'{{cmd}}' n'est pas reconnu en tant que commande."
+      "COMMAND_NOT_FOUND": "'{{cmd}}' n'est pas reconnu en tant que commande.",
+      "NOT_ADMIN": "Vous devez être administrateur pour utiliser cette commande."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}} a atteint le niveau {{level}}.",
@@ -161,7 +180,9 @@
         "CLIENT_MODS_DISALLOWED": "Ce serveur n'autorise pas : {{mods}}. Veuillez les retirer pour rejoindre le serveur.",
         "WRONG_PASSWORD": "Le mot de passe que vous avez saisi est incorrect.",
         "NO_REASON": "Le serveur a refusé la connexion sans raison.",
-        "SERVER_FULL": "Le serveur est plein."
+        "SERVER_FULL": "Le serveur est plein.",
+        "BAD_UGRIDSTOLOAD": "Il semble que votre fichier Skyrim.ini contienne une valeur non par défaut pour « uGridsToLoad ». C’EST UNE TRÈS MAUVAISE IDÉE et cela cassera très probablement le mod. Veuillez remettre ce paramètre à sa valeur par défaut (5), ou supprimer le fichier Skyrim.ini et lancer Skyrim en version originale une fois pour en générer un nouveau. Les paramètres « uExterior Cell Buffer » et « uInterior Cell Buffer » doivent également rester par défaut. Si vous ne savez pas comment faire, consultez notre wiki ou demandez de l’aide sur notre serveur Discord ou notre subreddit.",
+        "NON_DEFAULT_INSTALL": "Il semble que votre installation ne soit pas purement originale, c’est-à-dire qu’elle contient du contenu Creation Club (Anniversary Update ou autre) ou d’autres mods.\nNous NE recommandons PAS de jouer avec des mods.\nNous vous recommandons de désinstaller et de désactiver ces mods (les instructions se trouvent sur le wiki).\n\nPour une meilleure expérience, vous devriez avoir la liste de mods suivante :<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>\n"
       }
     },
     "PLAYER_LIST": {

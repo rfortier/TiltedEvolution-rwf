@@ -1,0 +1,85 @@
+diff --git a/src/RaceMenuOverlayBridge.cpp b/src/RaceMenuOverlayBridge.cpp
+index f2e48f6..80b10c3 100644
+--- a/src/RaceMenuOverlayBridge.cpp
++++ b/src/RaceMenuOverlayBridge.cpp
+@@ -63,6 +63,15 @@ namespace OStimTogether
+                 using OverlayInstallCallback =
+                     void (*)(RE::TESObjectREFR*, RE::NiAVObject*);
+ 
++                // RaceMenu 3.x ships version 1, whose vtable carries Save/Load
++                // where this declaration has Revert and has no GetOverlayCount,
++                // GetOverlayFormat or install callbacks at all. Calling version 1
++                // through this type dispatches GetOverlayCount to
++                // RevertHeadOverlays, which reads the OverlayType enum as a
++                // TESObjectREFR* and faults at [enum+0x14] - target 0x15 for
++                // OverlayType::Spell, the crash in skee64.dll+0x81be8.
++                static constexpr u32 kSupportedVersion = 2;
++
+                 virtual bool HasOverlays(
+                     RE::TESObjectREFR* reference) = 0;
+                 virtual void AddOverlays(
+@@ -115,6 +124,10 @@ namespace OStimTogether
+             class IOverrideInterface : public IPluginInterface
+             {
+             public:
++                // Version 1 of this interface orders the node-override methods
++                // differently, so the same layout check applies here.
++                static constexpr u32 kSupportedVersion = 2;
++
+                 class GetVariant
+                 {
+                 public:
+@@ -1026,6 +1039,11 @@ namespace OStimTogether
+             return;
+         }
+ 
++        // QueryInterface answers by name, not by layout, so an older RaceMenu
++        // hands back an interface whose vtable does not match this build's
++        // declaration. GetVersion() is slot 1 in every layout, so it is safe to
++        // ask before touching anything else, and an interface this build cannot
++        // call correctly is refused rather than dispatched into.
+         auto* overlay =
+             static_cast<SKEE::IOverlayInterface*>(
+                 overlayBase);
+@@ -1035,13 +1053,39 @@ namespace OStimTogether
+                     overrideBase) :
+                 nullptr;
+ 
++        const auto overlayVersion = overlay->GetVersion();
++        const auto overrideVersion =
++            overrides ? overrides->GetVersion() : 0;
++
++        if (overlayVersion <
++            SKEE::IOverlayInterface::kSupportedVersion) {
++            SKSE::log::error(
++                "RaceMenuOverlayBridge: SKEE Overlay interface version {} is older than the {} "
++                "this build declares; leaving it disabled because the vtable layout differs and "
++                "calling it would dispatch to the wrong methods. Update RaceMenu.",
++                overlayVersion,
++                SKEE::IOverlayInterface::kSupportedVersion);
++            return;
++        }
++
++        if (overrides &&
++            overrideVersion <
++                SKEE::IOverrideInterface::kSupportedVersion) {
++            SKSE::log::error(
++                "RaceMenuOverlayBridge: SKEE Override interface version {} is older than the {} "
++                "this build declares; leaving it disabled for the same reason.",
++                overrideVersion,
++                SKEE::IOverrideInterface::kSupportedVersion);
++            return;
++        }
++
+         _overlayInterface = overlay;
+         _overrideInterface = overrides;
+ 
+         SKSE::log::info(
+             "RaceMenuOverlayBridge READY overlayVersion={} overrideVersion={}",
+-            overlay->GetVersion(),
+-            overrides ? overrides->GetVersion() : 0);
++            overlayVersion,
++            overrideVersion);
+     }
+ 
+     void RaceMenuOverlayBridge::LogSceneGraph(

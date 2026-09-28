@@ -1,0 +1,71 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Option_Box_MC" itemID="6343e4ae-00000683" linkageExportForAS="true" linkageIdentifier="Option_Box_MC" linkageClassName="Option_Box_MC" lastModified="1691762613" hasValidCenterPoint="true" lastUniqueIdentifier="23" transformCenterPoint="0, #21.72">
+  <timeline>
+    <DOMTimeline name="Option_Box_MC" guides='&lt;guidelines&gt;&lt;guideline direction="h"&gt;0&lt;/guideline&gt;&lt;guideline direction="v"&gt;1&lt;/guideline&gt;&lt;guideline direction="v"&gt;25&lt;/guideline&gt;&lt;guideline direction="v"&gt;124&lt;/guideline&gt;&lt;guideline direction="v"&gt;223&lt;/guideline&gt;&lt;guideline direction="v"&gt;336&lt;/guideline&gt;&lt;guideline direction="h"&gt;-455&lt;/guideline&gt;&lt;guideline direction="h"&gt;-67&lt;/guideline&gt;&lt;guideline direction="h"&gt;-474&lt;/guideline&gt;&lt;/guidelines&gt;'>
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Import/Sprites/skyrim_BG_MC" name="bg" centerPoint3DX="-0.05">
+                  <transformationPoint>
+                    <Point x="-0.05"/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+                <DOMDynamicText name="optionDesc" width="216.6" height="70.2" lineType="multiline">
+                  <matrix>
+                    <Matrix tx="26" ty="-82.75"/>
+                  </matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters></characters>
+                      <textAttrs>
+                        <DOMTextAttrs aliasText="false" size="25" bitmapSize="500" face="$EverywhereMediumFont*" fillColor="#FFFFFF"/>
+                      </textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMDynamicText>
+                <DOMSymbolInstance libraryItemName="Divider" centerPoint3DX="167" centerPoint3DY="-86">
+                  <matrix>
+                    <Matrix a="0.998260498046875" tx="24" ty="-86"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point x="143.25"/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+                <DOMDynamicText name="speedDesc" width="36.35" height="27.95" lineType="multiline">
+                  <matrix>
+                    <Matrix tx="278.6" ty="-59.55"/>
+                  </matrix>
+                  <textRuns>
+                    <DOMTextRun>
+                      <characters>1.5</characters>
+                      <textAttrs>
+                        <DOMTextAttrs aliasText="false" size="25" bitmapSize="500" face="$EverywhereMediumFont*" fillColor="#FFFFFF"/>
+                      </textAttrs>
+                    </DOMTextRun>
+                  </textRuns>
+                </DOMDynamicText>
+                <DOMSymbolInstance libraryItemName="Option/SpeedButton" name="speedUp" selected="true" centerPoint3DX="264.95" centerPoint3DY="-71.9">
+                  <matrix>
+                    <Matrix tx="257" ty="-83.75"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point x="7.95" y="11.8"/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Option/SpeedButton" name="speedDown">
+                  <matrix>
+                    <Matrix a="-1" d="-1" tx="273" ty="-9.55"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

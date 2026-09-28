@@ -1,0 +1,175 @@
+name: Release build
+
+# Builds the client/server on a Windows runner and publishes two separate
+# zips as a GitHub Release when a tag is pushed:
+#   SkyrimTogetherNextMod-<version>.zip    -> the client mod (MO2 installable,
+#                                             FOMOD guided installer, optional
+#                                             companion plugins inside)
+#   SkyrimTogetherNextServer-<version>.zip -> the dedicated server (windowed
+#                                             control panel on Windows)
+# Can also be triggered manually (workflow_dispatch); the zips are then
+# uploaded as workflow artifacts instead.
+#
+# RELEASE FREEZE: while RELEASE-FREEZE.md exists at the repository root this
+# workflow refuses to run. The freeze was lifted on 2026-09-26 (the file is
+# gone), but the guard stays: it costs one ubuntu job and it is the only thing
+# standing between a stray tag push and a version nobody meant to publish.
+# Re-create the file to freeze releases again - that is the whole switch.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  # Runs first and cheaply, so a frozen repository never spends a Windows build
+  # on a release it is not allowed to publish.
+  freeze-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse to release while the freeze is active
+        shell: bash
+        run: |
+          if [ -f RELEASE-FREEZE.md ]; then
+            echo "::error::Release freeze is active (RELEASE-FREEZE.md exists)."
+            echo "No version may be published while the companion-plugin work is in progress."
+            echo "Delete RELEASE-FREEZE.md to allow releases again; see that file for details."
+            exit 1
+          fi
+          echo "No release freeze; proceeding."
+
+  build-windows:
+    needs: freeze-check
+    uses: ./.github/workflows/windows.yml
+    with:
+      build-mode: 'release'
+      upload-build-for-next-job: true
+
+  package:
+    runs-on: windows-latest
+    needs: [freeze-check, build-windows]
+    permissions:
+      contents: write
+    steps:
+      # A full checkout with submodules, deliberately.
+      #
+      # This job used to check out sparsely - Tools/Packaging, Code/plugins and
+      # GameFiles/Skyrim/fomod - on the stated grounds that "submodules are not
+      # needed: the plugin build already happened in the build job and arrives as
+      # an artifact". That reasoning only covers half of what gets staged. The
+      # artifact carries each plugin's *compiled* output; every plugin's payload
+      # is repository content inside its submodule - the package/Data trees of
+      # OStimTogether, MorphSyncTogether and TradeTogether, IEDSyncTogether's
+      # ini, AnimSyncTogether's rule profiles. Without the submodules
+      # Add-PluginPayload.ps1 reports "submodule not checked out" for every
+      # one of them, and that is exactly how the v1.1.2 tag run died at
+      # "Assemble the mod package".
+      #
+      # Keeping the sparse patterns and adding the submodule paths was the other
+      # option and was rejected: a non-cone sparse checkout drops .gitmodules
+      # unless it is listed, and with it gone "submodules: true" quietly checks
+      # out nothing. This job runs once per tag, so the minutes a full checkout
+      # costs are worth not having that failure mode.
+      - name: Checkout packaging inputs
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download build and game files
+        uses: actions/download-artifact@v5
+        with:
+          name: internal-job-files
+
+      - name: Download plugin artifacts
+        uses: actions/download-artifact@v5
+        continue-on-error: true
+        with:
+          name: plugin-artifacts
+          path: plugin-artifacts
+
+      - name: Assemble the mod package
+        shell: pwsh
+        run: |
+          # The zip root mirrors the game's Data folder (SKSE/, scripts/, meshes/,
+          # SkyrimTogether.esp, SkyrimTogetherRebornBehaviors/, SkyrimTogetherRuntime/),
+          # so a DIRECT install - when MO2 does not run the FOMOD wizard (replace
+          # installs, older MO2) or the user extracts the archive by hand - is
+          # already correct. fomod/ holds the wizard; the optional folders
+          # (VerifyScript/, launcher/, OptionalPlugins/) sit at the root as well.
+          #
+          # The assembly itself lives in Tools/Packaging so the same code path can
+          # be dry-run locally; it also verifies the wizard against the staged tree
+          # before zipping, so a wizard entry pointing at nothing fails the build.
+          $ver = "${{ needs.build-windows.outputs.str-version }}"
+          # Not $args (reserved in PowerShell) and not $LASTEXITCODE (the script
+          # is invoked with &, so failure arrives through $?).
+          $packArgs = @{
+            Stage = 'mod-pack'
+            Dist = '.'
+            BuildDir = 'build/windows/x64/release'
+            Version = $ver
+          }
+          if (Test-Path 'plugin-artifacts') { $packArgs['ArtifactsRoot'] = 'plugin-artifacts' }
+          & Tools/Packaging/New-STNModPackage.ps1 @packArgs
+          if (-not $?) { exit 1 }
+
+      - name: Assemble the server package
+        shell: pwsh
+        run: |
+          # ---- dedicated server (SkyrimTogetherNextServer-<version>.zip) ----
+          # The mod step left the server binaries in the build directory on purpose;
+          # copy them plus the shared runtime dlls so the server stays self contained.
+          New-Item -ItemType Directory -Force -Path server-pack | Out-Null
+          Get-ChildItem build/windows/x64/release -Filter SkyrimTogetherServer.exe |
+            ForEach-Object { Copy-Item $_.FullName server-pack/ -Force }
+          Get-ChildItem build/windows/x64/release -Filter STServer.dll |
+            ForEach-Object { Copy-Item $_.FullName server-pack/ -Force }
+          Copy-Item mod-pack/SkyrimTogetherRuntime/*.dll server-pack/ -Exclude SkyrimTogetherRuntime*.dll -ErrorAction SilentlyContinue
+          if (!(Test-Path server-pack/SkyrimTogetherServer.exe)) { throw 'server package is missing SkyrimTogetherServer.exe' }
+          # a starter readme so hosts know how to configure and run it
+          Set-Content server-pack/README.txt "Skyrim Together Next - dedicated server`n`nRun SkyrimTogetherServer.exe to start (a small control panel window opens).`n`n- Press Stop or close the window to shut the server down.`n- Edit config\STServer.ini (button in the window) to change port,`n  passwords, player limits and the mod policy.`n- Default port: UDP 10578 - remember to allow it in your firewall.`n- Add --nogui as a command line argument for the classic terminal mode.`n`nPlayers connect from the in-game menu (F2) to <this machine's ip>:10578.`nLAN/VPN play needs no further setup - see docs/LAN-RADMIN-GUIDE.md."
+          # a starter readme so hosts know how to configure and run it
+
+      - name: Create the server zip
+        shell: pwsh
+        run: |
+          # The mod package was already written by Tools/Packaging/New-STNModPackage.ps1,
+          # which owns its archive name and contents; only the server is zipped here.
+          $ver = "${{ needs.build-windows.outputs.str-version }}"
+          Compress-Archive -Path server-pack/* -DestinationPath "SkyrimTogetherNextServer-$ver.zip"
+          if (!(Test-Path "SkyrimTogetherNextMod-$ver.zip")) {
+            throw "mod package SkyrimTogetherNextMod-$ver.zip was not produced"
+          }
+          Get-ChildItem *.zip | Select-Object Name, Length
+      - name: Upload as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Skyrim Together Next Release ${{ needs.build-windows.outputs.str-version }}
+          path: |
+            SkyrimTogetherNextMod-*.zip
+            SkyrimTogetherNextServer-*.zip
+
+      # Belt and braces: the freeze job already gated this workflow, but the step
+      # that actually publishes is the one place worth re-checking, since a
+      # published release cannot be taken back.
+      - name: Refuse to publish while the freeze is active
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          if (Test-Path RELEASE-FREEZE.md) {
+            throw "Release freeze is active (RELEASE-FREEZE.md exists): refusing to publish $env:GITHUB_REF_NAME."
+          }
+
+      - name: Publish GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SkyrimTogetherNextMod-*.zip
+            SkyrimTogetherNextServer-*.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

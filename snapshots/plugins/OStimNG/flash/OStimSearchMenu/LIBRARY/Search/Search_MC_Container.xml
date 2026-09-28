@@ -1,0 +1,21 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Search/Search_MC_Container" itemID="6499ecea-0000024b" linkageExportForAS="true" linkageIdentifier="Search_MC_Container" linkageClassName="SearchMCContainer" lastModified="1687810924" lastUniqueIdentifier="7">
+  <timeline>
+    <DOMTimeline name="Search_MC_Container">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Search/Search_MC" name="searchMC" selected="true" centerPoint3DX="154.5" centerPoint3DY="-38.5">
+                  <transformationPoint>
+                    <Point x="154.75" y="12.2"/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

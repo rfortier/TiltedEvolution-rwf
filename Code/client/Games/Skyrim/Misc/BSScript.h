@@ -272,13 +272,18 @@ struct BSScript
             TP_THIS_FUNCTION(TNativeFunctionDtor, void, NativeFunction);
             // TODO: not sure about this address
             POINTER_SKYRIMSE(TNativeFunctionDtor, dtor, 104655);
+            if (!dtor.Get()) // unmapped on legacy game versions, degrade to a leak
+                return;
             TiltedPhoques::ThisCall(dtor, this);
         }
 
         NativeFunction(const char* apFunctionName, const char* apClassName, bool aIsStatic, uint32_t aParameterCount)
+            : pFunction(nullptr)
         {
             TP_THIS_FUNCTION(TNativeFunctionCtor, void, NativeFunction, const char*, const char*, bool, uint32_t);
             POINTER_SKYRIMSE(TNativeFunctionCtor, ctor, 104653);
+            if (!ctor.Get()) // unmapped on legacy game versions, degrade to a no-op callback
+                return;
             TiltedPhoques::ThisCall(ctor, this, apFunctionName, apClassName, aIsStatic, aParameterCount);
         }
 
@@ -316,33 +321,6 @@ struct BSScript
 
         bool MarshallAndDispatch(Variable* apBaseVar, IVirtualMachine* apVm, uint32_t aStackID, Variable* apResult, StackFrame* apStackFrame) override;
     };
-
-    // Bad PoC code
-#if 0
-    template <class... T> struct EventArguments : IFunctionArguments
-    {
-        using Tuple = std::tuple<EventArguments...>;
-
-        EventArguments(T... args)
-            : args(std::forward<T>(args)...)
-        {
-        }
-
-        virtual ~EventArguments(){};
-
-        virtual void Prepare(IFunctionArguments::Statement* apStatement) noexcept
-        {
-            apStatement->SetSize(std::tuple_size_v<std::remove_reference_t<Tuple>>);
-
-            PrepareImplementation(apStatement, std::make_index_sequence<std::tuple_size_v<std::remove_reference_t<Tuple>>>{});
-        }
-
-    private:
-        template <std::size_t... Is> void PrepareImplementation(IFunctionArguments::Statement* apStatement, std::index_sequence<Is...>) noexcept { ((apStatement->vars[Is].Set(std::get<Is>(args))), ...); }
-
-        Tuple args;
-    };
-#endif
 };
 
 template <> void BSScript::Variable::Set(int32_t aValue) noexcept;

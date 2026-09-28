@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fomod>
+  <Name>MorphSyncTogether</Name>
+  <Author>Caelvanost</Author>
+  <Version>0.4.2</Version>
+  <Description>Synchronizes RaceMenu BodyMorphs, FaceGen makeup, selected BodyHairSliders overlays and optional TNG genital scale between Skyrim Together players through STRPluginMessagingAPI.</Description>
+</fomod>

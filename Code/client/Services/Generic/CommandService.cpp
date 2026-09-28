@@ -14,6 +14,7 @@
 #include <Messages/TeleportCommandRequest.h>
 #include <Messages/TeleportCommandResponse.h>
 #include "Messages/SetTimeCommandRequest.h"
+#include <Messages/NotifySetTimeResult.h>
 
 #include <Structs/GridCellCoords.h>
 
@@ -23,6 +24,7 @@ CommandService::CommandService(World& aWorld, TransportService& aTransport, entt
 {
     m_setTimeConnection = aDispatcher.sink<SetTimeCommandEvent>().connect<&CommandService::OnSetTimeCommand>(this);
     m_teleportConnection = aDispatcher.sink<TeleportCommandResponse>().connect<&CommandService::OnTeleportCommandResponse>(this);
+    m_setTimeResultConnection = aDispatcher.sink<NotifySetTimeResult>().connect<&CommandService::OnSetTimeResult>(this);
 }
 
 void CommandService::OnSetTimeCommand(const SetTimeCommandEvent& acEvent) const noexcept
@@ -32,6 +34,19 @@ void CommandService::OnSetTimeCommand(const SetTimeCommandEvent& acEvent) const 
     request.Minutes = acEvent.Minutes;
     request.PlayerId = acEvent.PlayerId;
     m_transport.Send(request);
+}
+
+// The server always answers /settime, including when it refuses. Without this
+// the refusal was indistinguishable from the command not existing at all: the
+// server logged it, the player saw nothing, and the clock did not move.
+void CommandService::OnSetTimeResult(const NotifySetTimeResult& acMessage) noexcept
+{
+    using RT = NotifySetTimeResult::SetTimeResult;
+
+    if (acMessage.Result == RT::kSuccess)
+        return; // the calendar update that follows is the visible result
+
+    m_world.GetOverlayService().SendSystemMessage("Only an admin, or the party leader on a private server, can change the time.");
 }
 
 void CommandService::OnTeleportCommandResponse(const TeleportCommandResponse& acMessage) noexcept

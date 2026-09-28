@@ -1,0 +1,99 @@
+diff --git a/ImmersiveEquipmentDisplays/IED/Controller/IEquipment.cpp b/ImmersiveEquipmentDisplays/IED/Controller/IEquipment.cpp
+index 8015372..0000000 100644
+--- a/ImmersiveEquipmentDisplays/IED/Controller/IEquipment.cpp
++++ b/ImmersiveEquipmentDisplays/IED/Controller/IEquipment.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "ActorObjectHolder.h"
+ #include "BipedSlotData.h"
++#include "IEDSyncTogetherBridge.h"
+ #include "IRNG.h"
+ 
+ #include "IED/Controller/Controller.h"
+@@ -45,6 +46,30 @@ namespace IED
+ 		const ObjectEntrySlot&    a_slot) noexcept
+ 		-> SelectedItem
+ 	{
++		std::uint32_t overrideFormID = 0;
++		switch (IEDSyncTogetherBridge::QuerySlot(
++			a_params.actor->formID.get(),
++			stl::underlying(a_slot.slotid),
++			overrideFormID))
++		{
++		case IEDSyncTogetherBridge::SlotOverrideResult::kEmpty:
++			return {};
++		case IEDSyncTogetherBridge::SlotOverrideResult::kForm:
++		{
++			auto it = std::find_if(
++				a_candidates.begin(),
++				a_candidates.end(),
++				[overrideFormID](const auto& a_item) [[msvc::forceinline]] {
++					return a_item.item->form->formID.get() == overrideFormID;
++				});
++
++			return it != a_candidates.end() ? SelectedItem{ it } : SelectedItem{};
++		}
++		case IEDSyncTogetherBridge::SlotOverrideResult::kNotRemote:
++		default:
++			break;
++		}
++
+ 		if (a_candidates.empty())
+ 		{
+ 			return {};
+diff --git a/ImmersiveEquipmentDisplays/IED/Controller/IEDSyncTogetherBridge.h b/ImmersiveEquipmentDisplays/IED/Controller/IEDSyncTogetherBridge.h
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/ImmersiveEquipmentDisplays/IED/Controller/IEDSyncTogetherBridge.h
+@@ -0,0 +1,50 @@
++#pragma once
++
++#include <Windows.h>
++
++#include <cstdint>
++#include <memory>
++
++namespace IED::IEDSyncTogetherBridge
++{
++	enum class SlotOverrideResult : std::uint32_t
++	{
++		kNotRemote = 0,
++		kEmpty = 1,
++		kForm = 2
++	};
++
++	using query_slot_override_t = std::uint32_t(__cdecl*)(
++		std::uint32_t actorFormID,
++		std::uint32_t slotIndex,
++		std::uint32_t* outFormID) noexcept;
++
++	inline query_slot_override_t GetQueryFunction() noexcept
++	{
++		static query_slot_override_t function = nullptr;
++		if (!function)
++		{
++			if (const auto module = GetModuleHandleW(L"IEDSyncTogether.dll"))
++			{
++				function = reinterpret_cast<query_slot_override_t>(
++					GetProcAddress(module, "IEDST_QuerySlotOverride"));
++			}
++		}
++		return function;
++	}
++
++	inline SlotOverrideResult QuerySlot(
++		std::uint32_t actorFormID,
++		std::uint32_t slotIndex,
++		std::uint32_t& outFormID) noexcept
++	{
++		outFormID = 0;
++		const auto function = GetQueryFunction();
++		if (!function)
++		{
++			return SlotOverrideResult::kNotRemote;
++		}
++		return static_cast<SlotOverrideResult>(
++			function(actorFormID, slotIndex, std::addressof(outFormID)));
++	}
++}

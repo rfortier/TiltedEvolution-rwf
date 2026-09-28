@@ -1,0 +1,24 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Settings/MenuSelector_MC" itemID="6522d2e6-000001f8" linkageExportForAS="true" linkageIdentifier="MenuSelector_MC" linkageClassName="MenuSelector_MC" lastModified="1696781412" lastUniqueIdentifier="1">
+  <timeline>
+    <DOMTimeline name="MenuSelector_MC">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="BG_MC" name="bg">
+                  <matrix>
+                    <Matrix a="0.423187255859375"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

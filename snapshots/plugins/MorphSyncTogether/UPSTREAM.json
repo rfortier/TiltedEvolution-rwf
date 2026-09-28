@@ -1,0 +1,8 @@
+{
+  "id": "MorphSyncTogether",
+  "upstream": "https://github.com/Caelvanost/MorphSyncTogether.git",
+  "commit": "017c7b0c5ce5596fdb49a581f0041690ae5cbe66",
+  "files": 40,
+  "contentSha256": "218179a3470cb67d99f1de7106ef2f2dbd41aa834fd90f1dbd16b8d8dec78736",
+  "why": "Durability copy of the pinned commit. Not a build input: the submodule builds. Kept so the code survives the upstream repository disappearing."
+}

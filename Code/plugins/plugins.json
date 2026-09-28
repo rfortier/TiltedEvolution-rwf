@@ -1,0 +1,426 @@
+{
+  "$comment": [
+    "Single source of truth for the companion-plugin packaging pipeline.",
+    "Read by Code/plugins/tools/merge_fomod.py (wizard generation) and",
+    "Tools/Packaging/Add-PluginPayload.ps1 (archive assembly), so the wizard",
+    "and the staged tree cannot disagree.",
+    "",
+    "Every plugin is staged into <stageRoot>/<id>/, every sub-option into",
+    "<stageRoot>/<id>__<subId>/. The wizard installs exactly those two folder",
+    "shapes, which is why payload entries describe what goes inside them.",
+    "",
+    "payload:  copied from the plugin submodule at build time (repo content)",
+    "artifacts: copied from that plugin's own build output (compiled files)",
+    "dest '.':  the source is a directory and its CONTENTS land in the root",
+    "",
+    "A payload source beginning with ../ is repo-relative rather than",
+    "submodule-relative, for files this repository owns because it cannot push",
+    "to the plugin repositories. A file that upstream produces outside CMake",
+    "belongs in payload too, not artifacts: CI builds every plugin through",
+    "CMake alone, so anything their own build script generates is never built.",
+    "",
+    "The upstream fomod/ModuleConfig.xml files are NOT reused: IEDSyncTogether's",
+    "copy references a '00 Core' folder its own build script never creates, so it",
+    "is stale. STN owns the one wizard and this manifest is the only source."
+  ],
+  "stageRoot": "OptionalPlugins",
+  "prerequisites": [
+  {
+      "id": "OStimNG",
+      "displayName": "OStim Standalone (OStimNG)",
+      "submodule": "plugins/OStimNG",
+      "detectFile": "OStim.esp",
+    "commonLibSseNg": {
+      "repository": "https://github.com/alandtse/CommonLibVR",
+      "commit": "3c0f5a87c3b166c9a6712d5c3bd180e9ac5ad0fd",
+      "why": "OStimNG add_subdirectory()s the tree COMMONLIB_SSE_FOLDER names, so building it needs a CommonLibSSE-NG source checkout rather than the vcpkg package the plugins link. The pinned OStimNG used to carry that checkout as its own skse/extern/CommonLibSSE-NG gitlink; commit f20db82 (\"updated compiler\") deleted the gitlink when OStimNG moved to vcpkg, so the path the CI step read no longer exists in the pinned tree and the build could never start. The revision is pinned here, next to the OStimNG pin it has to match, instead of being inferred from a submodule's internals. v8.1.0 is the revision OStimNG's own 126fc52 (\"fixed build configs, skseapi definition and trampoline for commonlib 8.1.0\") adapted the pinned sources to; the sources use SKSE_EXPORT, AllocTrampoline, SkyrimVM::GetVMRuntimeData() and MessageBoxMenu::QueueMessage, all of which v8.1.0 declares."
+    },
+    "snapshotScope": ["skse", "flash", "OStim_CI.ppj", "README.md", "LICENSE", ".gitignore", ".gitmodules", "move-dll.ps1", "move-flash.ps1"],
+    "snapshotScopeNote": "Only the code is backed up. data/ is 256 MB of animation, texture and sound assets that this project neither builds, patches nor ships, so putting it in this repository to protect files nothing here can regenerate or consume is the wrong trade. The .esp and the scripts under data/Scripts are equally untouched by any patch here.",
+      "why": "The runtime OStim Together drives. OStim Together loads, registers its listeners and reports READY with this mod absent, but every OStim subsystem then reports unavailable and the mod stays inert - which is what a player experiences as OStim Together not being activated.",
+      "staged": false
+  }
+  ],
+  "requires": {
+    "OStimTogether": "OStimNG"
+  },
+  "plugins": [
+    {
+      "id": "STRPluginMessagingAPI",
+      "flag": "strpm",
+      "displayName": "STR Plugin Messaging API",
+      "submodule": "plugins/STRPluginMessagingAPI",
+      "required": true,
+      "wizardSteps": false,
+      "rationale": "Transport every companion plugin links against. Installed whenever any companion plugin is selected.",
+      "payloadNote": "The ini is owned by this repository rather than by the submodule: the plugin repositories are pinned and this project does not push to them, so an edit inside one would never reach CI or a release. It also must not live under GameFiles/Skyrim, because two workflows copy that tree wholesale into the always-installed core - which would install an ini for a DLL the user may not have chosen.",
+      "payload": [
+        {
+          "source": "../../Code/plugins/packaging/STRPluginMessagingAPI.ini",
+          "dest": "SKSE/Plugins/STRPluginMessagingAPI.ini"
+        }
+      ],
+      "artifacts": [
+        {
+          "from": "STRPluginMessagingAPI.dll",
+          "dest": "SKSE/Plugins/STRPluginMessagingAPI.dll"
+        },
+        {
+          "from": "STRPluginMessagingBridge.dll",
+          "dest": "SKSE/Plugins/STRPluginMessagingBridge.dll"
+        }
+      ]
+    },
+    {
+      "id": "OStimTogether",
+      "flag": "ostim",
+      "displayName": "OStim Together",
+      "submodule": "plugins/OStimTogether",
+      "required": false,
+      "wizardSteps": true,
+      "payload": [
+        {
+          "source": "package/Data",
+          "dest": "."
+        }
+      ],
+      "artifactsNote": "OSKSE.pex and OStimTogetherNative.pex are Papyrus, so CMake never builds them and the plugin's own compile-ui-consent.ps1 needs PapyrusCompiler.exe from an installed Skyrim, which no CI runner has. Code/plugins/papyrus/Compile-OStimConsentScripts.ps1 builds them with the open-source russo-2025/papyrus-compiler instead and writes into plugins/OStimTogether/build/, which the artifact collection scans; they therefore arrive here as artifacts rather than as payload. OSKSE.pex must win its conflict with OStim's original script for the Add Actor consent gate to apply at all.",
+      "artifacts": [
+        {
+          "from": "OStimTogether.dll",
+          "dest": "SKSE/Plugins/OStimTogether.dll"
+        },
+        {
+          "from": "OSKSE.pex",
+          "dest": "scripts/OSKSE.pex"
+        },
+        {
+          "from": "OStimTogetherNative.pex",
+          "dest": "scripts/OStimTogetherNative.pex"
+        }
+      ],
+      "introduction": {
+        "zh": "让联机队友之间的动作场景保持同步:场景状态、参与者对齐、装备锁、脱衣与外观修复。需要所有玩家一起安装同一版本;不勾选时,本框架的其余联机功能完全不受影响。",
+        "en": "Keeps scene state, participant alignment, equipment locks and undress/appearance repair in sync between connected players. Every player must install the same version; leaving it unchecked changes nothing else about the framework."
+      },
+      "subOptions": [
+        {
+          "id": "OCumAscended",
+          "payload": [
+            {
+              "source": "optional/OCumIntegration/package/Data",
+              "dest": "."
+            }
+          ],
+          "artifactsNote": "OStimTogetherOCum.pex is compiled by Code/plugins/papyrus/Compile-OCumIntegrationScript.ps1 into plugins/OStimTogether/build/, which the artifact collection scans. The esp this option ships names that script in its VMAD, so without the .pex the quest has no code: OnInit never fires, RegisterIntegration never runs, and the native side that dispatches \"OStimTogetherOCum\"/\"RegisterIntegration\" by name has nothing to call. The plugin's own compile-ocum-integration.ps1 needs PapyrusCompiler.exe from an installed Skyrim, and its build-fomod.ps1 throws when the .pex is missing - but this repository stages package/Data directly, so the gap shipped silently.",
+          "artifacts": [
+            {
+              "from": "OStimTogetherOCum.pex",
+              "dest": "scripts/OStimTogetherOCum.pex"
+            }
+          ],
+          "zh": {
+            "name": "OCum Ascended 同步",
+            "desc": "同步 OCum Ascended 的 RaceMenu CumOverlay。需要所有客户端都装了 OCum Ascended。"
+          },
+          "en": {
+            "name": "OCum Ascended synchronisation",
+            "desc": "Synchronises OCum Ascended RaceMenu CumOverlays. Requires OCum Ascended on every client."
+          }
+        },
+        {
+          "id": "PPA",
+          "payload": [
+            {
+              "source": "optional/PPAIntegration/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "PPA 同步",
+            "desc": "同步 PPA(Procedural Penis Animations)的动画参数。需要所有客户端都装了 PPA。"
+          },
+          "en": {
+            "name": "PPA synchronisation",
+            "desc": "Synchronises PPA (Procedural Penis Animations) parameters. Requires PPA on every client."
+          }
+        }
+      ]
+    },
+    {
+      "id": "MorphSyncTogether",
+      "flag": "morph",
+      "displayName": "MorphSyncTogether",
+      "submodule": "plugins/MorphSyncTogether",
+      "required": false,
+      "wizardSteps": true,
+      "payload": [
+        {
+          "source": "package/Data",
+          "dest": "."
+        }
+      ],
+      "artifacts": [
+        {
+          "from": "MorphSyncTogether.dll",
+          "dest": "SKSE/Plugins/MorphSyncTogether.dll"
+        }
+      ],
+      "introduction": {
+        "zh": "同步角色体型滑块与 RaceMenu 覆盖层(纹身、体毛等),让队友看到和你一致的身体外观。需要所有玩家一起安装同一版本。",
+        "en": "Synchronises character morph sliders and RaceMenu overlays (tattoos, body hair and similar) so other players render the same body appearance you do. Every player must install the same version."
+      },
+      "subOptions": [
+        {
+          "id": "PubesForeverFemale",
+          "payload": [
+            {
+              "source": "optional/PubesForeverFemale/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "Pubes Forever Female",
+            "desc": "同步该包提供的女性阴毛覆盖层。"
+          },
+          "en": {
+            "name": "Pubes Forever Female",
+            "desc": "Synchronises the female pubic-hair overlays supplied by this pack."
+          }
+        },
+        {
+          "id": "PubesForeverMale",
+          "payload": [
+            {
+              "source": "optional/PubesForeverMale/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "Pubes Forever Male",
+            "desc": "同步该包提供的男性阴毛覆盖层。"
+          },
+          "en": {
+            "name": "Pubes Forever Male",
+            "desc": "Synchronises the male pubic-hair overlays supplied by this pack."
+          }
+        },
+        {
+          "id": "NaturalPubicHairstyles",
+          "payload": [
+            {
+              "source": "optional/NaturalPubicHairstyles/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "Natural Pubic Hairstyles",
+            "desc": "同步该包提供的阴毛样式。"
+          },
+          "en": {
+            "name": "Natural Pubic Hairstyles",
+            "desc": "Synchronises the pubic-hair styles supplied by this pack."
+          }
+        },
+        {
+          "id": "NaturalPubicHairstylesUBE",
+          "payload": [
+            {
+              "source": "optional/NaturalPubicHairstylesUBE/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "Natural Pubic Hairstyles UBE",
+            "desc": "同步 UBE 版本的阴毛样式。"
+          },
+          "en": {
+            "name": "Natural Pubic Hairstyles UBE",
+            "desc": "Synchronises the UBE variant of the pubic-hair styles."
+          }
+        },
+        {
+          "id": "MorePubesSlaveTats",
+          "payload": [
+            {
+              "source": "optional/MorePubesSlaveTats/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "More Pubes for SlaveTats",
+            "desc": "同步 SlaveTats 版本的阴毛覆盖层。"
+          },
+          "en": {
+            "name": "More Pubes for SlaveTats",
+            "desc": "Synchronises the SlaveTats pubic-hair overlays."
+          }
+        },
+        {
+          "id": "NordicWarmaiden",
+          "payload": [
+            {
+              "source": "optional/NordicWarmaiden/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "Nordic Warmaiden 体毛",
+            "desc": "同步该包的女性腋下/腹部/背部等体毛样式。"
+          },
+          "en": {
+            "name": "Nordic Warmaiden Body Hair",
+            "desc": "Synchronises that pack's female armpit, stomach, butt and back styles."
+          }
+        },
+        {
+          "id": "HIMBOBodyhair",
+          "payload": [
+            {
+              "source": "optional/HIMBOBodyhair/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "HIMBO 体毛覆盖层",
+            "desc": "同步 HIMBO 体毛包的男性体毛覆盖层。"
+          },
+          "en": {
+            "name": "HIMBO V3 Bodyhair Overlays",
+            "desc": "Synchronises male body-hair overlays from the HIMBO body-hair pack."
+          }
+        },
+        {
+          "id": "OPubes",
+          "payload": [
+            {
+              "source": "optional/OPubes/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "OPubes NG 兼容",
+            "desc": "同步经 BodyHairSliders 兼容处理的 OPubes 覆盖层。"
+          },
+          "en": {
+            "name": "OPubes NG compatibility",
+            "desc": "Synchronises OPubes overlays handled through the BodyHairSliders compatibility provider."
+          }
+        },
+        {
+          "id": "TNG",
+          "payload": [
+            {
+              "source": "optional/TNG/package/Data",
+              "dest": "."
+            }
+          ],
+          "zh": {
+            "name": "The New Gentleman (TNG)",
+            "desc": "同步 TNG 相关外观数据。"
+          },
+          "en": {
+            "name": "The New Gentleman (TNG)",
+            "desc": "Synchronises TNG-related appearance data."
+          }
+        }
+      ]
+    },
+    {
+      "id": "IEDSyncTogether",
+      "flag": "ied",
+      "displayName": "IEDSyncTogether",
+      "submodule": "plugins/IEDSyncTogether",
+      "required": false,
+      "wizardSteps": true,
+      "payloadNote": "The esp is owned by this repository, like STRPluginMessagingAPI's ini and for the same reason. Upstream generates it in build-vortex.ps1 - Write-MinimalPlugin writes a TES4 header plus CNAM and SNAM subrecords - rather than in CMake. CI builds every plugin through CMake alone, so that script never runs and no esp is produced; listing this as an artifact therefore made the package unbuildable, because the staging step demanded a file nothing in the pipeline could create. The committed copy is byte-identical to the script's output (110 bytes, sha256 9811c7bd...), and it is only that script's output: if upstream ever changes the generator, this file has to be regenerated by hand, which is what the hash above is for. The esp is a marker the plugin resolves by name - IEDBridge and RemoteIEDRenderer both pass it as the plugin key to IED's Papyrus calls - so it has to exist for the plugin to work at all. The other payload file, SKSE/Plugins/IEDSyncTogether.ini, ships but is inert, which is worth recording before someone reports that their settings are ignored. Its only reader upstream is src/Config.cpp, and Config.cpp is not in this plugin's CMake SOURCES, so it is never compiled: the build that ships resolves its transport through STRPMAdapter and hardcodes the capture, retry and heartbeat intervals in LocalCaptureProbe.cpp and STRPMAdapter.cpp. It is still shipped because it is the upstream file and it starts working the moment upstream adds Config.cpp to the build, but no setting in it has an effect today. The RelayHost sub-option that used to sit under this plugin has been removed rather than documented: it existed only to switch on the legacy UDP transport, which is not compiled either, so ticking it could not have done anything.",
+      "payload": [
+        {
+          "source": "config/IEDSyncTogether.ini",
+          "dest": "SKSE/Plugins/IEDSyncTogether.ini"
+        },
+        {
+          "source": "../../Code/plugins/packaging/IEDSyncTogether.esp",
+          "dest": "IEDSyncTogether.esp"
+        }
+      ],
+      "artifacts": [
+        {
+          "from": "IEDSyncTogether.dll",
+          "dest": "SKSE/Plugins/IEDSyncTogether.dll"
+        }
+      ],
+      "introduction": {
+        "zh": "让队友看到你身上实际装备与挂载的物件(沉浸式装备展示类效果)。走本框架的联机会话传输,不需要自己开放或转发任何端口。需要所有玩家一起安装同一版本。",
+        "en": "Shows other players the equipment and attached objects you actually have equipped. Rides the framework's own session transport, so it opens and forwards no ports of its own. Every player must install the same version."
+      }
+    },
+    {
+      "id": "AnimSyncTogether",
+      "flag": "anim",
+      "displayName": "AnimSyncTogether",
+      "submodule": "plugins/AnimSyncTogether",
+      "required": false,
+      "wizardSteps": true,
+      "payloadNote": "The rule profiles are payload rather than artifacts on purpose. CMake copies config/Rules into its own build/package tree, but the CI artifact collection only gathers *.dll, *.pex and *.esp, so nothing under build/ would ever deliver them. They are also not optional cosmetics: a profile is what tells the plugin which graph variables and animation events belong to a mod, so a package without them synchronises nothing.",
+      "payload": [
+        {
+          "source": "config/Rules",
+          "dest": "SKSE/Plugins/AnimSyncTogether/Rules"
+        }
+      ],
+      "artifacts": [
+        {
+          "from": "AnimSyncTogether.dll",
+          "dest": "SKSE/Plugins/AnimSyncTogether.dll"
+        }
+      ],
+      "introduction": {
+        "zh": "同步动画图谱变量与动画事件,让 Open Animation Replacer 之类的动画 Mod 在队友端选中同一套替换动画(例如 Helmet Toggle 2 的换装动作)。属于实验性功能,只在队友也装了对应规则时生效;需要所有玩家一起安装同一版本。",
+        "en": "Synchronises animation graph variables and animation events, so Open Animation Replacer and similar mods select the same replacement animation on other players (Helmet Toggle 2\u0027s equip animations, for example). Experimental, and only effective for the mods a rule profile covers; every player must install the same version."
+      }
+    },
+    {
+      "id": "DAVSyncTogether",
+      "flag": "dav",
+      "displayName": "DAVSyncTogether",
+      "submodule": "plugins/DAVSyncTogether",
+      "required": false,
+      "wizardSteps": true,
+      "artifacts": [
+        {
+          "from": "DAVSyncTogether.dll",
+          "dest": "SKSE/Plugins/DAVSyncTogether.dll"
+        }
+      ],
+      "introduction": {
+        "zh": "同步 Dynamic Armor Variants(DAV)控制的装备外观结果,让队友看到你身上实际渲染的护甲变体,包括被隐藏的头盔。DAV 的规则文件由 DAV 自己提供,本包不带;需要所有客户端都装了 DAV,并且所有玩家一起安装同一版本。",
+        "en": "Synchronises the visual result of Dynamic Armor Variants (DAV), so other players see the armour variant actually rendered on you, hidden helmets included. The variant rules come from DAV itself and are not bundled here; DAV is required on every client, and every player must install the same version."
+      }
+    },
+    {
+      "id": "TradeTogether",
+      "flag": "trade",
+      "displayName": "TradeTogether",
+      "submodule": "plugins/TradeTogether",
+      "required": false,
+      "wizardSteps": true,
+      "payload": [
+        {
+          "source": "package/Data",
+          "dest": "."
+        }
+      ],
+      "artifacts": [
+        {
+          "from": "TradeTogether.dll",
+          "dest": "SKSE/Plugins/TradeTogether.dll"
+        }
+      ],
+      "introduction": {
+        "zh": "玩家之间的物品与金币交易:对准队友按快捷键发起,双方各自在自己背包里出价,双方都确认后自动完成转移。任务物品会被拒绝;可单方赠送。走本框架的联机会话传输,不需要开放或转发任何端口。MCM 需要 SkyUI;需要所有玩家一起安装同一版本。",
+        "en": "Player-to-player item and gold trading: target another player and press the trade key, both sides compose an offer from their own inventory, and the transfer happens automatically once both confirm. Quest items are rejected, and one-way gifts work. Rides the framework\u0027s own session transport, so it opens and forwards no ports. The MCM needs SkyUI; every player must install the same version."
+      }
+    }
+  ]
+}

@@ -24,6 +24,7 @@ struct OverlayClient : TiltedPhoques::OverlayClient
 private:
     void ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs);
     void ProcessDisconnectMessage();
+    void ProcessAbandonAttemptMessage();
     void ProcessRevealPlayersMessage();
     void ProcessChatMessage(CefRefPtr<CefListValue> aEventArgs);
     void ProcessSetTimeCommand(CefRefPtr<CefListValue> aEventArgs);

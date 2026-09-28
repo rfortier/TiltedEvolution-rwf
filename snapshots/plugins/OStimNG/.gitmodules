@@ -1,0 +1,7 @@
+[submodule "flash/external/greensock"]
+	path = flash/external/greensock
+	url = https://github.com/greensock/GreenSock-AS2
+[submodule "skse/extern/CommonLibSSE-NG"]
+	path = skse/extern/CommonLibSSE-NG
+	url = https://github.com/alandtse/CommonLibVR
+	branch = ng

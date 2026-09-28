@@ -5,7 +5,9 @@
     "CHAT": {
       "SEND": "Enviar",
       "MESSAGE": "Mensaje",
-      "MESSAGE_TOO_LONG": "No puedes enviar un mensaje de más de {{chatMessageLengthLimit}} caracteres."
+      "MESSAGE_TOO_LONG": "No puedes enviar un mensaje de más de {{chatMessageLengthLimit}} caracteres.",
+      "SET_TIME_ARGUMENT_COUNT": "Argumentos incorrectos, uso: /settime HH MM, ejemplo: /settime 15 32.",
+      "SET_TIME_INVALID_ARGUMENTS": "Las horas deben estar entre 0 y 23, y los minutos entre 0 y 59."
     },
     "CONNECT": {
       "INFO": {
@@ -22,6 +24,11 @@
         "CONNECTION": "No se ha podido conectar con el servidor especificado. Asegúrate de haber introducido la dirección correctamente y de no tener problemas de conexión.",
         "VERSION_MISMATCH": "No puedes conectarte al servidor ya que no posees la misma versión de Skyrim Together que el servidor.",
         "INVALID_ADDRESS": "La dirección tiene un formato no válido."
+      },
+      "HIDE_PASSWORD": "¿Ocultar contraseña?",
+      "SUCCESS": {
+        "TITLE": "Conectado",
+        "MESSAGE": "Ahora estás conectado a {{address}}. Pulsa F2 en cualquier momento para abrir este menú y chatear."
       }
     },
     "DISCONNECT": {
@@ -84,7 +91,12 @@
       "RECONNECT": "Reconectar",
       "PLAYER_MANAGER": "Gestionar jugadores",
       "SETTINGS": "Parámetros",
-      "CONNECTION_IN_PROGRESS": "Conexión en progreso..."
+      "CONNECTION_IN_PROGRESS": "Conexión en progreso...",
+      "STATUS": {
+        "OFFLINE": "Sin conexión",
+        "CONNECTING": "Conectando...",
+        "ONLINE": "Conectado a {{address}}"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "Buscar...",
@@ -101,7 +113,8 @@
         "COUNTRY": "País",
         "FAVORITE": "Favorito"
       },
-      "JOIN": "Entrar"
+      "JOIN": "Entrar",
+      "HIDE_PASSWORD_PROTECTED_SERVERS": "Ocultar servidores protegidos con contraseña"
     },
     "SETTINGS": {
       "AUDIO": "Audio",
@@ -133,7 +146,12 @@
         "L": "Grande",
         "XL": "Extra grande"
       },
-      "BACK": "Atrás"
+      "BACK": "Atrás",
+      "VERSION": {
+        "HEADER": "Versión",
+        "INFO": "Instalada actualmente:",
+        "OUTDATED": "La versión está desactualizada. Por favor, actualiza."
+      }
     }
   },
   "SERVICE": {
@@ -144,7 +162,8 @@
     },
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "Comandos del chat disponibles: {{cmds}}",
-      "COMMAND_NOT_FOUND": "'{{cmd}}' se reconoce como un comando."
+      "COMMAND_NOT_FOUND": "'{{cmd}}' se reconoce como un comando.",
+      "NOT_ADMIN": "Debes ser administrador para usar ese comando."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}} ha alcanzado el nivel {{level}}.",
@@ -163,7 +182,7 @@
         "NO_REASON": "El servidor ha rechazado la conexión sin razón.",
         "SERVER_FULL": "El servidor está lleno.",
         "BAD_UGRIDSTOLOAD": "Parece que su Skyrim.ini tiene un valor no predeterminado para 'uGridsToLoad'. ESTA ES UNA MUY MALA IDEA y lo más probable es que rompa el mod. Por favor, restaurar esta configuración a su valor predeterminado (5) , o elimine el Skyrim.ini e lanzar Skyrim Vanilla una vez para generar un nuevo archivo. Las configuraciones 'uExterior Cell Buffer' y 'uInterior Cell Buffer' también deben dejarse en la configuración predeterminada. Si no sabe cómo hacerlo. , consulte nuestra wiki o solicite ayuda en nuestro servidor de Discord/subreddit.",
-        "NON_DEFAULT_INSTALL": "Parece que tu instalación no es puramente básica, en ejemplo, tiene contenido del Creation Club (De aniversario o no) o otras modificaciones.\nNO recomendamos jugar con modificaciones.\nRecomendamos que desinstales y deshabilites estas modificaciones (las instrucciones se pueden encontrar en la wiki).\n\nPara la mejor experiencia, debe tener la siguiente lista de mods:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp</strong>"
+        "NON_DEFAULT_INSTALL": "Parece que tu instalación no es puramente básica, en ejemplo, tiene contenido del Creation Club (De aniversario o no) o otras modificaciones.\nNO recomendamos jugar con modificaciones.\nRecomendamos que desinstales y deshabilites estas modificaciones (las instrucciones se pueden encontrar en la wiki).\n\nPara la mejor experiencia, debe tener la siguiente lista de mods:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>"
       }
     },
     "PLAYER_LIST": {

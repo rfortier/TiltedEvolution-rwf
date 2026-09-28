@@ -1,0 +1,102 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create_release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Get the date
+        id: date
+        run: echo "today=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.today }}
+          release_name: Release ${{ env.today }}
+          body: 'Release of version ${{ env.today }}'
+          draft: false
+          prerelease: false
+
+  build_and_upload:
+    needs: create_release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            artifact: papyrus-compiler-windows.zip
+            v_asset: v_windows.zip
+          - os: ubuntu-latest
+            artifact: papyrus-compiler-ubuntu.tar.gz
+            v_asset: v_linux.zip
+          - os: macos-latest
+            artifact: papyrus-compiler-macos.tar.gz
+            v_asset: v_macos_arm64.zip
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install V (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL "https://github.com/vlang/v/releases/download/0.5.1/${{ matrix.v_asset }}" -o v.zip
+          unzip -q v.zip
+          echo "$PWD/v" >> "$GITHUB_PATH"
+          ./v/v version
+
+      - name: Install V (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/vlang/v/releases/download/0.5.1/${{ matrix.v_asset }}" -OutFile v.zip
+          Expand-Archive -Path v.zip -DestinationPath .
+          echo "$PWD\v" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          .\v\v.exe version
+
+      - name: Build Project
+        run: v -prod -g -gc none -o "bin/papyrus-compiler" compiler.v
+      
+      - name: Get the date
+        id: date
+        run: echo "today=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+      
+      - name: Remove 'Original Compiler' directory for macOS and Linux
+        if: matrix.os != 'windows-latest'
+        run: rm -rf bin/"Original Compiler"
+      
+      - name: Rename bin directory
+        run: mv bin papyrus-compiler
+      
+      - name: Create Archive
+        shell: bash
+        run: |
+          if [[ $RUNNER_OS == 'Windows' ]]; then
+            7z a -tzip ${{ matrix.artifact }} papyrus-compiler/
+          elif [[ $RUNNER_OS == 'Linux' ]]; then
+            tar -czf ${{ matrix.artifact }} papyrus-compiler/
+          elif [[ $RUNNER_OS == 'macOS' ]]; then
+            tar -czf ${{ matrix.artifact }} papyrus-compiler/
+          fi
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create_release.outputs.release_upload_url }}
+          asset_path: ./${{ matrix.artifact }}
+          asset_name: ${{ matrix.artifact }}
+          asset_content_type: application/zip

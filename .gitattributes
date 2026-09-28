@@ -17,3 +17,25 @@
 
 # Custom for the project to build
 *.sh text eol=lf
+
+# Byte-stable by contract. The STRPM interface header is pinned by SHA-256 and
+# the FOMOD wizard is generated and compared verbatim, so both must check out
+# with identical line endings everywhere. Without this, a Windows checkout
+# (text=auto + core.autocrlf) reports phantom drift against a pin recorded
+# elsewhere, and the gate stops meaning anything.
+Code/plugins/STRPM/include/STRPluginMessagingAPI/*.h text eol=lf
+Code/plugins/STRPM/contract.json text eol=lf
+Code/plugins/plugins.json text eol=lf
+GameFiles/Skyrim/fomod/ModuleConfig.xml text eol=lf
+
+# Patches are applied to the submodule working tree with 'git apply', which
+# compares context lines byte for byte. A Windows checkout (text=auto +
+# core.autocrlf) turns every line into CRLF and the context stops matching, so
+# the patch becomes unappliable on exactly the platform CI runs on - measured,
+# not assumed: with a CRLF copy, 'verify' failed while 'apply' silently
+# succeeded, which is the worst possible split. Pinned to LF for the same
+# reason as the two files above.
+Code/plugins/patches/**/*.patch text eol=lf
+
+# Batch files must stay CRLF for cmd.exe
+*.bat text eol=crlf

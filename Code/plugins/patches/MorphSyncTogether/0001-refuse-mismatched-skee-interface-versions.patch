@@ -1,0 +1,109 @@
+diff --git a/src/AppearanceProbe.cpp b/src/AppearanceProbe.cpp
+index e55de99..7b1ca6b 100644
+--- a/src/AppearanceProbe.cpp
++++ b/src/AppearanceProbe.cpp
+@@ -387,11 +387,34 @@ namespace MorphSyncTogether
+ 
+         std::scoped_lock lock(_interfaceMutex);
+ 
++        // QueryInterface answers by name, not by layout, so an older RaceMenu
++        // hands back an interface whose vtable does not match this build's
++        // declaration. GetVersion() is slot 1 in every layout, so it is safe to
++        // ask before touching anything else.
+         if (auto* base = interfaceMap->QueryInterface("Overlay")) {
+-            _overlay = static_cast<SKEE::IOverlayInterface*>(base);
++            auto* candidate = static_cast<SKEE::IOverlayInterface*>(base);
++            if (candidate->GetVersion() >= SKEE::IOverlayInterface::kSupportedVersion) {
++                _overlay = candidate;
++            } else {
++                SKSE::log::error(
++                    "MST APPEARANCE Overlay interface version {} is older than the {} this build "
++                    "declares; leaving it disabled because the vtable layout differs and calling "
++                    "it would dispatch to the wrong methods. Update RaceMenu.",
++                    candidate->GetVersion(),
++                    SKEE::IOverlayInterface::kSupportedVersion);
++            }
+         }
+         if (auto* base = interfaceMap->QueryInterface("Override")) {
+-            _override = static_cast<SKEE::IOverrideInterface*>(base);
++            auto* candidate = static_cast<SKEE::IOverrideInterface*>(base);
++            if (candidate->GetVersion() >= SKEE::IOverrideInterface::kSupportedVersion) {
++                _override = candidate;
++            } else {
++                SKSE::log::error(
++                    "MST APPEARANCE Override interface version {} is older than the {} this build "
++                    "declares; leaving it disabled for the same reason.",
++                    candidate->GetVersion(),
++                    SKEE::IOverrideInterface::kSupportedVersion);
++            }
+         }
+         SKSE::log::info(
+             "MST APPEARANCE interfaces READY overlay={} overlayVersion={} override={} overrideVersion={} mode=probe+face-material-rebind+pubic-overlay",
+diff --git a/src/MorphSyncService.cpp b/src/MorphSyncService.cpp
+index 1959ce3..743e9eb 100644
+--- a/src/MorphSyncService.cpp
++++ b/src/MorphSyncService.cpp
+@@ -150,10 +150,20 @@ namespace MorphSyncTogether
+             return;
+         }
+ 
+-        _bodyMorph = static_cast<SKEE::IBodyMorphInterface*>(base);
+-        SKSE::log::info(
+-            "MST RaceMenu BodyMorph interface READY version={}",
+-            _bodyMorph->GetVersion());
++        auto* bodyMorph = static_cast<SKEE::IBodyMorphInterface*>(base);
++        const auto bodyMorphVersion = bodyMorph->GetVersion();
++        if (bodyMorphVersion < SKEE::IBodyMorphInterface::kSupportedVersion) {
++            SKSE::log::critical(
++                "MST RaceMenu BodyMorph interface version {} is older than the {} this build "
++                "declares; leaving it disabled because the vtable layout differs. Update RaceMenu.",
++                bodyMorphVersion,
++                SKEE::IBodyMorphInterface::kSupportedVersion);
++        } else {
++            _bodyMorph = bodyMorph;
++            SKSE::log::info(
++                "MST RaceMenu BodyMorph interface READY version={}",
++                _bodyMorph->GetVersion());
++        }
+ 
+         AppearanceProbe::GetSingleton().Initialize(exchange.interfaceMap);
+     }
+diff --git a/src/SkeeInterfaces.h b/src/SkeeInterfaces.h
+index b93dffb..443bde6 100644
+--- a/src/SkeeInterfaces.h
++++ b/src/SkeeInterfaces.h
+@@ -65,6 +65,10 @@ namespace MorphSyncTogether::SKEE
+             virtual void Visit(RE::TESObjectREFR*, const char*) = 0;
+         };
+ 
++        // Version 5 only appends AddMorphShapeCallback after ClearMorphCache, so
++        // this version 4 layout is still a valid prefix of it.
++        static constexpr u32 kSupportedVersion = 4;
++
+         virtual void SetMorph(RE::TESObjectREFR*, const char*, const char*, float) = 0;
+         virtual float GetMorph(RE::TESObjectREFR*, const char*, const char*) = 0;
+         virtual void ClearMorph(RE::TESObjectREFR*, const char*, const char*) = 0;
+@@ -109,6 +113,14 @@ namespace MorphSyncTogether::SKEE
+ 
+         using OverlayInstallCallback = void (*)(RE::TESObjectREFR*, RE::NiAVObject*);
+ 
++        // RaceMenu 3.x ships version 1 of this interface, whose vtable carries
++        // Save/Load where this declaration has Revert and has no GetOverlayCount,
++        // GetOverlayFormat or install callbacks at all. Calling version 1 through
++        // this type dispatches GetOverlayCount to RevertHeadOverlays, which reads
++        // the OverlayType enum as a TESObjectREFR* and faults at [enum+0x14] -
++        // target 0x15 for OverlayType::Spell, the crash in skee64.dll+0x81be8.
++        static constexpr u32 kSupportedVersion = 2;
++
+         virtual bool HasOverlays(RE::TESObjectREFR*) = 0;
+         virtual void AddOverlays(RE::TESObjectREFR*, bool defer = true) = 0;
+         virtual void RemoveOverlays(RE::TESObjectREFR*, bool defer = true) = 0;
+@@ -179,6 +191,8 @@ namespace MorphSyncTogether::SKEE
+             virtual RE::BGSTextureSet* TextureSet() { return nullptr; }
+         };
+ 
++        static constexpr u32 kSupportedVersion = 2;
++
+         virtual bool HasArmorAddonNode(RE::TESObjectREFR*, bool, RE::TESObjectARMO*, RE::TESObjectARMA*, const char*, bool) = 0;
+         virtual bool HasArmorOverride(RE::TESObjectREFR*, bool, RE::TESObjectARMO*, RE::TESObjectARMA*, const char*, u16, u8) = 0;
+         virtual void AddArmorOverride(RE::TESObjectREFR*, bool, RE::TESObjectARMO*, RE::TESObjectARMA*, const char*, u16, u8, SetVariant&) = 0;

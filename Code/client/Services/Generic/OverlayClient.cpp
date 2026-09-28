@@ -4,6 +4,7 @@
 #include <DInputHook.hpp>
 
 #include <Services/OverlayClient.h>
+#include <Services/InputService.h>
 #include <Services/TransportService.h>
 
 #include <Messages/SendChatMessageRequest.h>
@@ -45,6 +46,8 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
             ProcessConnectMessage(eventArgs);
         else if (eventName == "disconnect")
             ProcessDisconnectMessage();
+        else if (eventName == "abandonAttempt")
+            ProcessAbandonAttemptMessage();
         else if (eventName == "revealPlayers")
             ProcessRevealPlayersMessage();
         else if (eventName == "sendMessage")
@@ -100,12 +103,36 @@ void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
 
     std::string endpoint = baseIp + ":" + std::to_string(port);
 
-    World::Get().GetRunner().Queue([endpoint] { World::Get().GetTransport().Connect(endpoint); });
+    // Close(), ArmConnectionWatchdog() and BeginConnect() only touch the uv
+    // loop, the socket interface and plain scalar members, and this method
+    // already runs on the CEF message thread, which is where every other
+    // ui-event is handled. Running them inline takes the start of the attempt
+    // off the frame loop, so opening the connection panel -- which is what
+    // precedes those stalls -- can no longer swallow it.
+    //
+    // BeginConnect goes further: it hands the attempt a pump of its own, so the
+    // handshake no longer depends on the vm tick arriving at all. A tick-driven
+    // attempt cannot even report that the tick is missing, which is how a
+    // stalled connection has been able to sit there printing nothing.
+    auto& transport = World::Get().GetTransport();
+    // A second connect while one is still in flight used to stack a new
+    // transport on top of the old one and leak its handle.
+    transport.Close();
+    transport.ArmConnectionWatchdog(endpoint);
+    transport.BeginConnect(endpoint);
 }
 
 void OverlayClient::ProcessDisconnectMessage()
 {
-    World::Get().GetRunner().Queue([]() { World::Get().GetTransport().Close(); });
+    // Same reasoning as the connect above: cancelling must work even when the
+    // runner is not being drained, otherwise the button appears to do nothing
+    // and the attempt is left running with no way to stop it.
+    World::Get().GetTransport().Close();
+}
+
+void OverlayClient::ProcessAbandonAttemptMessage()
+{
+    World::Get().GetTransport().AbandonAttempt();
 }
 
 void OverlayClient::ProcessRevealPlayersMessage()
@@ -156,7 +183,7 @@ void OverlayClient::SetUIVisible(bool aVisible) noexcept
     if (!pRenderer)
         return;
 
-    TiltedPhoques::DInputHook::Get().SetEnabled(aVisible);
+    InputService::SetCaptureEnabled(aVisible);
     World::Get().GetOverlayService().SetActive(aVisible);
     pRenderer->SetCursorVisible(aVisible);
 }

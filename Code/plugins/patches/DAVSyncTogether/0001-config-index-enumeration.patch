@@ -1,0 +1,47 @@
+diff --git a/src/DAVConfigIndex.cpp b/src/DAVConfigIndex.cpp
+index acd6d62..3900efd 100644
+--- a/src/DAVConfigIndex.cpp
++++ b/src/DAVConfigIndex.cpp
+@@ -92,8 +92,40 @@ namespace DAVSyncTogether
+         std::size_t files = 0;
+         std::size_t parseErrors = 0;
+ 
+-        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+-            if (!entry.is_regular_file() || ToLower(entry.path().extension().string()) != ".json") {
++        // The iterator is built through the error_code overloads on purpose.
++        // The throwing overloads raise filesystem_error, and Load() runs from
++        // OnSKSEMessage, so an exception raised here would leave the SKSE
++        // message callback and terminate the game. A path that exists but
++        // cannot be enumerated - a plain file, a permission problem, a
++        // symlink loop - is now reported and skipped instead.
++        std::error_code iterationEc;
++        std::filesystem::recursive_directory_iterator iterator(
++            root,
++            std::filesystem::directory_options::skip_permission_denied,
++            iterationEc);
++        const std::filesystem::recursive_directory_iterator end;
++        if (iterationEc) {
++            SKSE::log::error(
++                "DAVST CONFIG_INDEX cannot enumerate path=\"{}\" error=\"{}\"",
++                root.string(),
++                iterationEc.message());
++            return;
++        }
++
++        for (; iterator != end; iterator.increment(iterationEc)) {
++            if (iterationEc) {
++                SKSE::log::warn(
++                    "DAVST CONFIG_INDEX enumeration stopped path=\"{}\" error=\"{}\"",
++                    root.string(),
++                    iterationEc.message());
++                break;
++            }
++
++            const auto& entry = *iterator;
++
++            std::error_code entryEc;
++            if (!entry.is_regular_file(entryEc) || entryEc ||
++                ToLower(entry.path().extension().string()) != ".json") {
+                 continue;
+             }
+ 

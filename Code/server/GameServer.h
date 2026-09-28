@@ -67,6 +67,8 @@ struct GameServer final : Server
 
     bool IsRunning() const noexcept { return !m_requestStop; }
     bool IsPasswordProtected() const noexcept { return m_isPasswordProtected; }
+    [[nodiscard]] bool IsPublicServer() const noexcept;
+    [[nodiscard]] bool AllowsAutoPartyJoin() const noexcept;
 
     template <class T> void ForEachAdmin(const T& aFunctor)
     {
@@ -95,7 +97,6 @@ struct GameServer final : Server
     Player const* GetAdminByUsername(const String& acUsername) noexcept;
 
 protected:
-    bool ValidateAuthParams(ConnectionId_t aConnectionId, const UniquePtr<AuthenticationRequest>& acRequest);
     void HandleAuthenticationRequest(ConnectionId_t aConnectionId, const UniquePtr<AuthenticationRequest>& acRequest);
 
     // Implement TiltedPhoques::Server

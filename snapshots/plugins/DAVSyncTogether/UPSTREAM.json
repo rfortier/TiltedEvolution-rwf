@@ -1,0 +1,8 @@
+{
+  "id": "DAVSyncTogether",
+  "upstream": "https://github.com/Caelvanost/DAVSyncTogether.git",
+  "commit": "cd4ec0ec7a561b16c134c19e5debf2ab1525a2ca",
+  "files": 25,
+  "contentSha256": "ab253ec40dcb1c1fefca14e021589551e9bf176835925e0335e3fd2a30e8774c",
+  "why": "Durability copy of the pinned commit. Not a build input: the submodule builds. Kept so the code survives the upstream repository disappearing."
+}

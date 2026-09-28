@@ -1,0 +1,26 @@
+# Build outputs
+/build/
+/dist/
+/out/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Generated binaries
+*.dll
+*.pdb
+*.lib
+*.exp
+
+# Misc
+.DS_Store
+Thumbs.db

@@ -47,7 +47,7 @@ struct Actor : TESObjectREFR
     virtual void SetWeaponDrawn(bool aDraw);
     virtual void sub_A7();
     virtual void sub_A8();
-    virtual void SetPosition(const NiPoint3& acPoint, bool aSyncHavok = true);
+    virtual void SetPosition(const NiPoint3& acPoint, bool aUpdateCharController);
     virtual void sub_AA();
     virtual void Resurrect(bool aResetInventory);
     virtual void sub_AC();
@@ -198,6 +198,9 @@ struct Actor : TESObjectREFR
     MagicEquipment GetMagicEquipment() const noexcept;
     Inventory GetEquipment() const noexcept;
     int32_t GetGoldAmount() const noexcept;
+    // Returns the engine-recorded static leveled pick, or nullptr if unavailable.
+    // Changing baseForm directly does not update this record.
+    TESNPC* GetLeveledPick() const noexcept;
     uint16_t GetLevel() const noexcept;
     Factions GetFactions() const noexcept;
     ActorValues GetEssentialActorValues() const noexcept;
@@ -208,6 +211,9 @@ struct Actor : TESObjectREFR
     [[nodiscard]] Actor* GetCombatTarget() const noexcept;
     [[nodiscard]] bool HasPerk(uint32_t aPerkFormId) const noexcept;
     [[nodiscard]] uint8_t GetPerkRank(uint32_t aPerkFormId) const noexcept;
+    // fork-only: used by InventoryService::RunNakedNPCBugChecks. Upstream does
+    // not have these, so the merge dropped the declarations while Actor.cpp
+    // still defines them - restored here.
     [[nodiscard]] bool IsWearingBodyPiece() const noexcept;
     [[nodiscard]] bool ShouldWearBodyPiece() const noexcept;
     [[nodiscard]] bool IsVampireLord() const noexcept;
@@ -380,6 +386,24 @@ public:
     // void Save_Reversed(uint32_t aChangeFlags, Buffer::Writer& aWriter);
 };
 
+#ifdef SKYRIM_TARGET_LEGACY
+// 1.5.x layout: TESObjectREFR carries an 8-byte smaller ExtraDataList (no
+// vtable), so every Actor field sits 8 bytes earlier than on 1.6.x/1.7.x.
+static_assert(offsetof(Actor, currentProcess) == 0xF0);
+static_assert(offsetof(Actor, flags1) == 0xE0);
+static_assert(offsetof(Actor, actorValueOwner) == 0xB0);
+static_assert(offsetof(Actor, actorState) == 0xB8);
+static_assert(offsetof(Actor, flags2) == 0x1FC);
+static_assert(offsetof(Actor, unk194) == 0x270);
+static_assert(offsetof(Actor, fVoiceTimer) == 0x108);
+static_assert(offsetof(Actor, unk84) == 0xE8);
+static_assert(offsetof(Actor, unk17C) == 0x17C);
+static_assert(offsetof(Actor, pCombatController) == 0x158);
+static_assert(offsetof(Actor, magicItems) == 0x1C0);
+static_assert(offsetof(Actor, equippedShout) == 0x1E0);
+static_assert(offsetof(Actor, actorLock) == 0x27C);
+static_assert(sizeof(Actor) == 0x2B0);
+#else
 static_assert(offsetof(Actor, currentProcess) == 0xF8);
 static_assert(offsetof(Actor, flags1) == 0xE8);
 static_assert(offsetof(Actor, actorValueOwner) == 0xB8);
@@ -394,4 +418,5 @@ static_assert(offsetof(Actor, magicItems) == 0x1C8);
 static_assert(offsetof(Actor, equippedShout) == 0x1E8);
 static_assert(offsetof(Actor, actorLock) == 0x284);
 static_assert(sizeof(Actor) == 0x2B8);
+#endif
 static_assert(sizeof(Actor::SpellItemEntry) == 0x18);

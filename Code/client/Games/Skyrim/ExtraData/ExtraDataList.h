@@ -31,7 +31,14 @@ struct ExtraDataList
 
     [[nodiscard]] bool HasQuestObjectAlias() noexcept;
 
+    // The 1.6.x/1.7.x engine BSExtraDataList carries a vtable; the 1.5.x one
+    // does not (data@0x0 / bitfield@0x8 / lock@0x10). Keeping this
+    // conditional keeps the embedded layout - and every struct containing an
+    // ExtraDataList (Actor, TESObjectREFR, TESObjectCELL, ...) - correct for
+    // the target build. See docs/RELEASE-AND-MO2.md (per-version builds).
+#ifndef SKYRIM_TARGET_LEGACY
     virtual ~ExtraDataList();
+#endif
     BSExtraData* data = nullptr;
 
     struct Bitfield

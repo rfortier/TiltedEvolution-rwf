@@ -1,14 +1,24 @@
 
-local function build_client(name)
+local function build_client(name, extra_defines)
 target(name)
     set_kind("static")
     set_group("Client")
-    add_includedirs(".","../../Libraries/")
+    if extra_defines then
+        for _, d in ipairs(extra_defines) do
+            add_defines(d)
+        end
+    end
+    add_includedirs(
+        ".",
+        "../../Libraries/",
+        -- the STRPM consumer contract: the client implements the transport that
+        -- companion plugins call through, so both compile against one header
+        "../plugins/STRPM/include")
     set_pcxxheader("TiltedOnlinePCH.h")
 
     -- exclude game specifc stuff
-    add_headerfiles("**.h|Games/Skyrim/**|Services/Vivox/**")
-    add_files("**.cpp|Games/Skyrim/**|Services/Vivox/**")
+    add_headerfiles("**.h|Games/Skyrim/**")
+    add_files("**.cpp|Games/Skyrim/**")
 
     after_install(function(target)
         -- copy dlls
@@ -56,22 +66,20 @@ target(name)
         "mem",
         "xbyak")
 
-    if has_config("vivox") then
-        add_files("Services/Vivox/**.cpp")
-        add_headerfiles("Services/Vivox/**.h")
-        add_includedirs("Services/Vivox")
-        add_deps("Vivox")
-        add_defines("TP_VIVOX=1")
-    else
-        add_defines("TP_VIVOX=0")
-    end
-
     add_syslinks(
         "version",
         "dbghelp",
+        -- EnumProcessModules/GetModuleInformation, used by the crash report to
+        -- place an address that resolves to no module
+        "psapi",
         "kernel32")
 end
 
 add_requires("tiltedcore")
 
 build_client("SkyrimTogetherClient")
+-- per-version client library for legacy game versions (1.5.x): compiles the
+-- engine structs with the 1.5.x layouts (see the SKYRIM_TARGET_LEGACY
+-- conditionals in Games/Skyrim). The matching runtime DLL is loaded by the
+-- SKSE bootstrap based on the game version.
+build_client("SkyrimTogetherClientLegacy", {"SKYRIM_TARGET_LEGACY=1"})

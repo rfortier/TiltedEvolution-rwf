@@ -1,0 +1,17 @@
+build/
+out/
+dist/
+.vs/
+.vscode/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.sln
+*.vcxproj*
+*.user
+*.pdb
+*.ilk
+*.obj
+*.dll
+*.lib
+*.exp

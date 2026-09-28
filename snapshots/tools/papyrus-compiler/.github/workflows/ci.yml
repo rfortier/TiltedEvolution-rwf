@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, edited, reopened]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            v_asset: v_linux.zip
+          - os: macos-latest
+            v_asset: v_macos_arm64.zip
+          - os: windows-latest
+            v_asset: v_windows.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout ${{ github.event.repository.name }}
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install V (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL "https://github.com/vlang/v/releases/download/0.5.1/${{ matrix.v_asset }}" -o v.zip
+          unzip -q v.zip
+          echo "$PWD/v" >> "$GITHUB_PATH"
+          ./v/v version
+
+      - name: Install V (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/vlang/v/releases/download/0.5.1/${{ matrix.v_asset }}" -OutFile v.zip
+          Expand-Archive -Path v.zip -DestinationPath .
+          echo "$PWD\v" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          .\v\v.exe version
+
+      - name: Build ${{ github.event.repository.name }}
+        run: v -prod -gc none compiler.v
+
+      - name: Run Tests
+        run: v -stats test modules

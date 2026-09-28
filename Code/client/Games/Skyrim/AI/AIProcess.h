@@ -3,9 +3,15 @@
 struct TESForm;
 struct MiddleProcess;
 struct TESAmmo;
+struct bhkCharacterController;
 
 struct AIProcess
 {
+    // Null where the game has no mapping for the accessor (1.5.x), so callers
+    // treat a null controller as "there is no timing to refresh" rather than as
+    // a failure.
+    bhkCharacterController* GetCharController() noexcept;
+
     bool SetCurrentAmmo(TESAmmo* apAmmo) noexcept;
 
     void KnockExplosion(Actor* apActor, const NiPoint3* aSourceLocation, float afMagnitude);

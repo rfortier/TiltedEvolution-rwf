@@ -32,6 +32,7 @@ Console::Setting bPremiumTickrate{"GameServer:bPremiumMode", "Use premium tick r
 Console::StringSetting sServerName{"GameServer:sServerName", "Name that shows up in the server list", "Dedicated Together Server"};
 Console::StringSetting sAdminPassword{"GameServer:sAdminPassword", "Admin authentication password", ""};
 Console::StringSetting sPassword{"GameServer:sPassword", "Server password", ""};
+Console::Setting bAnnounceServer{"LiveServices:bAnnounceServer", "Whether to list the server on the public server list", false};
 
 // Gameplay
 // TODO: to make this easier for users, use game names for difficulty instead of int
@@ -201,6 +202,16 @@ GameServer::~GameServer()
 GameServer* GameServer::Get() noexcept
 {
     return s_pInstance;
+}
+
+bool GameServer::IsPublicServer() const noexcept
+{
+    return bAnnounceServer;
+}
+
+bool GameServer::AllowsAutoPartyJoin() const noexcept
+{
+    return bAutoPartyJoin && !IsPublicServer();
 }
 
 void GameServer::Initialize()
@@ -643,6 +654,11 @@ void GameServer::OnDisconnection(const ConnectionId_t aConnectionId, EDisconnect
 
         m_pWorld->GetDispatcher().update();
 
+        // Same lifetime as the player row: the messaging service keys its
+        // per-sender rate-limit buckets by PlayerId, which is handed out from a
+        // monotonic counter and never reused.
+        m_pWorld->GetPluginMessagingService().OnPlayerRemoved(pPlayer->GetId());
+
         m_pWorld->GetPlayerManager().Remove(pPlayer);
     }
 
@@ -817,11 +833,6 @@ static String PrettyPrintModList(const Vector<Mods::Entry>& acMods)
     return text;
 }
 
-bool GameServer::ValidateAuthParams(ConnectionId_t aConnectionId, const UniquePtr<AuthenticationRequest>& acRequest)
-{
-    return false;
-}
-
 void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId, const UniquePtr<AuthenticationRequest>& acRequest)
 {
     const auto info = GetConnectionInfo(aConnectionId);
@@ -957,7 +968,21 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
             responseList.ModList.push_back(entry);
         }
 
+        // Create() refuses a connection that already has a row, so a second
+        // AuthenticationRequest on the same connection - a retry, a duplicated
+        // packet, or a hostile client - returns null here. There is no
+        // "already authenticated" guard above, so without this the server
+        // dereferences it and dies; rejecting the duplicate is the correct
+        // answer either way.
         Player* pPlayer = m_pWorld->GetPlayerManager().Create(aConnectionId);
+        if (!pPlayer)
+        {
+            spdlog::warn("New player {:x} '{}' sent a second authentication request on a connection that already has a "
+                         "player; ignoring it",
+                         aConnectionId, remoteAddress);
+            return;
+        }
+
         pPlayer->SetEndpoint(remoteAddress);
         pPlayer->SetDiscordId(acRequest->DiscordId);
         pPlayer->SetUsername(std::move(acRequest->Username));

@@ -101,7 +101,27 @@ int TaskDialog::Show(int aIconId)
     dialogConfig.nDefaultButton = m_defaultButton;
 
     int button_result = IDCANCEL;
-    HRESULT hr = TaskDialogIndirect(&dialogConfig, &button_result, nullptr, nullptr);
+
+    // TaskDialogIndirect is exported by NAME on modern Windows, but the
+    // comctl32 import library binds it by ordinal 345, which Windows 11 24H2
+    // no longer exports. A static import would fail the whole module load
+    // with ERROR_INVALID_ORDINAL (182), so resolve it at runtime instead.
+    using TTaskDialogIndirect = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, int*);
+    static const TTaskDialogIndirect s_taskDialogIndirect = []() -> TTaskDialogIndirect {
+        const HMODULE hComCtl32 = LoadLibraryW(L"comctl32.dll");
+        if (!hComCtl32)
+            return nullptr;
+        return reinterpret_cast<TTaskDialogIndirect>(GetProcAddress(hComCtl32, "TaskDialogIndirect"));
+    }();
+
+    if (s_taskDialogIndirect)
+    {
+        s_taskDialogIndirect(&dialogConfig, &button_result, nullptr, nullptr);
+        return button_result;
+    }
+
+    // comctl32 unavailable (stripped system): degrade to a plain message box.
+    MessageBoxW(nullptr, m_pMessage, m_pWindowTitle, MB_OK | MB_ICONERROR);
     return button_result;
 }
 } // namespace Base

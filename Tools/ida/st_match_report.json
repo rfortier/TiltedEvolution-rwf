@@ -1,0 +1,457 @@
+[
+ {
+  "ae": 11612,
+  "var": "setWornData",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 11616,
+  "var": "setHealth",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 11619,
+  "var": "setChargeData",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 11620,
+  "var": "setSoulData",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 11822,
+  "var": "setPoison",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 12060,
+  "var": "setEnchantmentData",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 14953,
+  "var": "s_constructor",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 16005,
+  "var": "s_isQuestObject",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 18518,
+  "var": "getModifiedDistance",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 18563,
+  "var": "s_clearImageSpaceModifier",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 19075,
+  "var": "s_getCOCPlacementInfo",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 19708,
+  "var": "s_addInventoryItem",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 19784,
+  "var": "refrGetWorldLocation",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 19846,
+  "var": "s_getHandle",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 20203,
+  "var": "getLocationEncounterZone",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 20460,
+  "var": "s_loadCell",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 21600,
+  "var": "isFirstPerson",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 21622,
+  "var": "hasPerk",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 25011,
+  "var": "IsStageDone",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 26231,
+  "var": "updateWeather",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 26244,
+  "var": "releaseWeatherOverride",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 26503,
+  "var": "s_getDifficultyMultiplier",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 27244,
+  "var": "s_calculateExperience",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 32883,
+  "var": "InternalRevertAnimationGraphManager",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 33235,
+  "var": "setTarget",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 33236,
+  "var": "s_updateTarget",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 33261,
+  "var": "checkMovement",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 33282,
+  "var": "sortTargetSelectors",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 33285,
+  "var": "arrayQuickSort",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 34053,
+  "var": "adjustForPerks",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 34370,
+  "var": "s_finish",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 34512,
+  "var": "dispelAllSpells",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 34529,
+  "var": "getTargetAsActor",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 34989,
+  "var": "s_start",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 35269,
+  "var": "s_playDialogueOption",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 36035,
+  "var": "ctor",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37198,
+  "var": "addDeathItems",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37266,
+  "var": "s_IsTalking",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37511,
+  "var": "s_payGoldToContainer",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37521,
+  "var": "s_pickUpObject",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37527,
+  "var": "s_getGoldAmount",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37542,
+  "var": "s_speakSoundFunction",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37577,
+  "var": "isFleeing",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37717,
+  "var": "setPlayerTeammate",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37757,
+  "var": "getDetectionState",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37905,
+  "var": "s_initiateMountPackage",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 37975,
+  "var": "s_unequipObject",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 38533,
+  "var": "s_setNoBleedoutRecovery",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 38896,
+  "var": "s_equipFunc",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 38899,
+  "var": "s_unequipAll",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 38903,
+  "var": "s_unequipFunc",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 38959,
+  "var": "s_initFromPackage",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 38979,
+  "var": "setWeaponState",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 39114,
+  "var": "s_checkForNewPackage",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 39643,
+  "var": "s_processResponse",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 40454,
+  "var": "s_dropObject",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 40533,
+  "var": "s_pickUpObject",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 40535,
+  "var": "s_setWaypoint",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 40536,
+  "var": "s_removeWaypoint",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 42345,
+  "var": "setEnabled",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 42704,
+  "var": "s_updateDetectionState",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 47196,
+  "var": "isValidTarget",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 47303,
+  "var": "actorHasEquippedRangedWeapon_m",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 47307,
+  "var": "func",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 52626,
+  "var": "s_showSubtitle",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 52627,
+  "var": "s_hideSubtitle",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 52847,
+  "var": "fadeOutGame",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 55485,
+  "var": "s_isMovementControlsEnabled",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 55497,
+  "var": "s_setBeastForm",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 55739,
+  "var": "s_bindEverythingToScript",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 56205,
+  "var": "s_playAnimation",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 56206,
+  "var": "s_playAnimationAndWait",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 68545,
+  "var": "setEnabled",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 70639,
+  "var": "s_w2s",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 82088,
+  "var": "s_CloseAll",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 104359,
+  "var": "s_signaturesMatch",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 104483,
+  "var": "getPageForFrame",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 104653,
+  "var": "ctor",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 104655,
+  "var": "dtor",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 105220,
+  "var": "s_compareVariables",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 370892,
+  "var": "s_greetDistance",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 381472,
+  "var": "s_difficulty",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 382393,
+  "var": "s_value",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 382400,
+  "var": "s_value",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 400180,
+  "var": "rtti",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 404125,
+  "var": "s_value",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 405282,
+  "var": "s_value",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 406126,
+  "var": "s_matrix",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 406160,
+  "var": "s_port",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 410506,
+  "var": "NiCameraRTTI",
+  "status": "no candidates in bracket"
+ },
+ {
+  "ae": 414391,
+  "var": "s_policy",
+  "status": "no candidates in bracket"
+ }
+]

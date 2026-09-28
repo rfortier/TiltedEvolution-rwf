@@ -1,0 +1,11 @@
+<app-popup *ngIf="alert$ | async as alert">
+  <div class="alert-content" [ngClass]="'is-' + alert.kind">
+    <p class="alert-title">{{ alert.title }}</p>
+    <p class="alert-message" *ngIf="alert.message">{{ alert.message }}</p>
+    <app-action-buttons>
+      <button (click)="dismiss()" data-style-ornament="simple">
+        {{ 'COMPONENT.ERROR.OK' | transloco }}
+      </button>
+    </app-action-buttons>
+  </div>
+</app-popup>

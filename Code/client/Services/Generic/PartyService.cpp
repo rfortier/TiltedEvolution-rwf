@@ -19,6 +19,13 @@
 #include <Messages/PartyChangeLeaderRequest.h>
 #include <Messages/PartyKickRequest.h>
 
+namespace
+{
+// Same global PlayerService reskins on connect; kept local because this file
+// does not include PlayerService's translation unit.
+constexpr uint32_t kWorldEncountersGlobalId = 0xB8EC1;
+} // namespace
+
 #include <OverlayApp.hpp>
 
 #include <Forms/TESGlobal.h>
@@ -121,8 +128,8 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         // TODO: this can be done a bit prettier
         if (m_isLeader)
         {
-            TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-            pWorldEncountersEnabled->f = 1.f;
+            if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(kWorldEncountersGlobalId)))
+                pWorldEncountersEnabled->f = 1.f;
         }
 
         auto pArguments = CefListValue::Create();
@@ -134,7 +141,8 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         pArguments->SetList(0, pPlayerIds);
         pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
 
-        m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInfo", pArguments);
+        if (auto* pApp = m_world.GetOverlayService().GetOverlayApp())
+            pApp->ExecuteAsync("partyInfo", pArguments);
     }
 }
 
@@ -146,7 +154,8 @@ void PartyService::OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcep
 
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acPartyInvite.InviterId);
-    m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInviteReceived", pArguments);
+    if (auto* pApp = m_world.GetOverlayService().GetOverlayApp())
+        pApp->ExecuteAsync("partyInviteReceived", pArguments);
 }
 
 void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept

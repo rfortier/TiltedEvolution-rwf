@@ -151,8 +151,10 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
 BSTEventResult QuestService::OnEvent(const TESSceneEvent* apEvent, const EventDispatcher<TESSceneEvent>*)
 {
     GameId Id;
+    // Same lookup the phase-event handler already guards: the scene can be gone
+    // by the time the event is dispatched, and this dereferenced it outright.
     auto pScene = Cast<BGSScene>(TESForm::GetById(apEvent->sceneFormId));
-    auto pQuest = pScene->owningQuest;
+    auto pQuest = pScene ? pScene->owningQuest : nullptr;
     if (pQuest == nullptr || QuestService::IsNonSyncableQuest(pQuest) || !m_world.Get().GetPartyService().IsInParty() || !m_world.GetModSystem().GetServerModId(pQuest->formID, Id))
         return BSTEventResult::kOk;
 

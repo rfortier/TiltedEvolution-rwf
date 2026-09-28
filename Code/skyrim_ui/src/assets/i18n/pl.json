@@ -5,7 +5,9 @@
     "CHAT": {
       "SEND": "Wyślij",
       "MESSAGE": "Wiadomość",
-      "MESSAGE_TOO_LONG": "Nie możesz wysłać wiadomości dłuższej niż {{chatMessageLengthLimit}} znaków."
+      "MESSAGE_TOO_LONG": "Nie możesz wysłać wiadomości dłuższej niż {{chatMessageLengthLimit}} znaków.",
+      "SET_TIME_ARGUMENT_COUNT": "Nieprawidłowe argumenty, użycie: /settime GG MM, przykład: /settime 15 32.",
+      "SET_TIME_INVALID_ARGUMENTS": "Godziny muszą być w zakresie od 0 do 23, a minuty od 0 do 59."
     },
     "CONNECT": {
       "INFO": {
@@ -22,6 +24,11 @@
         "CONNECTION": "Nie można było cię połączyć to danego serwera. Upewnij się, że wpisałeś poprawny adres i że nie spotykają cię żadnę problemy z twoją siecią",
         "VERSION_MISMATCH": "Nie można było cię połączyć do danego serwera, ponieważ nie jest na tej samej wersji Skyrima Together co ty.",
         "INVALID_ADDRESS": "Adres jest w niepoprawnym formacie."
+      },
+      "HIDE_PASSWORD": "Ukryć hasło?",
+      "SUCCESS": {
+        "TITLE": "Połączono",
+        "MESSAGE": "Jesteś teraz połączony z {{address}}. Naciśnij F2 w dowolnym momencie, aby otworzyć to menu i rozmawiać."
       }
     },
     "DISCONNECT": {
@@ -84,7 +91,12 @@
       "RECONNECT": "Odłącz się i połącz z powrotem",
       "PLAYER_MANAGER": "Menedżer Graczy",
       "SETTINGS": "Ustawienia",
-      "CONNECTION_IN_PROGRESS": "Podłączanie jest w trakcie"
+      "CONNECTION_IN_PROGRESS": "Podłączanie jest w trakcie",
+      "STATUS": {
+        "OFFLINE": "Nie połączono",
+        "CONNECTING": "Łączenie...",
+        "ONLINE": "Połączono z {{address}}"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "Szukaj...",
@@ -101,7 +113,8 @@
         "COUNTRY": "Kraj",
         "FAVORITE": "Ulubione"
       },
-      "JOIN": "dołącz"
+      "JOIN": "dołącz",
+      "HIDE_PASSWORD_PROTECTED_SERVERS": "Ukryj serwery chronione hasłem"
     },
     "SETTINGS": {
       "VERSION": {
@@ -149,7 +162,8 @@
     },
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "Dostępne Komendy Czatu: {{cmds}}",
-      "COMMAND_NOT_FOUND": "'{{cmd}}' nie jest rozpoznawane jako Komenda."
+      "COMMAND_NOT_FOUND": "'{{cmd}}' nie jest rozpoznawane jako Komenda.",
+      "NOT_ADMIN": "Aby użyć tej komendy, musisz być administratorem."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}} Osiągnął Poziom {{level}}.",
@@ -166,7 +180,9 @@
         "CLIENT_MODS_DISALLOWED": "Ten serwer nie pozwala na mody {{mods}}. Usuń je by dołończyć.",
         "WRONG_PASSWORD": "Hasło które wpisałeś jest niepoprawne.",
         "NO_REASON": "Serwer odmówił połączenia brak powodu.",
-        "SERVER_FULL": "Ten Serwer jest Pełen."
+        "SERVER_FULL": "Ten Serwer jest Pełen.",
+        "BAD_UGRIDSTOLOAD": "Wygląda na to, że twój plik Skyrim.ini ma niedomyślną wartość dla „uGridsToLoad”. TO BARDZO ZŁY POMYSŁ i najprawdopodobniej zepsuje mod. Ustaw tę opcję z powrotem na wartość domyślną (5) albo usuń plik Skyrim.ini i uruchom Skyrim w wersji podstawowej raz, aby wygenerować nowy plik. Ustawienia „uExterior Cell Buffer” i „uInterior Cell Buffer” również powinny pozostać domyślne. Jeśli nie wiesz, jak to zrobić, zapoznaj się z naszą wiki lub zapytaj na naszym serwerze Discord albo subreddicie.",
+        "NON_DEFAULT_INSTALL": "Wygląda na to, że twoja instalacja nie jest czysto podstawowa, tzn. zawiera treści Creation Club (Anniversary Update lub inne) albo inne mody.\nNIE zalecamy gry z modami.\nZalecamy odinstalowanie i wyłączenie tych modów (instrukcje znajdziesz na wiki).\n\nAby uzyskać najlepsze doświadczenia, powinieneś mieć następującą listę modów:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>\n"
       }
     },
     "PLAYER_LIST": {

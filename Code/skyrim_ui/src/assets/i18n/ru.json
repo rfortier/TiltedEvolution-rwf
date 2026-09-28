@@ -23,6 +23,10 @@
         "CONNECTION": "Не удалось подключиться к серверу. Удостоверьтесь в правильности айпи-адреса и в корректной работе вашего Интернет-соединения",
         "VERSION_MISMATCH": "Вы не можете подключиться из-за разницы в версии Skyrim Together между вами и сервером.",
         "INVALID_ADDRESS": "Айпи-адрес имеет неверный формат."
+      },
+      "SUCCESS": {
+        "TITLE": "Подключено",
+        "MESSAGE": "Вы подключены к {{address}}. Нажмите F2 в любой момент, чтобы открыть это меню и чат."
       }
     },
     "DISCONNECT": {
@@ -85,7 +89,12 @@
       "RECONNECT": "Переподключиться",
       "PLAYER_MANAGER": "Управление игроками",
       "SETTINGS": "Настройки",
-      "CONNECTION_IN_PROGRESS": "Идет подключение..."
+      "CONNECTION_IN_PROGRESS": "Идет подключение...",
+      "STATUS": {
+        "OFFLINE": "Не подключено",
+        "CONNECTING": "Подключение...",
+        "ONLINE": "Подключено к {{address}}"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "Поиск...",
@@ -145,7 +154,7 @@
   },
   "SERVICE": {
     "CLIENT": {
-      "CONNECTION_LOST": "Соединение потеряно, попытка переподключения. Осталось попыток - {{RemainingReconnectionAttempt}.",
+      "CONNECTION_LOST": "Соединение потеряно, попытка переподключения. Осталось попыток - {{remainingReconnectionAttempt}}.",
       "CONNECTED": "Успешное подключение к серверу.",
       "DISCONNECTED": "Отключен от сервера."
     },
@@ -171,7 +180,7 @@
         "NO_REASON": "Сервер отказал в подключении без причины.",
         "SERVER_FULL": "Сервер переполнен.",
         "BAD_UGRIDSTOLOAD": "Похоже, что в вашем Skyrim.ini установлено нестандартное значение для параметра 'uGridsToLoad'. ЭТО ОЧЕНЬ ПЛОХО и, скорее всего, нарушит работу модификации. Пожалуйста, установите этот параметр в значение по умолчанию (5) или удалите файл Skyrim.ini и запустите обычный Skyrim один раз (без модов), чтобы создался новый файл. Параметры 'uExterior Cell Buffer' и 'uInterior Cell Buffer' также должны иметь стандартное значение. Если вы не знаете как это сделать, обратитесь за помощью в наших сообществах Discord/Reddit.",
-        "NON_DEFAULT_INSTALL": "Похоже, что установленный Skyrim не является 'чистым' (ванильным), т.е. в игре присутствует контент Creation Club (Anniversary Update или другой) или другие моды.\nМы НЕ рекомендуем играть с модами.\nМы рекомендуем вам удалить и отключить эти моды (инструкции можно найти на официальной вики модификации или в неофициальном VK сообществе Skyrim Together Reborn).\n\nДля получения наилучших впечатлений у вас должен быть следующий список модов:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp</strong>"
+        "NON_DEFAULT_INSTALL": "Похоже, что установленный Skyrim не является 'чистым' (ванильным), т.е. в игре присутствует контент Creation Club (Anniversary Update или другой) или другие моды.\nМы НЕ рекомендуем играть с модами.\nМы рекомендуем вам удалить и отключить эти моды (инструкции можно найти на официальной вики модификации или в неофициальном VK сообществе Skyrim Together Reborn).\n\nДля получения наилучших впечатлений у вас должен быть следующий список модов:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>"
       }
     },
     "PLAYER_LIST": {

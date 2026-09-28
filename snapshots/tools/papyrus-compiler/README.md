@@ -1,0 +1,221 @@
+# Papyrus Compiler
+
+[![Discord Chat](https://img.shields.io/discord/1377359857220321416?label=Discord&logo=Discord)](https://discord.gg/JqQZXAXvPT)
+
+An open-source compiler for the Papyrus scripting language. Currently, the compiler only supports Skyrim (tested on Skyrim SE/AE).
+
+![Papyrus Compiler](docs/image.png)
+
+The compiler was created for the following purposes:
+1. **Understanding Programming Languages:** The project is designed to gain a deeper understanding of how programming languages work.
+2. **Experimenting with the V Language:** It uses the V programming language for implementation.
+3. **Speeding Up Compilation:** The standard Papyrus compiler is very slow, so this project aims to optimize that process.
+4. **Improved Error Messages:** Provides higher quality and more understandable error messages to simplify debugging.
+
+## Сontent
+- [Usage](#usage)
+  - [Commands](#commands)
+  - [Arguments for the `compile` command](#arguments-for-the-compile-command)
+  - [Examples](#examples)
+  - [Header/Import Files](#headerimport-files)
+- [Differences from the original compiler](#differences-from-the-original-compiler)
+- [Building](#building)
+  - [Requirements](#requirements)
+- [Testing](#testing)
+- [References](#references)
+
+## Usage
+1. Download the archive with the compiler from the [Github Releases](https://github.com/russo-2025/papyrus-compiler/releases) page and extract it.
+2. Open a console in the directory where you extracted the compiler.
+3. Use the following syntax to work with the compiler:
+
+```
+papyrus-compiler <command> [arguments]
+```
+
+### Commands:
+- `compile`: Compiles files with the `.psc` extension into the binary `.pex` format.
+- `read`: Reads and disassembles a `.pex` file, outputting its contents in a human-readable format to the console.
+- `disassembly`: Reads and disassembles a `.pex` file, saving its contents in a human-readable format to a text file.
+- `create-dump`: Creates a `dump.json` file containing information about `.pex` files located in the specified directory.
+- `help`: Displays a list of available commands and their descriptions.
+
+### Arguments for the `compile` command:
+The following arguments can be used with the `compile` command:
+
+- `-i`, `-input`: Specifies the directory with `.psc` files or a `.psc` file to compile.
+- `-o`, `-output`: Specifies the directory where the compiled `.pex` files will be placed.
+- `-h`, `-headers-dir`: Specifies the directory with `.psc` header/import files that will be analyzed by the compiler but not compiled. Used to let the compiler know about existing scripts (`Form`, `ObjectReference`, `Actor`, ...) and their methods/functions/properties/variables. See the "Header/Import Files" section.
+- `-nocache`: Ignores the cache and forces compilation of all files.
+- `-silent`: Disables output of error messages to the console.
+- `-original`: Uses the original Papyrus compiler for compilation.
+- `-stats`: Saves statistics on compiled files to .md files (number of function calls, inheritances, files).
+- `-check`: Checks the syntax of .psc files without generating .pex files.
+- `-no-debug-info`: Excludes source line numbers and modification time from compiled .pex files. Debug info is included by default.
+- `-verbose`: ...
+
+### Examples
+Below are several examples demonstrating the use of various compiler commands and arguments for compiling scripts, reading compiled scripts, etc.
+
+#### Compile all scripts in a directory, ignoring the cache:
+```bash
+papyrus-compiler compile -nocache -i "D:\Steam\steamapps\common\Skyrim Special Edition\Data\Scripts\Source" -o "../test-files/compiled/skyrimSources"
+```
+This command compiles all scripts (ignoring the cache) located in `D:\Steam\steamapps\common\Skyrim Special Edition\Data\Scripts\Source` and places the compiled `.pex` files in the `../test-files/compiled/skyrimSources` directory.
+
+#### Compile all scripts in a directory:
+```bash
+papyrus-compiler compile -i "../../RH-workspace/scripts" -o "../../RH-workspace/compiled"
+```
+This command compiles all scripts located in `../../RH-workspace/scripts` and places the compiled `.pex` files in the `../../RH-workspace/compiled` directory.
+
+#### Compile scripts using header/import files:
+```bash
+papyrus-compiler compile -nocache -h "D:\Steam\steamapps\common\Skyrim Special Edition\Data\Scripts\Source" -i "../test-files/compiler" -o "../test-files/compiled" 
+```
+This command will compile all scripts from the `../test-files/compiler` directory to the `../test-files/compiled` directory, and missing information about objects (`Form`, `ObjectReference`, `Actor`, etc.) will be taken from `.psc` files in the `D:\Steam\steamapps\common\Skyrim Special Edition\Data\Scripts\Source` directory.
+
+#### Reading a compiled `.pex` file:
+```bash
+papyrus-compiler read "../test-files/compiled/ABCD.pex"
+```
+
+#### Creating a JSON dump of `.pex` files:
+```bash
+papyrus-compiler create-dump "../folder_with_pex_files"
+```
+Creates a JSON file `dump.json` containing some information about all `.pex` files located in the `../folder_with_pex_files` directory. Here's what it will look like:
+```json
+[
+  {
+    "name": "ActiveMagicEffect",
+    "parent_name": "",
+    "methods": [
+      {
+        "name": "RegisterForUpdate",
+        "arguments": [
+          {
+            "name": "afInterval",
+            "type": "Float"
+          }
+        ],
+        "return_type": "None",
+        "is_native": true,
+        "is_global": false
+      }
+    ],
+    "global_functions": [...]
+  },
+  ...
+]
+```
+
+### Header/Import Files
+By default, the compiler is unaware of existing scripts (`Form`, `ObjectReference`, `Actor`, etc.), their inheritance (`ObjectReference` -> `Form`), and available methods/functions/properties/variables.
+
+You can fix this in two ways:
+1. Specify the path to the directory with the original scripts (e.g., `..\Skyrim\Data\Scripts\Source`) using the `-h "..."` argument.
+2. Create a directory with header files indicating existing objects and their methods, functions, etc., and specify it using the `-h "..."` argument.
+
+Example of the `Actor.psc` header file:
+```papyrus
+ScriptName Actor extends ObjectReference
+
+Function EquipItem(Form akItem, bool abPreventRemoval = false, bool abSilent = false) native
+```
+
+By analyzing this file, the compiler learns about the existence of the `Actor` object, its inheritance from `ObjectReference`, and the presence of the `EquipItem` function with the corresponding arguments (some of which have default values). The `native` flag allows skipping the writing of the function body in the header file, as these scripts are used only for analysis. This significantly speeds up compilation.
+
+Scripts from the directory specified by the `-h "..."` argument will NOT be compiled and placed in the directory specified by `-o "..."`.
+
+## Differences from the original compiler
+
+This compiler has a few known differences from Bethesda's original Papyrus compiler. Some differences are intentional, while others document behavior that is currently not reproduced exactly.
+
+### 1. Multi-line string literals
+
+A line break placed directly inside a string literal is kept as a newline in the resulting string. Both Unix (`LF`) and Windows (`CRLF`) line endings are accepted and stored as a single `LF`, so the string content is the same regardless of the source file's line-ending style:
+
+```papyrus
+string s = "first line
+second line"
+; -> "first line\nsecond line"
+```
+
+The original compiler does not allow a string literal to span multiple lines.
+
+### 2. String capitalization at runtime
+
+Bethesda's original compiler can change the capitalization of string literals while compiling a script. This is not visible in the `.psc` source file, but it can change the value that a variable receives at runtime.
+
+Papyrus does not distinguish letter case in variable names, function names, property names, and type names. The original compiler also reuses text it has already seen without checking whether the capitalization is different. Because of this, a string literal can accidentally take the capitalization of an earlier variable name or earlier string.
+
+For example:
+
+```papyrus
+Function Test()
+    string s1 = "FooBar"
+    string s2 = "foobar"
+    string barfoo = "BarFoo"
+    string s3 = "BarFoo"
+EndFunction
+```
+
+With the original compiler, the variables may receive these values:
+
+```text
+s1 == "FooBar"
+s2 == "FooBar" ; not "foobar"
+barfoo == "barfoo" ; not "BarFoo"
+s3 == "barfoo" ; not "BarFoo"
+```
+
+In this example, `"foobar"` is treated as the same text as the earlier `"FooBar"`, so the earlier capitalization wins. The `"BarFoo"` literal can also be affected by the local variable named `barfoo`, because the compiler has already seen that name and considers it the same text ignoring case.
+
+This compiler preserves the exact capitalization of string literals. The same script keeps the values written in the source code:
+
+```text
+s1 == "FooBar"
+s2 == "foobar"
+barfoo == "BarFoo"
+s3 == "BarFoo"
+```
+
+This affects:
+- scripts that compare strings with case-sensitive logic;
+- strings used as keys, tags, IDs, file names, JSON keys, UI text, or values passed to other tools and plugins;
+- debug output and logs where the exact spelling matters.
+
+For normal Papyrus code this usually does not matter, because Papyrus names are case-insensitive. It matters when a string is data and your script expects that string to keep exactly the capitalization written in the `.psc` file. In that case, this compiler is more predictable than the original compiler.
+
+## Building
+
+### Requirements:
+- [V compiler 0c3183c (0.5.1)](https://github.com/vlang/v/releases/tag/0.5.1)
+
+```bash
+v -o "bin\papyrus-compiler.exe" -prod -g -gc none compiler.v
+```
+
+## Testing
+
+```bash
+v -stats test modules
+```
+
+## References
+- [Papyrus docs](https://ck.uesp.net/wiki/Category:Papyrus)
+- [VS Code Extension: Papyrus Language Tools](https://github.com/joelday/papyrus-lang)
+- [Creation Kit Papyrus Reference](https://www.creationkit.com/index.php?title=Category:Papyrus)
+- [Compiled Script File Format](https://en.uesp.net/wiki/Skyrim_Mod:Compiled_Script_File_Format)
+- [Caprica](https://github.com/Orvid/Caprica) - A compiler for the Papyrus scripting language used by the Creation Engine.
+- [Champollion](https://github.com/Orvid/Champollion) - A PEX to Papyrus Decompiler for Fallout 4
+- [PapyrusDotNet](https://github.com/zerratar/PapyrusDotNet) - PapyrusDotNet - A .NET Papyrus Compiler for Fallout 4 and Skyrim
+- [Open Papyrus - Docs](https://open-papyrus.github.io/docs/Papyrus_Language_Reference/index.html)
+- [Open Papyrus - Compiler](https://github.com/open-papyrus/papyrus-compiler) - (WIP, Rust lang) Open-source compiler for the Papyrus scripting language of Bethesda games.
+- [Scribe Papyrus](https://github.com/karledenstal/scribe-papyrus) - A command-line wrapper for the Papyrus compiler with an embedded compiler binary (Rust)
+- [Scribe Papyrus VSCode](https://github.com/karledenstal/scribe-papyrus-vscode) - A VS Code extension for compiling Papyrus scripts for Skyrim modding
+- [Washington Independent - Papyrus Compiler Skyrim](https://washingtonindependent.org/papyrus-compiler-skyrim/) - An article about the Papyrus Compiler with script optimization techniques
+- [Papyrus Header Generator](https://github.com/langfod/Papyrus-Header-Generator) - A tool to generate Papyrus header files from source scripts and compiled .pex files
+- [DeepWiki - Papyrus Compiler](https://deepwiki.com/russo-2025/papyrus-compiler) - AI-generated wiki and documentation for the Papyrus Compiler
+- [RepositoryStats - Papyrus Compiler](https://repositorystats.com/russo-2025/papyrus-compiler) - Statistics and analytics for the Papyrus Compiler

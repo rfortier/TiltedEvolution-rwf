@@ -1,0 +1,20 @@
+diff --git a/src/MorphSyncServiceBodyHair.cpp b/src/MorphSyncServiceBodyHair.cpp
+index ecf6313..07077fa 100644
+--- a/src/MorphSyncServiceBodyHair.cpp
++++ b/src/MorphSyncServiceBodyHair.cpp
+@@ -260,6 +260,15 @@ namespace MorphSyncTogether
+         const std::string& sender,
+         bool force)
+     {
++        // Start() refuses to run when the RaceMenu BodyMorph interface failed
++        // its version gate, but the STRPM transport is started on its own in
++        // main.cpp, so remote packets still arrive here. The drift branch below
++        // dereferences that interface, so a refused (null) one has to stop the
++        // apply instead of reaching ClearMorphs/SetMorph.
++        if (!_bodyMorph) {
++            return;
++        }
++
+         RemoteSnapshot snapshot;
+         {
+             std::scoped_lock lock(_remoteMutex);

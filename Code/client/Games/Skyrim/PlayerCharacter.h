@@ -133,7 +133,26 @@ struct PlayerCharacter : Actor
         uint64_t instanceCount;
     };
 
-    uint8_t pad1[0x588 - sizeof(Actor)];
+    // The pads below are relative glue: every offset in this struct is derived
+    // from pad1's anchor plus fixed-size deltas. So pad1 alone decides the whole
+    // tail, and each branch must anchor it on that game's real 0x580/0x590:
+    //
+    //   anchor   objectives  pSkills  locationForm  sizeof
+    //   0x580    0x580       0x9B0    0xAC8         0xBE0   <- real SE 1.5.97
+    //   0x590    0x590       0x9C0    0xAD8         0xBF0   <- real AE 1.7.x
+    //
+    // Do NOT derive the legacy anchor by subtracting 8 from the AE one. That
+    // only looks right because upstream bumped pad1 to 0x590 for AE while
+    // leaving the pad588/pad9B8 literals fixed - the tail drifted with pad1,
+    // so "AE minus 8" lands 8 bytes past the real SE field (0xAD0 instead of
+    // 0xAC8) and locationForm reads the qword after the real pointer. That
+    // exact mistake made DiscordService::OnLocationChangeEvent dereference a
+    // garbage TESForm* (0xFF7FFFFF) the moment a new game finished loading.
+#ifdef SKYRIM_TARGET_LEGACY
+    uint8_t pad1[0x580 - sizeof(Actor)];
+#else
+    uint8_t pad1[0x590 - sizeof(Actor)];
+#endif
     GameArray<ObjectiveInstance> objectives;
     uint8_t pad588[0x9B0 - 0x598];
     Skills** pSkills;
@@ -148,9 +167,21 @@ struct PlayerCharacter : Actor
     uint8_t padPlayerEnd[0xBE0 - 0xB30];
 };
 
-static_assert(offsetof(PlayerCharacter, objectives) == 0x588);
-static_assert(offsetof(PlayerCharacter, pSkills) == 0x9B8);
-static_assert(offsetof(PlayerCharacter, locationForm) == 0xAD0);
-static_assert(offsetof(PlayerCharacter, baseTints) == 0xB18);
-static_assert(offsetof(PlayerCharacter, overlayTints) == 0xB30);
-static_assert(sizeof(PlayerCharacter) == 0xBE8);
+// Each branch asserts its own game's real values (see the note above): the
+// 1.5.x layout is 8 bytes earlier than AE in the tail because its pad1 anchor
+// is 0x580 vs 0x590, and because its Actor base is 8 bytes smaller too.
+#ifdef SKYRIM_TARGET_LEGACY
+static_assert(offsetof(PlayerCharacter, objectives) == 0x580);
+static_assert(offsetof(PlayerCharacter, pSkills) == 0x9B0);
+static_assert(offsetof(PlayerCharacter, locationForm) == 0xAC8);
+static_assert(offsetof(PlayerCharacter, baseTints) == 0xB10);
+static_assert(offsetof(PlayerCharacter, overlayTints) == 0xB28);
+static_assert(sizeof(PlayerCharacter) == 0xBE0);
+#else
+static_assert(offsetof(PlayerCharacter, objectives) == 0x590);
+static_assert(offsetof(PlayerCharacter, pSkills) == 0x9C0);
+static_assert(offsetof(PlayerCharacter, locationForm) == 0xAD8);
+static_assert(offsetof(PlayerCharacter, baseTints) == 0xB20);
+static_assert(offsetof(PlayerCharacter, overlayTints) == 0xB38);
+static_assert(sizeof(PlayerCharacter) == 0xBF0);
+#endif

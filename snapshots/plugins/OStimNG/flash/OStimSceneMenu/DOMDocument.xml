@@ -1,0 +1,87 @@
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" backgroundColor="#666666" width="1920" height="1080" currentTimeline="1" xflVersion="2.2" creatorInfo="Adobe Flash Professional CS6" platform="Windows" versionInfo="Saved by Adobe Flash Windows 12.0 build 481" majorVersion="12" buildNumber="481" guidesVisible="false" viewAngle3D="122.353661987282" nextSceneIdentifier="606" playOptionsPlayLoop="false" playOptionsPlayPages="false" playOptionsPlayFrameActions="false" autoSaveHasPrompted="true">
+     <folders>
+          <DOMFolderItem name="Fonts" itemID="628f364c-00000620" isExpanded="true"/>
+          <DOMFolderItem name="Import" itemID="647c895b-0000030a" isExpanded="true"/>
+          <DOMFolderItem name="Import/Fonts" itemID="4ee98c62-00002ff0"/>
+          <DOMFolderItem name="Import/Shapes" itemID="4ee20824-00000192"/>
+          <DOMFolderItem name="Import/Sprites" itemID="647c88f8-00000301"/>
+          <DOMFolderItem name="Option" itemID="6343e163-000003a9" isExpanded="true"/>
+          <DOMFolderItem name="Settings" itemID="64d21452-000001ef" isExpanded="true"/>
+     </folders>
+     <fonts>
+          <DOMFontItem name="Fonts/$EverywhereMediumFont" itemID="647c9f42-00000311" linkageImportForRS="true" linkageExportInFirstFrame="false" linkageIdentifier="$EverywhereMediumFont" linkageURL="gfxfontlib.swf" font="FuturaStd-Condensed" size="0" id="1" sourceLastImported="1321755965"/>
+          <DOMFontItem name="Import/Fonts/$EverywhereMediumFont" itemID="4ec84e45-00001751" linkageImportForRS="true" linkageExportInFirstFrame="false" linkageIdentifier="$EverywhereMediumFont" linkageURL="gfxfontlib.swf" font="FuturaStd-Condensed" size="0" id="2" sourceLastImported="1321755965" embedRanges="1|2|4|3"/>
+     </fonts>
+     <symbols>
+          <Include href="Bar.xml" itemID="64510422-00000255" lastModified="1688502812"/>
+          <Include href="BAR_MC.xml" itemID="64510522-0000026b" lastModified="1683033486"/>
+          <Include href="BG_MC.xml" itemID="6343e0e9-00000393" lastModified="1681288796"/>
+          <Include href="Divider.xml" loadImmediate="false" itemID="645e0f01-0000027d" lastModified="1683885825"/>
+          <Include href="ExcitementBars.xml" itemID="643eea80-0000097f" lastModified="1683052441"/>
+          <Include href="Import/Shapes/Shape 194.xml" itemIcon="1" loadImmediate="false" itemID="4ee20824-000000ce" lastModified="1323436068"/>
+          <Include href="Import/Sprites/skyrim_BG_MC.xml" itemID="647ca08e-0000031d" lastModified="1685889166"/>
+          <Include href="Import/Sprites/skyrim_TextInput.xml" itemID="647ca096-0000031e" lastModified="1685889174"/>
+          <Include href="Import/Sprites/Sprite 196.xml" itemID="4ee20824-000000cc" lastModified="1688503230"/>
+          <Include href="Option/Option_Frame_MC.xml" loadImmediate="false" itemID="6343e148-000003a0" lastModified="1684181951"/>
+          <Include href="Option/Option_Input_MC.xml" loadImmediate="false" itemID="6343e133-0000039e" lastModified="1684181952"/>
+          <Include href="Option/Option_MC.xml" itemID="6343e15d-000003a5" lastModified="1696782060"/>
+          <Include href="Option/SpeedButton.xml" itemID="64b563cc-00000216" lastModified="1691762571"/>
+          <Include href="Option_Box_Container_MC.xml" itemID="64525e94-0000020b" lastModified="1697532272"/>
+          <Include href="Option_Box_MC.xml" itemID="6343e4ae-00000683" lastModified="1691762613"/>
+          <Include href="Settings/MenuSelector_MC.xml" itemID="6522d2e6-000001f8" lastModified="1696781412"/>
+          <Include href="TextureContainer.xml" loadImmediate="false" itemID="643c3710-00000cca" lastModified="1681673885"/>
+     </symbols>
+     <timelines>
+          <DOMTimeline name="root">
+               <layers>
+                    <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+                         <frames>
+                              <DOMFrame index="0" keyMode="9728">
+                                   <elements>
+                                        <DOMSymbolInstance libraryItemName="ExcitementBars" name="bars" centerPoint3DX="415.95" centerPoint3DY="910.1">
+                                             <matrix>
+                                                  <Matrix tx="364.95" ty="959.9"/>
+                                             </matrix>
+                                             <transformationPoint>
+                                                  <Point/>
+                                             </transformationPoint>
+                                        </DOMSymbolInstance>
+                                        <DOMSymbolInstance libraryItemName="Option_Box_Container_MC" name="optionBoxesContainer" selected="true" centerPoint3DX="94.4" centerPoint3DY="846.5">
+                                             <matrix>
+                                                  <Matrix tx="22.8" ty="999.4"/>
+                                             </matrix>
+                                             <transformationPoint>
+                                                  <Point x="71.6" y="-10.15"/>
+                                             </transformationPoint>
+                                        </DOMSymbolInstance>
+                                   </elements>
+                              </DOMFrame>
+                         </frames>
+                    </DOMLayer>
+               </layers>
+          </DOMTimeline>
+     </timelines>
+     <PrinterSettings/>
+     <publishHistory>
+          <PublishItem publishSize="930" publishTime="1697533521"/>
+          <PublishItem publishSize="930" publishTime="1697533518"/>
+          <PublishItem publishSize="14358" publishTime="1697532114"/>
+          <PublishItem publishSize="14357" publishTime="1697532109"/>
+          <PublishItem publishSize="1934" publishTime="1697532030"/>
+          <PublishItem publishSize="931" publishTime="1697532025"/>
+          <PublishItem publishSize="899" publishTime="1697532025"/>
+          <PublishItem publishSize="932" publishTime="1697447136"/>
+          <PublishItem publishSize="900" publishTime="1697447136"/>
+          <PublishItem publishSize="915" publishTime="1697363613"/>
+          <PublishItem publishSize="883" publishTime="1697363613"/>
+          <PublishItem publishSize="914" publishTime="1696782058"/>
+          <PublishItem publishSize="14343" publishTime="1696781552"/>
+          <PublishItem publishSize="915" publishTime="1696780972"/>
+          <PublishItem publishSize="915" publishTime="1696780963"/>
+          <PublishItem publishSize="1915" publishTime="1696780945"/>
+          <PublishItem publishSize="915" publishTime="1696780662"/>
+          <PublishItem publishSize="882" publishTime="1696780662"/>
+          <PublishItem publishSize="912" publishTime="1695907268"/>
+          <PublishItem publishSize="881" publishTime="1695907268"/>
+     </publishHistory>
+</DOMDocument>

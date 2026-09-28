@@ -3,7 +3,9 @@
     "CHAT": {
       "SEND": "보내기",
       "MESSAGE": "메시지",
-      "MESSAGE_TOO_LONG": "{{chatMessageLengthLimit}}자를 초과하는 메시지는 보낼 수 없습니다."
+      "MESSAGE_TOO_LONG": "{{chatMessageLengthLimit}}자를 초과하는 메시지는 보낼 수 없습니다.",
+      "SET_TIME_ARGUMENT_COUNT": "인수가 잘못되었습니다. 사용법: /settime HH MM, 예: /settime 15 32",
+      "SET_TIME_INVALID_ARGUMENTS": "시간은 0에서 23 사이, 분은 0에서 59 사이여야 합니다."
     },
     "CONNECT": {
       "INFO": {
@@ -21,6 +23,10 @@
         "CONNECTION": "지정된 서버에 연결할 수 없습니다. 올바른 주소를 입력했는지, 네트워크 문제가 발생하고 있지 않은지 확인하세요",
         "VERSION_MISMATCH": "귀하와 동일한 버전의 Skyrim Together가 없기 때문에 서버에 연결할 수 없습니다.",
         "INVALID_ADDRESS": "주소 형식이 잘못되었습니다."
+      },
+      "SUCCESS": {
+        "TITLE": "연결됨",
+        "MESSAGE": "{{address}}에 연결되었습니다. 언제든지 F2를 눌러 이 메뉴와 채팅을 여세요."
       }
     },
     "DISCONNECT": {
@@ -79,10 +85,16 @@
     "ROOT": {
       "CONNECT": "연결",
       "DISCONNECT": "연결 해제",
+      "REVEAL_PLAYERS": "플레이어 표시",
       "RECONNECT": "재연결",
       "PLAYER_MANAGER": "플레이어 관리자",
       "SETTINGS": "설정",
-      "CONNECTION_IN_PROGRESS": "연결 진행중..."
+      "CONNECTION_IN_PROGRESS": "연결 진행중...",
+      "STATUS": {
+        "OFFLINE": "연결되지 않음",
+        "CONNECTING": "연결 중...",
+        "ONLINE": "{{address}}에 연결됨"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "검색...",
@@ -148,7 +160,8 @@
     },
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "다음과 같은 대화 명령어가 사용 가능합니다: {{cmds}}",
-      "COMMAND_NOT_FOUND": "'{{cmd}}'은(는) 명령어로 인식되지 않습니다."
+      "COMMAND_NOT_FOUND": "'{{cmd}}'은(는) 명령어로 인식되지 않습니다.",
+      "NOT_ADMIN": "해당 명령어를 사용하려면 관리자여야 합니다."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}}님이 {{level}} 레벨에 도달했습니다.",
@@ -165,7 +178,9 @@
         "CLIENT_MODS_DISALLOWED": "이 서버는 {{mods}}를 허용하지 않습니다. 가입하려면 해당 항목을 삭제하세요.",
         "WRONG_PASSWORD": "입력한 암호가 올바르지 않습니다.",
         "NO_REASON": "서버가 이유 없이 연결을 거부했습니다.",
-        "SERVER_FULL": "이 서버는 만석입니다."
+        "SERVER_FULL": "이 서버는 만석입니다.",
+        "BAD_UGRIDSTOLOAD": "Skyrim.ini 파일의 'uGridsToLoad' 값이 기본값이 아닌 것 같습니다. 이는 매우 좋지 않은 선택이며, 모드가 깨질 가능성이 높습니다. 이 설정을 기본값(5)으로 되돌리거나, Skyrim.ini 파일을 삭제한 뒤 바닐라 Skyrim을 한 번 실행해 새 파일을 생성하세요. 'uExterior Cell Buffer'와 'uInterior Cell Buffer' 설정도 기본값으로 두어야 합니다. 방법을 모르시면 위키를 참고하거나 Discord 서버/Reddit 서브레딧에서 도움을 요청하세요.",
+        "NON_DEFAULT_INSTALL": "설치가 순수 바닐라가 아닌 것 같습니다. 즉, Creation Club 콘텐츠(Anniversary Update 여부와 무관)나 다른 모드가 포함되어 있습니다.\n모드와 함께 플레이하는 것은 권장하지 않습니다.\n해당 모드들을 제거하고 비활성화하시길 권장합니다(자세한 방법은 위키 참고).\n\n최상의 환경을 위해 다음 모드 목록을 사용하세요:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>"
       }
     },
     "PLAYER_LIST": {

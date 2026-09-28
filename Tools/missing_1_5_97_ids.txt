@@ -1,0 +1,97 @@
+# Skyrim Together Next - 1.5.97 missing address manifest (13 ids)
+#
+# Coverage 3069/3082 codebase ids (99.6%), and all 3698 map entries validate
+# against version-1-5-97-0.bin. Tools/ida/recover_1597.py closed 20 of the
+# previous 29 by identifying the 1.6.1170 function on its own terms (referenced
+# string literals, call-graph position, globals it touches) instead of
+# interpolating between mapped neighbours; see Tools/ida/st_overrides_graph.txt
+# for the per-id evidence.
+#
+# Counted with Tools/Scripts/gen_ae_to_se_map.py::collect_codebase_ids, which
+# scans every .cpp/.hpp/.h under Code/client, strips comments first, and counts
+# FindAddressById sites alongside POINTER_SKYRIMSE/RttiLocator/Anchor/
+# VersionDbPtr. Its old "*.[ch]pp" glob silently skipped all 301 .h files, and
+# it read commented-out calls as live ones; both are fixed, which is why the
+# totals here moved from 3075 to 3080 without the code gaining that many ids.
+#
+# What the remaining 11 cost, in order of how much anyone would notice:
+#
+#   32883  animation graph revert. AnimationSystem only calls it when a remote
+#          player's animation is replayed with ResetAnimationGraphForReplay, so
+#          the graph is not reverted and a replayed animation can look wrong.
+#          The only entry here with real gameplay effect.
+#   389089 the float global holding the physics timestep, added by the upstream
+#          #901 controller-timing fix. bhkCharacterController::UpdateStepTiming
+#          resolves it with FindAddressById rather than POINTER_SKYRIMSE: it is a
+#          DATA id, so an unmapped one would hand back the executable stub and
+#          dereferencing that reads the stub's own opcodes as a float. Where it
+#          is unavailable the timing falls back to the movement delta and then
+#          to the value already in the controller.
+#   39856  AIProcess::GetCharController, the other half of #901. A FUNCTION id,
+#          so the stub's documented "calling it returns zero" contract applies
+#          and the accessor simply answers null on 1.5.97 - which both call
+#          sites already handle by skipping the timing refresh.
+#   21600  PlayerCamera::IsFirstPerson. Read once, from the optional animation
+#          mod compat path (ModCompat/BehaviorVar.cpp), and only for the local
+#          player; degrades to "third person".
+#   82088  UI::CloseAllMenus, reached only from a debug view.
+#   36460  GarbageCollector::Add (the base-object overload), added by the
+#          upstream 1.8.2 leveled-NPC rebuild. Only reached from that rebuild,
+#          and the stub makes it a no-op: the superseded temporary NPC base is
+#          leaked instead of being handed to the engine's collector. Its
+#          singleton is unmapped too, so GarbageCollector::Get returns null
+#          there and the call is skipped before it ever reaches this id.
+#   400329 GarbageCollector singleton. Deliberately resolved with
+#          FindAddressById rather than POINTER_SKYRIMSE: an unmapped id there
+#          yields the zero-returning stub, and dereferencing it is an access
+#          violation at address 0 on every leveled NPC rebuild. Returning null
+#          instead makes the disposal a no-op (see 36460 above).
+#   69554  tasklet thread names - thread labels in a debugger, nothing else.
+#   400180 RTTI descriptor for BSWin32GameDataSystemUtility; nothing casts to it.
+#   36548  startup movie skip. One candidate exists and shares a literal, but
+#          its body diverges from the 1.6 function within eight instructions,
+#          so it was rejected rather than shipped on a guess.
+#   20231  TESObjectREFR::SetLeveledCreature, the leveled-creature metadata
+#          write added by the upstream 1.8.2 sync. Only reached from the
+#          leveled-NPC rebuild, which is gated on LeveledNpcSystem::
+#          CanRecordPick() precisely because this id does not resolve here.
+#   14774  BSRandom generator accessor  } the module has no callers at all
+#   68276  BSRandom unsigned int        }
+#
+# 21600, 32883 and 82088 are near twins of large sibling families with no
+# string references and no mapped call-graph neighbours, which is what defeats
+# every automated signal; Tools/missing_1_5_97_analysis.md records the
+# structural fingerprints and the candidates already ruled out.
+#
+# ae=14774 | call/data | getGenerator | Games/Skyrim/BSRandom/BSRandom.cpp:20
+# ae=36460 | call/data | GarbageCollector::Add(TESBoundObject*) | Games/Skyrim/Misc/GarbageCollector.cpp:24
+# ae=400329 | call/data | GarbageCollector singleton | Games/Skyrim/Misc/GarbageCollector.cpp:11
+# ae=389089 | data | physics timestep global | Games/Skyrim/Havok/bhkCharacterController.cpp:34
+# ae=39856 | call/data | AIProcess::GetCharController | Games/Skyrim/AI/AIProcess.cpp:14
+# ae=21600 | call/data | isFirstPerson | Games/Skyrim/Camera/PlayerCamera.cpp:15
+# ae=32883 | call/data | InternalRevertAnimationGraphManager | Games/IAnimationGraphManagerHolder.cpp:34
+# ae=20231 | call/data | TESObjectREFR::SetLeveledCreature | Games/Skyrim/TESObjectREFR.cpp:170
+# ae=36548 | patch anchor | skip startup movie | Games/Skyrim/Interface/UI.cpp:126
+# ae=68276 | call/data | unsignedInt | Games/Skyrim/BSRandom/BSRandom.cpp:17
+# ae=69554 | patch anchor | tasklet thread names | Games/Skyrim/BSSystem/BSTaskletManager.cpp:35
+# ae=82088 | call/data | s_CloseAll | Games/Skyrim/Interface/UI.cpp:32
+# ae=400180 | rtti | BSWin32GameDataSystemUtility | Games/Skyrim/RTTI.cpp:5620
+#
+# 2026-09-16, with both builds on disk (1.6.1170 and 1.5.97):
+#   14774  resolved and hand verified at 0x165f60 (BSRandom::GetGenerator).
+#          Nothing in the code base calls BSRandom::UnsignedInt, so folding it
+#          in changes no behaviour; it is recorded in
+#          Tools/ida/st_overrides_graph.txt for the next map regeneration.
+#   21600  the tool's candidate 0x2dc490 is wrong (stores a double, not a
+#          bool). Rejected, do not re-add.
+#   36548  still rejected; and even mapped it would not help, because the
+#          patch site at +0xFE has no aligned 1.5.97 offset
+#          (Tools/ida/st_patch_offsets_1597.tsv), so the patch stays skipped.
+#   32883  still open, and the only one here with gameplay effect. It
+#          has no caller anywhere in the 1.6.1170 image - no E8 call site and
+#          no vtable slot points at it - and its two callees (63370, 13129)
+#          are themselves unmapped, so there is no anchor left to pull on.
+#          The 1.5.97 twin of its 1.6 neighbour interpolation (0x4f24b0,
+#          0x4f0440) and the token-similarity candidate 0x4f1f90 were all
+#          disassembled and rejected: 0x4f1f90 reads a second argument from
+#          rdx, which RevertAnimationGraphManager does not have.

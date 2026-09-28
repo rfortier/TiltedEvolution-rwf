@@ -19,6 +19,14 @@ BGSSaveFormBuffer::BGSSaveFormBuffer()
 
     POINTER_SKYRIMSE(CtorT, ctor, 36035);
 
+    if (!ctor.Get()) // unmapped on legacy game versions, degrade to an empty buffer
+    {
+        buffer = nullptr;
+        capacity = 0;
+        position = 0;
+        return;
+    }
+
     TiltedPhoques::ThisCall(ctor, this);
 
     position = 0;
@@ -26,6 +34,9 @@ BGSSaveFormBuffer::BGSSaveFormBuffer()
 
 void BGSSaveFormBuffer::WriteId(uint32_t aId) noexcept
 {
+    if (!buffer) // legacy game versions: save serialization is unavailable
+        return;
+
     uint32_t modId = 0;
     uint32_t baseId = 0;
 

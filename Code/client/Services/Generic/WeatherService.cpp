@@ -131,7 +131,14 @@ void WeatherService::OnWeatherChange(const NotifyWeatherChange& acMessage) noexc
         return;
     }
 
-    Sky::Get()->ForceWeather(pWeather);
+    // Same guard the two other readers in this file apply. This path is driven
+    // by a server message, so it can run at a point where the sky singleton has
+    // not been created yet - the earlier version dereferenced it unguarded.
+    Sky* pSky = Sky::Get();
+    if (!pSky)
+        return;
+
+    pSky->ForceWeather(pWeather);
 
     m_cachedWeatherId = weatherId;
 }
@@ -184,8 +191,14 @@ void WeatherService::RunWeatherUpdates(const double acDelta) noexcept
 
 void WeatherService::ToggleGameWeatherSystem(bool aToggle) noexcept
 {
+    // Reached from the disconnect and party events, which can fire before the
+    // sky singleton exists. Only the release needs it; the request and the
+    // cache reset below are ours and still have to happen.
     if (aToggle)
-        Sky::Get()->ReleaseWeatherOverride();
+    {
+        if (Sky* pSky = Sky::Get())
+            pSky->ReleaseWeatherOverride();
+    }
     else
         m_transport.Send(RequestCurrentWeather());
 
@@ -205,5 +218,10 @@ void WeatherService::SetCachedWeather() noexcept
         return;
     }
 
-    Sky::Get()->ForceWeather(pWeather);
+    // Both callers are inside RunWeatherUpdates, which returns early when the
+    // sky is missing - so this cannot be null today. Checked anyway: it is a
+    // private helper, and the cost of the check is nothing next to a crash in a
+    // service that already treats the singleton as nullable everywhere else.
+    if (Sky* pSky = Sky::Get())
+        pSky->ForceWeather(pWeather);
 }

@@ -1,0 +1,8 @@
+{
+  "name": "dav-sync-together",
+  "version-string": "0.6.3",
+  "dependencies": [
+    "commonlibsse-ng",
+    "nlohmann-json"
+  ]
+}

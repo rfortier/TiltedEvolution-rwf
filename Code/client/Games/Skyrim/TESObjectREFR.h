@@ -16,6 +16,7 @@
 struct AnimationVariables;
 struct TESWorldSpace;
 struct TESBoundObject;
+struct TESActorBase;
 struct TESContainer;
 struct BGSScene;
 
@@ -137,7 +138,7 @@ struct TESObjectREFR : TESForm
     virtual void sub_81();
     virtual void sub_82();
     virtual void sub_83();
-    virtual void SetBaseForm(TESForm* apForm);
+    virtual void SetObjectReference(TESBoundObject* apObject);
     virtual void sub_85();
     virtual void sub_86();
     virtual void sub_87();
@@ -156,13 +157,21 @@ struct TESObjectREFR : TESForm
     virtual void sub_94();
     virtual void sub_95();
     virtual void sub_96();
-    virtual struct TESObjectCELL* GetParentCell() const;
+    // The actual parent cell is the field below at offset 0x60; use GetParentCellEx() when the
+    // effective cell is needed.
+    virtual struct TESObjectCELL* GetSaveParentCell() const;
     virtual void SetParentCell(struct TESObjectCELL* apParentCell);
     virtual bool VirtIsDead(bool abNotEssential); // TODO: Use this or papyrus IsDead?
     virtual void sub_9A();
     virtual void sub_9B();
 
     void SetRotation(float aX, float aY, float aZ) noexcept;
+
+    // Writes the ExtraLeveledCreature extra data the engine keeps for a
+    // resolved leveled actor: which placed NPC it came from and which template
+    // was picked. Unmapped on 1.5.x, where the address library substitutes a
+    // no-op stub and only the metadata write is lost.
+    void SetLeveledCreature(TESActorBase* apOriginalBase, TESActorBase* apTemplateA) noexcept;
 
     BSPointerHandle<TESObjectREFR> GetHandle() const noexcept;
     uint32_t GetCellId() const noexcept;
@@ -226,5 +235,16 @@ struct TESObjectREFR : TESForm
     uint16_t referenceFlags;
 };
 
+#ifdef SKYRIM_TARGET_LEGACY
+// 1.5.x: the embedded ExtraDataList has no vtable, so TESObjectREFR is 8
+// bytes smaller; fields after extraData (refLock, scale, referenceFlags)
+// sit 8 bytes earlier than on 1.6.x/1.7.x.
+static_assert(sizeof(TESObjectREFR) == 0x98);
+#else
 static_assert(sizeof(TESObjectREFR) == 0xA0);
+#endif
+// upstream added this. parentCell sits before extraData, so the 1.5.x 8 byte
+// shift (which only moves refLock/scale/referenceFlags) does not apply to it:
+// the offset is the same on both layouts.
+static_assert(offsetof(TESObjectREFR, parentCell) == 0x60);
 static_assert(offsetof(TESObjectREFR, loadedState) == 0x68);

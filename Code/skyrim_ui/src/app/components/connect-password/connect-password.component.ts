@@ -80,6 +80,20 @@ export class ConnectPasswordComponent implements AfterViewInit {
         }
       });
 
+    // connectionStateChange only goes false when the transport reports a
+    // disconnect, so an attempt that fails before it reaches the server (an
+    // unresolvable address, or the client-side handshake deadline) never
+    // cleared the local flag and the panel sat on "connecting" forever.
+    // isConnectionInProgressChange ends for every outcome, so it is what
+    // actually releases the flag.
+    this.client.isConnectionInProgressChange
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(inProgress => {
+        if (!inProgress && this.connecting) {
+          this.connecting = false;
+        }
+      });
+
     this.name = this.uiRepository.getConnectName();
     this.address = this.uiRepository.getConnectIp();
     this.port = this.uiRepository.getConnectPort();
@@ -116,6 +130,13 @@ export class ConnectPasswordComponent implements AfterViewInit {
   }
 
   public cancel(): void {
+    // Same reasoning as the plain connect panel: backing out of an attempt in
+    // progress has to abort it, not just navigate away from it.
+    if (this.connecting) {
+      this.connecting = false;
+      this.client.disconnect();
+    }
+
     this.uiRepository.openView(View.SERVER_LIST);
   }
 

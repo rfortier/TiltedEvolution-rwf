@@ -1,0 +1,10 @@
+# AnimSyncTogether rule profile v1
+# Helmet Toggle 2 / Offset Movement Animation
+
+# Custom graph inputs that STR does not reproduce correctly on proxies.
+event OffsetGPMA
+event OffsetGPMAStop
+
+# Graph variables used by Helmet Toggle's OAR replacement conditions.
+int iGPMAAnimationType
+int iGPMAOffsetType

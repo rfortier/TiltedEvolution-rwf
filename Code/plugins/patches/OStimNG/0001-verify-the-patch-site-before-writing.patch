@@ -1,0 +1,54 @@
+--- a/skse/src/GameLogic/GameHooks.h
++++ b/skse/src/GameLogic/GameHooks.h
+@@ -7,6 +7,18 @@
+ namespace GameLogic {
+     void installHooks();
+     void installHooksPostPost();
++
++    // write_call<5> / write_branch<5> overwrite exactly five bytes, so a site
++    // is only safe to patch when it starts with a five-byte rel32 branch. The SE
++    // and AE offsets differ, and on 1.5.80/1.5.97 the SE GetHeading offset lands
++    // inside a six-byte FF /2 indirect call instead of on a call: patching there
++    // splits the instruction, leaves the last byte of its disp32 as an orphan
++    // tail, and computes the "original" target from the middle of that
++    // displacement. Skipping is the correct outcome - a wrong hook corrupts the
++    // instruction stream on every call.
++    inline bool patchSiteIsRel32Branch(std::uintptr_t a_site, std::uint8_t a_opcode) {
++        return *reinterpret_cast<const std::uint8_t*>(a_site) == a_opcode;
++    }
+ 
+     struct IsThirdPerson {
+     public:
+@@ -19,6 +31,10 @@
+ 
+         static inline void Install() {
+             REL::Relocation<std::uintptr_t> target{RELOCATION_ID(36541, 37542), REL::VariantOffset(0x132, 0x135, 0x132)};
++            if (!patchSiteIsRel32Branch(target.address(), 0xE8)) {
++                logger::warn("IsThirdPerson patch site is not a 5-byte rel32 branch on this runtime; hook skipped");
++                return;
++            }
+             auto& trampoline = SKSE::GetTrampoline();
+ 
+             func = trampoline.write_call<5>(target.address(), thunk);
+@@ -35,6 +51,10 @@
+ 
+         static inline void Install() {
+             REL::Relocation<std::uintptr_t> target{RELOCATION_ID(36541, 37542), REL::VariantOffset(0x152, 0x155, 0x152)};
++            if (!patchSiteIsRel32Branch(target.address(), 0xE8)) {
++                logger::warn("GetHeading patch site is not a 5-byte rel32 branch on this runtime; hook skipped");
++                return;
++            }
+             auto& trampoline = SKSE::GetTrampoline();
+ 
+             func = trampoline.write_call<5>(target.address(), thunk);
+@@ -57,6 +77,10 @@
+ 
+         static inline void Install() {
+             REL::Relocation<std::uintptr_t> target{RELOCATION_ID(36404, 37398), REL::VariantOffset(0x47, 0x47, 0x47)};
++            if (!patchSiteIsRel32Branch(target.address(), 0xE9)) {
++                logger::warn("PackageStart patch site is not a 5-byte rel32 branch on this runtime; hook skipped");
++                return;
++            }
+             auto& trampoline = SKSE::GetTrampoline();
+ 
+             func = trampoline.write_branch<5>(target.address(), thunk);

@@ -1,0 +1,115 @@
+## Next Release
+
+### New Features
+
+- Added support for multiple output directories - you can now specify multiple `-o` flags to copy compiled .pex files to multiple locations. #18
+- Added Nix flake (`flake.nix`) — the compiler can now be built and run as a Nix package. #15
+- Added `-no-debug-info` flag to exclude source line numbers and modification time from compiled .pex files. Debug info is included by default.
+- A string literal may now span multiple source lines: a line break placed directly inside `"..."` is kept as a newline in the resulting string. Both Unix (`LF`) and Windows (`CRLF`) line endings are accepted and stored as a single newline, so the string content is the same regardless of the source file's line-ending style.
+
+### Improvements
+
+- Generated scripts now include real source line numbers in the debug info.
+- The `modificationTime` field in generated scripts is now set to the source file's last modification time instead of a fixed placeholder.
+- Updated required V compiler version to [0.5.1](https://github.com/vlang/v/releases/tag/0.5.1) (previously `weekly.2025.48`).
+
+### Fixes
+
+- String literals now support C-style escape sequences inside double-quoted strings:
+  - `\"` produces a literal double quote (so `"He said: \"hi\""` becomes the string `He said: "hi"`).
+  - `\n` produces a newline.
+  - `\t` produces a tab.
+  - `\\` produces a single backslash (so `"C:\\Temp"` becomes the string `C:\Temp`, the common Windows-path form used throughout Skyrim mods).
+  - Any other `\X` sequence (for example `\r`, `\0`, `\'`, `\x`) is now reported as a scanner error.
+- Strings must be written with double quotes. A single quote is no longer accepted as a string delimiter; it now produces a clear `invalid character` error instead of being silently treated as the start of a string.
+
+### CI/CD
+
+- Fixed CI pipeline on all platforms: replaced `vlang/setup-v` (which fell back to building V from source and failed due to a bootstrap compiler incompatibility with `$if native` in V 0.5.x) with a direct download of prebuilt release binaries from GitHub Releases.
+- Updated `actions/checkout` from v4 to v6 (Node.js 24).
+
+...
+
+## V 0.0.4
+
+### New Features
+
+- Added `version` command — run `papyrus version` to display the current compiler version.
+- String literals are now accepted as default values for typed properties and function parameters and are automatically converted to the declared type.
+  ```
+  int Property MyProp = "123" Auto  ; now valid — "123" is converted to 123
+  ```
+  ```
+  Int Function MyFunc(int n1, int n2 = "12")  ; "12" is converted to 12
+  EndFunction
+  ```
+
+### Improvements
+
+- The compiler now reports an error when a script referenced in `extends` or a variable type cannot be found, instead of failing silently.
+- The compiler now reports an error when two scripts with the same name are found in different source folders.
+- Added a check that the script name declared in `Scriptname` matches the source file name.
+- Default parameter values are now validated to be type-compatible with the declared parameter type.
+- Improved error messages to be clearer and more consistent (e.g., "undefined identifier" instead of "variable declaration not found").
+- Internal compiler errors now display a structured diagnostic message with version info, a stack trace, and instructions for reporting the issue, instead of crashing with an unhelpful message.
+
+### Fixes
+
+- Fixed incorrect handling of `None` as a default value in properties and function parameters.
+- Fixed a compiler crash when `None` was used in arithmetic or logical expressions (e.g., `None + 1`). A proper error message is now shown instead.
+- Fixed a compiler crash when an undefined script type was used in expressions that require conversion (for example, `value && true` where `value` has an unknown type). The compiler now reports an undefined type error instead of crashing.
+- Fixed an issue where calling a function with default parameters inside a `State` block was not validated correctly (#14).
+- Fixed parsing of comments inside parenthesized expressions and call argument lists (for example, `if !(PlayerRef ;/comment/;)`). The compiler now accepts these scripts instead of failing with a parser error.
+
+## V 0.0.3
+
+### Fixes
+
+- **Logical Operators Fix**
+  - Fixed `&&` and `||` operators to evaluate expressions correctly.
+
+## V 0.0.2
+
+### Improvements
+
+- **Error Messaging Improvements**
+  - Enhanced and added error messages for missing or incorrect arguments when using the console.
+  - Fixed the error message when attempting to call a function with fewer arguments than required.
+
+- **Compatibility Enhancements**
+  - Improved and fixed compatibility with the latest V compiler version [V compiler f3d2eb1 (weekly.2025.09)](https://github.com/vlang/v/releases/tag/weekly.2025.09).
+
+### Fixes
+
+- **Dependency Resolution During Casting**
+  - Fixed an issue with dependency resolution during casting operations, such as `DialogueGenericVampire as VampireQuestScript`. (#8)
+
+## V 0.0.1
+
+### Improvements
+
+- **Header File Parsing Enhanced**
+  - Header files are now parsed selectively. For instance, if you only use `Form` and `Game`, only these headers will be parsed from the directories.
+  - Header search paths now include folders from the `-i "..."` arguments. For instance, if `-i "src/MyPapyrusFile.psc"` is specified, the `src` folder is added to the search paths.
+  - The default search path no longer includes `bin\papyrus-headers`.
+  - The `bin\papyrus-headers` folder has been removed.
+
+- **Updated `-i` Argument Handling**
+  - The `-i "..."` argument now supports both source directories and specific source files. For example: `-i "src/MyPapyrusFile.psc"`.
+
+- **Improved Original Compiler Integration**
+  - Arguments `-i`, `-h`, and `-o` are now passed to the original compiler more accurately when using the `-original` flag.
+
+- **Compatibility Enhancements**
+  - Improved and fixed compatibility with the latest V compiler version [V compiler da228e9 (weekly.2024.36)](https://github.com/vlang/v/releases/tag/weekly.2024.36).
+
+- **New Arguments Added**
+  - Added the `-check` argument.
+  - Added the `-stats` argument.
+
+- **CI/CD and Benchmarking**
+
+### Fixes
+
+- **Line Number Display Bug Fix**
+  - Fixed the bug related to incorrect line number display.

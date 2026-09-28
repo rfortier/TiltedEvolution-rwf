@@ -3,7 +3,6 @@
 enum ClientOpcode : unsigned char
 {
     kAuthenticationRequest = 0,
-    kCancelAssignmentRequest,
     kAssignCharacterRequest,
     kClientReferencesMoveRequest,
     kEnterExteriorCellRequest,
@@ -55,6 +54,9 @@ enum ClientOpcode : unsigned char
     kRequestSetWaypoint,
     kRequestRemoveWaypoint,
     kSetTimeCommandRequest,
+    // Appended, never inserted. Companion plugins hook this table by index, so
+    // every existing opcode keeps its number; only new entries may be added.
+    kPluginMessagingRequest,
     kClientOpcodeMax
 };
 
@@ -77,7 +79,6 @@ enum ServerOpcode : unsigned char
     kNotifyActorValueChanges,
     kNotifyActorMaxValueChanges,
     kNotifyHealthChangeBroadcast,
-    kNotifySpawnData,
     kNotifyActivate,
     kNotifyLockChange,
     kAssignObjectsResponse,
@@ -105,7 +106,6 @@ enum ServerOpcode : unsigned char
     kNotifySubtitle,
     kNotifyPlayerDialogue,
     kNotifyActorTeleport,
-    kNotifyRelinquishControl,
     kNotifyPlayerLeft,
     kNotifyPlayerJoined,
     kNotifyPlayerLevel,
@@ -117,5 +117,7 @@ enum ServerOpcode : unsigned char
     kNotifySetWaypoint,
     kNotifyRemoveWaypoint,
     kNotifySetTimeResult,
+    // Appended for the same reason as the client opcode above.
+    kNotifyPluginMessaging,
     kServerOpcodeMax
 };

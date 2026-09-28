@@ -1,0 +1,8 @@
+OStim Together v0.18.11
+
+Source metadata correction:
+- CMake project version: 0.18.11
+- vcpkg manifest version: 0.18.11
+
+No runtime behavior changed.
+Furniture SELF pre-anchor remains exactly as implemented in v0.18.11.

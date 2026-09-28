@@ -35,6 +35,7 @@ struct TESForm : BaseFormComponent
 
     enum FormFlags
     {
+        DELETED = 1 << 5,
         DISABLED = 1 << 0xB,
         IGNORE_FRIENDLY_HITS = 1 << 0x14,
     };
@@ -113,8 +114,30 @@ struct TESForm : BaseFormComponent
     }
 
     bool IsDisabled() const noexcept { return (flags & DISABLED) != 0; }
+    bool IsDeleted() const noexcept { return (flags & DELETED) != 0; }
     bool IsTemporary() const noexcept { return formID >= 0xFF000000; }
     bool IsConsumable() const noexcept { return formType == FormType::Ingredient || formType == FormType::Alchemy; }
+
+    // Cheap sanity check for a TESForm* that came out of game memory and is about
+    // to be dereferenced through a virtual call. A null check is not enough:
+    // a stale or never-initialised slot holds garbage that walks straight into
+    // GetName() and faults on the vtable load.
+    //
+    // This is an instance method, so by the time it runs the pointer has already
+    // been accepted as dereferenceable - it only validates the *contents*. The
+    // callers must therefore screen the pointer value itself first; see
+    // IsPlausibleFormPointer() below, which is what the location-field call
+    // sites actually want.
+    bool IsPlausiblyValidForm() const noexcept
+    {
+        if (formID == 0)
+            return false;
+        if (formType == static_cast<FormType>(0) || formType >= FormType::Count)
+            return false;
+        if ((formID >> 24) == 0xFF && formID < 0xFF800000)
+            return false;
+        return true;
+    }
 
     uintptr_t unk4;
     uint32_t flags;
@@ -125,3 +148,33 @@ struct TESForm : BaseFormComponent
 };
 
 static_assert(sizeof(TESForm) == 0x20);
+
+// Screen a raw TESForm* that was loaded straight out of game memory before it is
+// dereferenced. Unlike TESForm::IsPlausiblyValidForm() this never touches the
+// pointee, so it is safe on a garbage pointer.
+//
+// A pointer that is going to be used for a virtual call must at least point into
+// a plausible user-mode address range. The failure this exists for is a
+// location slot holding a small sentinel like 0xFF7FFFFF: it is non-null, so a
+// plain `if (p)` lets it through, and the very next thing that happens is a read
+// of its vtable - a guaranteed access violation.
+inline bool IsPlausibleFormPointer(const TESForm* apForm) noexcept
+{
+    if (apForm == nullptr)
+        return false;
+
+    const auto value = reinterpret_cast<uintptr_t>(apForm);
+
+    // Anything below the smallest user-mode allocation cannot be a heap object,
+    // and the canonical kernel half of the address space is never a form.
+    if (value < 0x10000)
+        return false;
+    if (value >= 0x00007FFFFFFFFFFFULL)
+        return false;
+
+    // Real forms are 16-byte aligned (they start with a vtable pointer).
+    if ((value & 0xF) != 0)
+        return false;
+
+    return apForm->IsPlausiblyValidForm();
+}

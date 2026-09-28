@@ -1,0 +1,39 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Search/SearchOptionBg" itemID="6490b875-00000439" lastModified="1687806570">
+  <timeline>
+    <DOMTimeline name="SearchOptionBg">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMShape>
+                  <fills>
+                    <FillStyle index="1">
+                      <SolidColor color="#999999" alpha="0.698039215686274"/>
+                    </FillStyle>
+                  </fills>
+                  <strokes>
+                    <StrokeStyle index="1">
+                      <SolidStroke scaleMode="normal" weight="0.1">
+                        <fill>
+                          <SolidColor color="#999999" alpha="0.698039215686274"/>
+                        </fill>
+                      </SolidStroke>
+                    </StrokeStyle>
+                  </strokes>
+                  <edges>
+                    <Edge fillStyle1="1" strokeStyle="1" edges="!5700 900|0 900!0 900|0 0!0 0|5700 0!5700 0|5700 900"/>
+                    <Edge cubics="!5700 0(;5700,0 5700,900 5700,900q5700 0 5700 900);"/>
+                    <Edge cubics="!0 900(;0,900 0,0 0,0q0 900 0 0);"/>
+                    <Edge cubics="!5700 900(5700,900;5700,900 0,900 0,900q5700 900 0 900);"/>
+                    <Edge cubics="!0 0(0,0;0,0 5700,0 5700,0q0 0 5700 0);"/>
+                  </edges>
+                </DOMShape>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

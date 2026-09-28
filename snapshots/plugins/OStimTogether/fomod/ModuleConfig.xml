@@ -1,0 +1,44 @@
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>OStim Together 0.37.7</moduleName>
+  <requiredInstallFiles>
+    <folder source="00 Core" destination="" priority="0" />
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+    <installStep name="Optional integrations">
+      <optionalFileGroups order="Explicit">
+        <group name="OStim Together integrations" type="SelectAny">
+          <plugins order="Explicit">
+            <plugin name="OCum Ascended synchronization">
+              <description>Synchronizes OCum Ascended RaceMenu CumOverlays between Skyrim Together players while keeping the true local PlayerCharacter authoritative for local rendering. Known limitation: OCum's 3D vaginal and anal OStim equip-object meshes (ocumvagmesh / ocumanmesh) are local-only and are not supported on remote STR player proxies. v0.37.5+ intentionally suppresses those unsupported 3D object sync attempts. Requires OCum Ascended on both clients.</description>
+              <files>
+                <folder source="10 OCum Ascended" destination="" priority="0" />
+              </files>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="NotUsable" />
+                  <patterns>
+                    <pattern>
+                      <dependencies operator="And">
+                        <fileDependency file="OCum.esp" state="Active" />
+                      </dependencies>
+                      <type name="Recommended" />
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+            <plugin name="PPA - Procedural Penis Animations synchronization">
+              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. v0.33.3+ also reproduces PPA's native active-runtime refresh after remote target writes. Recommended by default and still user-deselectable. If PPA is not installed or the runtime DLL is unsupported, OStim Together disables this optional integration safely. Requires PPA on both clients for synchronization.</description>
+              <files>
+                <folder source="20 Procedural Penis Animations" destination="" priority="0" />
+              </files>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>

@@ -1,0 +1,8 @@
+{
+  "id": "IEDSyncTogether",
+  "upstream": "https://github.com/Caelvanost/IEDSyncTogether.git",
+  "commit": "ad4710a6b33b966af55d8a0326f1dae0e27460ed",
+  "files": 43,
+  "contentSha256": "a15ade3d4afc9e8791d5035f8c0b595801a3a9edbc6fbb041f4c83bec5f27a38",
+  "why": "Durability copy of the pinned commit. Not a build input: the submodule builds. Kept so the code survives the upstream repository disappearing."
+}

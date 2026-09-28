@@ -1,0 +1,17 @@
+.papyrus
+bin/.papyrus
+bin/*.exe
+bin/*.exp
+bin/*.lib
+bin/*.pdb
+bin/*.ilk
+bin/*.rar
+test-files/compiled
+test-files/compiler
+test-files/*.*
+*.bat
+*.log
+papyrus_fast.exe
+papyrus_fast.c
+____fast_vm_tests
+vlib_docs/*

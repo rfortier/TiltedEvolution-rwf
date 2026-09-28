@@ -1,0 +1,25 @@
+<?xml version='1.0'?><!-- Game is either sse, tesv, or fo4 -->
+<PapyrusProject xmlns="PapyrusProject.xsd" 
+    Flags="TESV_Papyrus_Flags.flg" 
+    Game="sse" 
+    Output="data/Scripts" 
+    Optimize="true" 
+    Anonymize="true">
+    <Variables>
+        <Variable Name="ModName" Value="OStimNG"/>
+        <Variable Name="MyProject" Value="."/>
+    </Variables>
+    <Imports>
+        <Import>@MyProject\data\Scripts\Source</Import>
+        <Import>https://github.com/MrOctopus/nl_online/tree/main/jcontainersse/source</Import>
+        <Import>https://github.com/eeveelo/PapyrusUtil/tree/master/Scripts/Source</Import>
+        <Import>https://github.com/CE0/OSA-SE/tree/master/Data/Scripts/Source</Import>
+        <Import>https://github.com/Osmosis-Wrench/racemenu-scripts/tree/main/scripts/source</Import>
+        <Import>https://github.com/MrOctopus/nl_online/tree/main/skyui/source</Import>
+        <Import>https://github.com/MrOctopus/nl_online/tree/main/skse64/source</Import>
+        <Import>https://github.com/MrOctopus/nl_online/tree/main/sse/source</Import>
+    </Imports>
+    <Folders>
+        <Folder>@MyProject\data\Scripts\Source</Folder>
+    </Folders>
+</PapyrusProject>

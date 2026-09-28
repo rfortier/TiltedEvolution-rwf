@@ -1,0 +1,16 @@
+{
+  "id": "papyrus-compiler",
+  "upstream": "https://github.com/russo-2025/papyrus-compiler.git",
+  "commit": "b9dc9951f4264084c8ded6721b20f0d81c021d58",
+  "commitDate": "2026-06-12 13:07:50 +0300",
+  "describe": "2026.03.15-10-gb9dc995",
+  "files": 72,
+  "contentSha256": "8afa2852e930a06a2df5ce94bbbe3725ced8de43e9218f45c8a27fd1a0cc7e35",
+  "excluded": [
+    "bin/",
+    "docs/",
+    "test-files/"
+  ],
+  "upstreamDocDrift": "AGENTS.md is archived verbatim, drift included. Line 35 says the test header stubs live in modules/tests/psc_deps/ with \"83 Skyrim base class header stubs\"; no such path exists. Line 152 of the same file says modules/tests/sources/psc_deps/, which is where the tests actually look (projects_test.v:28, selective_headers_loading_test.v:18). Whether it holds 83 files cannot be checked here: that path is a submodule and is not in this archive. Recorded rather than fixed, because editing the archive would stop it being a copy of the commit above. See docs/PAPYRUS-SOURCE-ARCHIVE.md.",
+  "why": "Source durability copy of the Papyrus compiler this project builds its scripts with. Not a build input and cannot produce papyrus.exe: bin/ is excluded because upstream commits Bethesda binaries there. Kept because the pinned release 2026.03.15 cannot compile SkyrimTogetherVerifyLaunchScript.psc, and the fix for that is unreleased."
+}

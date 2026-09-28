@@ -73,7 +73,7 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
           break;
       }
       setTimeout(() => {
-        this.emit(!!error ? 'disconnect' : 'connect');
+        this.emit(!!error ? 'disconnect' : 'connect', ...(error ? [true] : []));
         this.connected = !error;
         if (error && typeof error !== 'boolean') {
           this.emit('triggerError', JSON.stringify(error));
@@ -96,9 +96,14 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
 
   disconnect(): void {
     if (this.connected) {
-      this.emit('disconnect');
+      this.emit('disconnect', false);
       this.connected = false;
     }
+  }
+
+  /** Silent teardown used between auto-reconnect attempts; deliberately emits nothing. */
+  abandonAttempt(): void {
+    this.connected = false;
   }
 
   reconnect(): void {

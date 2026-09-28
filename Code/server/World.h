@@ -8,6 +8,7 @@
 #include <Services/CalendarService.h>
 #include <Services/QuestService.h>
 #include <Services/ScriptService.h>
+#include <Services/PluginMessagingService.h>
 
 #include "Game/PlayerManager.h"
 
@@ -38,6 +39,8 @@ struct World : entt::registry
     PlayerManager& GetPlayerManager() noexcept { return m_playerManager; }
     const PlayerManager& GetPlayerManager() const noexcept { return m_playerManager; }
     ScriptService& GetScriptService() const noexcept { return *m_pScriptService; }
+    PluginMessagingService& GetPluginMessagingService() noexcept { return ctx().at<PluginMessagingService>(); }
+    const PluginMessagingService& GetPluginMessagingService() const noexcept { return ctx().at<const PluginMessagingService>(); }
 
     // Null checked at start when MoPo is on!
     ESLoader::RecordCollection* GetRecordCollection() noexcept { return m_recordCollection.get(); }

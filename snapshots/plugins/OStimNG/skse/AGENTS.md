@@ -1,0 +1,1 @@
+do not attempt to build c++ or cmake

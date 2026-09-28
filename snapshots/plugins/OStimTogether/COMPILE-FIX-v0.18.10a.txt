@@ -1,0 +1,21 @@
+OStim Together v0.18.10a
+
+Compile-only correction over v0.18.10.
+
+Fixed two malformed C++ format strings in OStimBridge.cpp:
+
+Before:
+    name="{}"
+
+inside an already quoted C++ string literal.
+
+After:
+    name=\"{}\"
+
+Affected logs:
+- OSTNET PREANCHOR SELF skipped reason=furniture
+- OSTNET MIRROR FURNITURE EXACT using
+
+No functional change to furniture detection, resolution, mirror creation,
+initial animation replay, node synchronization, equipment lock, or outfit
+restore.

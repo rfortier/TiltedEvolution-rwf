@@ -1,0 +1,75 @@
+{
+  "header": "Code/plugins/STRPM/include/STRPluginMessagingAPI/STRPluginMessagingAPI.h",
+  "headerSha256": "8fdcf4816a9b7e970b3a816b4d028f007a227bb6fb67ba05dfc559b594e46e44",
+  "interfaceVersion": 2,
+  "exportNames": [
+    "STRPM_QueryTransportInterface",
+    "STR_QueryPluginMessagingDiagnostics",
+    "STR_QueryPluginMessagingInterface",
+    "STR_QueryPluginMessagingProxyResolver"
+  ],
+  "interfaceConstants": {
+    "kDiagnosticsVersion": "2",
+    "kInterfaceVersion": "2",
+    "kMaxChannelLength": "96",
+    "kMaxPayloadBytes": "24*1024",
+    "kProxyResolverVersion": "1",
+    "kTransportInterfaceVersion": "1"
+  },
+  "interfaceTypes": [
+    "ConnectionID",
+    "DiagnosticsInterface",
+    "Interface",
+    "ListenerHandle",
+    "LogCallback",
+    "Message",
+    "ProxyFormID",
+    "ProxyMappingCallback",
+    "ProxyMappingEvent",
+    "ProxyMappingEventType",
+    "ProxyResolverInterface",
+    "QueryDiagnosticsFn",
+    "QueryInterfaceFn",
+    "QueryProxyResolverFn",
+    "QueryTransportInterfaceFn",
+    "ReceiveCallback",
+    "Result",
+    "RuntimeBackend",
+    "RuntimeBackendMode",
+    "RuntimeStatus",
+    "Sender",
+    "Target",
+    "TargetKind",
+    "TransportInterface"
+  ],
+  "consumers": {
+    "AnimSyncTogether": {
+      "root": "plugins/AnimSyncTogether",
+      "vendored": "include/STRPluginMessagingAPI/STRPluginMessagingAPI.h"
+    },
+    "DAVSyncTogether": {
+      "root": "plugins/DAVSyncTogether",
+      "vendored": "include/STRPluginMessagingAPI/STRPluginMessagingAPI.h"
+    },
+    "IEDSyncTogether": {
+      "root": "plugins/IEDSyncTogether",
+      "vendored": "include/STRPluginMessagingAPI/STRPluginMessagingAPI.h"
+    },
+    "MorphSyncTogether": {
+      "root": "plugins/MorphSyncTogether",
+      "vendored": "src/STRPMCompat.h"
+    },
+    "OStimTogether": {
+      "root": "plugins/OStimTogether",
+      "vendored": "src/STRPMApi.h"
+    },
+    "STRPluginMessagingAPI": {
+      "root": "plugins/STRPluginMessagingAPI",
+      "vendored": "include/STRPluginMessagingAPI/STRPluginMessagingAPI.h"
+    },
+    "TradeTogether": {
+      "root": "plugins/TradeTogether",
+      "vendored": "src/STRPluginMessagingAPI/STRPluginMessagingAPI.h"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 import { Overlay } from '@angular/cdk/overlay';
 import { Component, OnInit, ViewChild } from '@angular/core';
 import { TranslocoService } from '@ngneat/transloco';
-import { takeUntil } from 'rxjs';
+import { combineLatest, Observable, takeUntil } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import { fadeInOutActiveAnimation } from '../../animations/fade-in-out-active.animation';
 import { View } from '../../models/view.enum';
@@ -45,6 +45,30 @@ export class RootComponent implements OnInit {
   active$ = this.client.activationStateChange.asObservable();
   connectionInProgress$ = this.client.isConnectionInProgressChange.asObservable();
   revealingInProgress$ = false;
+
+  // What the menu says about the session. Kept as a key plus parameters rather
+  // than finished text so it follows the language the player picked.
+  status$: Observable<{ key: string; params?: Record<string, string> }> =
+    combineLatest([
+      this.client.connectionStateChange,
+      this.client.isConnectionInProgressChange,
+      this.client.serverAddressChange,
+    ]).pipe(
+      map(([connected, inProgress, address]) => {
+        if (connected) {
+          return {
+            key: 'COMPONENT.ROOT.STATUS.ONLINE',
+            params: { address: address || '' },
+          };
+        }
+
+        if (inProgress) {
+          return { key: 'COMPONENT.ROOT.STATUS.CONNECTING' };
+        }
+
+        return { key: 'COMPONENT.ROOT.STATUS.OFFLINE' };
+      }),
+    );
 
   @ViewChild('chat') private chatComp!: ChatComponent;
   @ViewChild(GroupComponent) private groupComponent: GroupComponent;

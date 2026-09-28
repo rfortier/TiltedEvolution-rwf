@@ -72,25 +72,11 @@ void BindVec4(sol::state_view aState)
     type["z"] = &glm::vec4::z;
     type["w"] = &glm::vec4::w;
 
-#if 0
-      // Bind the common operations
-    type[sol::meta_function::addition] =
-        sol::overload(static_cast<glm::vec4 (*)(const glm::vec4&, const glm::vec4&)>(glm::operator+),
-                      static_cast<glm::vec4 (*)(const glm::vec4&, float)>(glm::operator+),
-                      static_cast<glm::vec4 (*)(float, const glm::vec4&)>(glm::operator+));
-    type[sol::meta_function::subtraction] =
-        sol::overload(static_cast<glm::vec4 (*)(const glm::vec4&, const glm::vec4&)>(glm::operator-),
-                      static_cast<glm::vec4 (*)(const glm::vec4&, float)>(glm::operator-),
-                      static_cast<glm::vec4 (*)(float, const glm::vec4&)>(glm::operator-));
-    type[sol::meta_function::multiplication] =
-        sol::overload(static_cast<glm::vec4 (*)(const glm::vec4&, const glm::vec4&)>(glm::operator*),
-                      static_cast<glm::vec4 (*)(const glm::vec4&, float)>(glm::operator*),
-                      static_cast<glm::vec4 (*)(float, const glm::vec4&)>(glm::operator*));
-    type[sol::meta_function::division] =
-        sol::overload(static_cast<glm::vec4 (*)(const glm::vec4&, const glm::vec4&)>(glm::operator/),
-                      static_cast<glm::vec4 (*)(const glm::vec4&, float)>(glm::operator/),
-                      static_cast<glm::vec4 (*)(float, const glm::vec4&)>(glm::operator/));
-#endif
+    // The "TBD" above is vec4's missing arithmetic: vec2 and vec3 bind the
+    // operators, vec4 never did. The #if 0 block that used to sit here was a
+    // copy of exactly those bindings, never compiled, so deleting it leaves
+    // vec4 as capable as it was - bind the operators here if a script needs
+    // them.
 }
 
 void BindMat3(sol::state_view aState)

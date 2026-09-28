@@ -10,9 +10,27 @@
 [submodule "Libraries/TiltedHooks"]
 	path = Libraries/TiltedHooks
 	url = https://github.com/TiltedPhoques/TiltedHooks
-[submodule "Libraries/TiltedScript"]
-	path = Libraries/TiltedScript
-	url = https://github.com/TiltedPhoques/TiltedScript
-[submodule "Libraries/cpp-httplib"]
-	path = Libraries/cpp-httplib
-	url = https://github.com/yhirose/cpp-httplib.git
+[submodule "plugins/STRPluginMessagingAPI"]
+	path = plugins/STRPluginMessagingAPI
+	url = https://github.com/Caelvanost/STRPluginMessagingAPI.git
+[submodule "plugins/OStimTogether"]
+	path = plugins/OStimTogether
+	url = https://github.com/Caelvanost/OStimTogether.git
+[submodule "plugins/MorphSyncTogether"]
+	path = plugins/MorphSyncTogether
+	url = https://github.com/Caelvanost/MorphSyncTogether.git
+[submodule "plugins/IEDSyncTogether"]
+	path = plugins/IEDSyncTogether
+	url = https://github.com/Caelvanost/IEDSyncTogether.git
+[submodule "plugins/AnimSyncTogether"]
+	path = plugins/AnimSyncTogether
+	url = https://github.com/Caelvanost/AnimSyncTogether.git
+[submodule "plugins/DAVSyncTogether"]
+	path = plugins/DAVSyncTogether
+	url = https://github.com/Caelvanost/DAVSyncTogether.git
+[submodule "plugins/TradeTogether"]
+	path = plugins/TradeTogether
+	url = https://github.com/Caelvanost/TradeTogether.git
+[submodule "plugins/OStimNG"]
+	path = plugins/OStimNG
+	url = https://github.com/VersuchDrei/OStimNG.git

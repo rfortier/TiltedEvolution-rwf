@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>IEDSyncTogether 0.3.1 STRPM</moduleName>
+  <requiredInstallFiles>
+    <folder source="00 Core" destination="" priority="0" />
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+    <installStep name="Transport">
+      <optionalFileGroups order="Explicit">
+        <group name="Network transport" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="STR plugin messaging / no port forwarding">
+              <description>Default install. Uses STRPluginMessagingAPI to ride on the STR session, so IEDSyncTogether does not open or require its own UDP Internet port.</description>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Legacy UDP relay host - requires port forwarding">
+              <description>Optional diagnostic/compatibility profile for the old UDP relay. Use only if you explicitly want the legacy transport and are ready to forward UDP port 38471.</description>
+              <files>
+                <folder source="20 Legacy UDP Relay Host" destination="" priority="20" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>

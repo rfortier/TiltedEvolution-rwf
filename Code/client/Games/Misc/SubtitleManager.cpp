@@ -1,4 +1,5 @@
 #include "SubtitleManager.h"
+#include "MenuTopicManager.h"
 
 #include <Events/SubtitleEvent.h>
 
@@ -33,6 +34,12 @@ void* SubtitleManager::HideSubtitle(TESObjectREFR* apSpeaker) noexcept
 void TP_MAKE_THISCALL(HookShowSubtitle, SubtitleManager, TESObjectREFR* apSpeaker, const char* apSubtitleText, bool aIsInDialogue)
 {
     Actor* pActor = Cast<Actor>(apSpeaker);
+    // fork commit b45b6303 ("Several dialog & subtitle improvements ...") made
+    // subtitle sync follow the fork's dialogue rules and deliberately dropped
+    // the IsLocal() filter. That condition is a superset of upstream's #896 fix
+    // (isNpc && (IsLocal() || IsPlayerDialogueSpeaker())), so upstream's fix is
+    // already covered here; upstream's rewrite would have narrowed it again.
+    // The strlen guard is the fork's own addition and is kept.
     if (apSubtitleText && std::strlen(apSubtitleText) && pActor && !pActor->GetExtension()->IsPlayer())
         World::Get().GetRunner().Trigger(SubtitleEvent(apSpeaker->formID, apSubtitleText));
 

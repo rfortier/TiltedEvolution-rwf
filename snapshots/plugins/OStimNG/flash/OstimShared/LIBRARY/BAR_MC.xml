@@ -1,0 +1,32 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="BAR_MC" itemID="645104ad-0000025f" linkageExportForAS="true" linkageExportForRS="true" linkageIdentifier="BAR_MC" linkageURL="OstimShared.swf" scaleGridLeft="29.45" scaleGridRight="512.75" scaleGridTop="-15" scaleGridBottom="15" lastModified="1683036014">
+  <timeline>
+    <DOMTimeline name="BAR_MC" guides='&lt;guidelines&gt;&lt;guideline direction="v"&gt;71&lt;/guideline&gt;&lt;guideline direction="v"&gt;-32&lt;/guideline&gt;&lt;guideline direction="h"&gt;-41&lt;/guideline&gt;&lt;guideline direction="h"&gt;-11&lt;/guideline&gt;&lt;guideline direction="h"&gt;10&lt;/guideline&gt;&lt;/guidelines&gt;'>
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Shapes/MeterFrame" symbolType="graphic" loop="loop">
+                  <matrix>
+                    <Matrix tx="147.3" ty="40.25"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point x="124.25" y="-40.9"/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Shapes/HealthMeterBarBackground" symbolType="graphic" loop="loop">
+                  <matrix>
+                    <Matrix a="1.32363891601563" tx="267.05" ty="0.35"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point x="0.45" y="-0.2"/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

@@ -1,0 +1,15 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="BAR_MC" itemID="64510522-0000026b" linkageImportForRS="true" linkageExportInFirstFrame="false" linkageIdentifier="BAR_MC" linkageURL="OStimShared.swf" scaleGridLeft="-5" scaleGridRight="5" scaleGridTop="-5" scaleGridBottom="5" lastModified="1683033486">
+  <timeline>
+    <DOMTimeline name="BAR_MC">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements/>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

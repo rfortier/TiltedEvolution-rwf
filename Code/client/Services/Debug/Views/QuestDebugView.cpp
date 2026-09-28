@@ -117,7 +117,8 @@ void DebugService::DrawQuestDebugView()
                         foundActors.insert(pActor->formID);
 
                         char name[256];
-                        sprintf_s(name, std::size(name), "%s (%x)", pActor->baseForm->GetName(), pActor->formID);
+                        sprintf_s(name, std::size(name), "%s (%x)",
+                                  pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>", pActor->formID);
                         ImGui::BulletText(name);
 
                         ImGui::PushID(pActor->formID);

@@ -1,0 +1,8 @@
+{
+  "id": "TradeTogether",
+  "upstream": "https://github.com/Caelvanost/TradeTogether.git",
+  "commit": "17199e4d82e2889919e6d9555e14c2144fd343f8",
+  "files": 44,
+  "contentSha256": "592f2564850afaa1b82517dc5928b8f23239eeafd1c9f71c0497353a6727cbbb",
+  "why": "Durability copy of the pinned commit. Not a build input: the submodule builds. Kept so the code survives the upstream repository disappearing."
+}

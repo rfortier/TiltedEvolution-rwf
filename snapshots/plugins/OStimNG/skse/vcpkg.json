@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "ostim",
+  "version-string": "0.1",
+  "dependencies": [
+    "fast-cpp-csv-parser",
+    "rsm-binary-io",
+    "simpleini",
+    "spdlog",
+    "xbyak",
+    "rapidcsv",
+    "directxmath",
+    "directxtk",
+    "boost-stl-interfaces",
+    "clib-util",
+    "pugixml",
+    "nlohmann-json",
+    "openssl"
+  ],
+  "overrides": [
+    {
+      "name": "fmt",
+      "version": "12.1.0"
+    }
+  ],
+  "builtin-baseline": "e3ed41868d5034bc608eaaa58383cd6ecdbb5ffb"
+}

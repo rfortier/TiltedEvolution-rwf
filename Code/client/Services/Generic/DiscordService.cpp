@@ -5,6 +5,7 @@
 
 #include <TiltedCore/Filesystem.hpp>
 #include <PlayerCharacter.h>
+#include <Forms/TESForm.h>
 #include <Forms/TESWorldSpace.h>
 
 #include <base/threading/ThreadUtils.h>
@@ -60,7 +61,11 @@ void DiscordService::OnLocationChangeEvent() noexcept
         auto* pWorldspace = pPlayer->GetWorldSpace();
         bool updateTimestamp = false;
 
-        if (pLocation)
+        // The location slot can hold a stale/garbage pointer while the new game
+        // is still settling (it is only null-checked here, and GetName() is a
+        // virtual call, so a bad pointer faults on the vtable load instead of
+        // being caught). Screen the pointer before touching it.
+        if (IsPlausibleFormPointer(pLocation))
             strncpy_s(m_ActivityState.details, pLocation->GetName(), sizeof(DiscordActivity::details));
 
         if (pWorldspace)
@@ -130,7 +135,11 @@ void DiscordService::WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_SYSKEYUP:
     {
         bool down = ((msg == WM_KEYDOWN) || (msg == WM_SYSKEYDOWN));
-        if (down && wParam == VK_F6)
+        // F2 is the only in-game key. This F6 binding is unreachable today
+        // because DISCORD_OVERLAY_ENABLE is 0, and it must stay that way if
+        // the overlay is ever switched back on: pick a key the game does not
+        // use, or drive the unlock from the overlay page instead.
+        if (false && down && wParam == VK_F6)
         {
             m_pOverlayMgr->set_locked(m_pOverlayMgr, false, nullptr, [](void*, EDiscordResult result) { spdlog::info("unlocking discord overlay ({})", static_cast<int>(result)); });
         }
@@ -175,12 +184,6 @@ bool DiscordService::Init()
         FreeLibrary(pHandle);
         return false;
     }
-
-#if 0
-    m_pCore->set_log_hook(m_pCore, EDiscordLogLevel::DiscordLogLevel_Debug, this,
-        [](void *, EDiscordLogLevel, const char *msg) { std::printf("NEW DISCORD MSG : %s\n", msg);
-                          });
-#endif
 
     m_pUserMgr = m_pCore->get_user_manager(m_pCore);
     m_pActivity = m_pCore->get_activity_manager(m_pCore);

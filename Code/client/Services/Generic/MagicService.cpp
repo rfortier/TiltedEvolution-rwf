@@ -68,8 +68,19 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
         return;
     }
 
+    TESForm* pMagicForm = TESForm::GetById(acEvent.SpellId);
+
+    // Summoned creatures are replicated by their owning client (see IsPlayerSummon); replaying the
+    // summon cast elsewhere spawns a duplicate, unowned creature that fights the real one. Summon spells avoid
+    // this via projectile sync, but summon EnchantmentItems (Sanguine Rose, Staff of the Familiar) didn't (#791).
+    if (const MagicItem* pMagicItem = Cast<MagicItem>(pMagicForm); pMagicItem && pMagicItem->HasSummonEffect())
+    {
+        spdlog::debug("{}: not syncing summon cast {:X}, the summoned actor is synced by its owner", __FUNCTION__, acEvent.SpellId);
+        return;
+    }
+
     // only sync concentration spells through spell cast sync, the rest through projectile sync for accuracy
-    if (SpellItem* pSpell = Cast<SpellItem>(TESForm::GetById(acEvent.SpellId)))
+    if (SpellItem* pSpell = Cast<SpellItem>(pMagicForm))
     {
         if ((pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION || pSpell->IsHealingSpell()) && !pSpell->IsWardSpell() && !pSpell->IsInvisibilitySpell())
         {
@@ -174,6 +185,14 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
     if (!pSpell)
     {
         spdlog::error("Could not find spell.");
+        return;
+    }
+
+    // Never replay a summon locally, whatever the sender decided: the creature arrives as a
+    // replicated actor from its owner.
+    if (pSpell->HasSummonEffect())
+    {
+        spdlog::debug("{}: ignoring remote summon cast {:X} from caster {:X}", __FUNCTION__, pSpell->formID, acMessage.CasterId);
         return;
     }
 
@@ -526,8 +545,8 @@ void MagicService::ApplyQueuedEffects() noexcept
         AddTargetEvent target = m_queuedEffects.front().Target();
         Actor* pCaster = Cast<Actor>(TESForm::GetById(target.CasterID));
         Actor* pTarget = Cast<Actor>(TESForm::GetById(target.TargetID));
-        auto pTargetName = !pTarget ? "" : pTarget->baseForm->GetName();
-        auto pCasterName = !pCaster ? "" : pCaster->baseForm->GetName();
+        auto pTargetName = (pTarget && pTarget->baseForm) ? pTarget->baseForm->GetName() : "";
+        auto pCasterName = (pCaster && pCaster->baseForm) ? pCaster->baseForm->GetName() : "";
 
         // Check for and skip expired (timed out) events, that Actor isn't likely to exist anymore.
         if (m_queuedEffects.front().Expired())
@@ -590,8 +609,8 @@ void MagicService::ApplyQueuedEffects() noexcept
         NotifyAddTarget target = m_queuedRemoteEffects.front().Target();
         Actor* pTarget = Utils::GetByServerId<Actor>(target.TargetId); 
         Actor* pCaster = Utils::GetByServerId<Actor>(target.CasterId); 
-        auto pTargetName = !pTarget ? "" : pTarget->baseForm->GetName();
-        auto pCasterName = !pCaster ? "" : pCaster->baseForm->GetName(); 
+        auto pTargetName = (pTarget && pTarget->baseForm) ? pTarget->baseForm->GetName() : "";
+        auto pCasterName = (pCaster && pCaster->baseForm) ? pCaster->baseForm->GetName() : ""; 
 
         if (m_queuedRemoteEffects.front().Expired())
             MagicQueue::Spdlog("{}: removing expired NotifyAddTarget event from queue: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
@@ -635,7 +654,13 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
     static std::chrono::steady_clock::time_point revealStartTimePoint;
     static std::chrono::steady_clock::time_point lastSendTimePoint;
 
-    const bool shouldActivate = aForceTrigger || GetAsyncKeyState(VK_F4) & 0x01;
+    // F4 used to be a shortcut for revealing other players. F2 is the only
+    // in-game key now, so the key check is gone. The feature itself is
+    // untouched: the overlay's own "reveal players" button reaches this
+    // through StartRevealingOtherPlayers(), which passes aForceTrigger.
+    //
+    // The old form was: aForceTrigger || (GetAsyncKeyState(VK_F4) & 0x01)
+    const bool shouldActivate = aForceTrigger;
 
     if (shouldActivate && !m_revealingOtherPlayers)
     {

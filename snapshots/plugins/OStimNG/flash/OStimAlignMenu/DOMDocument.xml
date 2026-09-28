@@ -1,0 +1,58 @@
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" backgroundColor="#666666" width="1920" height="1080" frameRate="60" currentTimeline="1" xflVersion="2.2" creatorInfo="Adobe Flash Professional CS6" platform="Windows" versionInfo="Saved by Adobe Flash Windows 12.0 build 481" majorVersion="12" buildNumber="481" sharedLibraryURL="OStimShared.swf" nextSceneIdentifier="91" playOptionsPlayLoop="false" playOptionsPlayPages="false" playOptionsPlayFrameActions="false" autoSaveHasPrompted="true">
+     <fonts>
+          <DOMFontItem name="Font 2" itemID="6435b4d2-000001dd" font="Futura-Condensed-Normal" size="0" id="2" embeddedCharacters="¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿˆ˜–—‘’‚“”„†‡•…‰‹›€™" embedRanges="1|2|3|4|5"/>
+     </fonts>
+     <symbols>
+          <Include href="AlignmentInfo.xml" itemID="6435b58a-00000205" lastModified="1682587172"/>
+          <Include href="BG_MC.xml" itemID="6343e0e9-00000393" lastModified="1681287579"/>
+          <Include href="IncrementButton.xml" loadImmediate="false" itemID="6435b56f-00000200" lastModified="1681290984"/>
+          <Include href="InfoField.xml" itemID="6435b581-00000203" lastModified="1681291124"/>
+          <Include href="RootObj.xml" itemID="6435b528-000001fb" lastModified="1692022057"/>
+          <Include href="SceneInfo.xml" itemID="6435b54e-000001fe" lastModified="1683121009"/>
+     </symbols>
+     <timelines>
+          <DOMTimeline name="root">
+               <layers>
+                    <DOMLayer name="Layer 1" color="#5591E7" current="true" isSelected="true">
+                         <frames>
+                              <DOMFrame index="0" keyMode="9728">
+                                   <elements>
+                                        <DOMSymbolInstance libraryItemName="RootObj" name="rootObj" selected="true" centerPoint3DX="1901.35" centerPoint3DY="797.3">
+                                             <matrix>
+                                                  <Matrix d="0.999969482421875" tx="1705.85" ty="350.1"/>
+                                             </matrix>
+                                             <transformationPoint>
+                                                  <Point/>
+                                             </transformationPoint>
+                                        </DOMSymbolInstance>
+                                   </elements>
+                              </DOMFrame>
+                         </frames>
+                    </DOMLayer>
+               </layers>
+          </DOMTimeline>
+     </timelines>
+     <PrinterSettings/>
+     <publishHistory>
+          <PublishItem publishSize="1865" publishTime="1697363819"/>
+          <PublishItem publishSize="22354" publishTime="1697363819"/>
+          <PublishItem publishSize="26567" publishTime="1692038136"/>
+          <PublishItem publishSize="26494" publishTime="1692022077"/>
+          <PublishItem publishSize="26486" publishTime="1692013612"/>
+          <PublishItem publishSize="1865" publishTime="1692013444"/>
+          <PublishItem publishSize="26487" publishTime="1692012373"/>
+          <PublishItem publishSize="22353" publishTime="1692010739"/>
+          <PublishItem publishSize="1864" publishTime="1692010739"/>
+          <PublishItem publishSize="22354" publishTime="1691585277"/>
+          <PublishItem publishSize="1864" publishTime="1691585277"/>
+          <PublishItem publishSize="22317" publishTime="1689689074"/>
+          <PublishItem publishSize="1835" publishTime="1689689074"/>
+          <PublishItem publishSize="24059" publishTime="1683121928"/>
+          <PublishItem publishSize="24058" publishTime="1683121868"/>
+          <PublishItem publishSize="24032" publishTime="1683121538"/>
+          <PublishItem publishSize="24055" publishTime="1683121191"/>
+          <PublishItem publishSize="22321" publishTime="1683121160"/>
+          <PublishItem publishSize="24090" publishTime="1683121055"/>
+          <PublishItem publishSize="1832" publishTime="1683109676"/>
+     </publishHistory>
+</DOMDocument>

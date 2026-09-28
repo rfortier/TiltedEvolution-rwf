@@ -1,0 +1,57 @@
+--- a/src/OStimBridge.cpp
++++ b/src/OStimBridge.cpp
+@@ -226,6 +226,18 @@
+                     GraphLayout::OStim74c;
+             }
+ 
++            // OStimNG 7.5.1.x keeps the 7.5 GraphActor prefix the OStim75b
++            // layout models: sosBend through animationIndex, then singleSpeed,
++            // the two expression strings, then offset. Checked against the
++            // pinned OStimNG source (Graph/GraphActor.h, Graph/Node.h) rather
++            // than inferred from the version number.
++            if (version.major == 7 &&
++                version.minor == 5 &&
++                version.patch == 1) {
++                return OStimInternalProbe::
++                    GraphLayout::OStim75b;
++            }
++
+             if (version.Is(7, 5, 0, 2)) {
+                 return OStimInternalProbe::
+                     GraphLayout::OStim75b;
+@@ -246,6 +258,10 @@
+         static_assert(
+             SelectGraphLayout({ 7, 5, 0, 3 }) ==
+             OStimInternalProbe::GraphLayout::Unsupported);
++
++        static_assert(
++            SelectGraphLayout({ 7, 5, 1, 2 }) ==
++            OStimInternalProbe::GraphLayout::OStim75b);
+ 
+         const char* GraphLayoutName(
+             OStimInternalProbe::GraphLayout layout)
+@@ -1202,8 +1218,12 @@
+             GetModuleHandleW(L"OStim.dll");
+ 
+         if (!ostimModule) {
+-            SKSE::log::error(
+-                "OStim bridge: OStim.dll module not found");
++            // The single most common reason a player reports "OStim Together
++            // does nothing": the plugin is loaded, but the OStim runtime it
++            // drives is not. Every subsystem below then reports itself
++            // unavailable and the mod stays inert with no user-visible cause.
++            SKSE::log::critical(
++                "OSTNET PREREQUISITE MISSING: OStim.dll is not loaded, so every OStim feature stays inactive. Install OStim Standalone (OStimNG) and confirm OStim.dll and OStim.esp are enabled.");
+             return false;
+         }
+ 
+@@ -1227,7 +1247,7 @@
+         if (_graphLayout ==
+             OStimInternalProbe::GraphLayout::Unsupported) {
+             SKSE::log::critical(
+-                "OStim bridge: unsupported OStim.dll {}; supported versions are 7.4.0.3 (7.4c) and 7.5.0.2 (7.5b)",
++                "OStim bridge: unsupported OStim.dll {}; supported versions are 7.4.0.3 (7.4c), 7.5.0.2 (7.5b) and 7.5.1.x",
+                 dllVersion->ToString());
+             return false;
+         }
+

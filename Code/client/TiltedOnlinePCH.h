@@ -35,6 +35,13 @@ extern void* RipAllocateN(size_t blockLength);
 #define REVERSE_ALLOC_STUB(x) RipAllocateN(x)
 #include <JitAssembly.hpp>
 
+// Route the client's game hooks through the audit, so the log can say which of
+// them landed and which share a function with another mod. Otherwise identical
+// to the macro in TiltedReverse: a delayed hook, committed by TP_HOOK_COMMIT.
+#include <HookAudit.h>
+#undef TP_HOOK
+#define TP_HOOK(systemFunction, hookFunction) HookAudit::Add(systemFunction, hookFunction)
+
 #define SPDLOG_WCHAR_FILENAMES
 #define SPDLOG_WCHAR_TO_UTF8_SUPPORT
 #include <entt/entt.hpp>

@@ -3,7 +3,9 @@
     "CHAT": {
       "SEND": "Odeslat",
       "MESSAGE": "Zpráva",
-      "MESSAGE_TOO_LONG": "Nelze odeslat zprávu delší než {{chatMessageLengthLimit}} znaků."
+      "MESSAGE_TOO_LONG": "Nelze odeslat zprávu delší než {{chatMessageLengthLimit}} znaků.",
+      "SET_TIME_ARGUMENT_COUNT": "Špatné argumenty, použití: /settime HH MM, příklad: /settime 15 32.",
+      "SET_TIME_INVALID_ARGUMENTS": "Hodiny musí být v rozmezí 0 až 23 a minuty v rozmezí 0 až 59."
     },
     "CONNECT": {
       "INFO": {
@@ -21,6 +23,10 @@
         "CONNECTION": "Nepodařilo se připojit k zadanému serveru. Ujistěte se, že jste zadali správnou adresu a že nemáte problémy se sítí.",
         "VERSION_MISMATCH": "Nelze se připojit k serveru, protože nemáte stejnou verzi Skyrim Together.",
         "INVALID_ADDRESS": "Adresa má špatný formát."
+      },
+      "SUCCESS": {
+        "TITLE": "Připojeno",
+        "MESSAGE": "Nyní jste připojeni k {{address}}. Stisknutím F2 kdykoli otevřete tuto nabídku a chat."
       }
     },
     "DISCONNECT": {
@@ -79,10 +85,16 @@
     "ROOT": {
       "CONNECT": "Připojit",
       "DISCONNECT": "Odpojit",
+      "REVEAL_PLAYERS": "Zobrazit hráče",
       "RECONNECT": "Znovu připojit",
       "PLAYER_MANAGER": "Správa hráčů",
       "SETTINGS": "Nastavení",
-      "CONNECTION_IN_PROGRESS": "Připojení probíhá..."
+      "CONNECTION_IN_PROGRESS": "Připojení probíhá...",
+      "STATUS": {
+        "OFFLINE": "Nepřipojeno",
+        "CONNECTING": "Připojování...",
+        "ONLINE": "Připojeno k {{address}}"
+      }
     },
     "SERVER_LIST": {
       "SEARCH": "Vyhledávání...",
@@ -148,7 +160,8 @@
     },
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "Dostupné příkazy pro chat: {{cmds}}",
-      "COMMAND_NOT_FOUND": "'{{cmd}}' není rozpoznán jako příkaz."
+      "COMMAND_NOT_FOUND": "'{{cmd}}' není rozpoznán jako příkaz.",
+      "NOT_ADMIN": "Pro použití tohoto příkazu musíte být správcem."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}} dosáhl {{level}} lv.",
@@ -165,7 +178,9 @@
         "CLIENT_MODS_DISALLOWED": "Tento server zakazuje {{mods}}. Chcete-li se připojit, odstraňte je prosím.",
         "WRONG_PASSWORD": "Zadané heslo je chybné.",
         "NO_REASON": "Server odmítl připojení bez udání důvodu.",
-        "SERVER_FULL": "Tento server je plný."
+        "SERVER_FULL": "Tento server je plný.",
+        "BAD_UGRIDSTOLOAD": "Zdá se, že váš soubor Skyrim.ini má nedefaultní hodnotu pro 'uGridsToLoad'. TO JE VELMI ŠPATNÝ NÁPAD a s největší pravděpodobností rozbije tento mod. Nastavte prosím tuto hodnotu zpět na výchozí (5), nebo soubor Skyrim.ini odstraňte a jednou spusťte čistou hru Skyrim, čímž se vytvoří nový soubor. Nastavení 'uExterior Cell Buffer' a 'uInterior Cell Buffer' by také měla zůstat na výchozích hodnotách. Pokud nevíte, jak na to, podívejte se na naši wiki nebo se zeptejte na našem Discord serveru/Reddit subu.",
+        "NON_DEFAULT_INSTALL": "Zdá se, že vaše instalace není čistě vanilla, tj. obsahuje obsah Creation Club (Anniversary Update nebo jiný) nebo jiné mody.\nHraní s mody NEDOPORUČUJEME.\nDoporučujeme tyto mody odinstalovat a zakázat (postup najdete na wiki).\n\nPro nejlepší zážitek byste měli mít následující seznam modů:<strong>\nSkyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n_ResourcePack.esl\nSkyrimTogether.esp\nSkyrimTogetherQuestPatches.esp</strong>"
       }
     },
     "PLAYER_LIST": {

@@ -30,6 +30,15 @@
 #include <Games/References.h>
 #include <AI/AIProcess.h>
 #include <EquipManager.h>
+
+namespace
+{
+// Game globals the multiplayer session reskins. Named rather than inlined
+// because the same two ids are written from several handlers, and a wrong or
+// missing lookup must be a no-op instead of a null write.
+constexpr uint32_t kKillMoveGlobalId = 0x100F19;
+constexpr uint32_t kWorldEncountersGlobalId = 0xB8EC1;
+} // namespace
 #include <Forms/TESRace.h>
 
 PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
@@ -50,10 +59,10 @@ PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher, Trans
     m_partyLeftConnection = aDispatcher.sink<PartyLeftEvent>().connect<&PlayerService::OnPartyLeftEvent>(this);
 }
 
-void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
+void PlayerService::OnUpdate(const UpdateEvent&) noexcept
 {
-    RunRespawnUpdates(acEvent.Delta);
-    RunPostDeathUpdates(acEvent.Delta);
+    RunRespawnUpdates();
+    RunPostDeathUpdates();
     RunDifficultyUpdates();
     RunLevelUpdates();
     RunBeastFormDetection();
@@ -61,12 +70,15 @@ void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
 void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
-    // TODO: SkyrimTogether.esm
-    TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19));
-    pKillMove->f = 0.f;
+    // These two reskins load a global by a hardcoded form id. A load order that
+    // does not have them - or has not reached them yet - makes the lookup fail,
+    // and the disconnect path that writes the same values then turns that into a
+    // crash on the way out. Guard every write.
+    if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(kKillMoveGlobalId)))
+        pKillMove->f = 0.f;
 
-    TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-    pWorldEncountersEnabled->f = 0.f;
+    if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(kWorldEncountersGlobalId)))
+        pWorldEncountersEnabled->f = 0.f;
 }
 
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
@@ -76,15 +88,15 @@ void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 
     ToggleDeathSystem(false);
 
-    TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19));
-    pKillMove->f = 1.f;
+    if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(kKillMoveGlobalId)))
+        pKillMove->f = 1.f;
 
     // Restore to the default value (150 in skyrim, 175 in fallout 4)
     float* greetDistance = Settings::GetGreetDistance();
     *greetDistance = 150.f;
 
-    TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-    pWorldEncountersEnabled->f = 1.f;
+    if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(kWorldEncountersGlobalId)))
+        pWorldEncountersEnabled->f = 1.f;
 }
 
 void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) noexcept
@@ -178,8 +190,8 @@ void PlayerService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
     // TODO: this can be done a bit prettier
     if (acEvent.IsLeader)
     {
-        TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-        pWorldEncountersEnabled->f = 1.f;
+        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(kWorldEncountersGlobalId)))
+            pWorldEncountersEnabled->f = 1.f;
     }
 }
 
@@ -188,19 +200,25 @@ void PlayerService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
     // TODO: this can be done a bit prettier
     if (World::Get().GetTransport().IsConnected())
     {
-        TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-        pWorldEncountersEnabled->f = 0.f;
+        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(kWorldEncountersGlobalId)))
+            pWorldEncountersEnabled->f = 0.f;
     }
 }
 
-void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
+void PlayerService::RunRespawnUpdates() noexcept
 {
     if (!m_isDeathSystemEnabled)
         return;
 
     static bool s_startTimer = false;
 
+    // Runs every frame from OnUpdate, including while a save is loading and on
+    // the main menu, where there is no player yet. This file already checks the
+    // same pointer on another path; these two did not.
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
     if (!pPlayer->actorState.IsBleedingOut())
     {
         m_cachedMainSpellId = pPlayer->magicItems[0] ? pPlayer->magicItems[0]->formID : 0;
@@ -214,7 +232,7 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
     if (!s_startTimer)
     {
         s_startTimer = true;
-        m_respawnTimer = 5.0;
+        m_respawnDeadline = std::chrono::steady_clock::now() + 5s;
         FadeOutGame(true, true, 3.0f, true, 2.0f);
 
         // If a player dies not by its health reaching 0, getting it up from its bleedout state isn't possible
@@ -225,14 +243,10 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
         pPlayer->PayCrimeGoldToAllFactions();
     }
 
-    m_respawnTimer -= acDeltaTime;
-
-    if (m_respawnTimer <= 0.0)
+    const auto cNow = std::chrono::steady_clock::now();
+    if (cNow >= m_respawnDeadline)
     {
         pPlayer->RespawnPlayer();
-
-        m_knockdownTimer = 1.5;
-        m_knockdownStart = true;
 
         m_transport.Send(PlayerRespawnRequest());
 
@@ -248,45 +262,42 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
         pSpell = TESForm::GetById(m_cachedPowerId);
         if (pSpell)
             pEquipManager->EquipShout(pPlayer, pSpell);
+
+        m_knockdownDeadline = std::chrono::steady_clock::now() + 1500ms;
+        m_knockdownStart = true;
     }
 }
 
 // Doesn't seem to respawn quite yet
-void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
+void PlayerService::RunPostDeathUpdates() noexcept
 {
     if (!m_isDeathSystemEnabled)
         return;
 
     // If a player dies in ragdoll, it gets stuck.
     // This code ragdolls the player again upon respawning.
-    // It also makes the player invincible for 5 seconds.
-    if (m_knockdownStart)
+    // It also makes the player invincible for 10 seconds.
+    const auto cNow = std::chrono::steady_clock::now();
+    if (m_knockdownStart && cNow >= m_knockdownDeadline)
     {
-        m_knockdownTimer -= acDeltaTime;
-        if (m_knockdownTimer <= 0.0)
-        {
-            PlayerCharacter::SetGodMode(true);
-            m_godmodeStart = true;
-            m_godmodeTimer = 10.0;
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
-            PlayerCharacter* pPlayer = PlayerCharacter::Get();
-            pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+        PlayerCharacter::SetGodMode(true);
+        m_godmodeStart = true;
 
-            FadeOutGame(false, true, 0.5f, true, 2.f);
+        pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
 
-            m_knockdownStart = false;
-        }
+        FadeOutGame(false, true, 0.5f, true, 2.f);
+
+        m_godmodeDeadline = std::chrono::steady_clock::now() + 10s;
+        m_knockdownStart = false;
     }
 
-    if (m_godmodeStart)
+    if (m_godmodeStart && cNow >= m_godmodeDeadline)
     {
-        m_godmodeTimer -= acDeltaTime;
-        if (m_godmodeTimer <= 0.0)
-        {
-            PlayerCharacter::SetGodMode(false);
+        PlayerCharacter::SetGodMode(false);
 
-            m_godmodeStart = false;
-        }
+        m_godmodeStart = false;
     }
 }
 
@@ -295,7 +306,8 @@ void PlayerService::RunDifficultyUpdates() const noexcept
     if (!m_transport.IsConnected())
         return;
 
-    PlayerCharacter::Get()->SetDifficulty(m_serverDifficulty);
+    if (auto* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetDifficulty(m_serverDifficulty);
 }
 
 void PlayerService::RunLevelUpdates() const noexcept
@@ -311,9 +323,16 @@ void PlayerService::RunLevelUpdates() const noexcept
 
     lastSendTimePoint = now;
 
-    static uint16_t oldLevel = PlayerCharacter::Get()->GetLevel();
+    auto* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
 
-    uint16_t newLevel = PlayerCharacter::Get()->GetLevel();
+    // Deliberately a function-local static: the first observation has to come
+    // from the game rather than from a literal, or the first level-up after a
+    // load looks like a change and is sent as one.
+    static uint16_t oldLevel = pPlayer->GetLevel();
+
+    const uint16_t newLevel = pPlayer->GetLevel();
     if (newLevel != oldLevel)
     {
         PlayerLevelRequest request{};
@@ -338,9 +357,9 @@ void PlayerService::RunBeastFormDetection() const noexcept
     lastSendTimePoint = now;
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    if (!pPlayer->race)
+    if (!pPlayer || !pPlayer->race)
         return;
-    
+
     if (pPlayer->race->formID == lastRaceFormID)
         return;
 

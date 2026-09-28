@@ -1,0 +1,8 @@
+{
+  "id": "OStimTogether",
+  "upstream": "https://github.com/Caelvanost/OStimTogether.git",
+  "commit": "541d426ad925dfcbe00676851b01e4c5d0917f2a",
+  "files": 112,
+  "contentSha256": "74238dd2eff9fb77ee1a43c9b898bd5022fa15b0dfe1065ddf4a2cf1a656b895",
+  "why": "Durability copy of the pinned commit. Not a build input: the submodule builds. Kept so the code survives the upstream repository disappearing."
+}

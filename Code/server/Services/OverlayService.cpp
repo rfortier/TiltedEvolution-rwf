@@ -61,9 +61,23 @@ void sendPlayerMessage(const ChatMessageType acType, const String acContent, Pla
 
 void OverlayService::HandleChatMessage(const PacketEvent<SendChatMessageRequest>& acMessage) const noexcept
 {
-    auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(*acMessage.pPlayer->GetCharacter(), acMessage.Packet.ChatMessage);
-    if (canceled)
-        return;
+    // GetCharacter() is an optional that stays empty until CharacterService
+    // creates the character, so a player who chats before that - or whose
+    // character creation failed - dereferences an empty optional here. That is
+    // the same defect class as the /settime crash: any connected player can
+    // send this packet, and the server has to survive it. WeatherService and
+    // PlayerService::OnPlayerRespawnRequest already guard the identical call.
+    //
+    // Only the script callback is skipped: it is handed the entity, so a
+    // default-constructed one would reach script code as a bogus sender. The
+    // broadcast below needs no character of its own - sendPlayerMessage guards
+    // its own use - so global and party chat still work for that player.
+    if (const auto character = acMessage.pPlayer->GetCharacter())
+    {
+        auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(*character, acMessage.Packet.ChatMessage);
+        if (canceled)
+            return;
+    }
 
     sendPlayerMessage(acMessage.Packet.MessageType, acMessage.Packet.ChatMessage, acMessage.pPlayer);
 }

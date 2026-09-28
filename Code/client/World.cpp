@@ -21,6 +21,9 @@
 #include <Services/CombatService.h>
 #include <Services/WeatherService.h>
 #include <Services/MapService.h>
+#include <Services/PluginMessagingService.h>
+
+#include <Messages/NotifyPluginMessaging.h>
 
 #include <Events/PreUpdateEvent.h>
 #include <Events/UpdateEvent.h>
@@ -39,7 +42,7 @@ World::World()
     ctx().emplace<InputService>(ctx().at<OverlayService>());
     ctx().emplace<CharacterService>(*this, m_dispatcher, m_transport);
     ctx().emplace<DebugService>(m_dispatcher, *this, m_transport, ctx().at<ImguiService>());
-    ctx().emplace<PapyrusService>(m_dispatcher);
+    ctx().emplace<PapyrusService>();
     ctx().emplace<DiscordService>(m_dispatcher);
     ctx().emplace<ObjectService>(*this, m_dispatcher, m_transport);
     ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
@@ -55,15 +58,37 @@ World::World()
     ctx().emplace<WeatherService>(*this, m_transport, m_dispatcher);
     ctx().emplace<MapService>(*this, m_dispatcher, m_transport);
 
+    // Companion plugin transport. Incoming payloads are delivered to whichever
+    // plugin registered the channel; the contract tells plugins to marshal to
+    // the game thread before touching game state.
+    PluginMessagingService::Get().Initialize(*this);
+    m_pluginMessagingConnection = m_dispatcher.sink<NotifyPluginMessaging>().connect<&PluginMessagingService::OnPluginMessage>(&PluginMessagingService::Get());
+
     BehaviorVar::Get()->Init();
 }
 
-World::~World() = default;
+World::~World()
+{
+    // The dispatcher is a member of this object and is destroyed with it, so the
+    // subscription goes away on its own; the service is a singleton that outlives
+    // the world, so its registrations are cleared explicitly. That ordering
+    // matters: a plugin callback must never be reachable once the world is gone.
+    PluginMessagingService::Get().Shutdown();
+}
 
 void World::Update() noexcept
 {
     const auto cNow = std::chrono::high_resolution_clock::now();
     const auto cDelta = cNow - m_lastFrameTime;
+
+    // A window timer now drives this in addition to the game's own vm tick, so
+    // run at most one update per ~8ms and let the two sources interleave rather
+    // than doubling the rate. A skipped call leaves m_lastFrameTime untouched,
+    // so the next accepted one measures its delta from the last real update.
+    if (m_hasTicked && cDelta < std::chrono::milliseconds(8))
+        return;
+
+    m_hasTicked = true;
     m_lastFrameTime = cNow;
 
     const auto cDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();

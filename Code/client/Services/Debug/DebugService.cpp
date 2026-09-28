@@ -84,11 +84,21 @@ void __declspec(noinline) DebugService::PlaceActorInWorld() noexcept
     if (m_actors.size())
         return;
 
-    const auto pPlayerBaseForm = static_cast<TESNPC*>(PlayerCharacter::Get()->baseForm);
+    const auto* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
 
+    const auto pPlayerBaseForm = static_cast<TESNPC*>(pPlayer->baseForm);
+    if (!pPlayerBaseForm)
+        return;
+
+    // Create() has two ways to come back empty: no player anchor, or a
+    // base form that does not cast. Both are reachable from the debug menu.
     auto pActor = Actor::Create(pPlayerBaseForm);
+    if (!pActor)
+        return;
 
-    const Inventory inventory = PlayerCharacter::Get()->GetActorInventory();
+    const Inventory inventory = pPlayer->GetActorInventory();
     pActor->SetActorInventory(inventory);
 
     pActor->GetExtension()->SetPlayer(true);
@@ -152,7 +162,9 @@ extern thread_local bool g_forceAnimation;
 
 void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 {
-    if (!BSGraphics::GetMainWindow()->IsForeground())
+    // null until the renderer hook has run, and this update can tick first
+    auto* pWindow = BSGraphics::GetMainWindow();
+    if (!pWindow || !pWindow->IsForeground())
         return;
 
     if (moveData.pActor)
@@ -161,16 +173,42 @@ void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
         moveData.pActor = nullptr;
     }
 
+
+// F3 used to toggle the debug menu bar. F2 is now the only in-game key, so
+// this is disabled in every configuration - the same treatment F6/F7/F8
+// already had. The reason is the one in the block below: a shortcut that
+// fires on a stray keypress is a support burden, not a feature.
+//
+// m_showDebugStuff is still settable from the overlay page through the
+// "toggleDebugUI" binding (OverlayClient::ProcessToggleDebugUI). That is the
+// only writer left, and the shipped page does not call it, so in practice the
+// menu bar below now stays off unless that binding is invoked deliberately.
+// Nothing below became unreachable code - it became opt-in.
+//
+// This block also used to be the proof that UpdateEvent is alive on 1.5.97,
+// because it logged on every toggle. That job no longer needs a keypress:
+// "vm tick heartbeat", "main loop heartbeat", "timer-driven update heartbeat"
+// and "transport pump heartbeat" all report it unconditionally.
+#if 0
+    if (GetAsyncKeyState(VK_F3) & 0x01)
+    {
+        m_showDebugStuff = !m_showDebugStuff;
+        spdlog::info("debug menu toggled: {}", m_showDebugStuff);
+    }
+#endif
+
+// F6/F7/F8 are development shortcuts: F6 dials 127.0.0.1:10578 directly, F7
+// creates or leaves a party, F8's body is commented out and does nothing.
+// F2 is the only in-game key, so these stay compiled out in every
+// configuration rather than only in a release build - IS_MASTER comes from the
+// branch name, which meant any non-main build turned a stray keypress into a
+// connect attempt. The bodies are kept for whoever needs them again; flip this
+// to 1 rather than deleting the block.
+#if 0
     static std::atomic<bool> s_f8Pressed = false;
     static std::atomic<bool> s_f7Pressed = false;
     static std::atomic<bool> s_f6Pressed = false;
 
-    if (GetAsyncKeyState(VK_F3) & 0x01)
-    {
-        m_showDebugStuff = !m_showDebugStuff;
-    }
-
-#if (!IS_MASTER)
     if (GetAsyncKeyState(VK_F6))
     {
         if (!s_f6Pressed)
@@ -267,6 +305,17 @@ void DebugService::OnDraw() noexcept
     if (view.empty() || !m_showDebugStuff)
         return;
 
+    // One line per session: the menu bar below only renders if ImGui is being
+    // pumped from the frame end, which is a different failure than the key not
+    // arriving. Without it a blank screen has two possible causes and no way
+    // to tell them apart from the log.
+    static bool s_reportedFirstDraw = false;
+    if (!s_reportedFirstDraw)
+    {
+        s_reportedFirstDraw = true;
+        spdlog::info("debug menu drawing");
+    }
+
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("Helpers"))
     {
@@ -295,9 +344,16 @@ void DebugService::OnDraw() noexcept
 
         if (ImGui::Button("Clear stuck screen effects"))
         {
+            Vector<ImageSpaceModifierInstance*> modifiers;
             for (const auto& modifier : TES::Get()->activeImageSpaceModifiers)
             {
-                ImageSpaceModifierInstance::Stop(modifier.object);
+                if (modifier.object)
+                    modifiers.push_back(modifier.object);
+            }
+
+            for (auto* pModifier : modifiers)
+            {
+                ImageSpaceModifierInstance::Stop(pModifier);
             }
         }
         ImGui::EndMenu();

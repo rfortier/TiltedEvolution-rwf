@@ -95,6 +95,13 @@ export class ClientService implements OnDestroy {
   /** Used for when a party leader changed. */
   public partyLeaderChange = new Subject<number>();
 
+  /**
+   * The address the last attempt targeted, empty before any. The menu shows
+   * which server a session belongs to; "connected" on its own does not say,
+   * once there is more than one to pick from.
+   */
+  public serverAddressChange = new BehaviorSubject('');
+
   public localPlayerId = undefined;
 
   private _host: string;
@@ -199,6 +206,7 @@ export class ClientService implements OnDestroy {
     this._host = host;
     this._port = port;
     this._password = password;
+    this.serverAddressChange.next(host ? `${host}:${port}` : '');
   }
 
   /**
@@ -357,6 +365,11 @@ export class ClientService implements OnDestroy {
       this.isConnectionInProgressChange.next(false);
 
       if (isError && this._remainingReconnectionAttempt > 0) {
+        // The old transport has to go before the replacement starts, but its
+        // teardown must not surface as a disconnect: that would flip
+        // isConnectionInProgress back to false between the two attempts and
+        // drop the panel out of "connecting" while a retry is still running.
+        skyrimtogether.abandonAttempt();
         this._remainingReconnectionAttempt--;
         this.chatService.pushSystemMessage('SERVICE.CLIENT.CONNECTION_LOST');
         this.connect(this._host, this._port, this._password);
@@ -551,7 +564,25 @@ export class ClientService implements OnDestroy {
 
   private onTriggerError(rawError: string) {
     this.zone.run(() => {
-      const error = JSON.parse(rawError) as ErrorEvents;
+      // An error always ends the attempt that raised it, so the flag is cleared
+      // before anything that can throw. The overlay only leaves "connecting"
+      // when connectionInProgress is false, and until now only onConnect and
+      // onDisconnect did that -- so a client-side failure such as the handshake
+      // deadline expiring left the UI on "connecting" forever, which is exactly
+      // what the deadline was added to prevent. onDisconnect still runs in the
+      // cases where the transport also tore down; setting the same value twice
+      // is harmless.
+      this.isConnectionInProgressChange.next(false);
+
+      let error: ErrorEvents;
+      try {
+        error = JSON.parse(rawError) as ErrorEvents;
+      } catch {
+        // A malformed payload must not cost the player the only exit from
+        // "connecting". Report it as a generic failure and move on.
+        error = { error: 'no_reason' };
+      }
+
       this.triggerError.next(error);
       void this.errorService.setError(error);
     });

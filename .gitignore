@@ -6,6 +6,7 @@ vs2019
 vs2022
 vsxmake2019
 vsxmake2022
+vsxmake2026
 .xmake
 vs2019
 
@@ -77,7 +78,17 @@ Artifacts/logs**
 **/obj/**
 /Setup.bat
 
-Package/
+# Anchored to the repository root on purpose. Unanchored, git matches this
+# case-insensitively on Windows and silently swallows every lowercase
+# 'package/' directory in the plugin trees - which is where the .ini and .esp
+# files the packaging stages actually live. That is how a backup ends up
+# quietly missing 22 files.
+/Package/
+
+# The snapshots are a durability copy of third-party sources. Nothing in this
+# file may exclude them, whatever the rule was written for.
+!/snapshots/
+!/snapshots/**
 
 distrib/
 distrib_debug/
@@ -88,3 +99,36 @@ distrib_releasedbg/
 new_addresses.txt
 
 packaged/*
+
+.zcode/
+
+# 文件名含控制字符的垃圾文件(禁止再次加入)
+*.garbage
+[0-1]S@@*
+
+# agent working memory (not part of the shipped tree)
+.workbuddy/
+
+# python bytecode from Tools/Scripts and Code/plugins/STRPM/tools
+__pycache__/
+
+# Scratch trees used to exercise the packaging scripts locally.
+# They leaked into a commit once; listing them is cheaper than remembering.
+.pv/
+.rx/
+.px/
+mod-pack*/
+dist-dryrun/
+
+# The Papyrus compiler the compile script downloads and unpacks. A build
+# input that is fetched, not committed: the script pins the release tag and
+# verifies the archive hash.
+.papyrus-tool/
+
+# The compiler's own cache directory. It is created relative to the process
+# working directory - not to any path it is given - so it appears at the
+# repository root whenever a compile script runs from there, which is what
+# Compile-ShippingScripts.ps1 and Compile-OStimConsentScripts.ps1 now do
+# deliberately. Unignored, it shows up as an unexplained untracked directory
+# after every local build.
+/.papyrus/

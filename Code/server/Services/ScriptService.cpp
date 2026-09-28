@@ -201,16 +201,6 @@ std::tuple<bool, String> ScriptService::HandleSetTime(int aHours, int aMinutes, 
     return CallCancelableEvent("onSetTime", aHours, aMinutes, aTimeScale);
 }
 
-#if 0
-void ScriptService::RegisterExtensions(ScriptContext& aContext)
-{
-    ScriptStore::RegisterExtensions(aContext);
-
-    BindTypes(aContext);
-    BindStaticFunctions(aContext);
-}
-#endif
-
 void ScriptService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
     if (m_sandboxes.size() == 0)

@@ -10,11 +10,13 @@
   ></app-notification-popup-container>
 
   <app-notifications [@notifications]="!(active$ | async)"></app-notifications>
-  <div
-    [@controls]="active$ | async"
-    class="app-root-controls"
-    [class.background-element]="view$ | async"
-  >
+  <!--
+    No dimming class here on purpose. This used to fade to 30% whenever a popup
+    was open, which meant the moment the player opened the connect panel to type
+    an address the connection menu and the chat box went translucent under it --
+    exactly when they are most needed. The menu stays fully visible throughout.
+  -->
+  <div [@controls]="active$ | async" class="app-root-controls">
     <app-window border="strip" class="app-root-menu">
       <button
         *ngIf="!(connected$ | async) && !(connectionInProgress$ | async)"
@@ -84,6 +86,18 @@
         {{ 'COMPONENT.ROOT.CONNECTION_IN_PROGRESS' | transloco }}
       </button>
     </app-window>
+    <app-window border="strip" class="app-root-status">
+      <span
+        class="app-root-status-dot"
+        [class.is-online]="connected$ | async"
+        [class.is-pending]="connectionInProgress$ | async"
+      ></span>
+      <ng-container *ngIf="status$ | async as status">
+        <span class="app-root-status-text">{{
+          status.key | transloco: status.params
+        }}</span>
+      </ng-container>
+    </app-window>
     <app-window class="app-root-chat">
       <app-chat #chat></app-chat>
     </app-window>
@@ -119,5 +133,6 @@
     </ng-container>
 
     <app-error></app-error>
+    <app-alert></app-alert>
   </div>
 </ng-container>

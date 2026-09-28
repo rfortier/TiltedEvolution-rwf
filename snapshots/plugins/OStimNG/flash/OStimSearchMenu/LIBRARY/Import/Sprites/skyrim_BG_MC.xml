@@ -1,0 +1,15 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Import/Sprites/skyrim_BG_MC" itemID="647ca08e-0000031d" linkageImportForRS="true" linkageExportInFirstFrame="false" linkageIdentifier="MessageBackground" linkageURL="sharedcomponents.swf" scaleGridLeft="-179.75" scaleGridRight="177.5" scaleGridTop="-39.85" scaleGridBottom="36.4" lastModified="1685889166">
+  <timeline>
+    <DOMTimeline name="skyrim_BG_MC">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="8704">
+              <elements/>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

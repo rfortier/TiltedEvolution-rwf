@@ -1,0 +1,102 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Search/Search_MC" itemID="64629254-0000020a" linkageExportForAS="true" linkageIdentifier="Search" linkageClassName="SearchBar" lastModified="1690726615" lastUniqueIdentifier="15">
+  <timeline>
+    <DOMTimeline name="Search_MC">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements/>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="textInput" color="#FF800A" autoNamed="false">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMComponentInstance libraryItemName="Import/Sprites/skyrim_TextInput" name="textInput" centerPoint3DX="165" centerPoint3DY="-40" uniqueID="14">
+                  <matrix>
+                    <Matrix tx="18.5" ty="-65.9"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point x="146.5" y="25.9"/>
+                  </transformationPoint>
+                  <dataBindingXML><![CDATA[<component metaDataFetched='true' schemaUrl='' schemaOperation='' sceneRootLabel='root' oldCopiedComponentPath='1.7.14'>
+</component>
+]]></dataBindingXML>
+                  <parametersAsXML><![CDATA[   <property id="actAsButton">
+      <Inspectable name="actAsButton" variable="actAsButton" category="" verbose="0" defaultValue="false" type="Boolean"/>
+   </property>
+   <property id="defaultText">
+      <Inspectable name="defaultText" variable="defaultText" category="" verbose="0" defaultValue="" type="Default"/>
+   </property>
+   <property id="disabled">
+      <Inspectable name="disabled" variable="disabled" category="" verbose="0" defaultValue="false" type="Boolean"/>
+   </property>
+   <property id="editable">
+      <Inspectable name="editable" variable="editable" category="" verbose="0" defaultValue="true" type="Boolean"/>
+   </property>
+   <property id="enableInitCallback">
+      <Inspectable name="enableInitCallback" variable="enableInitCallback" category="" verbose="0" defaultValue="true" type="Boolean"/>
+   </property>
+   <property id="maxChars">
+      <Inspectable name="maxChars" variable="maxChars" category="" verbose="0" defaultValue="0" type="Number"/>
+   </property>
+   <property id="password">
+      <Inspectable name="password" variable="password" category="" verbose="0" defaultValue="false" type="Boolean"/>
+   </property>
+   <property id="soundMap">
+      <Inspectable name="soundMap" variable="soundMap" category="" verbose="0" defaultValue="textChange" type="Array"/>
+   </property>
+   <property id="textID">
+      <Inspectable name="textID" variable="textID" category="" verbose="0" defaultValue="" type="Default"/>
+   </property>
+   <property id="visible">
+      <Inspectable name="visible" variable="visible" category="" verbose="0" defaultValue="true" type="Boolean"/>
+   </property>
+]]></parametersAsXML>
+                </DOMComponentInstance>
+                <DOMSymbolInstance libraryItemName="FakeButton" name="fakeButton" symbolType="button" isVisible="false">
+                  <matrix>
+                    <Matrix tx="32" ty="101.95"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="divider" color="#FF4FFF" autoNamed="false">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Divider" name="divider" centerPoint3DX="165.75" centerPoint3DY="-77">
+                  <matrix>
+                    <Matrix tx="22.5" ty="-77"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point x="143.25"/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+        <DOMLayer name="bg" color="#9933CC" current="true" isSelected="true" autoNamed="false">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Import/Sprites/skyrim_BG_MC" name="bg" selected="true">
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

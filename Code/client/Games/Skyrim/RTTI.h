@@ -16,7 +16,14 @@ extern const VersionDbPtr<TDynamicCast> DynamicCast;
 
 template <class T, class U> T* Cast(U* apPtr)
 {
-    return reinterpret_cast<T*>(internal::DynamicCast.Get()((void*)apPtr, 0, internal::RttiLocator<std::remove_cv_t<U>>::Get(), internal::RttiLocator<std::remove_cv_t<T>>::Get(), 0));
+    // guard against unmapped rtti ids (legacy game versions): the game's
+    // dynamic cast dereferences the rti structures, a null would crash
+    const void* pBaseRtti = internal::RttiLocator<std::remove_cv_t<U>>::Get();
+    const void* pTargetRtti = internal::RttiLocator<std::remove_cv_t<T>>::Get();
+    if (pBaseRtti == nullptr || pTargetRtti == nullptr || apPtr == nullptr)
+        return nullptr;
+
+    return reinterpret_cast<T*>(internal::DynamicCast.Get()((void*)apPtr, 0, pBaseRtti, pTargetRtti, 0));
 }
 
 struct IFormFactory;

@@ -1,0 +1,1597 @@
+{
+ "11612": {
+  "var": "setWornData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:112",
+  "ea_1170": "0x14015ab40",
+  "size": 481,
+  "decompile": "// Hidden C++ exception states: #wind=4\n__int64 __fastcall ae11612(__int64 a1, char a2, char a3)\n{\n  int *v6; // r15\n  int v7; // edi\n  __int64 v8; // rbx\n  __int64 result; // rax\n  char v10; // si\n  _QWORD *v11; // rax\n  __int64 v12; // rdx\n  bool v13; // si\n  _QWORD *v14; // rax\n\n  v6 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542) + 1896LL);\n  v7 = *v6;\n  *v6 = 97;\n  v8 = a1 + 24;\n  ae68234(a1 + 24);\n  ae68233(v8);\n  result = *(_QWORD *)(a1 + 16);\n  if ( a3 )\n  {\n    v10 = 0;\n    if ( result )\n      v10 = *(_BYTE *)(result + 2) >> 7;\n    if ( v8 )\n      result = ae68239(v8);\n    if ( a2 )\n    {\n      if ( v10 )\n        goto LABEL_28;\n      if ( ae400190 != 2 )\n        ae68121(&ae400188, &ae400190);\n      v11 = (_QWORD *)ae68115(&ae400188, 16LL, 0LL);\n      if ( v11 )\n      {\n        v11[1] = 0LL;\n        *v11 = ae186683;\n        result = ae12315(a1, v11);\n        goto LABEL_28;\n      }\nLABEL_24:\n      result = ae12315(a1, 0LL);\n      goto LABEL_28;\n    }\n    if ( !v10 )\n      goto LABEL_28;\n    v12 = 23LL;\n    goto LABEL_27;\n  }\n  v13 = 0;\n  if ( result )\n    v13 = (*(_BYTE *)(result + 2) & 0x40) != 0;\n  if ( v8 )\n    result = ae68239(v8);\n  if ( a2 )\n  {\n    if ( v13 )\n      goto LABEL_28;\n    if ( ae400190 != 2 )\n      ae68121(&ae400188, &ae400190);\n    v14 = (_QWORD *)ae68115(&ae400188, 16LL, 0LL);\n    if ( v14 )\n    {\n      v14[1] = 0LL;\n      *v14 = ae186681;\n      result = ae12315(a1, v14);\n      goto LABEL_28;\n    }\n    goto LABEL_24;\n  }\n  if ( v13 )\n  {\n    v12 = 22LL;\nLABEL_27:\n    result = ae12354(a1, v12);\n  }\nLABEL_28:\n  if ( v8 )\n    result = ae68240(v8);\n  *v6 = v7;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68234",
+   "ae68233",
+   "ae68239",
+   "ae68121",
+   "ae68115",
+   "ae12315",
+   "ae68239",
+   "ae68121",
+   "ae68115",
+   "ae12315",
+   "ae12315",
+   "ae12354",
+   "ae68240"
+  ],
+  "bytes16": "40555657415641574883ec3048c74424"
+ },
+ "11616": {
+  "var": "setHealth",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:126",
+  "ea_1170": "0x14015b0a0",
+  "size": 283,
+  "decompile": "// Hidden C++ exception states: #wind=3\n__int64 __fastcall ae11616(__int64 a1, float a2)\n{\n  __int64 v3; // r14\n  int v4; // edi\n  __int64 v5; // rbx\n  __int64 result; // rax\n  __int64 v7; // r8\n  __int64 v8; // rax\n\n  v3 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542);\n  v4 = *(_DWORD *)(v3 + 1896);\n  *(_DWORD *)(v3 + 1896) = 97;\n  v5 = a1 + 24;\n  ae68234(a1 + 24);\n  result = ae12329(a1, 37LL);\n  if ( result )\n  {\n    if ( a2 == -1.0 )\n    {\n      LOBYTE(v7) = 1;\n      result = ae12355(a1, result, v7);\n    }\n    else\n    {\n      *(float *)(result + 16) = a2;\n    }\n  }\n  else if ( a2 != -1.0 )\n  {\n    if ( ae400190 != 2 )\n      ae68121(&ae400188, &ae400190);\n    v8 = ae68115(&ae400188, 24LL, 0LL);\n    if ( v8 )\n    {\n      *(_QWORD *)(v8 + 8) = 0LL;\n      *(_QWORD *)v8 = ae186687;\n      *(float *)(v8 + 16) = a2;\n    }\n    result = ae12315(a1, v8);\n  }\n  if ( v5 )\n    result = ae68240(v5);\n  *(_DWORD *)(v3 + 1896) = v4;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68234",
+   "ae12329",
+   "ae12355",
+   "ae68121",
+   "ae68115",
+   "ae12315",
+   "ae68240"
+  ],
+  "bytes16": "405355565741564883ec4048c7442420"
+ },
+ "11619": {
+  "var": "setChargeData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:104",
+  "ea_1170": "0x14015b3d0",
+  "size": 250,
+  "decompile": "// Hidden C++ exception states: #wind=3\n__int64 __fastcall ae11619(__int64 a1, float a2)\n{\n  __int64 v3; // rsi\n  int v4; // edi\n  __int64 v5; // rbx\n  __int64 result; // rax\n  __int64 v7; // rax\n\n  v3 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542);\n  v4 = *(_DWORD *)(v3 + 1896);\n  *(_DWORD *)(v3 + 1896) = 97;\n  v5 = a1 + 24;\n  ae68234(a1 + 24);\n  result = ae12329(a1, 40LL);\n  if ( result )\n  {\n    *(float *)(result + 16) = a2;\n  }\n  else\n  {\n    if ( ae400190 != 2 )\n      ae68121(&ae400188, &ae400190);\n    v7 = ae68115(&ae400188, 24LL, 0LL);\n    if ( v7 )\n    {\n      *(_QWORD *)(v7 + 8) = 0LL;\n      *(_QWORD *)v7 = ae186693;\n      *(float *)(v7 + 16) = a2;\n    }\n    result = ae12315(a1, v7);\n  }\n  if ( v5 )\n    result = ae68240(v5);\n  *(_DWORD *)(v3 + 1896) = v4;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68234",
+   "ae12329",
+   "ae68121",
+   "ae68115",
+   "ae12315",
+   "ae68240"
+  ],
+  "bytes16": "405355565741564883ec4048c7442420"
+ },
+ "11620": {
+  "var": "setSoulData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:97",
+  "ea_1170": "0x14015b4d0",
+  "size": 185,
+  "decompile": "// Hidden C++ exception states: #wind=3\n__int64 __fastcall ae11620(__int64 a1, unsigned int a2)\n{\n  __int64 v4; // rbx\n  __int64 result; // rax\n  __int64 v6; // rax\n\n  v4 = a1 + 24;\n  ae68234(a1 + 24);\n  result = ae12329(a1, 156LL);\n  if ( result )\n  {\n    *(_BYTE *)(result + 16) = a2;\n  }\n  else\n  {\n    if ( ae400190 != 2 )\n      ae68121(&ae400188, &ae400190);\n    v6 = ae68115(&ae400188, 24LL, 0LL);\n    if ( v6 )\n      v6 = ae12471(v6, a2);\n    result = ae12315(a1, v6);\n  }\n  if ( v4 )\n    return ae68240(v4);\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68234",
+   "ae12329",
+   "ae68121",
+   "ae68115",
+   "ae12471",
+   "ae12315",
+   "ae68240"
+  ],
+  "bytes16": "40574883ec3048c7442420feffffff48"
+ },
+ "11822": {
+  "var": "setPoison",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:119",
+  "ea_1170": "0x1401646d0",
+  "size": 298,
+  "decompile": "// Hidden C++ exception states: #wind=5\n__int64 __fastcall ae11822(__int64 a1, __int64 a2, int a3)\n{\n  int *v6; // r15\n  int v7; // edi\n  __int64 v8; // rbx\n  int v9; // ebp\n  __int64 v10; // rax\n  __int64 v11; // rsi\n  __int64 result; // rax\n  __int64 v13; // rax\n  __int64 v14; // rsi\n\n  v6 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542) + 1896LL);\n  v7 = *v6;\n  *v6 = 97;\n  v8 = a1 + 24;\n  ae68234(a1 + 24);\n  v9 = 1;\n  if ( a3 )\n    v9 = a3;\n  v10 = ae12329(a1, 62LL);\n  v11 = v10;\n  if ( v10 )\n  {\n    result = ae12587(v10, a2);\n    *(_DWORD *)(v11 + 24) = v9;\n  }\n  else\n  {\n    if ( ae400190 != 2 )\n      ae68121(&ae400188, &ae400190);\n    v13 = ae68115(&ae400188, 32LL, 0LL);\n    v14 = v13;\n    if ( v13 )\n    {\n      *(_QWORD *)(v13 + 8) = 0LL;\n      *(_QWORD *)v13 = ae186751;\n      *(_QWORD *)(v13 + 16) = 0LL;\n      *(_DWORD *)(v13 + 24) = v9;\n      ae12587(v13, a2);\n    }\n    else\n    {\n      v14 = 0LL;\n    }\n    result = ae12315(a1, v14);\n  }\n  if ( v8 )\n    result = ae68240(v8);\n  *v6 = v7;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68234",
+   "ae12329",
+   "ae12587",
+   "ae68121",
+   "ae68115",
+   "ae12587",
+   "ae12315",
+   "ae68240"
+  ],
+  "bytes16": "40535556574155415641574883ec3048"
+ },
+ "12060": {
+  "var": "setEnchantmentData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:133",
+  "ea_1170": "0x14016dbe0",
+  "size": 300,
+  "decompile": "// Hidden C++ exception states: #wind=3\n__int64 __fastcall ae12060(__int64 a1, __int64 a2, __int16 a3, char a4)\n{\n  int *v8; // r12\n  int v9; // edi\n  __int64 v10; // rbx\n  __int64 result; // rax\n  __int64 v12; // rax\n\n  v8 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542) + 1896LL);\n  v9 = *v8;\n  *v8 = 97;\n  v10 = a1 + 24;\n  ae68234(a1 + 24);\n  if ( a2 )\n  {\n    result = ae12329(a1, 155LL);\n    if ( result )\n    {\n      *(_QWORD *)(result + 16) = a2;\n      *(_WORD *)(result + 24) = a3;\n      *(_BYTE *)(result + 26) = a4;\n    }\n    else\n    {\n      if ( ae400190 != 2 )\n        ae68121(&ae400188, &ae400190);\n      v12 = ae68115(&ae400188, 32LL, 0LL);\n      if ( v12 )\n      {\n        *(_QWORD *)(v12 + 8) = 0LL;\n        *(_QWORD *)v12 = ae186753;\n        *(_QWORD *)(v12 + 16) = a2;\n        *(_WORD *)(v12 + 24) = a3;\n        *(_BYTE *)(v12 + 26) = a4;\n      }\n      result = ae12315(a1, v12);\n    }\n  }\n  else\n  {\n    result = ae12354(a1, 155LL);\n  }\n  if ( v10 )\n    result = ae68240(v10);\n  *v8 = v9;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68234",
+   "ae12354",
+   "ae12329",
+   "ae68121",
+   "ae68115",
+   "ae12315",
+   "ae68240"
+  ],
+  "bytes16": "4056574154415641574883ec3048c744"
+ },
+ "14953": {
+  "var": "s_constructor",
+  "callsite": "Games/Skyrim/Components/TESTexture.cpp:9",
+  "ea_1170": "0x1401ed290",
+  "size": 201,
+  "decompile": "// Hidden C++ exception states: #wind=4\nvoid __fastcall ae14953(char *a1)\n{\n  __int64 v2; // r8\n  _DWORD *v3; // rsi\n  int v4; // ebx\n\n  *(_QWORD *)a1 = ae187984;\n  ae14970(a1 + 8);\n  v2 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542);\n  v3 = (_DWORD *)(v2 + 1896);\n  v4 = *(_DWORD *)(v2 + 1896);\n  *(_DWORD *)(v2 + 1896) = 101;\n  if ( ae400522 > *(_DWORD *)(v2 + 10760) )\n  {\n    ae109616(&ae400522);\n    if ( ae400522 == -1 )\n    {\n      ae14970(&ae400521);\n      ae109608(ae165635);\n      ae109615(&ae400522);\n    }\n  }\n  ae69166(a1 + 8, &ae400521);\n  *v3 = v4;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae14970",
+   "ae69166",
+   "ae109616",
+   "ae14970",
+   "ae109608",
+   "ae109615"
+  ],
+  "bytes16": "48894c24085556574883ec3048c74424"
+ },
+ "16005": {
+  "var": "s_isQuestObject",
+  "callsite": "Games/Skyrim/ExtraData/ExtraContainerChanges.cpp:27",
+  "ea_1170": "0x1402235a0",
+  "size": 111,
+  "decompile": "__int64 __fastcall ae16005(__int64 a1)\n{\n  _QWORD *v1; // rbx\n  unsigned __int8 v2; // di\n\n  v1 = *(_QWORD **)(a1 + 8);\n  v2 = 0;\n  if ( !v1 )\n    return 0LL;\n  do\n  {\n    if ( !v1[1] && !*v1 )\n      break;\n    if ( v2 )\n      break;\n    if ( (unsigned __int8)ae12052(*v1) )\n      v2 = 1;\n    else\n      v1 = (_QWORD *)v1[1];\n  }\n  while ( v1 );\n  return v2;\n}\n",
+  "strings": [],
+  "callers": [
+   "ae294168",
+   "ae294169"
+  ],
+  "callees": [
+   "ae12052"
+  ],
+  "bytes16": "48895c2410574883ec20488b59084032"
+ },
+ "18518": {
+  "var": "getModifiedDistance",
+  "callsite": "Services/Debug/Views/CombatView.cpp:84",
+  "ea_1170": "0x14029b6e0",
+  "size": 75,
+  "decompile": "float __fastcall ae18518(__int64 a1, __int64 a2)\n{\n  float v3; // xmm0_4\n\n  if ( *(_QWORD *)(a1 + 16) != *(_QWORD *)(a2 + 16) )\n    return *(float *)&ae187061;\n  v3 = *(float *)(a2 + 8) - *(float *)(a1 + 8);\n  return fsqrt(\n           (float)((float)((float)(*(float *)(a2 + 4) - *(float *)(a1 + 4))\n                         * (float)(*(float *)(a2 + 4) - *(float *)(a1 + 4)))\n                 + (float)((float)(*(float *)a2 - *(float *)a1) * (float)(*(float *)a2 - *(float *)a1)))\n         + (float)(v3 * v3));\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "488b4210483941107409f30f1005068d"
+ },
+ "18563": {
+  "var": "s_clearImageSpaceModifier",
+  "callsite": "Games/Skyrim/NetImmerse/ImageSpaceModifierInstance.h:24",
+  "ea_1170": "0x14029db70",
+  "size": 347,
+  "decompile": "// Hidden C++ exception states: #wind=2\nvoid __fastcall ae18563(__int64 a1)\n{\n  __int64 v2; // rdi\n  volatile signed __int32 *v3; // rbx\n  volatile signed __int32 **v4; // rsi\n  volatile signed __int32 **v5; // rcx\n  volatile signed __int32 **v6; // rdx\n  volatile signed __int32 *v7; // rcx\n  volatile signed __int32 *v8; // rax\n  volatile signed __int32 *v9; // rcx\n\n  v2 = ae403450 + 264;\n  if ( ae403450 != -264 )\n  {\n    while ( 1 )\n    {\n      v3 = *(volatile signed __int32 **)v2;\n      if ( *(_QWORD *)v2 == a1 )\n        break;\n      v2 = *(_QWORD *)(v2 + 8);\nLABEL_29:\n      if ( !v2 )\n        return;\n    }\n    if ( v3 )\n    {\n      _InterlockedIncrement(v3 + 2);\n      v4 = *(volatile signed __int32 ***)(v2 + 8);\n      if ( v4 || *(_QWORD *)v2 )\n      {\n        v5 = (volatile signed __int32 **)v2;\n        v6 = (volatile signed __int32 **)v2;\n        while ( *v5 != v3 )\n        {\n          v6 = v5;\n          v5 = (volatile signed __int32 **)v5[1];\n          if ( !v5 )\n            goto LABEL_24;\n        }\n        if ( v5 == (volatile signed __int32 **)v2 )\n        {\n          if ( !v4 )\n          {\n            v9 = *(volatile signed __int32 **)v2;\n            if ( *(_QWORD *)v2 )\n            {\n              *(_QWORD *)v2 = 0LL;\n              if ( _InterlockedExchangeAdd(v9 + 2, 0xFFFFFFFF) == 1 )\n                (*(void (__fastcall **)(volatile signed __int32 *, volatile signed __int32 **))(*(_QWORD *)v9 + 8LL))(\n                  v9,\n                  v6);\n            }\n            goto LABEL_24;\n          }\n          *(_QWORD *)(v2 + 8) = v4[1];\n          v7 = *(volatile signed __int32 **)v2;\n          v8 = *v4;\n          if ( *(volatile signed __int32 **)v2 != *v4 )\n          {\n            if ( v8 )\n              _InterlockedIncrement(v8 + 2);\n            *(_QWORD *)v2 = v8;\n            if ( v7 && _InterlockedExchangeAdd(v7 + 2, 0xFFFFFFFF) == 1 )\n              (*(void (__fastcall **)(volatile signed __int32 *, volatile signed __int32 **))(*(_QWORD *)v7 + 8LL))(\n                v7,\n                v6);\n          }\n          v4[1] = 0LL;\n          v5 = v4;\n        }\n        else\n        {\n          v6[1] = v5[1];\n          v5[1] = 0LL;\n        }\n        ae18596(v5, 1LL);\n      }\n    }\nLABEL_24:\n    if ( v3 )\n    {\n      if ( _InterlockedExchangeAdd(v3 + 2, 0xFFFFFFFF) == 1 )\n        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v3 + 8LL))(v3);\n    }\n    goto LABEL_29;\n  }\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae18596"
+  ],
+  "bytes16": "40565741564883ec3048c7442420feff"
+ },
+ "19075": {
+  "var": "s_getCOCPlacementInfo",
+  "callsite": "Games/Skyrim/Forms/TESObjectCELL.cpp:30",
+  "ea_1170": "0x1402bd850",
+  "size": 240,
+  "decompile": "void __fastcall ae19075(__int64 a1, __int64 a2, _DWORD *a3, char a4)\n{\n  __int64 v8; // rax\n  float v9; // xmm1_4\n  float v10; // xmm2_4\n  __int64 v11; // rax\n\n  if ( (*(_BYTE *)(a1 + 64) & 1) != 0 || (v8 = *(_QWORD *)(a1 + 104)) == 0 )\n  {\n    v9 = 0.0;\n    v10 = 0.0;\n  }\n  else\n  {\n    v9 = *(float *)(v8 + 24);\n    v10 = *(float *)(v8 + 28);\n  }\n  *(_DWORD *)(a2 + 8) = 0;\n  *(float *)a2 = v9 + 2048.0;\n  *(float *)(a2 + 4) = v10 + 2048.0;\n  *a3 = ae410468;\n  a3[1] = ae410469;\n  a3[2] = ae410470;\n  if ( (*(_BYTE *)(a1 + 64) & 1) == 0 )\n  {\n    v11 = ae18970();\n    ae18763(v11, a2, a2 + 8);\n  }\n  if ( !ae360507 || (*(_BYTE *)(a1 + 64) & 1) != 0 )\n  {\n    if ( a4 )\n      ae19111(a1);\n    ae19076(a1, a2, a3);\n  }\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae18970",
+   "ae18763",
+   "ae19111",
+   "ae19076"
+  ],
+  "bytes16": "48895c240848896c2410488974241848"
+ },
+ "19708": {
+  "var": "s_addInventoryItem",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:1107",
+  "ea_1170": "0x1402e23d0",
+  "size": 576,
+  "decompile": "// Hidden C++ exception states: #wind=8\n__int64 __fastcall ae19708(__int64 a1, int a2, __int64 a3, int a4, __int64 a5)\n{\n  __int64 v9; // rbx\n  __int64 v10; // rax\n  __int64 v11; // rbx\n  unsigned int v12; // edi\n  __int64 v13; // rdi\n  __int64 v14; // rsi\n  __int64 v15; // rbx\n  __int64 v16; // rdx\n  __int64 result; // rax\n  char v18; // cl\n  __int64 v19; // rcx\n  int v20; // eax\n  _BYTE v21[8]; // [rsp+30h] [rbp-78h] BYREF\n  __int64 v22; // [rsp+38h] [rbp-70h] BYREF\n  _QWORD v23[2]; // [rsp+40h] [rbp-68h] BYREF\n  __int128 v24; // [rsp+50h] [rbp-58h] BYREF\n  int v25; // [rsp+60h] [rbp-48h]\n  _DWORD v26[16]; // [rsp+68h] [rbp-40h] BYREF\n  int v27; // [rsp+B0h] [rbp+8h] BYREF\n  char v28; // [rsp+C0h] [rbp+18h] BYREF\n\n  v23[1] = -2LL;\n  if ( a3 )\n  {\n    if ( ae11692(a3) )\n    {\n      v9 = ae11692(a3);\n      if ( v9 == ae20194(a1) )\n        ae11930(a3);\n    }\n    v10 = ae11719(a3, &v28);\n    v22 = 0LL;\n    ae12332(v10, &v22);\n    v11 = v22;\n    if ( v22 )\n    {\n      v12 = *(_DWORD *)(v22 + 20);\n      v24 = 0LL;\n      v25 = 0;\n      ae68160((__crt_strtox::big_integer *)v26);\n      ae41323(ae400315, v12, a1, &v24);\n      if ( v26[0] )\n      {\n        v13 = 0LL;\n        v14 = v26[0];\n        do\n        {\n          v23[0] = 0LL;\n          ae12922(v13 + *((_QWORD *)&v24 + 1), v23);\n          v15 = v23[0];\n          if ( v23[0] && *(_DWORD *)ae37396(v23[0], v21) )\n            v16 = a1;\n          else\n            v16 = 0LL;\n          ae37395(v15, v16);\n          if ( v15 && (_InterlockedDecrement((volatile signed __int32 *)(v15 + 40)) & 0x3FF) == 0 )\n            (*(void (__fastcall **)(__int64))(*(_QWORD *)(v15 + 32) + 8LL))(v15 + 32);\n          v13 += 4LL;\n          --v14;\n        }\n        while ( v14 );\n        v11 = v22;\n      }\n      if ( !a1 || (*(_DWORD *)(a1 + 40) & 0x3FF) != 0 )\n        ae12326(&v27, a1);\n      else\n        v27 = ae400312;\n      ae11631(v11 + 112, &v27);\n      if ( *((_QWORD *)&v24 + 1) )\n      {\n        ae68175(&v24);\n        v26[0] = 0;\n      }\n      ae68166(v26);\n    }\n    if ( v11 && (_InterlockedDecrement((volatile signed __int32 *)(v11 + 40)) & 0x3FF) == 0 )\n      (*(void (__fastcall **)(__int64))(*(_QWORD *)(v11 + 32) + 8LL))(v11 + 32);\n  }\n  result = *(_QWORD *)(a1 + 64);\n  if ( result )\n  {\n    v18 = *(_BYTE *)(result + 26);\n    if ( v18 == 28 )\n    {\n      v19 = 48LL;\n    }\n    else\n    {\n      if ( v18 != 43 )\n        return result;\n      v19 = 136LL;\n    }\n    result += v19;\n    if ( result )\n    {\n      v20 = ae16040(a1);\n      return ae16053(v20, a2, a3, a4, a5);\n    }\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae11692",
+   "ae11692",
+   "ae20194",
+   "ae11930",
+   "ae11719",
+   "ae12332",
+   "ae68160",
+   "ae41323",
+   "ae12922",
+   "ae37396",
+   "ae37395",
+   "ae12326",
+   "ae11631",
+   "ae68175",
+   "ae68166",
+   "ae16040"
+  ],
+  "bytes16": "4055565741544155415641574883ec70"
+ },
+ "19784": {
+  "var": "refrGetWorldLocation",
+  "callsite": "Services/Debug/Views/CombatView.cpp:77",
+  "ea_1170": "0x1402ea5e0",
+  "size": 126,
+  "decompile": "__int64 __fastcall ae19784(__int64 a1, __int64 a2)\n{\n  __int64 v2; // rax\n  __int64 v5; // r8\n  __int64 v6; // rax\n  __int64 result; // rax\n\n  v2 = *(_QWORD *)(a1 + 96);\n  if ( v2 )\n  {\n    if ( (*(_BYTE *)(v2 + 64) & 1) != 0 )\n    {\n      v5 = *(_QWORD *)(a1 + 96);\n    }\n    else\n    {\n      v5 = *(_QWORD *)(v2 + 296);\n      if ( !v5 )\n        v5 = *(_QWORD *)(a1 + 96);\n    }\n  }\n  else\n  {\n    v6 = ae11728(a1 + 112);\n    if ( !v6 || (*(_BYTE *)(v6 + 64) & 1) != 0 )\n      v5 = 0LL;\n    else\n      v5 = *(_QWORD *)(v6 + 296);\n  }\n  *(_DWORD *)a2 = *(_DWORD *)(a1 + 84);\n  *(_DWORD *)(a2 + 4) = *(_DWORD *)(a1 + 88);\n  *(_DWORD *)(a2 + 8) = *(_DWORD *)(a1 + 92);\n  result = a2;\n  *(_QWORD *)(a2 + 16) = v5;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae11728"
+  ],
+  "bytes16": "48895c2408574883ec20488b4160488b"
+ },
+ "19846": {
+  "var": "s_getHandle",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:123",
+  "ea_1170": "0x1402efac0",
+  "size": 60,
+  "decompile": "_DWORD *__fastcall ae19846(__int64 a1, _DWORD *a2)\n{\n  if ( !a1 || (*(_DWORD *)(a1 + 40) & 0x3FF) != 0 )\n  {\n    ae12326(a2, a1);\n    return a2;\n  }\n  else\n  {\n    *a2 = ae400312;\n    return a2;\n  }\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae12326"
+  ],
+  "bytes16": "40534883ec20488bda4885c9741af741"
+ },
+ "20203": {
+  "var": "getLocationEncounterZone",
+  "callsite": "Services/Debug/Views/CombatView.cpp:36",
+  "ea_1170": "0x1402fa520",
+  "size": 52,
+  "decompile": "__int64 __fastcall ae20203(__int64 a1)\n{\n  __int64 result; // rax\n\n  if ( *(_QWORD *)(a1 + 96) )\n    return ae18988(*(_QWORD *)(a1 + 96));\n  result = ae19816();\n  if ( result )\n    return *(_QWORD *)(result + 544);\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae18988",
+   "ae19816"
+  ],
+  "bytes16": "4883ec28488b41604885c0740c488bc8"
+ },
+ "20460": {
+  "var": "s_loadCell",
+  "callsite": "Games/Skyrim/Forms/TESWorldSpace.cpp:6",
+  "ea_1170": "0x140306a50",
+  "size": 629,
+  "decompile": "// Hidden C++ exception states: #wind=2\n__int64 __fastcall ae20460(__int64 a1, __int16 a2, __int16 a3)\n{\n  int v4; // ebx\n  unsigned int v5; // r13d\n  __int64 v6; // rax\n  __int64 v7; // rdi\n  __int64 v8; // rsi\n  __int64 v9; // rdx\n  __int64 v10; // rax\n  __int64 v11; // r15\n  unsigned int v12; // r12d\n  unsigned int v13; // ebp\n  __int64 v14; // rax\n  __int64 v15; // rax\n  __int64 v16; // rsi\n  __int64 v17; // rax\n  __int64 v18; // rax\n  __int64 v19; // rax\n  int *v21; // [rsp+20h] [rbp-68h]\n  int v22; // [rsp+90h] [rbp+8h]\n  char v23; // [rsp+98h] [rbp+10h]\n  unsigned int v24; // [rsp+A0h] [rbp+18h]\n\n  v21 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542) + 1896LL);\n  v4 = *v21;\n  v22 = *v21;\n  *v21 = 106;\n  v5 = a3;\n  v24 = a2;\n  v6 = ae13641(a1, (unsigned int)a2, (unsigned int)a3);\n  v7 = v6;\n  ae400462 = a1;\n  if ( !v6 || !(unsigned __int8)ae19114(v6) )\n  {\n    v8 = ae411121;\n    if ( ae175063() == *(_DWORD *)(v8 + 216) )\n    {\n      v23 = 0;\n    }\n    else\n    {\n      ae75712(v8);\n      v23 = 1;\n    }\n    v10 = *(_QWORD *)(a1 + 8);\n    v11 = 0LL;\n    if ( v10 )\n      v12 = *(_DWORD *)(v10 + 8);\n    else\n      v12 = 0;\n    v13 = 0;\n    if ( v12 )\n    {\n      while ( 1 )\n      {\n        v14 = ae14621(a1, v13);\n        v15 = ae14018(v14, 0x4000LL);\n        v16 = v15;\n        if ( !v15 || !(unsigned __int8)ae20456(a1, v15, v24, v5) )\n          goto LABEL_22;\n        if ( !v7 )\n          break;\n        if ( (*(_DWORD *)(v16 + 652) & 0x4000) == 0 )\n          goto LABEL_20;\nLABEL_21:\n        ae19112(v7, v16);\nLABEL_22:\n        if ( ++v13 >= v12 )\n        {\n          v4 = v22;\n          goto LABEL_24;\n        }\n      }\n      if ( ae400190 != 2 )\n        ae68121(&ae400188, &ae400190);\n      v17 = ae68115(&ae400188, 328LL, 0LL);\n      if ( v17 )\n        v7 = ae18876(v17);\n      else\n        v7 = 0LL;\n      ae19013(v7, 0LL);\n      ae18917(v7);\n      ae18964(v7, v24, v5);\n      ae20507(a1, v7);\nLABEL_20:\n      ae13690(v7, v16);\n      goto LABEL_21;\n    }\nLABEL_24:\n    if ( v23 )\n      ae75713(ae411121);\n    if ( v7 )\n    {\n      LOBYTE(v9) = 1;\n      ae19115(v7, v9);\n      (*(void (__fastcall **)(__int64))(*(_QWORD *)v7 + 152LL))(v7);\n      ae20532(a1, v7);\n      v18 = ae18905(v7);\n      if ( v18 )\n        ae18360(v18);\n      v19 = ae20543(a1);\n      if ( v19 )\n      {\n        if ( (*(_BYTE *)(v19 + 64) & 1) == 0 )\n          v11 = *(_QWORD *)(v19 + 296);\n        if ( v11 == a1 )\n          ae18224(a1 + 592, v7);\n      }\n      ae19084(v7);\n    }\n  }\n  *v21 = v4;\n  return v7;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae13641",
+   "ae19114",
+   "ae175063",
+   "ae75712",
+   "ae14621",
+   "ae14018",
+   "ae20456",
+   "ae68121",
+   "ae68115",
+   "ae18876",
+   "ae19013",
+   "ae18917",
+   "ae18964",
+   "ae20507",
+   "ae13690",
+   "ae19112"
+  ],
+  "bytes16": "4c8bdc53555657415441554156415748"
+ },
+ "21600": {
+  "var": "isFirstPerson",
+  "callsite": "Games/Skyrim/Camera/PlayerCamera.cpp:15",
+  "ea_1170": "0x140332360",
+  "size": 222,
+  "decompile": "char __fastcall ae21600(__int64 a1, __int64 a2, __int64 a3, __int64 *a4)\n{\n  unsigned int v4; // edx\n  unsigned int v6; // edi\n  int v7; // ecx\n  __int64 v8; // r8\n  __int64 v9; // rax\n  __int64 v10; // xmm0_8\n  char result; // al\n\n  v4 = 0;\n  *a4 = 0LL;\n  if ( *(_DWORD *)(ae400883 + 32) )\n  {\n    if ( *(_QWORD *)(ae400802 + 40) == *(_QWORD *)(ae400802 + 200) && (v6 = *(_DWORD *)(ae400802 + 176), v7 = -1, v6) )\n    {\n      while ( v7 == -1 )\n      {\n        v8 = ae400802 + 72;\n        if ( *(int *)(ae400802 + 64) >= 0 )\n          v8 = *(_QWORD *)(ae400802 + 72);\n        v9 = v4;\n        v7 = v4++;\n        if ( *(_QWORD *)(v8 + 8 * v9) != *(_QWORD *)(ae400802 + 184) )\n          v7 = -1;\n        if ( v4 >= v6 )\n        {\n          if ( v7 == -1 )\n            goto LABEL_12;\n          break;\n        }\n      }\n      v10 = ae191220;\n    }\n    else\n    {\nLABEL_12:\n      v10 = 0LL;\n    }\n    result = 1;\n    *a4 = v10;\n  }\n  else\n  {\n    if ( !(*(unsigned __int8 (__fastcall **)(__int64))(*(_QWORD *)ae403521 + 904LL))(ae403521) )\n      *a4 = 0x3FF0000000000000LL;\n    return 1;\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [
+   "ae297911",
+   "ae297912",
+   "ae363513"
+  ],
+  "callees": [],
+  "bytes16": "40534883ec2033d2498bd9498911488b"
+ },
+ "21622": {
+  "var": "hasPerk",
+  "callsite": "Games/Skyrim/Magic/MagicTarget.cpp:234",
+  "ea_1170": "0x140332e80",
+  "size": 130,
+  "decompile": "char __fastcall ae21622(__int64 a1, __int64 a2, __int64 a3, _QWORD *a4)\n{\n  __int64 v6; // rcx\n  int v7; // ebx\n\n  v6 = 0LL;\n  *a4 = 0LL;\n  if ( a1 )\n  {\n    if ( *(_BYTE *)(a1 + 26) == 62 )\n      v6 = a1;\n    if ( v6 )\n    {\n      v7 = (unsigned __int8)ae37698();\n      if ( *(_BYTE *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542) + 1536LL) )\n        ae51109(ae401203, \"Perk Rank >> %d\", v7);\n      if ( v7 )\n        *a4 = 0x3FF0000000000000LL;\n    }\n  }\n  return 1;\n}\n",
+  "strings": [
+   "Perk Rank >> %d"
+  ],
+  "callers": [
+   "ae297922",
+   "ae297923",
+   "ae363863"
+  ],
+  "callees": [
+   "ae37698",
+   "ae51109"
+  ],
+  "bytes16": "40574883ec20488bc1498bf933c94989"
+ },
+ "25011": {
+  "var": "IsStageDone",
+  "callsite": "Games/Skyrim/Forms/TESQuest.cpp:58",
+  "ea_1170": "0x1403c9e00",
+  "size": 57,
+  "decompile": "char __fastcall ae25011(__int64 a1, __int16 a2)\n{\n  _QWORD *v2; // rax\n  bool i; // zf\n  __int64 v4; // rcx\n\n  v2 = (_QWORD *)(a1 + 232);\n  for ( i = a1 == -232; !i; i = v4 == 0 )\n  {\n    v4 = v2[1];\n    if ( !v4 && !*v2 )\n      break;\n    if ( *(_WORD *)*v2 == a2 )\n      return *(_BYTE *)(*v2 + 2LL) & 1;\n    v2 = (_QWORD *)v2[1];\n  }\n  return 0;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "488d81e8000000440fb7c24885c07426"
+ },
+ "26231": {
+  "var": "updateWeather",
+  "callsite": "Games/Skyrim/Sky/Sky.cpp:93",
+  "ea_1170": "0x14040b490",
+  "size": 1484,
+  "decompile": "_UNKNOWN **__fastcall ae26231(__int64 a1)\n{\n  _UNKNOWN **result; // rax\n  __int64 v3; // rcx\n  __int64 v4; // rdx\n  bool v5; // zf\n  float v6; // xmm0_4\n  int v7; // eax\n  float v8; // xmm1_4\n  __int64 v9; // r8\n  bool v10; // r9\n  char v11; // bp\n  __int64 v12; // rdi\n  __int64 v13; // rax\n  __int64 v14; // rcx\n  float v15; // xmm0_4\n  int v16; // eax\n  float v17; // xmm1_4\n  __int64 v18; // rdx\n  __int64 v19; // rax\n  __int64 v20; // rax\n  bool v21; // zf\n  __int64 v22; // rcx\n  __int64 v23; // rax\n  int v24; // eax\n  float v25; // xmm0_4\n  float v26; // xmm1_4\n  float v27; // xmm3_4\n  int v28; // eax\n  __int64 v29; // rax\n  int v30; // eax\n  float v31; // xmm0_4\n  float v32; // xmm1_4\n  float v33; // xmm3_4\n  int v34; // eax\n  __int64 v35; // rax\n  __int64 v36; // rax\n  _BYTE *v37; // rsi\n  __int64 v38; // rax\n  __int64 v39; // rcx\n  __int64 v40; // rcx\n  _QWORD *v41; // rdi\n  __int64 v42; // rcx\n  float v43; // xmm4_4\n  float v44; // xmm0_4\n  float v45; // xmm1_4\n  int v46; // eax\n  int v47; // ecx\n  bool v48; // al\n  bool v49; // dl\n  unsigned int v50; // ecx\n  _UNKNOWN *retaddr; // [rsp+58h] [rbp+0h] BYREF\n\n  result = &retaddr;\n  v3 = *(_QWORD *)(a1 + 64);\n  if ( !v3 )\n    return result;\n  v4 = *(_QWORD *)(a1 + 96);\n  v5 = v4 == 0;\n  if ( v4 )\n  {\n    v6 = *(float *)(a1 + 432);\n    v7 = 0;\n    v8 = *(float *)(a1 + 436);\n    if ( v8 > v6 )\n      v7 = 24;\n    if ( (float)((float)((float)v7 + v6) - v8) > (float)((float)((float)(22 * (255 - *(unsigned __int8 *)(v3 + 124)))\n                                                               * 0.0039215689)\n                                                       + 1.0) )\n    {\n      *(_DWORD *)(a1 + 476) |= 0x200000u;\n      v4 = 0LL;\n      *(_QWORD *)(a1 + 96) = 0LL;\n    }\n    v5 = v4 == 0;\n  }\n  v9 = *(_QWORD *)(a1 + 72);\n  v10 = v5;\n  v11 = 0;\n  if ( v9 && (*(_DWORD *)(ae403330 + 832) & 2) != 0 )\n  {\n    v10 = 0;\n    v11 = 1;\n  }\n  v12 = 0LL;\n  if ( v10 )\n  {\n    if ( !*(_QWORD *)(ae403450 + 192) || (v13 = ae19007()) == 0 )\n      v13 = *(_QWORD *)(ae400477 + 72);\n    v14 = *(_QWORD *)(a1 + 104);\n    if ( v14 != v13 || (*(_DWORD *)(a1 + 476) & 0x200000) != 0 )\n    {\n      *(_QWORD *)(a1 + 104) = v13;\n      if ( v13 )\n      {\n        v12 = ae16449(v13);\n        if ( *(_QWORD *)(a1 + 72) != v12 && (unsigned __int8)ae16450(*(_QWORD *)(a1 + 104)) )\n        {\n          v23 = ae14774();\n          v24 = ae68276(v23, 0xFFFFFFFFLL);\n          v25 = *(float *)(a1 + 432);\n          v26 = *(float *)(a1 + 436);\n          v27 = (float)v24;\n          v28 = 0;\n          if ( v26 > v25 )\n            v28 = 24;\n          if ( (float)(v27 * 2.3283064e-10) > (float)((float)((float)((float)v28 + v25) - v26)\n                                                    / (float)((float)((float)(22\n                                                                            * (255\n                                                                             - *(unsigned __int8 *)(*(_QWORD *)(a1 + 64)\n                                                                                                  + 124LL)))\n                                                                    * 0.0039215689)\n                                                            + 1.0)) )\n          {\n            v12 = *(_QWORD *)(a1 + 72);\n            v9 = v12;\n            goto LABEL_46;\n          }\n        }\n        goto LABEL_44;\n      }\n      if ( *(_QWORD *)(a1 + 72) != *(_QWORD *)(a1 + 88) && (unsigned __int8)ae20435(*(_QWORD *)(a1 + 64) + 72LL) )\n      {\n        v29 = ae14774();\n        v30 = ae68276(v29, 0xFFFFFFFFLL);\n        v31 = *(float *)(a1 + 432);\n        v32 = *(float *)(a1 + 436);\n        v33 = (float)v30;\n        v34 = 0;\n        if ( v32 > v31 )\n          v34 = 24;\n        if ( (float)(v33 * 2.3283064e-10) > (float)((float)((float)((float)v34 + v31) - v32)\n                                                  / (float)((float)((float)(22\n                                                                          * (255\n                ",
+  "strings": [],
+  "callers": [
+   "ae300753",
+   "ae300754",
+   "ae300755",
+   "ae300756",
+   "ae300757",
+   "ae300758"
+  ],
+  "callees": [
+   "ae19007",
+   "ae16449",
+   "ae20433",
+   "ae16449",
+   "ae16450",
+   "ae14774",
+   "ae68276",
+   "ae20435",
+   "ae14774",
+   "ae68276",
+   "ae20433",
+   "ae14617",
+   "ae20433",
+   "ae14617",
+   "ae26180",
+   "ae26151"
+  ],
+  "bytes16": "488bc4534883ec50488bd9488b494048"
+ },
+ "26244": {
+  "var": "releaseWeatherOverride",
+  "callsite": "Games/Skyrim/Sky/Sky.cpp:33",
+  "ea_1170": "0x14040e270",
+  "size": 26,
+  "decompile": "void __fastcall ae26244(__int64 a1)\n{\n  if ( *(_QWORD *)(a1 + 96) )\n  {\n    *(_DWORD *)(a1 + 476) |= 0x200000u;\n    *(_QWORD *)(a1 + 96) = 0LL;\n  }\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "488379600074128189dc010000000020"
+ },
+ "26503": {
+  "var": "s_getDifficultyMultiplier",
+  "callsite": "Games/References.cpp:56",
+  "ea_1170": "0x14041a940",
+  "size": 57,
+  "decompile": "float __fastcall ae26503(int a1, int a2, char a3)\n{\n  __int64 (__fastcall ***v3)(); // rax\n\n  if ( a2 != 24 )\n    return ae186482;\n  if ( a3 )\n    v3 = ae375657[a1];\n  else\n    v3 = ae375663[a1];\n  return *((float *)v3 + 2);\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "83fa18752b4863c9488d05b156beff45"
+ },
+ "27244": {
+  "var": "s_calculateExperience",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:251",
+  "ea_1170": "0x14043e060",
+  "size": 93,
+  "decompile": "char __fastcall ae27244(unsigned int a1, _DWORD *a2, _DWORD *a3, _DWORD *a4, _DWORD *a5)\n{\n  __int64 v5; // r10\n  _DWORD *v6; // rax\n\n  if ( a1 > 0xA3 )\n    return 0;\n  v5 = *(_QWORD *)(ae400267 + 8LL * (int)a1 + 8);\n  if ( !v5 )\n    return 0;\n  v6 = *(_DWORD **)(v5 + 264);\n  if ( !v6 )\n    return 0;\n  *a2 = *v6;\n  *a3 = *(_DWORD *)(*(_QWORD *)(v5 + 264) + 4LL);\n  *a4 = *(_DWORD *)(*(_QWORD *)(v5 + 264) + 8LL);\n  *a5 = *(_DWORD *)(*(_QWORD *)(v5 + 264) + 12LL);\n  return 1;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "81f9a30000007752488b05a182cb0148"
+ },
+ "32883": {
+  "var": "InternalRevertAnimationGraphManager",
+  "callsite": "Games/IAnimationGraphManagerHolder.cpp:34",
+  "ea_1170": "0x14054b4f0",
+  "size": 351,
+  "decompile": "// Hidden C++ exception states: #wind=3\n__int64 __fastcall ae32883(__int64 a1)\n{\n  unsigned __int8 v2; // bl\n  bool v3; // di\n  __int64 v4; // rbx\n  int *v5; // r15\n  unsigned int i; // esi\n  __int64 v7; // rcx\n  __int64 v8; // rbx\n  void (__fastcall ***v9)(_QWORD, __int64); // rcx\n  int v11; // [rsp+60h] [rbp+8h]\n  __int64 v12; // [rsp+68h] [rbp+10h] BYREF\n  __int64 v13; // [rsp+70h] [rbp+18h] BYREF\n\n  v2 = 1;\n  v12 = 0LL;\n  if ( (*(unsigned __int8 (__fastcall **)(__int64, __int64 *))(*(_QWORD *)a1 + 16LL))(a1, &v12) )\n  {\n    v2 = ae63370(v12);\n    if ( v2 )\n    {\n      v3 = 1;\n      v4 = v12;\n      v5 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542) + 1896LL);\n      v11 = *v5;\n      *v5 = 58;\n      ae13129(&v13, v4 + 160);\n      for ( i = 0; i < *(_DWORD *)(v4 + 80); ++i )\n      {\n        v7 = v4 + 72;\n        if ( *(int *)(v4 + 64) >= 0 )\n          v7 = *(_QWORD *)(v4 + 72);\n        v3 = (*(unsigned __int8 (__fastcall **)(__int64, __int64))(*(_QWORD *)a1 + 56LL))(a1, v7 + 8LL * i) && v3;\n      }\n      v8 = v13;\n      if ( v13 )\n      {\n        _mm_lfence();\n        if ( *(_DWORD *)v8 == ae175063() )\n        {\n          if ( *(_DWORD *)(v8 + 4) == 1 )\n          {\n            *(_DWORD *)v8 = 0;\n            _mm_mfence();\n            _InterlockedCompareExchange((volatile signed __int32 *)(v8 + 4), 0, 1);\n          }\n          else\n          {\n            _InterlockedDecrement((volatile signed __int32 *)(v8 + 4));\n          }\n        }\n      }\n      *v5 = v11;\n      v2 = v3 && (unsigned __int8)ae63356(v12);\n    }\n  }\n  v9 = (void (__fastcall ***)(_QWORD, __int64))v12;\n  if ( v12 && !_InterlockedDecrement((volatile signed __int32 *)(v12 + 8)) )\n    (**v9)(v9, 1LL);\n  return v2;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae63370",
+   "ae13129",
+   "ae175063",
+   "ae63356"
+  ],
+  "bytes16": "40555657415641574883ec3048c74424"
+ },
+ "33235": {
+  "var": "setTarget",
+  "callsite": "Games/Skyrim/Combat/CombatController.cpp:73",
+  "ea_1170": "0x140559630",
+  "size": 753,
+  "decompile": "// Hidden C++ exception states: #wind=14\n__int64 __fastcall ae33235(_QWORD *a1, __int64 a2)\n{\n  int v4; // ecx\n  _DWORD *v5; // rsi\n  int v6; // eax\n  __int64 v7; // rbx\n  __int64 result; // rax\n  __int64 v9; // r13\n  int v10; // eax\n  __int64 v11; // rcx\n  volatile signed __int32 *v12; // rcx\n  _DWORD *v13; // rax\n  _DWORD *v14; // rax\n  unsigned int v15; // ebx\n  __int64 v16; // rax\n  __int64 v17; // rcx\n  __int64 v18; // rcx\n  __int64 v19; // rcx\n  __int64 v20; // rcx\n  _QWORD v21[2]; // [rsp+30h] [rbp-50h] BYREF\n  __int64 v22; // [rsp+40h] [rbp-40h] BYREF\n  __int64 v23; // [rsp+48h] [rbp-38h]\n  __int64 v24; // [rsp+50h] [rbp-30h] BYREF\n  _DWORD *v25; // [rsp+58h] [rbp-28h]\n  int v26; // [rsp+60h] [rbp-20h] BYREF\n  _DWORD *v27; // [rsp+68h] [rbp-18h]\n  int v28; // [rsp+70h] [rbp-10h] BYREF\n  __int64 v29; // [rsp+78h] [rbp-8h]\n  int v30; // [rsp+C0h] [rbp+40h] BYREF\n  int v31; // [rsp+C8h] [rbp+48h] BYREF\n  int v32; // [rsp+D0h] [rbp+50h] BYREF\n  __int64 v33; // [rsp+D8h] [rbp+58h] BYREF\n\n  v21[1] = -2LL;\n  v4 = *((_DWORD *)a1 + 50);\n  if ( v4 )\n  {\n    v5 = (_DWORD *)a1[26];\n    v6 = 0;\n  }\n  else\n  {\n    v6 = *((_DWORD *)a1 + 10);\n    v5 = 0LL;\n  }\n  v26 = v6;\n  v27 = v5;\n  v24 = 0LL;\n  if ( v6 )\n  {\n    ae17201(&v26, &v24);\n    v5 = (_DWORD *)v24;\n    v4 = *((_DWORD *)a1 + 50);\n  }\n  v25 = v5;\n  if ( v4 )\n  {\n    v7 = a1[27];\n    result = 0LL;\n  }\n  else\n  {\n    result = *((unsigned int *)a1 + 11);\n    v7 = 0LL;\n  }\n  v28 = result;\n  v29 = v7;\n  v22 = 0LL;\n  if ( (_DWORD)result )\n  {\n    result = ae17201(&v28, &v22);\n    v7 = v22;\n  }\n  v23 = v7;\n  if ( a2 != v7 )\n  {\n    if ( v7 && *a1 )\n      ae44721(*a1, v7);\n    if ( a2 )\n    {\n      v9 = a2 + 40;\n      if ( (*(_DWORD *)(a2 + 40) & 0x3FF) == 0 )\n      {\n        v10 = ae400312;\nLABEL_20:\n        *((_DWORD *)a1 + 11) = v10;\n        v5[65] = v10;\n        if ( *((_DWORD *)a1 + 50) )\n        {\n          v11 = a1[27];\n          if ( v11 != a2 )\n          {\n            if ( a2 )\n            {\n              _InterlockedIncrement((volatile signed __int32 *)v9);\n              v5 = v25;\n              v7 = v23;\n            }\n            a1[27] = a2;\n            if ( v11 )\n            {\n              v12 = (volatile signed __int32 *)(v11 + 32);\n              if ( (_InterlockedDecrement(v12 + 2) & 0x3FF) == 0 )\n                (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v12 + 8LL))(v12);\n              v7 = v23;\n              v5 = v25;\n            }\n          }\n        }\n        if ( (*(unsigned __int8 (__fastcall **)(_DWORD *, _QWORD))(*(_QWORD *)v5 + 1224LL))(v5, 0LL) || !v7 )\n        {\n          if ( !a2 )\n          {\nLABEL_42:\n            ae46949(a1[1]);\n            result = a1[2];\n            *(_DWORD *)(result + 408) = -1082130432;\n            goto LABEL_43;\n          }\n        }\n        else if ( !a2 )\n        {\n          if ( (*(unsigned __int8 (__fastcall **)(__int64, _QWORD))(*(_QWORD *)v7 + 1224LL))(v7, 0LL)\n            && !*(_DWORD *)(*a1 + 216LL) )\n          {\n            ae44672(ae404937, (_DWORD)a1, 5, 61, 0);\n            v13 = ae19846(v7, &v31);\n            v21[0] = 0LL;\n            ae12332(v13, v21);\n            v14 = ae19846((__int64)v5, &v32);\n            v33 = 0LL;\n            ae12332(v14, &v33);\n            v15 = ae38556(v5);\n            v16 = ae14298();\n            ae33309(v16, &v33, v21, v15);\n            if ( v33 )\n            {\n              v17 = v33 + 32;\n              if ( (_InterlockedDecrement((volatile signed __int32 *)(v33 + 40)) & 0x3FF) == 0 )\n                (*(void (__fastcall **)(__int64))(*(_QWORD *)v17 + 8LL))(v17);\n            }\n            if ( v21[0] )\n            {\n              v18 = v21[0] + 32LL;\n              if ( (_InterlockedDecrement((volatile signed __int32 *)(v21[0] + 40LL)) & 0x3FF) == 0 )\n                (*(void (__fastcall **)(__int64))(*(_QWORD *)v18 + 8LL))(v18);\n            }\n          }\n          goto LABEL_42;\n        }\n        ae44720(*a1, a2);\n        goto LABEL_42;\n      }\n    }\n    else\n    {\n      v9",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae17201",
+   "ae17201",
+   "ae44721",
+   "ae12325",
+   "ae44672",
+   "ae19846",
+   "ae12332",
+   "ae19846",
+   "ae12332",
+   "ae38556",
+   "ae14298",
+   "ae33309",
+   "ae44720",
+   "ae46949"
+  ],
+  "bytes16": "4055535657415541564157488bec4881"
+ },
+ "33236": {
+  "var": "s_updateTarget",
+  "callsite": "Games/Skyrim/Combat/CombatController.cpp:81",
+  "ea_1170": "0x140559930",
+  "size": 332,
+  "decompile": "// Hidden C++ exception states: #wind=3\n__int64 __fastcall ae33236(__int64 a1)\n{\n  __int64 i; // rbx\n  _DWORD *v3; // rcx\n  unsigned int v4; // r9d\n  __int64 result; // rax\n  __int64 v6; // rbx\n  _BYTE *v7; // rcx\n  __int64 v8; // rbx\n  int v9; // [rsp+60h] [rbp+8h] BYREF\n  char v10; // [rsp+68h] [rbp+10h] BYREF\n  __int64 v11; // [rsp+70h] [rbp+18h] BYREF\n  __int64 (__fastcall *v12)(); // [rsp+78h] [rbp+20h] BYREF\n\n  for ( i = 0LL; (unsigned int)i < *(_DWORD *)(a1 + 176); i = (unsigned int)(i + 1) )\n  {\n    v3 = *(_DWORD **)(*(_QWORD *)(a1 + 160) + 8 * i);\n    if ( (v3[8] & 2) == 0 )\n      (*(void (__fastcall **)(_DWORD *))(*(_QWORD *)v3 + 40LL))(v3);\n  }\n  v12 = ae33282;\n  v4 = *(_DWORD *)(a1 + 176);\n  if ( v4 > 1 )\n    ae33285(a1 + 160, &v12, 0LL, v4 - 1, -2LL);\n  result = (unsigned int)ae400312;\n  v9 = ae400312;\n  *(_QWORD *)(a1 + 192) = 0LL;\n  v6 = 0LL;\n  if ( *(_DWORD *)(a1 + 176) )\n  {\n    while ( 1 )\n    {\n      v7 = *(_BYTE **)(*(_QWORD *)(a1 + 160) + 8 * v6);\n      if ( (v7[32] & 1) != 0 && (*((_DWORD *)v7 + 8) & 2) == 0 )\n      {\n        result = *(unsigned int *)(*(__int64 (__fastcall **)(_BYTE *, char *))(*(_QWORD *)v7 + 48LL))(v7, &v10);\n        v9 = result;\n        if ( (_DWORD)result )\n          break;\n      }\n      v6 = (unsigned int)(v6 + 1);\n      if ( (unsigned int)v6 >= *(_DWORD *)(a1 + 176) )\n        goto LABEL_14;\n    }\n    *(_QWORD *)(a1 + 192) = *(_QWORD *)(*(_QWORD *)(a1 + 160) + 8 * v6);\n  }\nLABEL_14:\n  if ( (_DWORD)result != *(_DWORD *)(a1 + 44) )\n  {\n    v11 = 0LL;\n    ae12922(&v9, &v11);\n    v8 = v11;\n    result = ae33235((_QWORD *)a1, v11);\n    if ( v8 )\n    {\n      result = (unsigned int)_InterlockedDecrement((volatile signed __int32 *)(v8 + 40));\n      if ( (result & 0x3FF) == 0 )\n        return (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)(v8 + 32) + 8LL))(v8 + 32);\n    }\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae33285",
+   "ae12922",
+   "ae33235"
+  ],
+  "bytes16": "4053565741564883ec3848c7442420fe"
+ },
+ "33261": {
+  "var": "checkMovement",
+  "callsite": "Services/Debug/Views/CombatView.cpp:97",
+  "ea_1170": "0x14055b310",
+  "size": 38,
+  "decompile": "char __fastcall ae33261(__int64 a1)\n{\n  __int64 v1; // rcx\n  char result; // al\n\n  v1 = *(_QWORD *)(a1 + 152);\n  if ( !v1 )\n    return 1;\n  result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v1 + 40LL))(v1);\n  if ( result )\n    return 1;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "4883ec28488b89980000004885c9740f"
+ },
+ "33282": {
+  "var": "sortTargetSelectors",
+  "callsite": "Games/Skyrim/Combat/CombatController.cpp:11",
+  "ea_1170": "0x14055c220",
+  "size": 19,
+  "decompile": "__int64 __fastcall ae33282(__int64 a1, __int64 a2)\n{\n  unsigned int v2; // eax\n  unsigned int v3; // ecx\n\n  v2 = *(_DWORD *)(a1 + 28);\n  v3 = *(_DWORD *)(a2 + 28);\n  if ( v3 <= v2 )\n    return (unsigned int)-(v3 < v2);\n  else\n    return 1LL;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae33283"
+  ],
+  "bytes16": "8b411c8b4a1c3bc87606b801000000c3"
+ },
+ "33285": {
+  "var": "arrayQuickSort",
+  "callsite": "Games/Skyrim/Combat/CombatController.cpp:8",
+  "ea_1170": "0x14055c320",
+  "size": 321,
+  "decompile": "void __fastcall ae33285(__int64 *a1, int (__fastcall **a2)(_QWORD, _QWORD), unsigned int a3, unsigned int a4)\n{\n  unsigned int v4; // ebp\n  unsigned int v5; // r13d\n  __int64 v8; // r8\n  unsigned int v9; // edi\n  __int64 v10; // rsi\n  unsigned int v11; // ebx\n  __int64 v12; // r9\n  _QWORD *v13; // r15\n  __int64 v14; // rcx\n  _QWORD *v15; // rdx\n  __int64 v16; // rsi\n  __int64 v17; // rcx\n  _QWORD *v18; // r8\n  __int64 v19; // [rsp+20h] [rbp-38h]\n\n  if ( a3 < a4 )\n  {\n    v4 = a4;\n    v5 = a3;\n    do\n    {\n      v8 = *a1;\n      v9 = v5;\n      v10 = v5;\n      v11 = v4;\n      v12 = 8LL * v5;\n      v19 = v12;\n      v13 = (_QWORD *)(v12 + *a1);\n      if ( v5 < v4 )\n      {\n        do\n        {\n          while ( (*a2)(*(_QWORD *)(*a1 + 8LL * v11), *v13) <= 0 )\n          {\n            v16 = 8 * v10;\n            while ( (*a2)(*(_QWORD *)(v16 + *a1), *v13) <= 0 )\n            {\n              ++v9;\n              v16 += 8LL;\n              if ( v9 >= v11 )\n                goto LABEL_6;\n            }\n            v10 = v9;\n            v17 = *(_QWORD *)(*a1 + 8LL * v9);\n            v18 = (_QWORD *)(*a1 + 8LL * v11);\n            *(_QWORD *)(*a1 + 8LL * v9) = *v18;\n            *v18 = v17;\n          }\n          --v11;\n        }\n        while ( v9 < v11 );\nLABEL_6:\n        v8 = *a1;\n        v4 = a4;\n        v12 = v19;\n      }\n      v14 = *(_QWORD *)(v12 + v8);\n      v15 = (_QWORD *)(v8 + 8LL * v11);\n      *(_QWORD *)(v12 + v8) = *v15;\n      *v15 = v14;\n      if ( v11 )\n        ae33285(a1, a2, v5, v11 - 1, v19);\n      if ( v11 >= *((_DWORD *)a1 + 4) - 1 )\n        break;\n      v5 = v11 + 1;\n    }\n    while ( v11 + 1 < v4 );\n  }\n}\n",
+  "strings": [],
+  "callers": [
+   "ae311091",
+   "ae311092",
+   "ae311093"
+  ],
+  "callees": [
+   "ae33285"
+  ],
+  "bytes16": "453bc10f83ee00000044894c24205541"
+ },
+ "34053": {
+  "var": "adjustForPerks",
+  "callsite": "Games/Skyrim/Magic/MagicTarget.cpp:233",
+  "ea_1170": "0x1405ac3a0",
+  "size": 167,
+  "decompile": "__int64 __fastcall ae34053(__int64 a1, __int64 a2, __int64 a3, __int64 a4, __int64 a5)\n{\n  __int64 v7; // rbp\n  __int64 v9; // [rsp+20h] [rbp-18h]\n\n  v7 = ae34529(a3);\n  ae23526(30LL, a2, *(_QWORD *)(a1 + 64), v7, a1 + 116);\n  ae23526(29LL, a2, *(_QWORD *)(a1 + 64), v7, a1 + 120);\n  ae23526(42LL, v7, *(_QWORD *)(a1 + 64), a1 + 116, v9);\n  return ae23526(41LL, v7, *(_QWORD *)(a1 + 64), a1 + 120, a5);\n}\n",
+  "strings": [],
+  "callers": [
+   "ae205801",
+   "ae205803",
+   "ae205813",
+   "ae205842",
+   "ae205849",
+   "ae205855",
+   "ae205857",
+   "ae205859",
+   "ae205861",
+   "ae205863",
+   "ae205865",
+   "ae205870"
+  ],
+  "callees": [
+   "ae34529",
+   "ae23526",
+   "ae23526",
+   "ae23526",
+   "ae23526"
+  ],
+  "bytes16": "48895c240848896c2410488974241848"
+ },
+ "34370": {
+  "var": "s_finish",
+  "callsite": "Games/Skyrim/Effects/InvisibilityEffect.cpp:27",
+  "ea_1170": "0x1405ba640",
+  "size": 235,
+  "decompile": "__int64 __fastcall ae34370(__int64 a1)\n{\n  __int64 result; // rax\n  __int64 v3; // rcx\n  __int64 v4; // rbx\n  __int64 v5; // rdx\n  double v6; // xmm0_8\n  __int64 v7; // rdx\n\n  result = ae35085();\n  v3 = *(_QWORD *)(a1 + 80);\n  if ( v3 )\n  {\n    result = ae34529(v3);\n    v4 = result;\n    if ( result )\n    {\n      v6 = (*(double (__fastcall **)(__int64, _QWORD))(*(_QWORD *)(result + 184) + 8LL))(\n             result + 184,\n             *(unsigned int *)(a1 + 144));\n      if ( fminf(fmaxf(*(float *)&v6 * 0.0099999998, 0.0), 1.0) <= 0.0 )\n      {\n        LOBYTE(v5) = 1;\n        (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)v4 + 1560LL))(v4, v5);\n        return (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v4 + 1792LL))(v4);\n      }\n      else\n      {\n        ae11412();\n        ae11413();\n        LOBYTE(v7) = 1;\n        return (*(__int64 (__fastcall **)(__int64, __int64))(*(_QWORD *)v4 + 1560LL))(v4, v7);\n      }\n    }\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [
+   "ae311796",
+   "ae311801"
+  ],
+  "callees": [
+   "ae35085",
+   "ae34529",
+   "ae11412",
+   "ae11413"
+  ],
+  "bytes16": "40574883ec50488bf9e862e30100488b"
+ },
+ "34512": {
+  "var": "dispelAllSpells",
+  "callsite": "Games/Skyrim/Magic/MagicTarget.cpp:41",
+  "ea_1170": "0x1405c28b0",
+  "size": 101,
+  "decompile": "// Hidden C++ exception states: #wind=1\n__int64 __fastcall ae34512(__int64 a1, char a2)\n{\n  _QWORD *v2; // rax\n  _QWORD *v3; // rbx\n  __int64 result; // rax\n  __int64 (__fastcall **v5)(); // [rsp+28h] [rbp-20h] BYREF\n  char v6; // [rsp+30h] [rbp-18h]\n\n  v5 = ae205939;\n  v6 = a2;\n  v2 = (_QWORD *)(*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 56LL))(a1);\n  v3 = v2;\n  for ( result = v2 && *v2; v3; v3 = (_QWORD *)v3[1] )\n  {\n    if ( (_DWORD)result != 1 )\n      break;\n    result = ((__int64 (__fastcall *)(__int64 (__fastcall ***)(), _QWORD))v5[1])(&v5, *v3);\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "40534883ec4048c7442420feffffff48"
+ },
+ "34529": {
+  "var": "getTargetAsActor",
+  "callsite": "Games/Skyrim/Magic/MagicTarget.cpp:77",
+  "ea_1170": "0x1405c3b90",
+  "size": 40,
+  "decompile": "__int64 __fastcall ae34529(__int64 a1)\n{\n  if ( (*(unsigned __int8 (__fastcall **)(__int64))(*(_QWORD *)a1 + 24LL))(a1) )\n    return a1 - 160;\n  else\n    return 0LL;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "40534883ec20488b01488bd9ff501884"
+ },
+ "34989": {
+  "var": "s_start",
+  "callsite": "Games/Skyrim/Effects/SummonCreatureEffect.h:30",
+  "ea_1170": "0x1405d44c0",
+  "size": 345,
+  "decompile": "// Hidden C++ exception states: #wind=2\n__int64 __fastcall ae34989(__int64 a1, __int64 a2, __int64 a3)\n{\n  __int64 v6; // rsi\n  int v7; // ebx\n  __int64 v8; // rax\n  __int64 v9; // rdi\n\n  v6 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542);\n  v7 = *(_DWORD *)(v6 + 1896);\n  *(_DWORD *)(v6 + 1896) = 95;\n  if ( ae400190 != 2 )\n    ae68121(&ae400188, &ae400190);\n  v8 = ae68115(&ae400188, 192LL, 0LL);\n  v9 = v8;\n  if ( v8 )\n  {\n    ae34049(v8, a1, a2, a3, -2LL, v8);\n    *(_QWORD *)v9 = ae206083;\n    *(_DWORD *)(v9 + 168) = 0;\n    *(_QWORD *)(v9 + 176) = 0LL;\n    *(_WORD *)(v9 + 184) = 0;\n    *(_BYTE *)(v9 + 186) = 0;\n    *(_DWORD *)(v9 + 144) = ae410468;\n    *(_DWORD *)(v9 + 148) = ae410469;\n    *(_DWORD *)(v9 + 152) = ae410470;\n    *(_DWORD *)(v9 + 156) = ae410468;\n    *(_DWORD *)(v9 + 160) = ae410469;\n    *(_DWORD *)(v9 + 164) = ae410470;\n  }\n  else\n  {\n    v9 = 0LL;\n  }\n  *(_DWORD *)(v6 + 1896) = v7;\n  return v9;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68121",
+   "ae68115",
+   "ae34049"
+  ],
+  "bytes16": "4056574154415641574883ec3048c744"
+ },
+ "35269": {
+  "var": "s_playDialogueOption",
+  "callsite": "Games/Misc/MenuTopicManager.cpp:40",
+  "ea_1170": "0x1405dfa50",
+  "size": 284,
+  "decompile": "// Hidden C++ exception states: #wind=3\nbool __fastcall ae35269(__int64 a1, int a2)\n{\n  int v3; // eax\n  _QWORD *v4; // rdi\n  __int64 v6; // rbx\n  __int64 v7; // rax\n  __int64 v8; // rax\n  __int64 v9; // [rsp+50h] [rbp+8h] BYREF\n\n  v3 = 0;\n  v4 = *(_QWORD **)(a1 + 32);\n  if ( *(_BYTE *)(a1 + 183) )\n    v4 = (_QWORD *)v4[1];\n  if ( !v4 )\n    return 0;\n  while ( v3 < a2 )\n  {\n    v4 = (_QWORD *)v4[1];\n    ++v3;\n    if ( !v4 )\n      return 0;\n  }\n  *(_QWORD *)(a1 + 24) = v4;\n  v9 = 0LL;\n  ae12331(a1 + 104, &v9);\n  v6 = v9;\n  if ( v9 )\n  {\n    v7 = 0LL;\n    if ( *(_BYTE *)(v9 + 26) == 62 )\n      v7 = v9;\n    if ( !v7 && *v4 )\n    {\n      ae20207(v9, *(_QWORD *)(*v4 + 80LL));\n      v8 = ae25541(*(_QWORD *)(*v4 + 80LL), v6, ae403521, 0, 0LL, 0LL);\n      ae20206(v6, v8);\n    }\n  }\n  if ( v6 )\n  {\n    if ( (_InterlockedDecrement((volatile signed __int32 *)(v6 + 40)) & 0x3FF) == 0 )\n      (*(void (__fastcall **)(__int64))(*(_QWORD *)(v6 + 32) + 8LL))(v6 + 32);\n  }\n  return **(_QWORD **)(a1 + 24) != 0;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae12331",
+   "ae20207",
+   "ae25541",
+   "ae20206"
+  ],
+  "bytes16": "40574883ec4048c7442430feffffff48"
+ },
+ "36035": {
+  "var": "ctor",
+  "callsite": "Games/SaveLoad.cpp:20",
+  "ea_1170": "0x140626a90",
+  "size": 56,
+  "decompile": "__int64 __fastcall ae36035(__int64 a1)\n{\n  ae36043((std::exception *)a1);\n  *(_QWORD *)a1 = &ae206723;\n  *(_WORD *)(a1 + 24) = 0;\n  *(_BYTE *)(a1 + 26) = 0;\n  *(_DWORD *)(a1 + 27) = 0;\n  *(_WORD *)(a1 + 31) = 0;\n  *(_QWORD *)(a1 + 40) = 0LL;\n  return a1;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae36043"
+  ],
+  "bytes16": "40534883ec20488bd9e862030000488d"
+ },
+ "37198": {
+  "var": "addDeathItems",
+  "callsite": "Games/Skyrim/Actor.cpp:1387",
+  "ea_1170": "0x140660170",
+  "size": 605,
+  "decompile": "// Hidden C++ exception states: #wind=6\n__int64 __fastcall ae37198(_QWORD *a1)\n{\n  int *v2; // r13\n  int v3; // ebx\n  __int64 result; // rax\n  __int64 v5; // rdi\n  __int64 v6; // r14\n  unsigned __int16 v7; // ax\n  unsigned int i; // esi\n  __int64 v9; // rdi\n  __int64 v10; // rcx\n  __int64 v11; // r15\n  __int64 v12; // rax\n  __int64 v13; // rax\n  _QWORD v14[2]; // [rsp+38h] [rbp-38h] BYREF\n  __int128 v15; // [rsp+48h] [rbp-28h] BYREF\n  int v16; // [rsp+58h] [rbp-18h]\n  _DWORD v17[4]; // [rsp+60h] [rbp-10h] BYREF\n\n  v2 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542) + 1896LL);\n  v3 = *v2;\n  *v2 = 104;\n  result = a1[8];\n  v5 = *(_QWORD *)(result + 80);\n  if ( v5 )\n  {\n    v15 = 0LL;\n    v6 = 0LL;\n    v16 = 0;\n    ae68160((__crt_strtox::big_integer *)v17);\n    v14[0] = ae187172;\n    v14[1] = &v15;\n    ae68162(v17, v14, 16LL, 40LL);\n    v14[0] = &ae186364;\n    v7 = ae14384(a1[8] + 48LL);\n    ae14751(v5 + 48, v7, 1, (unsigned int)&v15, 0, 1);\n    for ( i = 0; i < v17[0]; ++i )\n    {\n      v9 = 40LL * i;\n      v10 = *(_QWORD *)(v9 + *((_QWORD *)&v15 + 1));\n      if ( v10 )\n      {\n        if ( (*(unsigned __int8 (__fastcall **)(__int64))(*(_QWORD *)v10 + 312LL))(v10) )\n        {\n          v11 = *(_QWORD *)(v9 + *((_QWORD *)&v15 + 1));\n          if ( v11 )\n          {\n            if ( (unsigned __int8)ae11520(v9 + *((_QWORD *)&v15 + 1) + 16LL) )\n            {\n              (*(void (__fastcall **)(_QWORD *, __int64, _QWORD, _QWORD, _QWORD))(*a1 + 720LL))(\n                a1,\n                v11,\n                0LL,\n                *(unsigned int *)(v9 + *((_QWORD *)&v15 + 1) + 8),\n                0LL);\n            }\n            else\n            {\n              if ( ae400190 != 2 )\n                ae68121(&ae400188, &ae400190);\n              v12 = ae68115(&ae400188, 32LL, 0LL);\n              if ( v12 )\n                v6 = ae11583(v12);\n              ae11617(v6, *(unsigned __int16 *)(v9 + *((_QWORD *)&v15 + 1) + 8));\n              ae11535(v9 + *((_QWORD *)&v15 + 1) + 16LL, v6, *(_QWORD *)(v9 + *((_QWORD *)&v15 + 1)));\n              (*(void (__fastcall **)(_QWORD *, __int64, __int64, _QWORD, _QWORD))(*a1 + 720LL))(\n                a1,\n                v11,\n                v6,\n                *(unsigned int *)(v9 + *((_QWORD *)&v15 + 1) + 8),\n                0LL);\n              v6 = 0LL;\n            }\n          }\n        }\n      }\n    }\n    v13 = ae11717(a1 + 14);\n    if ( v13 )\n      ae16068(v13);\n    if ( *((_QWORD *)&v15 + 1) )\n    {\n      ae68175(&v15);\n      v17[0] = 0;\n    }\n    result = ae68166(v17);\n  }\n  *v2 = v3;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68160",
+   "ae68162",
+   "ae14384",
+   "ae14751",
+   "ae11520",
+   "ae68121",
+   "ae68115",
+   "ae11583",
+   "ae11617",
+   "ae11535",
+   "ae11717",
+   "ae16068",
+   "ae68175",
+   "ae68166"
+  ],
+  "bytes16": "405556574154415541564157488bec48"
+ },
+ "37266": {
+  "var": "s_IsTalking",
+  "callsite": "Games/Skyrim/Actor.cpp:1285",
+  "ea_1170": "0x140662a90",
+  "size": 36,
+  "decompile": "bool __fastcall ae37266(__int64 a1)\n{\n  return (*(_DWORD *)(a1 + 232) & 0x180) != 0x180 || *(float *)(a1 + 272) > 0.0;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "8b81e800000025800100003d80010000"
+ },
+ "37511": {
+  "var": "s_payGoldToContainer",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:369",
+  "ea_1170": "0x140677e50",
+  "size": 65,
+  "decompile": "__int64 __fastcall ae37511(__int64 a1, __int64 a2, unsigned int a3)\n{\n  __int64 v6; // rax\n\n  v6 = ae11717(a1 + 112);\n  return ae16117(v6, a1, a3, a2);\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae11717",
+   "ae16117"
+  ],
+  "bytes16": "48895c24084889742410574883ec2048"
+ },
+ "37521": {
+  "var": "s_pickUpObject",
+  "callsite": "Games/Skyrim/Actor.cpp:1380",
+  "ea_1170": "0x140678600",
+  "size": 1332,
+  "decompile": "// Hidden C++ exception states: #wind=5\n__int64 __fastcall ae37521(_QWORD *a1, __int64 a2, int a3, unsigned __int8 a4, int a5)\n{\n  unsigned __int8 v5; // r14\n  __int64 v9; // rcx\n  __int64 v10; // rax\n  __int64 v11; // r15\n  int v12; // r13d\n  __int64 v13; // r8\n  __int64 v14; // r14\n  __int64 v15; // rbp\n  __int64 v16; // rbx\n  int v17; // eax\n  __int64 v18; // r9\n  _QWORD *v19; // rdx\n  __int64 v20; // rax\n  __int64 v21; // rax\n  __int64 v22; // rax\n  unsigned __int8 v23; // bp\n  int v24; // r9d\n  __int64 v25; // rbx\n  __int64 v26; // rax\n  unsigned int v27; // ebx\n  __int64 v28; // rax\n  __int64 v29; // rax\n  __int64 v30; // rdx\n  __int64 v31; // rax\n  _QWORD *v32; // rax\n  _QWORD *v33; // rbx\n  __int64 v34; // rax\n  __int64 v35; // rdx\n  __int64 v36; // rax\n  __int64 v37; // r8\n  __int64 v38; // r8\n  __int64 v39; // r8\n  __int64 v40; // rcx\n  __int64 v41; // rcx\n  _QWORD v43[2]; // [rsp+40h] [rbp-68h] BYREF\n  __int128 v44; // [rsp+50h] [rbp-58h] BYREF\n  int v45; // [rsp+60h] [rbp-48h]\n  _DWORD v46[16]; // [rsp+68h] [rbp-40h] BYREF\n  int v47; // [rsp+B0h] [rbp+8h] BYREF\n  int v48; // [rsp+B8h] [rbp+10h] BYREF\n  unsigned __int8 v49; // [rsp+C8h] [rbp+20h]\n\n  v49 = a4;\n  v43[1] = -2LL;\n  v5 = a4;\n  v9 = a1[31];\n  if ( v9 )\n  {\n    if ( !*(_BYTE *)(v9 + 311) )\n    {\n      v10 = a1[44];\n      if ( !v10 || *(_BYTE *)(v10 + 67) || *(_BYTE *)(v10 + 66) )\n      {\n        ae39331();\n        ae39255(a1[31], (_DWORD)a1, 55, *(_QWORD *)(a2 + 64), a2);\n      }\n    }\n  }\n  (*(void (__fastcall **)(__int64, _QWORD))(*(_QWORD *)a2 + 88LL))(a2, 0LL);\n  v11 = *(_QWORD *)(a2 + 64);\n  if ( v11 )\n    v12 = *(unsigned __int8 *)(v11 + 26);\n  else\n    v12 = 0;\n  v44 = 0LL;\n  v45 = 0;\n  ae68160((__crt_strtox::big_integer *)v46);\n  ae41323(ae400315, *(unsigned int *)(a2 + 20), a1, &v44);\n  if ( (_BYTE)a5 )\n  {\n    LOBYTE(v13) = 1;\n    (*(void (__fastcall **)(_QWORD *, __int64, __int64, _QWORD))(*a1 + 1304LL))(a1, v11, v13, 0LL);\n  }\n  if ( (*(_DWORD *)(a2 + 40) & 0x3FF) != 0 )\n    ae12326(&a5, a2);\n  else\n    a5 = ae400312;\n  if ( v46[0] )\n  {\n    v14 = 0LL;\n    v15 = v46[0];\n    do\n    {\n      v43[0] = 0LL;\n      ae12922(v14 + *((_QWORD *)&v44 + 1), v43);\n      v16 = v43[0];\n      if ( v43[0] )\n      {\n        v17 = ae400312;\n        v18 = *(_QWORD *)(v43[0] + 248LL);\n        if ( v18 )\n          v17 = *(_DWORD *)(v18 + 48);\n        v19 = 0LL;\n        if ( v17 == a5 )\n          v19 = a1;\n        if ( v18 )\n        {\n          if ( !v19 || (v19[5] & 0x3FF) != 0 )\n          {\n            ae12326(&v47, v19);\n            v18 = *(_QWORD *)(v16 + 248);\n          }\n          else\n          {\n            v47 = ae400312;\n          }\n          ae39139(v18, v16, &v47);\n        }\n      }\n      if ( v16 && (_InterlockedDecrement((volatile signed __int32 *)(v16 + 40)) & 0x3FF) == 0 )\n        (*(void (__fastcall **)(__int64))(*(_QWORD *)(v16 + 32) + 8LL))(v16 + 32);\n      v14 += 4LL;\n      --v15;\n    }\n    while ( v15 );\n    v5 = v49;\n  }\n  LOBYTE(v13) = 1;\n  if ( (unsigned __int8)ae20210(a2, a1, v13, 0LL)\n    || (v20 = a1[31]) == 0\n    || *(_BYTE *)(v20 + 311)\n    || (v21 = ae20194(a2),\n        ae37422((_DWORD)a1, a2, v11, a3, 0, v21, 1),\n        (*(unsigned __int8 (__fastcall **)(_QWORD *))(*a1 + 1816LL))(a1))\n    && a1 != (_QWORD *)ae403521 )\n  {\n    ae11930(a2 + 112);\n  }\n  else\n  {\n    v22 = ae11810(a2 + 112);\n    if ( !v22 )\n      v22 = *(_QWORD *)(a2 + 64);\n    ae11609(a2 + 112, v22);\n  }\n  if ( *(_BYTE *)(*(_QWORD *)(a2 + 64) + 26LL) == 42 )\n    v5 = 0;\n  v23 = 0;\n  if ( (*(_BYTE *)(a2 + 16) & 1) != 0 || ae14621(a2, 0xFFFFFFFFLL) || (unsigned __int8)ae19593(a2) )\n  {\n    v24 = v5;\n  }\n  else\n  {\n    if ( !(unsigned __int8)ae19682(a2, 2LL) && !(*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a2 + 1144LL))(a2) )\n    {\n      ae19687((_DWORD)a1, a2, a3, 0, 0);\n      v23 = 1;\n      goto LABEL_53;\n    }\n    v24 = 0;\n  }\n  ae19687((_DWORD)a1, a2, a3, v24, 0);\nLABEL_53:\n  v25 = *(_QWORD *)(a2 + 64);\n  if ( v25 == (*(__int64 (__fastcall **)(_QWORD *))(*a1 + 1264LL))",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae39331",
+   "ae39255",
+   "ae68160",
+   "ae41323",
+   "ae12326",
+   "ae12922",
+   "ae12326",
+   "ae39139",
+   "ae20210",
+   "ae20194",
+   "ae37422",
+   "ae11810",
+   "ae11609",
+   "ae11930",
+   "ae14621",
+   "ae19593"
+  ],
+  "bytes16": "44884c24205556574154415541564157"
+ },
+ "37527": {
+  "var": "s_getGoldAmount",
+  "callsite": "Games/Skyrim/Actor.cpp:726",
+  "ea_1170": "0x140679390",
+  "size": 35,
+  "decompile": "__int64 __fastcall ae37527(__int64 a1)\n{\n  __int64 result; // rax\n\n  result = ae11717(a1 + 112);\n  if ( result )\n    return ae16116(result);\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae11717",
+   "ae16116"
+  ],
+  "bytes16": "4883ec284883c170e8f362aeff4885c0"
+ },
+ "37542": {
+  "var": "s_speakSoundFunction",
+  "callsite": "Games/Skyrim/Actor.cpp:1386",
+  "ea_1170": "0x14067a9d0",
+  "size": 2339,
+  "decompile": "// Hidden C++ exception states: #wind=4\n__m128 __fastcall ae37542(\n        _QWORD *a1,\n        char *a2,\n        __int64 a3,\n        unsigned int a4,\n        unsigned int a5,\n        int a6,\n        __int64 a7,\n        __int64 a8,\n        __int64 a9,\n        char a10,\n        __int64 a11,\n        char a12,\n        char a13,\n        char a14)\n{\n  __m128 v14; // xmm0\n  __int64 v19; // r12\n  __m128 v20; // xmm7\n  bool v21; // si\n  float v22; // xmm9_4\n  int *v23; // r15\n  char v24; // bl\n  float v25; // xmm6_4\n  bool v26; // si\n  __int64 v27; // rax\n  __int64 v28; // rax\n  __int64 v29; // rdi\n  __int64 v30; // rcx\n  double v31; // xmm0_8\n  float v32; // xmm6_4\n  __int64 v33; // rax\n  float *v34; // rax\n  __m128 v35; // xmm0\n  __m128 v36; // xmm0\n  __m128 v37; // xmm0\n  __int64 v38; // rdx\n  __int64 v39; // rsi\n  int v40; // ebx\n  char v41; // bl\n  char v42; // bl\n  __int64 v43; // rbx\n  bool v44; // di\n  __int64 v45; // rax\n  __int64 v46; // rax\n  __int64 v47; // rax\n  __int64 v48; // rbx\n  __int64 v49; // rax\n  __int64 v50; // rsi\n  __int64 *v51; // rcx\n  char v52; // r15\n  __int64 v53; // rdi\n  __int64 v54; // r12\n  __int64 v55; // rdi\n  __int64 v56; // rcx\n  __int64 v57; // rcx\n  __int64 v58; // rax\n  int v59; // edi\n  int v60; // eax\n  __int64 v61; // rdx\n  __int64 v62; // rax\n  __int64 v63; // rax\n  __int64 v64; // rdx\n  __int64 v65; // rax\n  int v66; // eax\n  float v67; // xmm6_4\n  float v68; // xmm0_4\n  int v69; // eax\n  float v70; // xmm6_4\n  __m128 v71; // xmm8\n  bool v73; // [rsp+48h] [rbp-C0h]\n  __int64 v74; // [rsp+50h] [rbp-B8h] BYREF\n  __int64 v75; // [rsp+58h] [rbp-B0h]\n  __int64 v76; // [rsp+60h] [rbp-A8h]\n  __int64 v77; // [rsp+68h] [rbp-A0h] BYREF\n  __int64 v78; // [rsp+70h] [rbp-98h] BYREF\n  __int64 v79; // [rsp+78h] [rbp-90h]\n  int *v80; // [rsp+80h] [rbp-88h]\n  __int64 v81; // [rsp+88h] [rbp-80h]\n  int v82; // [rsp+90h] [rbp-78h]\n  _BYTE v83[16]; // [rsp+98h] [rbp-70h] BYREF\n  __int64 v84; // [rsp+A8h] [rbp-60h]\n  __int64 v85; // [rsp+B0h] [rbp-58h]\n  __int64 v86; // [rsp+B8h] [rbp-50h]\n  char Destination[264]; // [rsp+C0h] [rbp-48h] BYREF\n  __int64 v88; // [rsp+1C8h] [rbp+C0h]\n  char v89; // [rsp+258h] [rbp+150h]\n  bool v92; // [rsp+278h] [rbp+170h]\n\n  v84 = -2LL;\n  v19 = 0LL;\n  v81 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542);\n  LODWORD(v75) = *(_DWORD *)(v81 + 1896);\n  *(_DWORD *)(v81 + 1896) = 117;\n  v20 = 0LL;\n  v21 = a1 == (_QWORD *)ae401069;\n  v73 = a1 == (_QWORD *)ae401069;\n  v22 = 0.0;\n  *((_DWORD *)a1 + 68) = -1082130432;\n  if ( !a1[31] || (v89 = 1, !(unsigned __int8)ae39347()) )\n    v89 = 0;\n  v23 = (int *)ae39373(a1[31]);\n  v80 = v23;\n  v79 = 0LL;\n  *((_DWORD *)a1 + 58) |= 0x10000000u;\n  (*(void (__fastcall **)(_QWORD *, _QWORD))(*a1 + 2136LL))(a1, a4);\n  (*(void (__fastcall **)(_QWORD *, _QWORD))(*a1 + 2152LL))(a1, a5);\n  *((_DWORD *)a1 + 95) = a5;\n  v92 = 0;\n  v24 = 0;\n  v26 = 1;\n  if ( v21 )\n  {\n    if ( !(unsigned __int8)ae50798(ae400802)\n      || (v25 = *(float *)(ae400802 + 340),\n          COERCE_FLOAT(COERCE_UNSIGNED_INT(v25 - (*(float (__fastcall **)(_QWORD *, _QWORD))(*a1 + 1312LL))(a1, 0LL)) & ae187064) <= 0.78539819) )\n    {\n      v26 = 0;\n    }\n  }\n  if ( !a2 || (unsigned __int8)ae19765(a1, 1LL) )\n  {\n    v24 = 1;\n    if ( a1[31] )\n      ae39155();\n  }\n  if ( !a11 )\n  {\n    v27 = ae13894();\n    if ( *(_BYTE *)(v73 + v27 + 3107) )\n      a11 = *(_QWORD *)(v27 + 8LL * v73 + 1208);\n    else\n      a11 = 0LL;\n  }\n  v28 = (*(__int64 (__fastcall **)(_QWORD *))(*a1 + 592LL))(a1);\n  v29 = v28;\n  if ( !v28 || (*(_DWORD *)(v28 + 160) & 0x10) != 0 )\n  {\n    if ( v24 )\n      goto LABEL_28;\n    if ( v89 )\n      goto LABEL_27;\n    v30 = *(_QWORD *)(a11 + 48);\n    if ( v30 )\n    {\n      v31 = (*(double (__fastcall **)(__int64))(*(_QWORD *)v30 + 8LL))(v30);\n      v32 = *(float *)&v31;\n    }\n    else\n    {\n      v32 = *(float *)&ae187061;\n    }\n    v33 = ae67652();\n    v34 = (float *)ae67710(v33);\n    v35 = (__m128)*((unsigned int *)a1 + 21);\n    v35.m128_f32[0] = v35",
+  "strings": [
+   "sound\\"
+  ],
+  "callers": [],
+  "callees": [
+   "ae39347",
+   "ae39373",
+   "ae50798",
+   "ae19765",
+   "ae39155",
+   "ae13894",
+   "ae67652",
+   "ae67710",
+   "ae19659",
+   "ae39369",
+   "ae39372",
+   "ae16254",
+   "ae16256",
+   "ae39375",
+   "ae16318",
+   "ae39369"
+  ],
+  "bytes16": "488bc444894820488950105556574154"
+ },
+ "37577": {
+  "var": "isFleeing",
+  "callsite": "Games/Skyrim/Actor.cpp:1388",
+  "ea_1170": "0x14067efe0",
+  "size": 116,
+  "decompile": "char __fastcall ae37577(__int64 a1)\n{\n  __int64 v2; // rcx\n  __int64 v4; // rax\n  char v5; // cl\n\n  v2 = *(_QWORD *)(a1 + 352);\n  if ( v2 && !*(_BYTE *)(v2 + 67) && !*(_BYTE *)(v2 + 66) )\n    return ae33232();\n  if ( *(_QWORD *)(a1 + 248) && (unsigned __int8)ae39893() )\n    return 1;\n  if ( *(_QWORD *)(a1 + 248) )\n  {\n    v4 = ae39155();\n    if ( v4 )\n    {\n      v5 = *(_BYTE *)(v4 + 36);\n      if ( v5 == 22 || v5 == 10 )\n        return 1;\n    }\n  }\n  return 0;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae33232",
+   "ae39893",
+   "ae39155"
+  ],
+  "bytes16": "40534883ec20488bd9488b8960010000"
+ },
+ "37717": {
+  "var": "setPlayerTeammate",
+  "callsite": "Games/Skyrim/Actor.cpp:823",
+  "ea_1170": "0x14068d690",
+  "size": 143,
+  "decompile": "void __fastcall ae37717(__int64 a1, char a2, char a3)\n{\n  unsigned int v6; // ecx\n  int v7; // eax\n  unsigned int v8; // eax\n\n  if ( a1 != ae403521 )\n  {\n    if ( a2 )\n    {\n      if ( (*(_DWORD *)(a1 + 232) & 0x4000000) == 0 )\n        ae40624();\n    }\n    else if ( (*(_DWORD *)(a1 + 232) & 0x4000000) != 0 )\n    {\n      ae40625();\n    }\n    v6 = *(_DWORD *)(a1 + 232) | 0x4000000;\n    if ( !a2 )\n      v6 = *(_DWORD *)(a1 + 232) & 0xFBFFFFFF;\n    v7 = *(_DWORD *)(a1 + 516);\n    *(_DWORD *)(a1 + 232) = v6;\n    if ( a3 )\n      v8 = v7 | 0x80;\n    else\n      v8 = v7 & 0xFFFFFF7F;\n    *(_DWORD *)(a1 + 516) = v8;\n  }\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae40624",
+   "ae40625"
+  ],
+  "bytes16": "48895c24084889742410574883ec2048"
+ },
+ "37757": {
+  "var": "getDetectionState",
+  "callsite": "Services/Debug/Views/CombatView.cpp:51",
+  "ea_1170": "0x14068f7a0",
+  "size": 42,
+  "decompile": "__int64 __fastcall ae37757(__int64 a1)\n{\n  __int64 v1; // rax\n\n  if ( *(_QWORD *)(a1 + 248) && (v1 = ae39514()) != 0 )\n    return *(_QWORD *)(v1 + 32);\n  else\n    return 0LL;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae39514"
+  ],
+  "bytes16": "4883ec28488b89f80000004885c97413"
+ },
+ "37905": {
+  "var": "s_initiateMountPackage",
+  "callsite": "Games/Skyrim/Actor.cpp:1384",
+  "ea_1170": "0x1406992c0",
+  "size": 1046,
+  "decompile": "// Hidden C++ exception states: #wind=10\nchar __fastcall ae37905(__int64 a1, __int64 a2)\n{\n  __int64 v4; // r14\n  int v5; // ebx\n  __int64 v6; // rax\n  __int64 v7; // rbp\n  __int64 v8; // rax\n  __int64 v9; // rbx\n  __int64 v10; // rax\n  int v11; // r8d\n  int v12; // r9d\n  __int64 v13; // rcx\n  __int64 v14; // rax\n  void (__fastcall ***v15)(_QWORD, __int64); // rcx\n  __int64 v17; // rax\n  __int64 v18; // rdx\n  int v19; // ebx\n  __int64 v20; // r15\n  __int64 v21; // rcx\n  __int64 v22; // rax\n  unsigned int v23; // ebp\n  __int64 v24; // rax\n  int v25; // xmm6_4\n  __int64 v26; // rcx\n  __int64 v27; // rcx\n  __int64 v28; // [rsp+30h] [rbp-A8h] BYREF\n  __int64 v29; // [rsp+38h] [rbp-A0h] BYREF\n  char v30[4]; // [rsp+40h] [rbp-98h] BYREF\n  int v31; // [rsp+44h] [rbp-94h]\n  _BYTE v32[24]; // [rsp+48h] [rbp-90h] BYREF\n  __int64 v33; // [rsp+60h] [rbp-78h]\n  __int64 v34; // [rsp+68h] [rbp-70h]\n  _BYTE v35[32]; // [rsp+70h] [rbp-68h] BYREF\n  int v36; // [rsp+E8h] [rbp+10h]\n  int v37; // [rsp+F0h] [rbp+18h] BYREF\n  int v38; // [rsp+F8h] [rbp+20h]\n\n  v33 = -2LL;\n  v4 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542);\n  v38 = *(_DWORD *)(v4 + 1896);\n  v5 = v38;\n  *(_DWORD *)(v4 + 1896) = 78;\n  v6 = ((__int64 (*)(void))ae37799)();\n  ae41614(v6);\n  *(_DWORD *)(v4 + 1896) = v5;\n  v7 = 0LL;\n  if ( a2 )\n    goto LABEL_11;\n  v8 = ae12033(a1 + 112, v30);\n  v28 = 0LL;\n  ae12332(v8, &v28);\n  v9 = v28;\n  if ( v28 )\n    goto LABEL_6;\n  if ( (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 896LL))(a1) )\n  {\n    v10 = ae38045(a1, 0LL);\n    if ( v10 )\n    {\n      _InterlockedIncrement((volatile signed __int32 *)(v10 + 40));\n      v9 = v10;\n      v28 = v10;\nLABEL_6:\n      a2 = 0LL;\n      if ( *(_BYTE *)(v9 + 26) == 62 )\n        a2 = v9;\n    }\n  }\n  if ( v9 && (_InterlockedDecrement((volatile signed __int32 *)(v9 + 40)) & 0x3FF) == 0 )\n    (*(void (__fastcall **)(__int64))(*(_QWORD *)(v9 + 32) + 8LL))(v9 + 32);\nLABEL_11:\n  if ( !(unsigned __int8)ae38706(a1, a2) )\n    return 0;\n  v13 = *(_QWORD *)(a1 + 248);\n  if ( v13 && *(_BYTE *)(v13 + 311) > 1u )\n  {\n    v36 = *(_DWORD *)(v4 + 1896);\n    *(_DWORD *)(v4 + 1896) = 104;\n    if ( ae400190 != 2 )\n      ae68121(&ae400188, &ae400190);\n    v14 = ae68115(&ae400188, 56LL, 0LL);\n    v34 = v14;\n    if ( v14 )\n      v7 = ae40345(v14, a1, a2);\n    v29 = v7;\n    if ( v7 )\n      _InterlockedIncrement((volatile signed __int32 *)(v7 + 8));\n    ae41532(&v29);\n    v15 = (void (__fastcall ***)(_QWORD, __int64))v29;\n    if ( v29 )\n    {\n      if ( _InterlockedExchangeAdd((volatile signed __int32 *)(v29 + 8), 0xFFFFFFFF) == 1 )\n        (**v15)(v15, 1LL);\n    }\n    *(_DWORD *)(v4 + 1896) = v36;\n    return 0;\n  }\n  if ( (*(_DWORD *)(a1 + 200) & 0x3C000) != 0 )\n  {\n    (*(void (__fastcall **)(__int64))(*(_QWORD *)a1 + 1776LL))(a1);\n    return 1;\n  }\n  else\n  {\n    if ( a1 == ae401069 )\n    {\n      v17 = ae37799(ae403521);\n      ae41624(v17);\n      LOBYTE(v18) = 1;\n      ae40597(ae403521, v18);\n      v13 = *(_QWORD *)(a1 + 248);\n    }\n    ae39933(v13, a2, v11, v12, 0);\n    v19 = *(_DWORD *)(v4 + 1896);\n    v31 = v19;\n    *(_DWORD *)(v4 + 1896) = 112;\n    v20 = ae29496(41LL);\n    *(_DWORD *)(v20 + 32) &= 0xFFFFFFF9;\n    ae29796(v32);\n    ae29811(v32, a2);\n    ae29526(v20, v32);\n    ae29842(v35);\n    ae29528(v20, v35);\n    *(_DWORD *)(v20 + 216) = 21;\n    ae29854(*(_QWORD *)(v20 + 64), 0LL);\n    ae29855(*(_QWORD *)(v20 + 64), a2);\n    v21 = *(_QWORD *)(a1 + 248);\n    if ( *(_QWORD *)(v21 + 32) )\n    {\n      ae29500(v20);\n      v21 = *(_QWORD *)(a1 + 248);\n    }\n    ae39116(v21);\n    (*(void (__fastcall **)(__int64, __int64, __int64))(*(_QWORD *)a1 + 1784LL))(a1, v20, 1LL);\n    ae37818(a2);\n    if ( *(_QWORD *)(a2 + 248) )\n    {\n      v22 = ae39856();\n      if ( v22 )\n      {\n        (*(void (__fastcall **)(__int64, int *))(*(_QWORD *)v22 + 64LL))(v22, &v37);\n        LODWORD(v7) = v37;\n      }\n    }\n    v23 = WORD1(v7);\n    if ( v23 )\n    {\n      v24 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae37799",
+   "ae41614",
+   "ae12033",
+   "ae12332",
+   "ae38045",
+   "ae38706",
+   "ae68121",
+   "ae68115",
+   "ae40345",
+   "ae41532",
+   "ae37799",
+   "ae41624",
+   "ae40597",
+   "ae39933",
+   "ae29496",
+   "ae29796"
+  ],
+  "bytes16": "4c8bdc535556574154415641574881ec"
+ },
+ "37975": {
+  "var": "s_unequipObject",
+  "callsite": "Games/Skyrim/Actor.cpp:1385",
+  "ea_1170": "0x14069d1b0",
+  "size": 425,
+  "decompile": "// Hidden C++ exception states: #wind=6\n__int64 __fastcall ae37975(__int64 a1, __int64 a2, __int64 a3, int a4, __int64 a5)\n{\n  int v7; // r14d\n  __int64 v8; // rsi\n  __int64 v9; // rax\n  __int64 v10; // rcx\n  _DWORD *v11; // rax\n  int v12; // r15d\n  __int16 v13; // r12\n  __int64 v14; // rax\n  __int64 v15; // rbx\n  __int64 v16; // rcx\n  _BYTE v18[4]; // [rsp+68h] [rbp-21h] BYREF\n  int v19; // [rsp+6Ch] [rbp-1Dh] BYREF\n  __int64 v20; // [rsp+70h] [rbp-19h] BYREF\n  _QWORD v21[2]; // [rsp+78h] [rbp-11h] BYREF\n  __int64 v22; // [rsp+88h] [rbp-1h] BYREF\n  int v23; // [rsp+90h] [rbp+7h]\n  int v24; // [rsp+94h] [rbp+Bh]\n  __int16 v25; // [rsp+98h] [rbp+Fh]\n  char v26; // [rsp+9Ah] [rbp+11h]\n  int v27; // [rsp+E8h] [rbp+5Fh]\n  __int16 v28; // [rsp+F8h] [rbp+6Fh] BYREF\n  int v29; // [rsp+100h] [rbp+77h]\n\n  v29 = a4;\n  v27 = a1;\n  v21[1] = -2LL;\n  v28 = 0;\n  v7 = 0;\n  v8 = a5;\n  if ( a5 )\n  {\n    LODWORD(a5) = 0;\n    ae12030(v8, &v28, &a5);\n    v9 = ae11719(v8, v18);\n    v21[0] = 0LL;\n    ae12332(v9, v21);\n    if ( v21[0] )\n    {\n      v7 = *(_DWORD *)(v21[0] + 20LL);\n      v10 = v21[0] + 32LL;\n      if ( (_InterlockedDecrement((volatile signed __int32 *)(v21[0] + 40LL)) & 0x3FF) == 0 )\n        (*(void (__fastcall **)(__int64))(*(_QWORD *)v10 + 8LL))(v10);\n    }\n  }\n  v11 = ae19846(a1, &v19);\n  v20 = 0LL;\n  ae12332(v11, &v20);\n  v12 = *(_DWORD *)(a3 + 20);\n  v13 = v28;\n  v14 = ae14298();\n  v15 = v20;\n  v22 = v20;\n  if ( v20 )\n  {\n    _InterlockedIncrement((volatile signed __int32 *)(v20 + 40));\n    v15 = v20;\n  }\n  v22 = v15;\n  v23 = v12;\n  v24 = v7;\n  v25 = v13;\n  v26 = 0;\n  ae38321(v14 + 1144, &v22);\n  if ( v22 )\n  {\n    v16 = v22 + 32;\n    if ( (_InterlockedDecrement((volatile signed __int32 *)(v22 + 40)) & 0x3FF) == 0 )\n      (*(void (__fastcall **)(__int64))(*(_QWORD *)v16 + 8LL))(v16);\n    v15 = v20;\n  }\n  if ( v15 && (_InterlockedDecrement((volatile signed __int32 *)(v15 + 40)) & 0x3FF) == 0 )\n    (*(void (__fastcall **)(__int64))(*(_QWORD *)(v15 + 32) + 8LL))(v15 + 32);\n  return ae38901(ae400636, v27, a3, v8, v29, 0LL, 0, 0, 0, 0, 0LL);\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae12030",
+   "ae11719",
+   "ae12332",
+   "ae19846",
+   "ae12332",
+   "ae14298",
+   "ae38321",
+   "ae38901"
+  ],
+  "bytes16": "488bc444894820488948085556574154"
+ },
+ "38533": {
+  "var": "s_setNoBleedoutRecovery",
+  "callsite": "Games/Skyrim/Actor.cpp:311",
+  "ea_1170": "0x1406b51d0",
+  "size": 88,
+  "decompile": "__int64 __fastcall ae38533(_DWORD *a1, char a2)\n{\n  unsigned int v2; // r9d\n  __int64 result; // rax\n  unsigned int v5; // r8d\n  int v6; // r9d\n\n  v2 = a1[129];\n  result = v2 & 0xFFFFFFDF;\n  v5 = v2 >> 5;\n  v6 = v2 | 0x20;\n  if ( !a2 )\n    v6 = result;\n  a1[129] = v6;\n  if ( (v5 & 1) != 0 && !a2 )\n  {\n    result = (*(__int64 (__fastcall **)(_DWORD *))(*(_QWORD *)a1 + 1816LL))(a1);\n    if ( !(_BYTE)result )\n      return ae38680(a1);\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae38680"
+  ],
+  "bytes16": "40534883ec20448b8904020000488bd9"
+ },
+ "38896": {
+  "var": "s_equipFunc",
+  "callsite": "Games/Skyrim/EquipManager.cpp:97",
+  "ea_1170": "0x1406c9a70",
+  "size": 103,
+  "decompile": "void __fastcall ae38896(__int64 a1, __int64 a2, __int64 a3, int a4)\n{\n  __int64 v7; // rax\n\n  if ( a2 && a3 )\n  {\n    if ( a4 )\n    {\n      if ( a4 == 1 )\n      {\n        v7 = ae23608();\n      }\n      else\n      {\n        if ( a4 != 2 )\n          return;\n        v7 = ae23610();\n      }\n    }\n    else\n    {\n      v7 = ae23607();\n    }\n    ae38895(a1, a2, a3, v7);\n  }\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae23607",
+   "ae23608",
+   "ae23610",
+   "ae38895"
+  ],
+  "bytes16": "4885d2746148895c2408488974241057"
+ },
+ "38899": {
+  "var": "s_unequipAll",
+  "callsite": "Games/Skyrim/EquipManager.cpp:137",
+  "ea_1170": "0x1406c9db0",
+  "size": 213,
+  "decompile": "// Hidden C++ exception states: #wind=1\n__int64 __fastcall ae38899(__int64 a1, __int64 a2)\n{\n  __int64 v4; // rax\n  __int64 v5; // rax\n  __int64 v6; // rdx\n  __int64 v7; // rcx\n  __int64 v8; // r8\n  __int64 v9; // rdi\n  __int64 v10; // rax\n  __int64 result; // rax\n  __int64 v12; // rdi\n  __int64 v13; // rax\n  __int64 v14; // [rsp+20h] [rbp-28h]\n  __int64 (__fastcall **v15)(); // [rsp+28h] [rbp-20h] BYREF\n  __int64 v16; // [rsp+30h] [rbp-18h]\n\n  v14 = -2LL;\n  if ( a2 )\n  {\n    if ( a2 == ae401069 )\n      ae41255(ae403521);\n    v4 = ae16039(a2);\n    if ( v4 )\n    {\n      v15 = ae207701;\n      v16 = a2;\n      ae16096(v4, &v15);\n    }\n  }\n  v5 = ae39195(*(_QWORD *)(a2 + 248));\n  v9 = v5;\n  if ( v5 && *(_BYTE *)(v5 + 26) == 22 )\n  {\n    v10 = ae23607(v7, v6, v8);\n    ae38902(a1, a2, v9, v10, -2LL, v15, v16);\n  }\n  result = ae39196(*(_QWORD *)(a2 + 248));\n  v12 = result;\n  if ( result )\n  {\n    if ( *(_BYTE *)(result + 26) == 22 )\n    {\n      v13 = ae23608();\n      return ae38902(a1, a2, v12, v13, v14, v15, v16);\n    }\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae41255",
+   "ae16039",
+   "ae16096",
+   "ae39195",
+   "ae23607",
+   "ae38902",
+   "ae39196",
+   "ae23608",
+   "ae38902"
+  ],
+  "bytes16": "40574883ec4048c7442420feffffff48"
+ },
+ "38903": {
+  "var": "s_unequipFunc",
+  "callsite": "Games/Skyrim/EquipManager.cpp:127",
+  "ea_1170": "0x1406ca2b0",
+  "size": 103,
+  "decompile": "None",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae23607",
+   "ae23608",
+   "ae23610",
+   "ae38902"
+  ],
+  "bytes16": "4885d2746148895c2408488974241057"
+ },
+ "38959": {
+  "var": "s_initFromPackage",
+  "callsite": "Games/References.cpp:137",
+  "ea_1170": "0x1406cd930",
+  "size": 462,
+  "decompile": "// Hidden C++ exception states: #wind=2\nvoid __fastcall ae38959(__int64 a1, __int64 a2, __int64 a3, __int64 a4)\n{\n  __int64 v8; // rcx\n  __int64 v9; // rax\n  __int64 v10; // rcx\n  __int64 v11; // rbx\n  __int64 v12; // rax\n  int v13; // eax\n  __int64 v14; // rcx\n  __int64 v15; // rbx\n  _QWORD v16[2]; // [rsp+20h] [rbp-58h] BYREF\n  _QWORD v17[2]; // [rsp+30h] [rbp-48h] BYREF\n  _QWORD v18[7]; // [rsp+40h] [rbp-38h] BYREF\n  int v19; // [rsp+80h] [rbp+8h] BYREF\n  __int64 v20; // [rsp+88h] [rbp+10h] BYREF\n\n  v16[1] = -2LL;\n  if ( a2 != *(_QWORD *)(a1 + 8) )\n  {\n    ae13129(v16, a1);\n    ae13129(&v20, a1);\n    v17[0] = a4;\n    v17[1] = a1;\n    v8 = *(_QWORD *)(a1 + 16);\n    if ( v8 )\n      v9 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v8 + 16LL))(v8);\n    else\n      v9 = 0LL;\n    ae38972(a1, v9, v17);\n    v10 = *(_QWORD *)(a1 + 16);\n    if ( v10 )\n      (*(void (__fastcall **)(__int64))(*(_QWORD *)v10 + 32LL))(v10);\n    ae38973(a1, 0LL);\n    *(_DWORD *)(a1 + 32) = -1082130432;\n    *(_DWORD *)(a1 + 28) = -1;\n    *(_QWORD *)(a1 + 36) = 0LL;\n    *(_DWORD *)(a1 + 24) = 0;\n    v11 = v20;\n    if ( v20 )\n    {\n      _mm_lfence();\n      if ( *(_DWORD *)v11 == ae175063() )\n      {\n        if ( *(_DWORD *)(v11 + 4) == 1 )\n        {\n          *(_DWORD *)v11 = 0;\n          _mm_mfence();\n          _InterlockedCompareExchange((volatile signed __int32 *)(v11 + 4), 0, 1);\n        }\n        else\n        {\n          _InterlockedDecrement((volatile signed __int32 *)(v11 + 4));\n        }\n      }\n    }\n    if ( a2 )\n    {\n      *(float *)(a1 + 32) = ae36301(ae400447);\n      v18[0] = a4;\n      v18[1] = a1;\n      if ( a2 != *(_QWORD *)(a1 + 8) )\n      {\n        ae38972(a1, 0LL, v18);\n        _InterlockedIncrement((volatile signed __int32 *)(a2 + 220));\n        *(_QWORD *)(a1 + 8) = a2;\n      }\n      v12 = ae38975(a2);\n      ae38973(a1, v12);\n      *(_DWORD *)(a1 + 28) = 0;\n      if ( !a3 || (*(_DWORD *)(a3 + 40) & 0x3FF) != 0 )\n      {\n        ae12326(&v19, a3);\n        v13 = v19;\n      }\n      else\n      {\n        v13 = ae400312;\n      }\n      *(_DWORD *)(a1 + 24) = v13;\n      v14 = *(_QWORD *)(a1 + 8);\n      *(_DWORD *)(a1 + 36) = *(_DWORD *)(v14 + 32);\n      *(_WORD *)(a1 + 40) = *(_WORD *)(v14 + 40);\n    }\n    v15 = v16[0];\n    if ( v16[0] )\n    {\n      _mm_lfence();\n      if ( *(_DWORD *)v15 == ae175063() )\n      {\n        if ( *(_DWORD *)(v15 + 4) == 1 )\n        {\n          *(_DWORD *)v15 = 0;\n          _mm_mfence();\n          _InterlockedCompareExchange((volatile signed __int32 *)(v15 + 4), 0, 1);\n        }\n        else\n        {\n          _InterlockedDecrement((volatile signed __int32 *)(v15 + 4));\n        }\n      }\n    }\n  }\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae13129",
+   "ae13129",
+   "ae38972",
+   "ae38973",
+   "ae175063",
+   "ae36301",
+   "ae38972",
+   "ae38975",
+   "ae38973",
+   "ae12326",
+   "ae175063"
+  ],
+  "bytes16": "40555657415641574883ec5048c74424"
+ },
+ "38979": {
+  "var": "setWeaponState",
+  "callsite": "Games/Skyrim/Misc/ActorState.cpp:6",
+  "ea_1170": "0x1406ce8d0",
+  "size": 60,
+  "decompile": "char __fastcall ae38979(__int64 a1, char a2)\n{\n  int v2; // eax\n\n  v2 = 1;\n  if ( a2 )\n    v2 = 4;\n  if ( ((*(_DWORD *)(a1 + 12) >> 5) & 7) != v2 )\n    *(_DWORD *)(a1 + 12) = *(_DWORD *)(a1 + 12) & 0xFFFFFF1F | (a2 != 0 ? 0x60 : 0);\n  return 1;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "448b490cb801000000458bc141ba0400"
+ },
+ "39114": {
+  "var": "s_checkForNewPackage",
+  "callsite": "Games/References.cpp:136",
+  "ea_1170": "0x1406d5690",
+  "size": 179,
+  "decompile": "char __fastcall ae39114(__int64 a1, __int64 a2, unsigned __int8 a3)\n{\n  float v7; // xmm0_4\n\n  if ( *(_QWORD *)(a1 + 16) )\n    return ae39645();\n  if ( *(_QWORD *)(a1 + 8) )\n    return ae40080(a1, a2, a3);\n  if ( *(_QWORD *)a1 )\n  {\n    v7 = ae36301(ae400447);\n    if ( !a3 && *(_QWORD *)(a1 + 32) && **(_DWORD **)a1 == (int)v7 )\n      return 0;\n  }\n  return (unsigned __int8)ae39213(a1, a2, a3) != 0;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae39645",
+   "ae40080",
+   "ae36301",
+   "ae39213"
+  ],
+  "bytes16": "48895c24084889742410574883ec2048"
+ },
+ "39643": {
+  "var": "s_processResponse",
+  "callsite": "Games/Skyrim/Actor.cpp:1383",
+  "ea_1170": "0x1406f8020",
+  "size": 627,
+  "decompile": "// Hidden C++ exception states: #wind=1\n__int64 __fastcall ae39643(__int64 a1, __int64 *a2, __int64 a3, __int64 a4, char a5)\n{\n  __int64 result; // rax\n  volatile signed __int32 *v10; // rdi\n  __int64 v11; // r12\n  __int64 v12; // rcx\n  volatile signed __int32 *v13; // rdi\n  const CHAR **v14; // rax\n  const CHAR *v15; // rdx\n  __int64 v16; // rdi\n  _DWORD *v17; // rax\n  __int64 v18; // rcx\n  int v19; // edi\n  volatile signed __int32 *v20; // rbx\n  int v21; // [rsp+70h] [rbp+8h] BYREF\n  __int64 *v22; // [rsp+78h] [rbp+10h]\n\n  v22 = a2;\n  result = *(_QWORD *)(a1 + 16);\n  if ( result )\n  {\n    v10 = *(volatile signed __int32 **)(result + 864);\n    v11 = 0LL;\n    if ( v10 )\n    {\n      if ( v10 != (volatile signed __int32 *)*a2 )\n      {\n        *(_QWORD *)(result + 864) = 0LL;\n        if ( _InterlockedExchangeAdd(v10, 0xFFFFFFFF) == 1 )\n        {\n          ae35221(v10);\n          ae109588(v10, 72LL);\n        }\n      }\n    }\n    v12 = *(_QWORD *)(a1 + 16);\n    result = *a2;\n    v13 = *(volatile signed __int32 **)(v12 + 864);\n    if ( (volatile signed __int32 *)*a2 != v13 )\n    {\n      if ( result )\n        _InterlockedIncrement((volatile signed __int32 *)result);\n      *(_QWORD *)(v12 + 864) = result;\n      if ( v13 )\n      {\n        result = (unsigned int)_InterlockedExchangeAdd(v13, 0xFFFFFFFF);\n        if ( (_DWORD)result == 1 )\n        {\n          ae35221(v13);\n          result = ae109588(v13, 72LL);\n        }\n      }\n    }\n    if ( *a2 )\n    {\n      if ( ((__int64 (*)(void))ae35224)() )\n      {\n        v14 = (const CHAR **)ae35224(*a2);\n        v15 = &ae469508;\n        if ( *v14 )\n          v15 = *v14;\n        ae69165(*(_QWORD *)(a1 + 16) + 536LL, v15);\n      }\n      if ( a4 )\n      {\n        if ( (*(_DWORD *)(a4 + 16) & 0x800) == 0 )\n        {\n          v16 = *(_QWORD *)(a4 + 248);\n          if ( v16 )\n          {\n            v17 = ae19846(a3, &v21);\n            v18 = *(_QWORD *)(v16 + 16);\n            if ( v18 )\n              *(_DWORD *)(v18 + 756) = *v17;\n          }\n        }\n      }\n      result = ae35224(*a2);\n      v19 = result;\n      if ( result )\n      {\n        if ( *(_QWORD *)(result + 48) )\n        {\n          ae39771(*(_QWORD *)(a1 + 16), result, a3, *(_QWORD *)(*(_QWORD *)(a1 + 8) + 568LL));\n        }\n        else if ( (*(_DWORD *)(a3 + 232) & 0x80) != 0 )\n        {\n          if ( (*(_WORD *)(*(_QWORD *)(*a2 + 32) + 60LL) & 0x2000) != 0 )\n            v11 = ae25610();\n          ae39172(a1, *(_QWORD *)(*a2 + 40));\n          ae39772(*(_QWORD *)(a1 + 16), v19, a3, a4, v11, a5);\n        }\n        result = *(_QWORD *)(a1 + 16);\n        if ( *(_QWORD *)(result + 864) )\n        {\n          result = ae39369(a1);\n          if ( !(_BYTE)result )\n          {\n            ae35225(*(_QWORD *)(*(_QWORD *)(a1 + 16) + 864LL), 0LL, 0LL);\n            result = ae35223(*(_QWORD *)(*(_QWORD *)(a1 + 16) + 864LL));\n          }\n        }\n      }\n      if ( a4 )\n      {\n        result = *(_DWORD *)(a3 + 232) >> 12;\n        if ( (*(_DWORD *)(a3 + 232) & 0x1000) == 0 )\n        {\n          result = *(_QWORD *)(a1 + 16);\n          *(_DWORD *)(result + 788) = ae370897;\n        }\n      }\n    }\n  }\n  v20 = (volatile signed __int32 *)*a2;\n  if ( *a2 )\n  {\n    if ( _InterlockedExchangeAdd(v20, 0xFFFFFFFF) == 1 )\n    {\n      ae35221(v20);\n      return ae109588(v20, 72LL);\n    }\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae35221",
+   "ae109588",
+   "ae35221",
+   "ae109588",
+   "ae35224",
+   "ae35224",
+   "ae69165",
+   "ae19846",
+   "ae35224",
+   "ae39771",
+   "ae25610",
+   "ae39172",
+   "ae39772",
+   "ae39369",
+   "ae35225",
+   "ae35223"
+  ],
+  "bytes16": "488bc448895010565741544156415748"
+ },
+ "40454": {
+  "var": "s_dropObject",
+  "callsite": "Games/Skyrim/Actor.cpp:1381",
+  "ea_1170": "0x140734250",
+  "size": 1238,
+  "decompile": "// Hidden C++ exception states: #wind=3\n_DWORD *__fastcall ae40454(__int64 a1, _DWORD *a2, __int64 a3, __int64 a4, unsigned int a5, __int64 a6, __int64 a7)\n{\n  __int64 v11; // r15\n  __int64 v12; // rbx\n  __int64 v13; // r8\n  __int64 v14; // rdx\n  _QWORD *v15; // rbx\n  __int64 v16; // rbp\n  __int64 v17; // rax\n  unsigned int v18; // ebp\n  __int64 v19; // rax\n  __int64 v20; // rbx\n  __int64 v21; // rax\n  __int64 v22; // rax\n  unsigned int v23; // edi\n  __int64 v24; // rax\n  __int64 v25; // rax\n  __int64 v26; // rax\n  __int64 v27; // rdx\n  float *v28; // rdi\n  float v29; // xmm5_4\n  float v30; // xmm2_4\n  float v31; // xmm4_4\n  float v32; // xmm4_4\n  float v33; // xmm5_4\n  __int64 v34; // rdx\n  __int64 v35; // r8\n  __int64 v36; // rdx\n  int v37; // edi\n  __int64 v38; // rax\n  int v39; // edi\n  int v40; // eax\n  __int64 v41; // rax\n  _BYTE v43[8]; // [rsp+50h] [rbp-88h] BYREF\n  __int64 v44; // [rsp+58h] [rbp-80h] BYREF\n  _DWORD v45[2]; // [rsp+60h] [rbp-78h] BYREF\n  __int64 v46; // [rsp+68h] [rbp-70h]\n  float v47; // [rsp+70h] [rbp-68h] BYREF\n  float v48; // [rsp+74h] [rbp-64h]\n  float v49; // [rsp+78h] [rbp-60h]\n  _BYTE v50[88]; // [rsp+80h] [rbp-58h] BYREF\n  int v51; // [rsp+E0h] [rbp+8h] BYREF\n  __int64 v52; // [rsp+F0h] [rbp+18h] BYREF\n\n  v46 = -2LL;\n  v11 = 0LL;\n  if ( (*(unsigned __int8 (__fastcall **)(__int64))(*(_QWORD *)a3 + 312LL))(a3) )\n    v11 = a3;\n  ae44289(ae400883, 0LL, 0LL, 0LL);\n  v12 = *(_QWORD *)(a1 + 96);\n  if ( (unsigned __int8)ae19109() && v12 && ((v14 = ae19106(v12)) != 0 || (v14 = ae19107(v12, a1)) != 0) )\n  {\n    (*(void (__fastcall **)(__int64, __int64 *, __int64, _QWORD, int, __int64, __int64, _QWORD, _QWORD))(*(_QWORD *)a1 + 688LL))(\n      a1,\n      &v52,\n      v11,\n      a5,\n      4,\n      a4,\n      v14,\n      0LL,\n      0LL);\n    *a2 = ae400312;\n  }\n  else\n  {\n    v15 = (_QWORD *)(a1 + 1856);\n    v16 = 10LL;\n    do\n    {\n      v17 = *(v15 - 1);\n      if ( v17 && a3 == v17 && a4 && (unsigned __int8)ae11696(a4, 0LL, 0LL) )\n        *(v15 - 1) = 0LL;\n      if ( *v15 )\n      {\n        if ( a3 == *v15 )\n        {\n          if ( a4 )\n          {\n            LOBYTE(v13) = 1;\n            if ( (unsigned __int8)ae11696(a4, 0LL, v13) )\n              *v15 = 0LL;\n          }\n        }\n      }\n      v15 += 2;\n      --v16;\n    }\n    while ( v16 );\n    v18 = a5;\n    v19 = (*(__int64 (__fastcall **)(__int64, _BYTE *, __int64, _QWORD, int, __int64, _QWORD, __int64, __int64))(*(_QWORD *)a1 + 688LL))(\n            a1,\n            v43,\n            v11,\n            a5,\n            3,\n            a4,\n            0LL,\n            a6,\n            a7);\n    v44 = 0LL;\n    ae12332(v19, &v44);\n    v20 = v44;\n    if ( v44 )\n    {\n      if ( !ae20197(v44) && ae18982(*(_QWORD *)(ae403521 + 96)) )\n      {\n        v21 = ae37683(ae403521);\n        ae20198(v20, v21);\n      }\n      if ( a3 == (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 1264LL))(a1) )\n      {\n        v22 = ae39807(*(_QWORD *)(a1 + 248));\n        v23 = ae16004(v22) - v18;\n        v24 = ae39807(*(_QWORD *)(a1 + 248));\n        ae16028(v24, v23);\n        v25 = (*(__int64 (__fastcall **)(__int64, _QWORD))(*(_QWORD *)a1 + 1008LL))(a1, 0LL);\n        ae38542(a1, v25, 0LL);\n      }\n      v26 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v20 + 896LL))(v20);\n      v28 = (float *)v26;\n      if ( v26 )\n      {\n        ae77868(v26, 0LL, 1LL);\n        v45[0] = 0;\n        v45[1] = 0;\n        ae70251(v28, v45);\n        ae77868(v28, 1LL, 1LL);\n        v47 = *(float *)(v20 + 84);\n        v48 = *(float *)(v20 + 88);\n        v29 = *(float *)(v20 + 92);\n        v30 = v29 - v28[59];\n        v31 = v48 - v28[58];\n        v47 = (float)(v47 - v28[57]) + v47;\n        v32 = v31 + v48;\n        v48 = v32;\n        v33 = v29 + v30;\n        v49 = v33;\n        v28[27] = v47;\n        v28[28] = v32;\n        v28[29] = v33;\n        ae19790(v20, &v47);\n        LOBYTE(v34) = 1;\n        ae78383(v28, v34);\n        LOBYTE(v35) = 1;\n        ae77869(v28, 1LL, v35, 0LL);\n      }\n      else\n      {\n        ",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae44289",
+   "ae19109",
+   "ae19106",
+   "ae19107",
+   "ae11696",
+   "ae11696",
+   "ae12332",
+   "ae20197",
+   "ae18982",
+   "ae37683",
+   "ae20198",
+   "ae39807",
+   "ae16004",
+   "ae39807",
+   "ae16028",
+   "ae38542"
+  ],
+  "bytes16": "4055565741544155415641574881eca0"
+ },
+ "40533": {
+  "var": "s_pickUpObject",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:248",
+  "ea_1170": "0x140739990",
+  "size": 1607,
+  "decompile": "// Hidden C++ exception states: #wind=11\nchar __fastcall ae40533(_QWORD *a1, __int64 a2, __int64 a3, unsigned __int8 a4, char a5)\n{\n  int v5; // r12d\n  _BYTE *v8; // r14\n  char v9; // al\n  char result; // al\n  __int64 v11; // r14\n  __int64 v12; // r13\n  __int64 v13; // rbx\n  __int64 v14; // rax\n  bool v15; // r12\n  __int64 v16; // rcx\n  _QWORD *v17; // rdx\n  __int64 v18; // r13\n  __int64 v19; // rbx\n  __int64 v20; // r8\n  __int64 v21; // rax\n  __int64 v22; // rcx\n  __int64 v23; // rax\n  volatile signed __int32 *v24; // rcx\n  int v25; // edx\n  __int64 v26; // rax\n  int v27; // eax\n  __int64 v28; // rax\n  unsigned __int8 v29; // bl\n  _BYTE *v30; // rbx\n  char v31; // cl\n  __int64 v32; // rdx\n  __int64 v33; // rax\n  unsigned int v34; // ebx\n  __int64 v35; // rax\n  __int64 v36; // rdx\n  __int64 v37; // rax\n  unsigned int v38; // ebx\n  __int64 v39; // rdx\n  __int64 v40; // rax\n  __int64 v41; // rax\n  unsigned int v42; // ebx\n  __int64 v43; // rax\n  unsigned __int8 v44; // r15\n  int v45; // r9d\n  __int64 v46; // rbx\n  __int64 v47; // rdx\n  __int64 v48; // r13\n  int v49; // eax\n  __int64 v50; // rax\n  unsigned int v51; // ebx\n  __int64 v52; // rax\n  __int64 *v53; // rax\n  __int64 v54; // r14\n  char v55; // r12\n  unsigned int v56; // eax\n  __int64 v57; // [rsp+48h] [rbp-71h] BYREF\n  __int64 v58; // [rsp+50h] [rbp-69h] BYREF\n  _BYTE *v59; // [rsp+58h] [rbp-61h]\n  __int64 v60; // [rsp+60h] [rbp-59h] BYREF\n  _BYTE *v61; // [rsp+68h] [rbp-51h]\n  __int128 v62; // [rsp+70h] [rbp-49h] BYREF\n  int v63; // [rsp+80h] [rbp-39h]\n  unsigned int v64; // [rsp+88h] [rbp-31h] BYREF\n  char v65[4]; // [rsp+90h] [rbp-29h] BYREF\n  char v66[4]; // [rsp+94h] [rbp-25h] BYREF\n  __int64 v67; // [rsp+98h] [rbp-21h]\n  __int64 v68; // [rsp+A0h] [rbp-19h]\n  __int64 v69; // [rsp+A8h] [rbp-11h]\n  _BYTE v70[88]; // [rsp+B0h] [rbp-9h] BYREF\n  int v71; // [rsp+120h] [rbp+67h] BYREF\n  int v72; // [rsp+128h] [rbp+6Fh]\n  unsigned __int8 v73; // [rsp+130h] [rbp+77h]\n\n  v73 = a4;\n  v72 = a3;\n  v67 = -2LL;\n  v5 = a3;\n  v8 = *(_BYTE **)(a2 + 64);\n  v59 = v8;\n  v61 = 0LL;\n  if ( v8[26] == 41 )\n  {\n    v61 = v8;\n    v9 = v8[414] >> 7;\n  }\n  else\n  {\n    if ( v8[26] != 42 )\n      goto LABEL_6;\n    v9 = v8[280] >> 1;\n  }\n  result = ~v9;\n  if ( (result & 1) == 0 )\n    return result;\nLABEL_6:\n  if ( a5 )\n  {\n    LOBYTE(a3) = 1;\n    (*(void (__fastcall **)(_QWORD *, _BYTE *, __int64, _QWORD))(*a1 + 1304LL))(a1, v8, a3, 0LL);\n  }\n  v62 = 0LL;\n  v63 = 0;\n  ae68160((__crt_strtox::big_integer *)&v64);\n  ae41323(ae400315, *(unsigned int *)(a2 + 20), a1, &v62);\n  if ( v64 )\n  {\n    v11 = 0LL;\n    v12 = v64;\n    do\n    {\n      v58 = 0LL;\n      ae12922(v11 + *((_QWORD *)&v62 + 1), &v58);\n      v13 = v58;\n      if ( v58 )\n      {\n        v14 = ae37396(v58, v65);\n        v60 = 0LL;\n        ae12332(v14, &v60);\n        v15 = v60 == a2;\n        if ( v60 )\n        {\n          v16 = v60 + 32;\n          if ( (_InterlockedDecrement((volatile signed __int32 *)(v60 + 40)) & 0x3FF) == 0 )\n            (*(void (__fastcall **)(__int64))(*(_QWORD *)v16 + 8LL))(v16);\n          v13 = v58;\n        }\n        if ( v15 )\n          v17 = a1;\n        else\n          v17 = 0LL;\n        ae37395(v13, v17);\n      }\n      if ( v13 && (_InterlockedDecrement((volatile signed __int32 *)(v13 + 40)) & 0x3FF) == 0 )\n        (*(void (__fastcall **)(__int64))(*(_QWORD *)(v13 + 32) + 8LL))(v13 + 32);\n      v11 += 4LL;\n      --v12;\n    }\n    while ( v12 );\n    v8 = v59;\n    v5 = v72;\n  }\n  v18 = ae14621(a2, 0xFFFFFFFFLL);\n  v19 = ae20194(a2);\n  if ( v19 )\n  {\n    LOBYTE(v20) = 1;\n    if ( !(unsigned __int8)ae20210(a2, a1, v20, 0LL) )\n    {\n      v21 = ae41382(ae400315, v66, a2);\n      v57 = 0LL;\n      ae17201(v21, &v57);\n      v22 = ae404240;\n      v23 = v57;\n      if ( ae404240 != v57 )\n      {\n        if ( v57 )\n        {\n          _InterlockedIncrement((volatile signed __int32 *)(v57 + 40));\n          v23 = v57;\n        }\n        ae404240 = v23;\n        if ( v22 )\n        {\n          v24 = (volatile signed __int32 *)(v22 + 32)",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68160",
+   "ae41323",
+   "ae12922",
+   "ae37396",
+   "ae12332",
+   "ae37395",
+   "ae14621",
+   "ae20194",
+   "ae20210",
+   "ae41382",
+   "ae17201",
+   "ae19682",
+   "ae37422",
+   "ae11609",
+   "ae40456",
+   "ae41064"
+  ],
+  "bytes16": "488bc444884820448940185556574154"
+ },
+ "40535": {
+  "var": "s_setWaypoint",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:252",
+  "ea_1170": "0x14073a060",
+  "size": 340,
+  "decompile": "// Hidden C++ exception states: #wind=4\n__int64 __fastcall ae40535(__int64 a1, _DWORD *a2, __int64 a3)\n{\n  __int64 v6; // rdi\n  __int64 v7; // rbx\n  __int64 v8; // rax\n  char v9; // al\n  __int64 v10; // rax\n  __int64 result; // rax\n  __int64 v12; // [rsp+60h] [rbp+8h] BYREF\n  __int64 v13; // [rsp+68h] [rbp+10h] BYREF\n\n  v6 = 0LL;\n  v13 = 0LL;\n  ae12331(a1 + 2348, &v13);\n  v7 = v13;\n  if ( !v13 )\n  {\n    if ( ae400190 != 2 )\n      ae68121(&ae400188, &ae400190);\n    v8 = ae68115(&ae400188, 160LL, 0LL);\n    v12 = v8;\n    if ( v8 )\n      v6 = ae19501(v8);\n    if ( v6 )\n    {\n      _InterlockedIncrement((volatile signed __int32 *)(v6 + 40));\n      v7 = v6;\n      v13 = v6;\n    }\n    *(_DWORD *)(a1 + 2348) = *(_DWORD *)ae12326(&v12, v7);\n    (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)v7 + 1056LL))(v7, ae401051);\n    ae14642(v7);\n  }\n  *(_DWORD *)(v7 + 84) = *a2;\n  *(_DWORD *)(v7 + 88) = a2[1];\n  *(_DWORD *)(v7 + 92) = a2[2];\n  v9 = *(_BYTE *)(a3 + 26);\n  if ( v9 == 60 )\n  {\n    *(_QWORD *)(v7 + 96) = a3;\n  }\n  else if ( v9 == 71 )\n  {\n    v10 = ae20528(a3);\n    if ( v10 )\n      *(_QWORD *)(v7 + 96) = v10;\n  }\n  result = ae40517(a1, v7, *(_QWORD *)(a1 + 2352), 0LL, -2LL);\n  if ( v7 )\n  {\n    result = (unsigned int)_InterlockedDecrement((volatile signed __int32 *)(v7 + 40));\n    if ( (result & 0x3FF) == 0 )\n      return (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)(v7 + 32) + 8LL))(v7 + 32);\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae12331",
+   "ae68121",
+   "ae68115",
+   "ae19501",
+   "ae12326",
+   "ae14642",
+   "ae20528",
+   "ae40517"
+  ],
+  "bytes16": "40555657415641574883ec3048c74424"
+ },
+ "40536": {
+  "var": "s_removeWaypoint",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:253",
+  "ea_1170": "0x14073a1c0",
+  "size": 124,
+  "decompile": "__int64 __fastcall ae40536(__int64 a1)\n{\n  int v1; // eax\n  char *v3; // rdx\n\n  v1 = *(_DWORD *)(a1 + 2348);\n  v3 = (char *)&ae400622 + 16 * (v1 & 0xFFFFF);\n  if ( (*(_DWORD *)v3 & 0x4000000) != 0\n    && ((*(_DWORD *)v3 ^ v1) & 0x3F00000) == 0\n    && *(_DWORD *)(*((_QWORD *)v3 + 1) + 8LL) >> 11 == (v1 & 0xFFFFF) )\n  {\n    ae25183(a1 + 2348);\n  }\n  *(_DWORD *)(a1 + 2348) = ae400312;\n  return ae30980(*(_QWORD *)(a1 + 2352));\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae25183",
+   "ae30980"
+  ],
+  "bytes16": "48895c2408574883ec208b812c090000"
+ },
+ "42345": {
+  "var": "setEnabled",
+  "callsite": "Games/Skyrim/AI/Movement/PlayerControls.cpp:13",
+  "ea_1170": "0x14079b290",
+  "size": 19,
+  "decompile": "__int64 __fastcall ae42345(__int64 a1, char a2)\n{\n  __int64 result; // rax\n\n  result = *(_QWORD *)(a1 + 416);\n  if ( result )\n    *(_BYTE *)(result + 27) = a2 ^ 1;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "488b81a00100004885c0740680f20188"
+ },
+ "42704": {
+  "var": "s_updateDetectionState",
+  "callsite": "Games/Skyrim/Actor.cpp:1382",
+  "ea_1170": "0x1407af4b0",
+  "size": 95,
+  "decompile": "__int64 __fastcall ae42704(__int64 a1, volatile signed __int32 *a2)\n{\n  volatile signed __int32 *v3; // rcx\n  __int64 result; // rax\n  bool v5; // zf\n\n  v3 = *(volatile signed __int32 **)(a1 + 32);\n  if ( v3 != a2 )\n  {\n    if ( a2 )\n      _InterlockedIncrement(a2 + 2);\n    *(_QWORD *)(a1 + 32) = a2;\n    if ( v3 )\n    {\n      result = (unsigned int)_InterlockedExchangeAdd(v3 + 2, 0xFFFFFFFF);\n      if ( (_DWORD)result == 1 )\n        result = (*(__int64 (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v3 + 8LL))(v3);\n    }\n  }\n  v5 = *(_DWORD *)(a1 + 56) == 0;\n  *(_DWORD *)(a1 + 68) = ae187412;\n  if ( !v5 )\n    return ae42715(a1);\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae42715"
+  ],
+  "bytes16": "40534883ec20488bd9488b4920483bca"
+ },
+ "47196": {
+  "var": "isValidTarget",
+  "callsite": "Services/Debug/Views/CombatView.cpp:44",
+  "ea_1170": "0x14084d940",
+  "size": 139,
+  "decompile": "bool __fastcall ae47196(__int64 a1, __int64 a2, __int64 a3, __int64 a4)\n{\n  __int64 v7; // rax\n\n  if ( !a3 )\n    return 0;\n  if ( ae382391 )\n  {\n    v7 = ae20203(a3);\n    if ( !(unsigned __int8)ae47331(a4, v7) )\n      return 0;\n  }\n  if ( (*(_DWORD *)(a2 + 232) & 0x4000000) != 0 )\n    return (*(unsigned __int8 (__fastcall **)(__int64))(*(_QWORD *)a3 + 752LL))(a3) == 0;\n  return 1;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae20203",
+   "ae47331"
+  ],
+  "bytes16": "48895c240848896c2410488974241857"
+ },
+ "47303": {
+  "var": "actorHasEquippedRangedWeapon_m",
+  "callsite": "Services/Debug/Views/CombatView.cpp:70",
+  "ea_1170": "0x140853d80",
+  "size": 127,
+  "decompile": "bool __fastcall ae47303(__int64 a1)\n{\n  __int64 v2; // rcx\n  __int64 v3; // rax\n\n  v2 = *(_QWORD *)(a1 + 248);\n  if ( v2 )\n  {\n    v3 = ae39196(v2);\n    if ( !v3 )\n      return ae39195(*(_QWORD *)(a1 + 248)) == 0;\n    if ( *(_BYTE *)(v3 + 26) == 41 && (unsigned int)(*(char *)(v3 + 413) + 1) <= 7 )\n      return 1;\n  }\n  return 0;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae39196",
+   "ae39195"
+  ],
+  "bytes16": "48895c2408574883ec20488bd94032ff"
+ },
+ "47307": {
+  "var": "func",
+  "callsite": "Services/Debug/Views/CombatView.cpp:104",
+  "ea_1170": "0x140853f10",
+  "size": 44,
+  "decompile": "char __fastcall ae47307(__int64 a1, __int64 a2)\n{\n  char result; // al\n\n  if ( (unsigned __int8)ae19593(a1) )\n    return 1;\n  result = ae18515(a2);\n  if ( result )\n    return 1;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae19593",
+   "ae18515"
+  ],
+  "bytes16": "40534883ec20488bdae832a6a8ff84c0"
+ },
+ "52626": {
+  "var": "s_showSubtitle",
+  "callsite": "Games/Misc/SubtitleManager.cpp:45",
+  "ea_1170": "0x14096cb00",
+  "size": 494,
+  "decompile": "// Hidden C++ exception states: #wind=4\nvoid __fastcall ae52626(__int64 a1, __int64 a2, __int64 a3, char a4)\n{\n  __int64 v8; // rsi\n  int v9; // edi\n  int v10; // eax\n  unsigned int v11; // eax\n  __int64 v12; // rbx\n  const CHAR *v13; // rdx\n  __int64 v14; // rbx\n  _QWORD v15[2]; // [rsp+20h] [rbp-78h] BYREF\n  _QWORD v16[2]; // [rsp+30h] [rbp-68h] BYREF\n  int v17; // [rsp+40h] [rbp-58h]\n  const CHAR *v18; // [rsp+48h] [rbp-50h] BYREF\n  int v19; // [rsp+50h] [rbp-48h]\n  int v20; // [rsp+58h] [rbp-40h]\n  char v21; // [rsp+5Ch] [rbp-3Ch]\n  int v22; // [rsp+A8h] [rbp+10h] BYREF\n\n  v15[1] = -2LL;\n  v8 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542);\n  v9 = *(_DWORD *)(v8 + 1896);\n  *(_DWORD *)(v8 + 1896) = 70;\n  ae13129(v15, a1 + 32);\n  if ( a2 && a2 != ae403521 && (ae383199 || ae383202) && !(unsigned __int8)ae68344(a3) )\n  {\n    if ( (*(_DWORD *)(a2 + 40) & 0x3FF) != 0 )\n    {\n      ae12326(&v22, a2);\n      v10 = v22;\n    }\n    else\n    {\n      v10 = ae400312;\n    }\n    v17 = v10;\n    v18 = 0LL;\n    v19 = 0;\n    ae439876(&v18, a3, 0LL);\n    v20 = ae187061;\n    v21 = a4;\n    v16[0] = &ae186376;\n    v16[1] = a1 + 8;\n    v11 = ae68163(a1 + 24, v16, *(unsigned int *)(a1 + 16), 32LL);\n    v16[0] = &ae186364;\n    if ( v11 != -1 )\n    {\n      v12 = *(_QWORD *)(a1 + 8) + 32LL * v11;\n      *(_DWORD *)v12 = v17;\n      *(_QWORD *)(v12 + 8) = 0LL;\n      *(_DWORD *)(v12 + 16) = 0;\n      v13 = &ae469508;\n      if ( v18 )\n        v13 = v18;\n      ae439876(v12 + 8, v13, 0LL);\n      *(_DWORD *)(v12 + 24) = 2139095039;\n      *(_BYTE *)(v12 + 28) = a4;\n    }\n    ae439875(&v18);\n  }\n  v14 = v15[0];\n  if ( v15[0] && (_mm_lfence(), *(_DWORD *)v14 == ae175063()) )\n  {\n    if ( *(_DWORD *)(v14 + 4) == 1 )\n    {\n      *(_DWORD *)v14 = 0;\n      _mm_mfence();\n      _InterlockedCompareExchange((volatile signed __int32 *)(v14 + 4), 0, 1);\n    }\n    else\n    {\n      _InterlockedDecrement((volatile signed __int32 *)(v14 + 4));\n    }\n    *(_DWORD *)(v8 + 1896) = v9;\n  }\n  else\n  {\n    *(_DWORD *)(v8 + 1896) = v9;\n  }\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae13129",
+   "ae68344",
+   "ae12326",
+   "ae439876",
+   "ae68163",
+   "ae439876",
+   "ae439875",
+   "ae175063"
+  ],
+  "bytes16": "4c8bdc55565741544155415641574883"
+ },
+ "52627": {
+  "var": "s_hideSubtitle",
+  "callsite": "Games/Misc/SubtitleManager.cpp:29",
+  "ea_1170": "0x14096cd00",
+  "size": 509,
+  "decompile": "// Hidden C++ exception states: #wind=5\n__int64 __fastcall ae52627(__int64 a1, __int64 a2)\n{\n  unsigned int *v4; // r12\n  __int64 v5; // rsi\n  _DWORD *v6; // rbx\n  __int64 v7; // rax\n  __int64 v8; // rax\n  __int64 v9; // rdi\n  __int64 v10; // rbx\n  int v11; // eax\n  __int64 v12; // rdi\n  __int64 v13; // rbx\n  __int64 v14; // rax\n  __int64 v15; // rcx\n  __int64 result; // rax\n  _QWORD v17[2]; // [rsp+20h] [rbp-58h] BYREF\n  _BYTE v18[72]; // [rsp+30h] [rbp-48h] BYREF\n  int v19; // [rsp+80h] [rbp+8h] BYREF\n  unsigned int v20; // [rsp+88h] [rbp+10h]\n  __int64 v21; // [rsp+90h] [rbp+18h] BYREF\n  _DWORD *v22; // [rsp+98h] [rbp+20h] BYREF\n\n  v17[1] = -2LL;\n  v4 = (unsigned int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542) + 1896LL);\n  v20 = *v4;\n  *v4 = 70;\n  if ( !a2 || (*(_DWORD *)(a2 + 40) & 0x3FF) != 0 )\n    ae12326(&v19, a2);\n  else\n    v19 = ae400312;\n  ae13129(v17, a1 + 32);\n  v5 = 0LL;\n  v6 = 0LL;\n  if ( *(_DWORD *)(a1 + 24) )\n    v6 = *(_DWORD **)(a1 + 8);\n  while ( 1 )\n  {\n    v7 = *(unsigned int *)(a1 + 24);\n    v8 = (_DWORD)v7 ? *(_QWORD *)(a1 + 8) + 32 * v7 : 0LL;\n    if ( v6 == (_DWORD *)v8 )\n      break;\n    v21 = 0LL;\n    ae12331(v6, &v21);\n    v9 = v21;\n    if ( !v21 || *v6 == v19 )\n    {\n      v22 = v6;\n      v6 = *(_DWORD **)ae52645(a1 + 8, v18, &v22);\n    }\n    else\n    {\n      v6 += 8;\n    }\n    if ( v9 )\n    {\n      if ( (_InterlockedDecrement((volatile signed __int32 *)(v9 + 40)) & 0x3FF) == 0 )\n        (*(void (__fastcall **)(__int64))(*(_QWORD *)(v9 + 32) + 8LL))(v9 + 32);\n    }\n  }\n  v10 = v17[0];\n  if ( v17[0] )\n  {\n    _mm_lfence();\n    if ( *(_DWORD *)v10 == ae175063() )\n    {\n      if ( *(_DWORD *)(v10 + 4) == 1 )\n      {\n        *(_DWORD *)v10 = 0;\n        _mm_mfence();\n        _InterlockedCompareExchange((volatile signed __int32 *)(v10 + 4), 0, 1);\n      }\n      else\n      {\n        _InterlockedDecrement((volatile signed __int32 *)(v10 + 4));\n      }\n    }\n  }\n  v11 = *(_DWORD *)(a1 + 40);\n  if ( v11 == v19 )\n  {\n    if ( *(_BYTE *)(ae401099 + 177) && *(_DWORD *)(ae401099 + 104) == v11 )\n      ae52855();\n    v12 = ae400445;\n    if ( ae400445 )\n    {\n      v13 = ae400446;\n      v14 = ae52843(6LL);\n      ae13631(v12, v13 + 160, 0LL, v14);\n    }\n    if ( *(_BYTE *)(a2 + 26) == 62 )\n      v5 = a2;\n    if ( v5 )\n    {\n      v15 = *(_QWORD *)(a2 + 248);\n      if ( v15 )\n        ae39320(v15, 0LL);\n    }\n    *(_DWORD *)(a1 + 40) = ae400312;\n  }\n  result = v20;\n  *v4 = v20;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae12326",
+   "ae13129",
+   "ae12331",
+   "ae52645",
+   "ae175063",
+   "ae52855",
+   "ae52843",
+   "ae13631",
+   "ae39320"
+  ],
+  "bytes16": "4c8bdc535556574154415641574883ec"
+ },
+ "52847": {
+  "var": "fadeOutGame",
+  "callsite": "Games/References.cpp:77",
+  "ea_1170": "0x1409768e0",
+  "size": 188,
+  "decompile": "// Hidden C++ exception states: #wind=1\n__int64 __fastcall ae52847(char a1, char a2, float a3, char a4, int a5)\n{\n  __int64 v8; // r14\n  int v9; // ebx\n  __int64 v10; // rax\n  __int64 result; // rax\n\n  v8 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)ae415542);\n  v9 = *(_DWORD *)(v8 + 1896);\n  *(_DWORD *)(v8 + 1896) = 70;\n  v10 = ae35855(ae400446 + 8);\n  *(_BYTE *)(v10 + 36) = a1 ^ 1;\n  *(_BYTE *)(v10 + 37) = a2;\n  *(_BYTE *)(v10 + 38) = a4;\n  *(float *)(v10 + 32) = a3;\n  *(_DWORD *)(v10 + 28) = a5;\n  result = ae52877(v10);\n  *(_DWORD *)(v8 + 1896) = v9;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae35855",
+   "ae52877"
+  ],
+  "bytes16": "4057415641574883ec4048c7442420fe"
+ },
+ "55485": {
+  "var": "s_isMovementControlsEnabled",
+  "callsite": "Games/Skyrim/AI/Movement/PlayerControls.cpp:25",
+  "ea_1170": "0x140a0d040",
+  "size": 29,
+  "decompile": "bool ae55485()\n{\n  return (*(_DWORD *)(ae400863 + 288) & 0x401) == 1025;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "488b05c9096f028b882001000081e101"
+ },
+ "55497": {
+  "var": "s_setBeastForm",
+  "callsite": "Games/Skyrim/PlayerCharacter.cpp:249",
+  "ea_1170": "0x140a0d3e0",
+  "size": 55,
+  "decompile": "__int64 __fastcall ae55497(__int64 a1, __int64 a2, __int64 a3, unsigned __int8 a4)\n{\n  __int64 result; // rax\n\n  result = ae52209(ae401263, a4);\n  if ( !a4 )\n    return ae50841(ae400802, 0LL);\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae52209",
+   "ae50841"
+  ],
+  "bytes16": "40534883ec20488b0dfbac7202410fb6"
+ },
+ "55739": {
+  "var": "s_bindEverythingToScript",
+  "callsite": "Games/Misc/BSScript.cpp:99",
+  "ea_1170": "0x140a19b20",
+  "size": 947,
+  "decompile": "__int64 __fastcall ae55739(__int64 a1)\n{\n  ae55889();\n  ae55118(a1);\n  ae55124(a1);\n  ae55125(a1);\n  ae55126(a1);\n  ae55169(a1);\n  ae55170(a1);\n  ae55171(a1);\n  ae55172(a1);\n  ae55173(a1);\n  ae55176(a1);\n  ae55213(a1);\n  ae55254(a1);\n  ae55257(a1);\n  ae55275(a1);\n  ae55281(a1);\n  ae55284(a1);\n  ae55310(a1);\n  ae55322(a1);\n  ae55343(a1);\n  ae55355(a1);\n  ae55364(a1);\n  ae55365(a1);\n  ae55366(a1);\n  ae55432(a1);\n  ae55438(a1);\n  ae55649(a1);\n  ae55749(a1);\n  ae55726(a1);\n  ae55776(a1);\n  ae55777(a1);\n  ae55781(a1);\n  ae55814(a1);\n  ae55868(a1);\n  ae55922(a1);\n  ae55925(a1);\n  ae55935(a1);\n  ae55940(a1);\n  ae55953(a1);\n  ae55955(a1);\n  ae55966(a1);\n  ae55977(a1);\n  ae55990(a1);\n  ae56028(a1);\n  ae56030(a1);\n  ae56035(a1);\n  ae56041(a1);\n  ae56083(a1);\n  ae56084(a1);\n  ae56086(a1);\n  ae56091(a1);\n  ae56245(a1);\n  ae56652(a1);\n  ae56654(a1);\n  ae56662(a1);\n  ae56687(a1);\n  ae56737(a1);\n  ae56738(a1);\n  ae56744(a1);\n  ae56739(a1);\n  ae56759(a1);\n  ae56767(a1);\n  ae56808(a1);\n  ae54782(a1);\n  ae55145(a1);\n  ae55291(a1);\n  ae55194(a1);\n  ae55668(a1);\n  ae54599(a1);\n  ae56779(a1);\n  ae55282(a1);\n  ae56809(a1);\n  ae55503(a1);\n  ae56819(a1);\n  ae55394(a1);\n  ae55710(a1);\n  ae55890(a1);\n  ae55177(a1);\n  ae55214(a1);\n  ae55258(a1);\n  ae55276(a1);\n  ae55311(a1);\n  ae55323(a1);\n  ae55344(a1);\n  ae55356(a1);\n  ae55433(a1);\n  ae55782(a1);\n  ae55815(a1);\n  ae55926(a1);\n  ae55941(a1);\n  ae55956(a1);\n  ae55967(a1);\n  ae55978(a1);\n  ae55991(a1);\n  ae56031(a1);\n  ae56042(a1);\n  ae56087(a1);\n  ae56246(a1);\n  ae56655(a1);\n  ae56663(a1);\n  ae56688(a1);\n  ae56745(a1);\n  ae56760(a1);\n  ae56768(a1);\n  ae54784(a1);\n  ae55146(a1);\n  ae55292(a1);\n  ae55195(a1);\n  ae55671(a1);\n  ae55750(a1);\n  ae55727(a1);\n  ae54600(a1);\n  ae56780(a1);\n  ae55283(a1);\n  ae55650(a1);\n  ae55119(a1);\n  return ae55439(a1);\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae55889",
+   "ae55118",
+   "ae55124",
+   "ae55125",
+   "ae55126",
+   "ae55169",
+   "ae55170",
+   "ae55171",
+   "ae55172",
+   "ae55173",
+   "ae55176",
+   "ae55213",
+   "ae55254",
+   "ae55257",
+   "ae55275",
+   "ae55281"
+  ],
+  "bytes16": "40534883ec20488bd9e8125a0000488b"
+ },
+ "56205": {
+  "var": "s_playAnimation",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:1110",
+  "ea_1170": "0x140a2e8c0",
+  "size": 122,
+  "decompile": "// Hidden C++ exception states: #wind=1\nchar __fastcall ae56205(int a1, int a2, __int64 a3, __int64 a4)\n{\n  __int64 v5; // rax\n  char v6; // bl\n  char v8; // [rsp+60h] [rbp+18h] BYREF\n\n  v5 = 0LL;\n  if ( *(_BYTE *)(a3 + 26) == 62 )\n    v5 = a3;\n  if ( v5 )\n  {\n    ae53824(a3, (unsigned int)\"is an Actor, and PlayAnimation should not be used.\", a1, a2, 2);\n    return 0;\n  }\n  else\n  {\n    ae69162(&v8, a4);\n    v6 = (*(__int64 (__fastcall **)(__int64, char *))(*(_QWORD *)(a3 + 56) + 8LL))(a3 + 56, &v8);\n    ae69164(&v8);\n    return v6;\n  }\n}\n",
+  "strings": [
+   "is an Actor, and PlayAnimation should not be used."
+  ],
+  "callers": [],
+  "callees": [
+   "ae69162",
+   "ae69164",
+   "ae53824"
+  ],
+  "bytes16": "40534883ec4048c7442430feffffff49"
+ },
+ "56206": {
+  "var": "s_playAnimationAndWait",
+  "callsite": "Games/Skyrim/TESObjectREFR.cpp:1109",
+  "ea_1170": "0x140a2e940",
+  "size": 393,
+  "decompile": "// Hidden C++ exception states: #wind=5\nchar __fastcall ae56206(__int64 a1, unsigned int a2, __int64 a3, __int64 a4, __int64 a5)\n{\n  char v8; // r12\n  char v9; // r15\n  __int64 v10; // r14\n  __int64 v11; // rax\n  char v12; // bl\n  _BYTE v14[8]; // [rsp+30h] [rbp-58h] BYREF\n  __int64 v15; // [rsp+38h] [rbp-50h]\n  __int64 v16; // [rsp+48h] [rbp-40h] BYREF\n  _QWORD v17[2]; // [rsp+50h] [rbp-38h] BYREF\n  __int64 v18; // [rsp+A0h] [rbp+18h] BYREF\n\n  v15 = -2LL;\n  v8 = 0;\n  v9 = 1;\n  v10 = 0LL;\n  v11 = 0LL;\n  if ( *(_BYTE *)(a3 + 26) == 62 )\n    v11 = a3;\n  if ( v11 )\n  {\n    ae53824(a3, (unsigned int)\"is available only for non-actors.  Returning immediately.\", a1, a2, 2);\nLABEL_11:\n    v18 = 5LL;\n    v16 = 5LL;\n    LOBYTE(v10) = v8 != 0;\n    v17[0] = v10;\n    (*(void (__fastcall **)(__int64, _QWORD, __int64 *))(*(_QWORD *)a1 + 344LL))(a1, a2, &v16);\n    ae104296(&v16);\n    return 1;\n  }\n  ae69162(v14, a4);\n  v8 = (*(__int64 (__fastcall **)(__int64, _BYTE *))(*(_QWORD *)(a3 + 56) + 8LL))(a3 + 56, v14);\n  if ( v8 )\n  {\n    ae69162(&v18, a5);\n    LODWORD(v16) = *(_DWORD *)(a3 + 20);\n    ae69162(v17, &v18);\n    v12 = ae53364(ae406703, &v16, a1, a2);\n    ae69164(v17);\n    ae69164(&v18);\n    if ( v12 )\n      v9 = 0;\n    else\n      ae53824(\n        a3,\n        (unsigned int)\"failed to register for animation callbacks, but the animation was started. Returning immediately.\",\n        a1,\n        a2,\n        1);\n  }\n  ae69164(v14);\n  if ( v9 )\n    goto LABEL_11;\n  return 1;\n}\n",
+  "strings": [
+   "failed to register for animation callbacks, but the animation was started. Returning immediately.",
+   "is available only for non-actors.  Returning immediately."
+  ],
+  "callers": [],
+  "callees": [
+   "ae69162",
+   "ae69162",
+   "ae69162",
+   "ae53364",
+   "ae69164",
+   "ae69164",
+   "ae53824",
+   "ae69164",
+   "ae53824",
+   "ae104296"
+  ],
+  "bytes16": "4c8bdc56574154415641574883ec6049"
+ },
+ "68545": {
+  "var": "setEnabled",
+  "callsite": "Games/Skyrim/AI/Movement/PlayerControls.cpp:38",
+  "ea_1170": "0x140cd5650",
+  "size": 136,
+  "decompile": "__int64 __fastcall ae68545(__int64 a1, int a2, char a3, char a4)\n{\n  int v4; // r10d\n  int v5; // eax\n  int v6; // r8d\n  int v7; // edx\n  int v8; // r9d\n  int v10; // [rsp+30h] [rbp+8h] BYREF\n  int v11; // [rsp+34h] [rbp+Ch]\n\n  v4 = *(_DWORD *)(a1 + 288);\n  if ( a3 )\n  {\n    v5 = a2 | v4;\n    *(_DWORD *)(a1 + 288) = a2 | v4;\n    if ( a4 )\n    {\n      v6 = *(_DWORD *)(a1 + 292);\n      if ( v6 != 0x80000000 )\n        *(_DWORD *)(a1 + 292) = a2 | v6;\n    }\n  }\n  else\n  {\n    v7 = ~a2;\n    *(_DWORD *)(a1 + 288) = v4 & v7;\n    v5 = v4 & v7;\n    if ( a4 )\n    {\n      v8 = *(_DWORD *)(a1 + 292);\n      if ( v8 != 0x80000000 )\n        *(_DWORD *)(a1 + 292) = v8 & v7;\n    }\n  }\n  v10 = v5;\n  v11 = v4;\n  return ae68600(a1 + 8, &v10);\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae68600"
+  ],
+  "bytes16": "4883ec28448b91200100004584c0742c"
+ },
+ "70639": {
+  "var": "s_w2s",
+  "callsite": "Games/Skyrim/NetImmerse/NiCamera.cpp:10",
+  "ea_1170": "0x140d2c5b0",
+  "size": 448,
+  "decompile": "char __fastcall ae70639(float *a1, float *a2, float *a3, float *a4, float *a5, float a6)\n{\n  float v6; // xmm2_4\n\n  LODWORD(v6) = COERCE_UNSIGNED_INT((float)((float)((float)(*a2 * a1[80]) + (float)(a2[1] * a1[81]))\n                                          + (float)(a2[2] * a1[82])) + a1[83]) & ae187064;\n  if ( v6 <= a6 )\n    return 0;\n  *a3 = (float)((float)((float)(a2[1] * a1[69]) + (float)(*a2 * a1[68])) + (float)(a2[2] * a1[70])) + a1[71];\n  *a4 = (float)((float)((float)(a1[73] * a2[1]) + (float)(a1[72] * *a2)) + (float)(a1[74] * a2[2])) + a1[75];\n  *a3 = (float)(1.0 / v6) * *a3;\n  *a4 = (float)(1.0 / v6) * *a4;\n  *a3 = (float)((float)(a1[94] - a1[93]) * 0.5) * *a3;\n  *a4 = (float)((float)(a1[95] - a1[96]) * 0.5) * *a4;\n  *a3 = (float)((float)(a1[94] + a1[93]) * 0.5) + *a3;\n  *a4 = (float)((float)(a1[95] + a1[96]) * 0.5) + *a4;\n  *a5 = (float)((float)((float)((float)(a1[77] * a2[1]) + (float)(a1[76] * *a2)) + (float)(a1[78] * a2[2])) + a1[79])\n      * (float)(1.0 / v6);\n  return 1;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "4883ec18f30f106204f30f102a0f28c4"
+ },
+ "82088": {
+  "var": "s_CloseAll",
+  "callsite": "Games/Skyrim/Interface/UI.cpp:31",
+  "ea_1170": "0x140fa5630",
+  "size": 560,
+  "decompile": "// Hidden C++ exception states: #wind=1\nDWORD __fastcall ae82088(__int64 a1)\n{\n  DWORD v2; // edi\n  unsigned int v3; // ebx\n  DWORD i; // ecx\n  __int64 *v5; // rbx\n  unsigned __int64 v6; // rdi\n  __int64 v7; // r8\n  char v8; // dl\n  __int64 *v9; // rsi\n  _QWORD *v10; // r10\n  __int64 v11; // rax\n  int v12; // r8d\n  unsigned int v13; // r11d\n  __int64 v14; // r9\n  char v15; // al\n  DWORD result; // eax\n  __int64 v17; // [rsp+20h] [rbp-38h]\n\n  v17 = -2LL;\n  v2 = ae175063();\n  _mm_lfence();\n  if ( ae412033 == v2 )\n  {\n    _InterlockedIncrement(&ae412034);\n  }\n  else\n  {\n    v3 = 0;\n    if ( _InterlockedCompareExchange(&ae412034, 1, 0) )\n    {\n      _mm_pause();\n      if ( _InterlockedCompareExchange(&ae412034, 1, 0) )\n      {\nLABEL_5:\n        ++v3;\n        for ( i = 0; ; i = 1 )\n        {\n          ae175091(i);\n          if ( !_InterlockedCompareExchange(&ae412034, 1, 0) )\n            break;\n          if ( v3 < 0x2710 )\n            goto LABEL_5;\n        }\n      }\n      _mm_lfence();\n    }\n    ae412033 = v2;\n    _mm_sfence();\n  }\n  *(_BYTE *)(a1 + 449) = 1;\n  v5 = 0LL;\n  v6 = 0LL;\n  v7 = *(_QWORD *)(a1 + 336);\n  if ( v7 )\n  {\n    v6 = v7 + 32LL * *(unsigned int *)(a1 + 308);\n    v8 = 0;\n    v5 = *(__int64 **)(a1 + 336);\n    do\n    {\n      if ( (unsigned __int64)v5 >= v6 )\n        break;\n      if ( v5[3] )\n        v8 = 1;\n      else\n        v5 += 4;\n    }\n    while ( !v8 );\n    v9 = (__int64 *)(v7 + 32LL * *(unsigned int *)(a1 + 308));\n  }\n  else\n  {\n    v9 = 0LL;\n  }\n  if ( v5 != v9 )\n  {\n    v10 = (_QWORD *)ae400446;\n    do\n    {\n      v11 = *v5;\n      if ( *v5 == v10[20] || v11 == v10[33] || v11 == v10[56] )\n        goto LABEL_33;\n      v12 = -1;\n      v13 = *(_DWORD *)(a1 + 288);\n      v14 = 0LL;\n      if ( v13 )\n      {\n        while ( v12 == -1 )\n        {\n          v12 = v14;\n          if ( *(_QWORD *)(*(_QWORD *)(a1 + 272) + 8LL * (unsigned int)v14) != v5[1] )\n            v12 = -1;\n          v14 = (unsigned int)(v14 + 1);\n          if ( (unsigned int)v14 >= v13 )\n          {\n            if ( v12 != -1 )\n              break;\n            goto LABEL_31;\n          }\n        }\n      }\n      else\n      {\nLABEL_31:\n        v15 = ae82168(ae400445, v5, 1LL, v14, v17);\n        v10 = (_QWORD *)ae400446;\n        if ( !v15 )\n          goto LABEL_33;\n      }\n      ae82179(v5, 3LL, v10 + 73, v14);\n      v10 = (_QWORD *)ae400446;\n      do\nLABEL_33:\n        v5 += 4;\n      while ( (unsigned __int64)v5 < v6 && !v5[3] );\n    }\n    while ( v5 != v9 );\n  }\n  _mm_lfence();\n  result = ae175063();\n  if ( ae412033 == result )\n  {\n    if ( ae412034 == 1 )\n    {\n      ae412033 = 0;\n      _mm_mfence();\n      return _InterlockedCompareExchange(&ae412034, 0, 1);\n    }\n    else\n    {\n      _InterlockedDecrement(&ae412034);\n    }\n  }\n  return result;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae175063",
+   "ae175091",
+   "ae82168",
+   "ae82179",
+   "ae175063"
+  ],
+  "bytes16": "4056574154415641574883ec3048c744"
+ },
+ "104359": {
+  "var": "s_signaturesMatch",
+  "callsite": "Games/Misc/BSScript.cpp:100",
+  "ea_1170": "0x14142aba0",
+  "size": 287,
+  "decompile": "// Hidden C++ exception states: #wind=1\nbool __fastcall ae104359(__int64 a1, __int64 a2)\n{\n  char v4; // di\n  int v5; // edi\n  unsigned int i; // edi\n  __int64 v7; // rcx\n  __int64 v8; // rax\n  bool v9; // bp\n  _QWORD *v11; // rdi\n  __int64 v12; // [rsp+20h] [rbp-38h]\n  __int64 v13; // [rsp+60h] [rbp+8h] BYREF\n  char v14; // [rsp+68h] [rbp+10h] BYREF\n  __int64 v15; // [rsp+70h] [rbp+18h] BYREF\n\n  v12 = -2LL;\n  v4 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 72LL))(a1);\n  if ( v4 != (*(unsigned __int8 (__fastcall **)(__int64))(*(_QWORD *)a2 + 72LL))(a2) )\n    return 0;\n  v5 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 40LL))(a1);\n  if ( v5 != (*(unsigned int (__fastcall **)(__int64))(*(_QWORD *)a2 + 40LL))(a2) )\n    return 0;\n  for ( i = 0; i < (*(unsigned int (__fastcall **)(__int64))(*(_QWORD *)a1 + 40LL))(a1); ++i )\n  {\n    v13 = 0LL;\n    v15 = 0LL;\n    v8 = ae12340(v7);\n    ae69162(&v14, v8);\n    (*(void (__fastcall **)(__int64, _QWORD, char *, __int64 *, __int64))(*(_QWORD *)a1 + 48LL))(a1, i, &v14, &v13, v12);\n    (*(void (__fastcall **)(__int64, _QWORD, char *, __int64 *))(*(_QWORD *)a2 + 48LL))(a2, i, &v14, &v15);\n    v9 = v15 == v13;\n    ae69164(&v14);\n    if ( !v9 )\n      return 0;\n  }\n  v11 = (_QWORD *)(*(__int64 (__fastcall **)(__int64, __int64 *))(*(_QWORD *)a2 + 32LL))(a2, &v13);\n  return *v11 == *(_QWORD *)(*(__int64 (__fastcall **)(__int64, char *))(*(_QWORD *)a1 + 32LL))(a1, &v14);\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae12340",
+   "ae69162",
+   "ae69164"
+  ],
+  "bytes16": "405355565741564883ec3048c7442420"
+ },
+ "104483": {
+  "var": "getPageForFrame",
+  "callsite": "Games/Skyrim/Misc/BSScript.h:122",
+  "ea_1170": "0x1414327e0",
+  "size": 99,
+  "decompile": "__int64 __fastcall ae104483(__int64 a1, unsigned __int64 a2)\n{\n  unsigned int v2; // r11d\n  unsigned int v3; // r8d\n  bool v4; // al\n  _QWORD *v7; // rdx\n  unsigned int *v8; // rcx\n  unsigned int v9; // ecx\n\n  v2 = *(_DWORD *)(a1 + 80);\n  v3 = 0;\n  v4 = 0;\n  if ( v2 )\n  {\n    do\n    {\n      if ( v4 )\n        break;\n      v7 = (_QWORD *)(a1 + 32);\n      if ( *(int *)(a1 + 24) >= 0 )\n        v7 = (_QWORD *)*v7;\n      v8 = (unsigned int *)v7[2 * v3];\n      v4 = a2 >= (unsigned __int64)(v8 + 1) && a2 < (unsigned __int64)v8 + *v8 + 4;\n      v9 = v3 + 1;\n      if ( v4 )\n        v9 = v3;\n      v3 = v9;\n    }\n    while ( v9 < v2 );\n  }\n  return v3;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "448b59504533c032c04c8bd24c8bc945"
+ },
+ "104653": {
+  "var": "ctor",
+  "callsite": "Games/Skyrim/Misc/BSScript.h:284",
+  "ea_1170": "0x14143e0e0",
+  "size": 261,
+  "decompile": "// Hidden C++ exception states: #wind=8\n__int64 __fastcall ae104653(__int64 a1, __int64 a2, __int64 a3, char a4, unsigned int a5)\n{\n  __int64 v9; // rbp\n  __int64 v10; // rcx\n  __int64 v11; // rax\n  __int64 v12; // rcx\n  __int64 v13; // rax\n  __int64 v14; // rcx\n  __int64 v15; // rax\n\n  *(_DWORD *)(a1 + 8) = 0;\n  *(_QWORD *)a1 = ae252545;\n  v9 = a1 + 16;\n  ae69161(a1 + 16);\n  if ( !a2 )\n  {\n    v11 = ae12340(v10);\n    ae69166(v9, v11);\n  }\n  ae69161(a1 + 24);\n  if ( !a3 )\n  {\n    v13 = ae12340(v12);\n    ae69166(a1 + 24, v13);\n  }\n  ae69162(a1 + 32, &ae414466);\n  *(_QWORD *)(a1 + 40) = 0LL;\n  *(_DWORD *)(a1 + 40) = 0;\n  ae105361(a1 + 48, a5, 0LL);\n  *(_BYTE *)(a1 + 64) = a4;\n  *(_WORD *)(a1 + 65) = 0;\n  *(_DWORD *)(a1 + 68) = 0;\n  v15 = ae12340(v14);\n  ae69162(a1 + 72, v15);\n  ae104654(a1, a5);\n  return a1;\n}\n",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae69161",
+   "ae12340",
+   "ae69166",
+   "ae69161",
+   "ae12340",
+   "ae69166",
+   "ae69162",
+   "ae105361",
+   "ae12340",
+   "ae69162",
+   "ae104654"
+  ],
+  "bytes16": "48894c2408555657415641574883ec30"
+ },
+ "104655": {
+  "var": "dtor",
+  "callsite": "Games/Skyrim/Misc/BSScript.h:274",
+  "ea_1170": "0x14143e330",
+  "size": 80,
+  "decompile": "__int64 (__fastcall **__fastcall ae104655(_QWORD *a1))()\n{\n  __int64 (__fastcall **result)(); // rax\n\n  *a1 = ae252545;\n  ae69164(a1 + 9);\n  ae105362(a1 + 6);\n  ae69164(a1 + 4);\n  ae69164(a1 + 3);\n  ae69164(a1 + 2);\n  result = &ae252543;\n  *a1 = &ae252543;\n  return result;\n}\n",
+  "strings": [],
+  "callers": [
+   "ae56408"
+  ],
+  "callees": [
+   "ae69164",
+   "ae105362",
+   "ae69164",
+   "ae69164",
+   "ae69164"
+  ],
+  "bytes16": "40534883ec20488d05dbfa6500488bd9"
+ },
+ "105220": {
+  "var": "s_compareVariables",
+  "callsite": "Games/Misc/BSScript.cpp:102",
+  "ea_1170": "0x141469f00",
+  "size": 1049,
+  "decompile": "// Hidden C++ exception states: #wind=6\n__int64 __fastcall ae105220(__int64 a1, unsigned int *a2, __int64 a3)\n{\n  unsigned int v6; // r12d\n  unsigned int v7; // esi\n  unsigned int v8; // r9d\n  __int64 v9; // rax\n  bool v10; // cl\n  unsigned int v11; // r9d\n  unsigned int v12; // r9d\n  unsigned int v13; // r9d\n  unsigned int v14; // r9d\n  int v15; // esi\n  double v16; // xmm0_8\n  float v17; // xmm6_4\n  double v18; // xmm0_8\n  int v19; // edi\n  const char **v20; // rbx\n  const char **v21; // rax\n  __int64 *v22; // rbx\n  __int64 *v23; // rax\n  __int64 v24; // rcx\n  __int64 v25; // rbx\n  __int64 v26; // rdi\n  __int64 v27; // rbx\n  __int64 v28; // rdi\n  _DWORD *v29; // r14\n  bool v30; // cf\n\n  v6 = 0;\n  v7 = 0;\n  v8 = *a2;\n  if ( *a2 - 11 > 4 )\n  {\n    LODWORD(v9) = *a2;\n    if ( v8 < 0x10 || (v9 = *(_QWORD *)a2, (*(_QWORD *)a2 & 1) == 0) )\n    {\n      if ( (unsigned int)v9 >= 0x10 )\n      {\n        v10 = v8 >= 0x10 && (*(_BYTE *)a2 & 1) != 0;\n        v8 = 1;\n        if ( v10 )\n          v8 = 11;\n      }\n      v11 = v8 - 1;\n      if ( v11 )\n      {\n        v12 = v11 - 1;\n        if ( v12 )\n        {\n          v13 = v12 - 1;\n          if ( v13 )\n          {\n            v14 = v13 - 1;\n            if ( v14 )\n            {\n              if ( v14 == 1 )\n              {\n                v15 = (unsigned __int8)ae105227(a2, *(_QWORD *)(a1 + 24));\n                return ((unsigned __int8)ae105227(a3, *(_QWORD *)(a1 + 24)) ^ v15 ^ 1u) - 1;\n              }\n            }\n            else\n            {\n              v16 = ae105226(a3, *(_QWORD *)(a1 + 24));\n              v17 = *(float *)&v16;\n              v18 = ae105226(a2, *(_QWORD *)(a1 + 24));\n              if ( COERCE_FLOAT(COERCE_UNSIGNED_INT(*(float *)&v18 - v17) & ae187064) > 0.000099999997 )\n              {\n                v7 = 1;\n                if ( (float)(*(float *)&v18 - v17) < 0.0 )\n                  return (unsigned int)-1;\n              }\n            }\n          }\n          else\n          {\n            v19 = ae105225(a3, *(_QWORD *)(a1 + 24));\n            return (unsigned int)ae105225(a2, *(_QWORD *)(a1 + 24)) - v19;\n          }\n        }\n        else\n        {\n          v20 = (const char **)ae104285(a2);\n          v21 = (const char **)ae104285(a3);\n          return (unsigned int)ae464275(*v20, *v21);\n        }\n      }\n      else\n      {\n        v22 = (__int64 *)ae104287(a2);\n        v23 = (__int64 *)ae104287(a3);\n        v24 = *v22;\n        v25 = *v23;\n        if ( v24 != *v23 )\n        {\n          if ( !v24 )\n            return (unsigned int)-1;\n          if ( !v25 )\n            return (unsigned int)-1;\n          v26 = ae104247(v24);\n          if ( v26 == (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)ae414391 + 24LL))(ae414391)\n            || v26 != ae104247(v25) )\n          {\n            return (unsigned int)-1;\n          }\n        }\n      }\n      return v7;\n    }\n  }\n  v27 = *(_QWORD *)ae104290(a2);\n  if ( v27 )\n    _InterlockedIncrement((volatile signed __int32 *)v27);\n  v28 = *(_QWORD *)ae104290(a3);\n  if ( v28 )\n    _InterlockedIncrement((volatile signed __int32 *)v28);\n  if ( v27 )\n  {\n    if ( v28 )\n    {\n      if ( *(_DWORD *)(v27 + 16) == *(_DWORD *)(v28 + 16) )\n      {\n        v29 = (_DWORD *)(v27 + 20);\n        ae13663(v27 + 20, 0LL);\n        ae13663(v28 + 20, 0LL);\n        if ( *(_DWORD *)(v27 + 16) )\n        {\n          do\n          {\n            if ( v7 )\n              break;\n            v7 = ae105220(a1, v27 + 16 * (v6 + 2LL), v28 + 16 * (v6 + 2LL));\n            ++v6;\n          }\n          while ( v6 < *(_DWORD *)(v27 + 16) );\n        }\n        _mm_lfence();\n        if ( *(_DWORD *)(v28 + 20) == ae175063() )\n        {\n          if ( *(_DWORD *)(v28 + 24) == 1 )\n          {\n            *(_DWORD *)(v28 + 20) = 0;\n            _mm_mfence();\n            _InterlockedCompareExchange((volatile signed __int32 *)(v28 + 24), 0, 1);\n          }\n          else\n          {\n            _InterlockedDecrement((volatile signed __int32 *)(v28 + 24));\n          }\n        }\n      ",
+  "strings": [],
+  "callers": [],
+  "callees": [
+   "ae105227",
+   "ae105227",
+   "ae105226",
+   "ae105226",
+   "ae105225",
+   "ae105225",
+   "ae104285",
+   "ae104285",
+   "ae464275",
+   "ae104287",
+   "ae104287",
+   "ae104247",
+   "ae104247",
+   "ae104290",
+   "ae104290",
+   "ae13663"
+  ],
+  "bytes16": "4055565741544155415641574883ec50"
+ },
+ "370892": {
+  "var": "s_greetDistance",
+  "callsite": "Games/References.cpp:44",
+  "ea_1170": "0x141ffcbe8",
+  "size": 256,
+  "decompile": "None",
+  "strings": [
+   "fAIMinGreetingDistance",
+   "fAIMaxSmileDistance",
+   "fAIGreetingTimer",
+   "fAIForceGreetingTimer",
+   "fAIExclusiveGreetingTimer",
+   "fAIDefaultSpeechMult",
+   "fAIHeadTrackPickNewOffsetTimer",
+   "fAIHeadTrackResetPositionTimer",
+   "fAIHeadTrackStayInOffsetMin",
+   "fAIHeadTrackStayInOffsetMax",
+   "fAIHeadTrackOffsetRandomValueMin"
+  ],
+  "callers": [],
+  "callees": [],
+  "bytes16": "000016430000000060217f4101000000"
+ },
+ "381472": {
+  "var": "s_difficulty",
+  "callsite": "Games/References.cpp:38",
+  "ea_1170": "0x142013e98",
+  "size": 256,
+  "decompile": "None",
+  "strings": [
+   "iDifficulty:GamePlay",
+   "\\\\vault2\\Fallout\\LevelData\\",
+   "sTrackProgressPath:GamePlay",
+   "Actors\\Character\\_1stPerson\\FirstPerson.hkx",
+   "strPlayerCharacterBehavior1stPGraph:Animation",
+   "iPlayerCharacterImagespaceModifierAnimCount:Animation",
+   "fPlayerCharacterPowerAttackStartTime:Animation",
+   "fPlayerCharacterAttackIntroLength:Animation",
+   "fPlayerCharacterAttackComboStartFraction:Animation",
+   "fPlayerCharacterDrawSheatheTimeout:Animation",
+   "fPlayerVelocitySampleTime",
+   "fPlayerVelocitySampleInterval",
+   "fPlayerVelocityCacheTime"
+  ],
+  "callers": [],
+  "callees": [],
+  "bytes16": "000000000000000090818a4101000000"
+ },
+ "382393": {
+  "var": "s_value",
+  "callsite": "Services/Debug/Views/CombatView.cpp:57",
+  "ea_1170": "0x142016870",
+  "size": 256,
+  "decompile": "None",
+  "strings": [
+   "bDebugCombatThreats:Combat",
+   "fLowPerfCombatantVoiceDistance",
+   "bDebugCombatTextColorDark:Combat",
+   "fDebugCombatTextSize:Combat",
+   "bDebugCombatProjectileLOS:Combat",
+   "fDebugCombatProjectileLOSTime:Combat",
+   "fMountedAttackRange:Combat"
+  ],
+  "callers": [],
+  "callees": [],
+  "bytes16": "0000004000007a4400007a440000c842"
+ },
+ "382400": {
+  "var": "s_value",
+  "callsite": "Services/Debug/Views/CombatView.cpp:63",
+  "ea_1170": "0x14201688c",
+  "size": 256,
+  "decompile": "None",
+  "strings": [
+   "bDebugCombatThreats:Combat",
+   "fLowPerfCombatantVoiceDistance",
+   "bDebugCombatTextColorDark:Combat",
+   "fDebugCombatTextSize:Combat",
+   "bDebugCombatProjectileLOS:Combat",
+   "fDebugCombatProjectileLOSTime:Combat",
+   "fMountedAttackRange:Combat"
+  ],
+  "callers": [],
+  "callees": [],
+  "bytes16": "00000040000000450000fa4400401c45"
+ },
+ "400180": {
+  "var": "rtti",
+  "callsite": "Games/Skyrim/RTTI.cpp:5620",
+  "ea_1170": "0x1420f11a0",
+  "size": 256,
+  "decompile": "None",
+  "strings": [],
+  "callers": [
+   "ae290548"
+  ],
+  "callees": [],
+  "bytes16": "08a9ac41010000000000000000000000"
+ },
+ "404125": {
+  "var": "s_value",
+  "callsite": "Games/Skyrim/AI/AITimer.h:7",
+  "ea_1170": "0x14319b05c",
+  "size": 256,
+  "decompile": "None",
+  "strings": [],
+  "callers": [
+   "ae39147",
+   "ae44357",
+   "ae45352",
+   "ae46943",
+   "ae46945",
+   "ae46946",
+   "ae46950",
+   "ae48253",
+   "ae442665"
+  ],
+  "callees": [],
+  "bytes16": "ffffffffffffffffffffffffffffffff"
+ },
+ "405282": {
+  "var": "s_value",
+  "callsite": "Services/Debug/Views/CombatView.cpp:90",
+  "ea_1170": "0x1431ab8c8",
+  "size": 256,
+  "decompile": "None",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "ffffffffffffffffffffffffffffffff"
+ },
+ "406126": {
+  "var": "s_matrix",
+  "callsite": "Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:19",
+  "ea_1170": "0x1431ad3a0",
+  "size": 256,
+  "decompile": "None",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "ffffffffffffffffffffffffffffffff"
+ },
+ "406160": {
+  "var": "s_port",
+  "callsite": "Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:20",
+  "ea_1170": "0x1431ae960",
+  "size": 256,
+  "decompile": "None",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "ffffffffffffffffffffffffffffffff"
+ },
+ "410506": {
+  "var": "NiCameraRTTI",
+  "callsite": "Games/Skyrim/Camera/TESCamera.cpp:8",
+  "ea_1170": "0x143272f10",
+  "size": 256,
+  "decompile": "None",
+  "strings": [],
+  "callers": [
+   "ae10631",
+   "ae70647"
+  ],
+  "callees": [],
+  "bytes16": "ffffffffffffffffffffffffffffffff"
+ },
+ "414391": {
+  "var": "s_policy",
+  "callsite": "Games/Skyrim/Misc/BSScript.cpp:108",
+  "ea_1170": "0x143329d50",
+  "size": 256,
+  "decompile": "None",
+  "strings": [],
+  "callers": [],
+  "callees": [],
+  "bytes16": "ffffffffffffffffffffffffffffffff"
+ }
+}

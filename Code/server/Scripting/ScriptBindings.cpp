@@ -52,38 +52,16 @@ void CreateQuestServiceBindings(sol::state_view);
 void CreateScriptServiceBindings(sol::state_view);
 void CreateWorldBindings(sol::state_view);
 
+// Left as a stub on purpose: this is where the scripting 3.0 mod-list bindings
+// were meant to go, and the module the scripts see is deliberately empty until
+// they are written. The #if 0 copy of them that used to sit here was never
+// compiled - the members it named still exist, but a block no compiler reads is
+// not a reference worth keeping, and it is not a switch either.
 sol::table BindModsComponent(sol::state_view aState)
 {
     sol::table module = aState.create_table();
 
-    auto modsComponentType = aState.new_usertype<ModsComponent>("ModsComponent");
-#if 0
-    auto entryType = aState.new_usertype<ModsComponent::Entry>(
-        "Entry", sol::constructors<ModsComponent::Entry(uint32_t, uint32_t)>());
-
-    // Bind the public methods of ModsComponent
-    modsComponentType["AddStandard"] = &ModsComponent::AddStandard;
-    modsComponentType["AddLite"] = &ModsComponent::AddLite;
-    modsComponentType["AddServerMod"] = &ModsComponent::AddServerMod;
-    modsComponentType["GetStandardMods"] = &ModsComponent::GetStandardMods;
-    modsComponentType["GetLiteMods"] = &ModsComponent::GetLiteMods;
-    modsComponentType["GetServerMods"] = &ModsComponent::GetServerMods;
-    modsComponentType["IsInstalled"] = &ModsComponent::IsInstalled;
-#endif
-
-#if 0
-    // Bind the TModList type
-    auto modListType = aState.new_usertype<ModsComponent::TModList>("TModList");
-    modListType[sol::meta_function::index] = [](const ModsComponent::TModList& modList,
-                                                const String& key) -> const ModsComponent::Entry* {
-        const auto it = modList.find(key);
-        return it == modList.cend() ? nullptr : &it->second;
-    };
-
-    // Bind the Entry type
-    entryType["id"] = &ModsComponent::Entry::id;
-    entryType["refCount"] = &ModsComponent::Entry::refCount;
-#endif
+    aState.new_usertype<ModsComponent>("ModsComponent");
 
     return module;
 }

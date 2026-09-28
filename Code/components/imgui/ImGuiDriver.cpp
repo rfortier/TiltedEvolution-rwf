@@ -93,13 +93,6 @@ ImGuiDriver::ImGuiDriver()
     // io.IniFilename = nullptr;
 
     auto& st = ImGui::GetStyle();
-#if 0
-    st.FrameBorderSize = 1.0f;
-    st.FramePadding = ImVec2(4.0f, 2.0f);
-    st.ItemSpacing = ImVec2(8.0f, 2.0f);
-    st.WindowBorderSize = 1.0f;
-    st.TabBorderSize = 1.0f;
-#endif
 
     // make everything have smooth edges
     st.WindowRounding = 2.0f;

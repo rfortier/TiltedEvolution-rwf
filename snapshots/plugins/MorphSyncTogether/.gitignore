@@ -1,0 +1,31 @@
+# CMake and vcpkg outputs
+build/
+out/
+dist/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+vcpkg_installed/
+
+# Compiled binaries
+*.dll
+*.exp
+*.ilk
+*.lib
+*.obj
+*.pdb
+
+# Release archives
+*.zip
+*.rar
+*.7z
+
+# Logs and local editor files
+*.log
+.vs/
+.vscode/
+*.suo
+*.user
+Desktop.ini
+Thumbs.db

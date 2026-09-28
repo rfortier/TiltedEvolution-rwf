@@ -11,6 +11,7 @@ import {
 import { TranslocoService } from '@ngneat/transloco';
 import { firstValueFrom, Subscription } from 'rxjs';
 import { View } from '../../models/view.enum';
+import { AlertService } from '../../services/alert.service';
 import { ClientService } from '../../services/client.service';
 import { ErrorService } from '../../services/error.service';
 import { Sound, SoundService } from '../../services/sound.service';
@@ -26,6 +27,7 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
   public address = '';
   public password = '';
   public savePassword = false;
+  public hidePassword = true;
 
   public connecting = false;
 
@@ -34,6 +36,7 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
   public constructor(
     private readonly client: ClientService,
     private readonly sound: SoundService,
+    private readonly alert: AlertService,
     private readonly errorService: ErrorService,
     private readonly storeService: StoreService,
     private readonly translocoService: TranslocoService,
@@ -45,7 +48,24 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
           this.connecting = false;
 
           if (state) {
-            this.sound.play(Sound.Success);
+            // The panel used to just close here, with a sound as the only sign
+            // anything had happened. Closing is the right thing once the player
+            // has acknowledged the result, not before, so the attempt now ends
+            // on an explicit "connected" dialog and the panel closes behind it.
+            this.alert.show({
+              kind: 'success',
+              title: await firstValueFrom(
+                this.translocoService.selectTranslate<string>(
+                  'COMPONENT.CONNECT.SUCCESS.TITLE',
+                ),
+              ),
+              message: await firstValueFrom(
+                this.translocoService.selectTranslate<string>(
+                  'COMPONENT.CONNECT.SUCCESS.MESSAGE',
+                  { address: this.address.trim() },
+                ),
+              ),
+            });
             this.done.next();
           } else if (this.errorService.getError() === '') {
             // show connection error when there is no more specific error
@@ -56,6 +76,21 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
             );
             await this.errorService.setError(message);
           }
+        }
+      },
+    );
+
+    // connectionStateChange only goes false when the transport reports a
+    // disconnect. An attempt that fails before it ever reaches the server --
+    // an unresolvable address, or the client-side handshake deadline -- raises
+    // an error instead and never touches that stream, which used to leave this
+    // panel showing "connecting" forever. isConnectionInProgressChange is the
+    // stream that ends for every outcome, so it is what actually clears the
+    // local flag.
+    this.inProgressSubscription = this.client.isConnectionInProgressChange.subscribe(
+      inProgress => {
+        if (!inProgress && this.connecting) {
+          this.connecting = false;
         }
       },
     );
@@ -87,9 +122,14 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
   public ngOnDestroy(): void {
     this.connectionSubscription.unsubscribe();
     this.protocolMismatchSubscription.unsubscribe();
+    this.inProgressSubscription.unsubscribe();
   }
 
-  async connect(): Promise<void> {
+  public connect(): void {
+    void this.attemptConnect();
+  }
+
+  private async attemptConnect(): Promise<void> {
     const address = this.address.trim().match(/^(.+?)(?::([0-9]+))?$/);
 
     if (!address) {
@@ -121,6 +161,15 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
   }
 
   public cancel(): void {
+    // Cancelling while a connection is in flight has to abort it, otherwise
+    // the attempt keeps running behind a closed popup and the next one stacks
+    // on top of it. The client clears its state on the resulting disconnect
+    // event, which is what ends the "connecting" state.
+    if (this.connecting) {
+      this.connecting = false;
+      this.client.disconnect();
+    }
+
     this.sound.play(Sound.Cancel);
     this.done.next();
   }
@@ -135,6 +184,8 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
   private connectionSubscription: Subscription;
 
   private protocolMismatchSubscription: Subscription;
+
+  private inProgressSubscription: Subscription;
 
   @HostListener('window:keydown.escape', ['$event'])
   // @ts-ignore

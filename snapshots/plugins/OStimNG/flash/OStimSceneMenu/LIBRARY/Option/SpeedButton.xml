@@ -1,0 +1,45 @@
+<DOMSymbolItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" name="Option/SpeedButton" itemID="64b563cc-00000216" linkageExportForAS="true" linkageIdentifier="SpeedButton" linkageClassName="SpeedButton" lastModified="1691762571" lastUniqueIdentifier="1">
+  <timeline>
+    <DOMTimeline name="SpeedButton">
+      <layers>
+        <DOMLayer name="Layer 1" color="#4FFF4F" outline="true" current="true" isSelected="true" useOutlineView="true">
+          <frames>
+            <DOMFrame index="0" duration="4" tweenType="motion" motionTweenSnap="true" keyMode="22017">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Import/Sprites/Sprite 196" name="shape" centerPoint3DX="7.95" centerPoint3DY="11.85">
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="4" duration="4" tweenType="motion" motionTweenSnap="true" keyMode="22017">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Import/Sprites/Sprite 196" name="shape" centerPoint3DX="7.95" centerPoint3DY="6.85">
+                  <matrix>
+                    <Matrix ty="-5"/>
+                  </matrix>
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+            <DOMFrame index="8" keyMode="9728">
+              <Actionscript>
+                <script><![CDATA[stop();]]></script>
+              </Actionscript>
+              <elements>
+                <DOMSymbolInstance libraryItemName="Import/Sprites/Sprite 196" name="shape" centerPoint3DX="7.95" centerPoint3DY="11.85">
+                  <transformationPoint>
+                    <Point/>
+                  </transformationPoint>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timeline>
+</DOMSymbolItem>

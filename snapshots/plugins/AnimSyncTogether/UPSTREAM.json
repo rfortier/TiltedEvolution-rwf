@@ -1,0 +1,8 @@
+{
+  "id": "AnimSyncTogether",
+  "upstream": "https://github.com/Caelvanost/AnimSyncTogether.git",
+  "commit": "a432ec340f27eea0411e0a7c9eb048ad035c9d31",
+  "files": 29,
+  "contentSha256": "0ee4da6101971bcb62ecf2ddb5620d9bf1acaf0dc25f4a8e4a024a4115b89df7",
+  "why": "Durability copy of the pinned commit. Not a build input: the submodule builds. Kept so the code survives the upstream repository disappearing."
+}

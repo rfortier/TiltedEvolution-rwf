@@ -8,5 +8,8 @@ void TESTexture::Construct()
 
     POINTER_SKYRIMSE(TConstructor, s_constructor, 14953);
 
+    if (!s_constructor.Get()) // unmapped on legacy game versions
+        return;
+
     TiltedPhoques::ThisCall(s_constructor, this);
 }

@@ -2,6 +2,8 @@
 
 #include <Services/OverlayService.h>
 
+#include <Services/InputService.h>
+
 #include <OverlayApp.hpp>
 
 #include <D3D11Hook.hpp>
@@ -67,6 +69,53 @@ private:
     RenderSystemD3D11* m_pRenderSystem;
 };
 
+// CEF refuses to run inside an elevated process: Chromium re-launches itself
+// without elevation and then ends this process with
+// CEF_RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED (38). The re-launch target is
+// this same executable, and a second process could not share the game's D3D11
+// device or window anyway, so the overlay never gets a page - which is the
+// "F2 only shows the cursor" report. do-not-de-elevate is checked before that
+// re-launch is even attempted, and it has to be appended while the command
+// line is still being processed, which is what this subclass is for.
+struct SkyrimTogetherOverlayApp final : OverlayApp
+{
+    // Written out rather than inherited so the two arguments this build
+    // passes stay visible here; the base also defaults the subprocess name.
+    SkyrimTogetherOverlayApp(OverlayApp::RenderProvider* apRenderProvider, TiltedPhoques::OverlayClient* apCustomClient)
+        : OverlayApp(apRenderProvider, apCustomClient)
+    {
+    }
+
+    void OnBeforeCommandLineProcessing(const CefString& aProcessType, CefRefPtr<CefCommandLine> aCommandLine) override
+    {
+        OverlayApp::OnBeforeCommandLineProcessing(aProcessType, aCommandLine);
+
+        if (aCommandLine)
+            aCommandLine->AppendSwitch("do-not-de-elevate");
+    }
+};
+
+// The bare number sends the reader to cef_types.h. Name the codes this build
+// can actually hit; 38 is the one behind an overlay that never comes up.
+static const char* DescribeCefExitCode(int32_t aCode) noexcept
+{
+    switch (aCode)
+    {
+    case 6: return "unknown process type";
+    case 7: return "a critical CEF data file is missing";
+    case 13: return "unsupported command line parameter";
+    case 21: return "the profile is in use on another host";
+    case 24: return "the command line was handed to another running browser";
+    case 31: return "the browser process was sandboxed";
+    case 34: return "the GPU process lost its context";
+    case 36: return "an early startup command must exit the browser";
+    case 37: return "system resources are exhausted";
+    case 38: return "Chromium re-launched itself to drop administrator rights";
+    case 39: return "another process terminated this one on commit failure";
+    default: return "see cef_types.h for the description";
+    }
+}
+
 String GetCellName(const GameId& aWorldSpaceId, const GameId& aCellId) noexcept
 {
     auto& modSystem = World::Get().GetModSystem();
@@ -93,6 +142,12 @@ String GetCellName(const GameId& aWorldSpaceId, const GameId& aCellId) noexcept
 
 float CalculateHealthPercentage(Actor* apActor) noexcept
 {
+    // Its per-frame caller passes PlayerCharacter::Get(), which is null while a
+    // save is loading and on the main menu. The two other callers look the actor
+    // up from the world and already know it is there.
+    if (!apActor)
+        return 0.f;
+
     const float maxHealth = apActor->GetActorPermanentValue(ActorValueInfo::kHealth);
     const float tempModHealth = apActor->healthModifiers.temporaryModifier;
 
@@ -136,14 +191,14 @@ OverlayService::~OverlayService() noexcept
 void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
 {
     m_pProvider = TiltedPhoques::MakeUnique<D3D11RenderProvider>(apRenderSystem);
-    m_pOverlay = new OverlayApp(m_pProvider.get(), new ::OverlayClient(m_transport, m_pProvider->Create()));
+    m_pOverlay = new SkyrimTogetherOverlayApp(m_pProvider.get(), new ::OverlayClient(m_transport, m_pProvider->Create()));
 
     if (!m_pOverlay->Initialize())
     {
         spdlog::error("Overlay could not be initialized");
         if (int32_t exitCode = CefGetExitCode())
         {
-            spdlog::critical("CEF failed to initialize, exit code {}. See 'cef_types.h' for description", exitCode);
+            spdlog::critical("CEF failed to initialize, exit code {} ({})", exitCode, DescribeCefExitCode(exitCode));
         }
     }
 
@@ -170,11 +225,16 @@ void OverlayService::Reset() const noexcept
 void OverlayService::Reload() noexcept
 {
     SetInGame(false);
-    SetActive(false);
-    GetOverlayApp()->GetClient()->GetBrowser()->Reload();
+
+    // Reload() is reachable from the UI before CEF has produced an app.
+    if (const auto* pApp = GetOverlayApp())
+    {
+        if (const auto pBrowser = pApp->GetClient()->GetBrowser())
+            pBrowser->Reload();
+    }
+
     Initialize();
     SetInGame(true);
-    m_pOverlay->ExecuteAsync("enterGame");
     SetActive(true);
 }
 
@@ -185,12 +245,20 @@ void OverlayService::Initialize() noexcept
 
 void OverlayService::SetActive(bool aActive) noexcept
 {
-    if (!m_inGame)
-        return;
-    if (m_active == aActive)
+    // Activating follows the game state, deactivating is always allowed.
+    // Refusing to deactivate outside the game is what let a UI left open
+    // when the world went away stay stuck open.
+    if (aActive && !m_inGame)
         return;
 
+    // Send the event even when the flag already matches. The page can have
+    // been rebuilt since the last one (enter/exit game, reload, renderer
+    // restart) and this is the only thing that puts the C++ flag and the
+    // page back in agreement, instead of leaving the mismatch to be
+    // discovered by the next F2 press.
     m_active = aActive;
+
+    spdlog::info("overlay active state: {} (in game: {})", m_active, m_inGame);
 
     m_pOverlay->ExecuteAsync(m_active ? "activate" : "deactivate");
 }
@@ -200,22 +268,63 @@ bool OverlayService::GetActive() const noexcept
     return m_active;
 }
 
+// Closes the UI without going through SetActive, which refuses to run once
+// m_inGame has flipped. The DirectInput hook and the software cursor belong
+// to the same state, so they are released with it: leaving them on would
+// freeze game input while nothing is on screen to take it.
+void OverlayService::ForceDeactivate() noexcept
+{
+    if (!m_active)
+        return;
+
+    m_active = false;
+    m_pOverlay->ExecuteAsync("deactivate");
+
+    spdlog::info("overlay force-deactivated, leaving the game with the UI open");
+
+    InputService::SetCaptureEnabled(false);
+
+    const auto pClient = m_pOverlay->GetClient();
+    if (!pClient)
+        return;
+
+    const auto pRenderer = pClient->GetOverlayRenderHandler();
+    if (pRenderer)
+        pRenderer->SetCursorVisible(false);
+}
+
 void OverlayService::SetInGame(bool aInGame) noexcept
 {
     if (m_inGame == aInGame)
         return;
+
+    // Close the UI while m_inGame is still true. Doing it after the flip made
+    // SetActive() a no-op, which left m_active set while the page had been
+    // told to tear itself down. The next F2 then hit the "already active"
+    // early return, sent no "activate", and only the software cursor came
+    // back - which is exactly the "F2 shows a cursor and nothing else" report.
+    if (!aInGame)
+        ForceDeactivate();
+
     m_inGame = aInGame;
+
+    // the F2 toggle is ignored until this flips, so it is worth a line
+    spdlog::info("overlay in-game state: {}", m_inGame);
 
     if (m_inGame)
     {
         SetVersion(BUILD_COMMIT);
         m_pOverlay->ExecuteAsync("enterGame");
+
+        // The page may have been rebuilt while the flag stayed set, so push
+        // the activation state again rather than waiting for the next F2 to
+        // disagree with it.
+        if (m_active)
+            m_pOverlay->ExecuteAsync("activate");
     }
     else
     {
         m_pOverlay->ExecuteAsync("exitGame");
-        // TODO: this does nothing, since m_inGame is false
-        SetActive(false);
     }
 }
 
@@ -290,9 +399,12 @@ void OverlayService::OnConnectedEvent(const ConnectedEvent& acEvent) noexcept
     m_pOverlay->ExecuteAsync("setLocalPlayerId", pArguments);
 }
 
-void OverlayService::OnDisconnectedEvent(const DisconnectedEvent&) noexcept
+void OverlayService::OnDisconnectedEvent(const DisconnectedEvent& acEvent) noexcept
 {
-    m_pOverlay->ExecuteAsync("disconnect");
+    auto pArgs = CefListValue::Create();
+    pArgs->SetBool(0, acEvent.IsError);
+
+    m_pOverlay->ExecuteAsync("disconnect", pArgs);
 }
 
 void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
@@ -439,13 +551,22 @@ void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& 
 
 void OverlayService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
 {
+    // The overlay app is created in Init(), so it is null for anything that
+    // arrives before the page exists - a party event right after connecting is
+    // the normal way to hit that. Reload() guards the same pointer; these two
+    // did not.
+    auto* pApp = GetOverlayApp();
+    if (!pApp)
+        return;
+
     if (acEvent.IsLeader)
-        m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyCreated");
+        pApp->ExecuteAsync("partyCreated");
 }
 
 void OverlayService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
 {
-    m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyLeft");
+    if (auto* pApp = GetOverlayApp())
+        pApp->ExecuteAsync("partyLeft");
 }
 
 void OverlayService::RunDebugDataUpdates() noexcept

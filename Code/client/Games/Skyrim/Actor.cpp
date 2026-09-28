@@ -5,18 +5,22 @@
 #include <Misc/GameVM.h>
 #include <DefaultObjectManager.h>
 #include <Forms/TESNPC.h>
+#include <Forms/TESObjectARMO.h>
+#include <Forms/TESLevItem.h>
+#include <Forms/BGSOutfit.h>
 #include <Forms/TESFaction.h>
 #include <Forms/TESQuest.h>
 #include <Components/TESActorBaseData.h>
 #include <ExtraData/ExtraFactionChanges.h>
+#include <ExtraData/ExtraLeveledCreature.h>
 #include <Games/Memory.h>
-#include <Forms/TESLevItem.h>
 #include <Combat/CombatController.h>
 
 #include <Events/HealthChangeEvent.h>
 #include <Events/InventoryChangeEvent.h>
 #include <Events/MountEvent.h>
 #include <Events/DialogueEvent.h>
+#include <Games/Misc/MenuTopicManager.h>
 #include <Events/HitEvent.h>
 #include <Events/RemoveSpellEvent.h>
 
@@ -51,12 +55,30 @@
 #include <Games/Skyrim/BSAnimationGraphManager.h>
 #include <Havok/hkbStateMachine.h>
 #include <Havok/hkbBehaviorGraph.h>
-#include <Forms/BGSOutfit.h>
-#include <Forms/TESObjectARMO.h>
+#include <Havok/bhkCharacterController.h>
 
 #include <ModCompat/BehaviorVar.h>
 
-#include <World.h>
+namespace
+{
+// The game's "PlayerFaction" record. Named because a missing load-order entry
+// must be a no-op, not a null write, and the intent is not obvious from the id.
+constexpr uint32_t kPlayerFactionId = 0xDB1;
+
+void QueueActorInventoryChange(Actor* apActor, InventoryChangeEvent aEvent, TESObjectREFR* apTransferReference = nullptr)
+{
+    auto ownershipToken = Utils::GetLocalOwnershipToken(apActor->formID);
+    if (!ownershipToken && apTransferReference == PlayerCharacter::Get())
+        ownershipToken = Utils::GetRemoteOwnershipToken(apActor->formID);
+
+    if (!ownershipToken)
+        return;
+
+    aEvent.ServerId = ownershipToken->ServerId;
+    aEvent.OwnershipEpoch = ownershipToken->OwnershipEpoch;
+    World::Get().GetRunner().Trigger(std::move(aEvent));
+}
+}
 
 #ifdef SAVE_STUFF
 
@@ -146,6 +168,16 @@ void Actor::SetSpeed(float aSpeed) noexcept
     animationGraphHolder.SetVariableFloat(&speedSampledStr, aSpeed);
 }
 
+TESNPC* Actor::GetLeveledPick() const noexcept
+{
+    const auto* pExtra = static_cast<ExtraLeveledCreature*>(extraData.GetByType(ExtraDataType::LeveledCreature));
+    TESActorBase* pTemplate = pExtra ? pExtra->templateBase : nullptr;
+    if (!pTemplate || pTemplate->formType != FormType::Npc || pTemplate->IsTemporary())
+        return nullptr;
+
+    return static_cast<TESNPC*>(pTemplate);
+}
+
 uint16_t Actor::GetLevel() const noexcept
 {
     TP_THIS_FUNCTION(TGetLevel, uint16_t, const Actor);
@@ -157,8 +189,23 @@ void Actor::ForcePosition(const NiPoint3& acPosition) noexcept
 {
     ScopedReferencesOverride recursionGuard;
 
-    // It just works TM
-    SetPosition(acPosition, true);
+    // A remote actor skips native movement processing, so its controller can
+    // still be sitting on a zero timestep when this runs. Handing that state to
+    // SetPosition lets the position write reset velocity against a zero step,
+    // and the division that follows produces non-finite acceleration, which
+    // propagates into contact mass modifiers - the "objects and NPCs glide after
+    // a collision" failure. Refresh the timing first; where no usable step
+    // exists yet, move the reference and let interpolation catch the controller
+    // up once physics timing is available.
+    bool updateController = true;
+    const auto* pExtension = GetExtension();
+    if (pExtension && pExtension->IsRemote() && currentProcess)
+    {
+        if (auto* pController = currentProcess->GetCharController())
+            updateController = pController->UpdateStepTiming();
+    }
+
+    SetPosition(acPosition, updateController);
 }
 
 void Actor::QueueUpdate() noexcept
@@ -177,24 +224,31 @@ void Actor::QueueUpdate() noexcept
 
 GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
 {
+    // The player is the anchor every remote actor is spawned around, so a
+    // missing one has to fail closed - and it has to fail *before* the
+    // allocation below, otherwise the early return leaks the actor New()
+    // just built. Checked first for exactly that reason.
+    const auto pPlayer = static_cast<Actor*>(GetById(0x14));
+    if (!pPlayer)
+        return nullptr;
+
     auto pActor = New();
     // Prevent saving
     pActor->SetSkipSaveFlag(true);
     pActor->GetExtension()->SetRemote(true);
 
-    const auto pPlayer = static_cast<Actor*>(GetById(0x14));
     auto pCell = pPlayer->parentCell;
     const auto pWorldSpace = pPlayer->GetWorldSpace();
 
     pActor->SetLevelMod(4);
     pActor->MarkChanged(0x40000000);
     pActor->SetParentCell(pCell);
-    pActor->SetBaseForm(apBaseForm);
+    pActor->SetObjectReference(apBaseForm);
 
     auto position = pPlayer->position;
     auto rotation = pPlayer->rotation;
 
-    if (pCell && !(pCell->cellFlags[0] & 1))
+    if (pCell && !(pCell->cellFlags & 1))
         pCell = nullptr;
 
     ModManager::Get()->Spawn(position, rotation, pCell, pWorldSpace, pActor);
@@ -213,6 +267,9 @@ GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
 GamePtr<Actor> Actor::Spawn(uint32_t aBaseFormId) noexcept
 {
     TESNPC* pNpc = Cast<TESNPC>(TESForm::GetById(aBaseFormId));
+    if (!pNpc)
+        return nullptr;
+
     return Actor::Create(pNpc);
 }
 
@@ -292,8 +349,11 @@ void Actor::SetPlayerRespawnMode(bool aSet) noexcept
 
     if (formID != 0x14)
     {
-        auto pPlayerFaction = Cast<TESFaction>(TESForm::GetById(0xDB1));
-        SetFactionRank(pPlayerFaction, 1);
+        // Hardcoded "PlayerFaction" id. A load order without it - or one where
+        // the record has not been loaded yet - leaves this null, and the rank
+        // write below used to hand that straight to the engine.
+        if (auto pPlayerFaction = Cast<TESFaction>(TESForm::GetById(kPlayerFactionId)))
+            SetFactionRank(pPlayerFaction, 1);
     }
 }
 
@@ -492,7 +552,7 @@ bool Actor::ShouldWearBodyPiece() const noexcept
     if (!pBase)
         return false;
 
-    BGSOutfit* pDefaultOutfit = pBase->outfits[0];
+    BGSOutfit* pDefaultOutfit = pBase->defaultOutfit;
     if (!pDefaultOutfit)
         return false;
 
@@ -535,7 +595,7 @@ void Actor::EquipOutfit(bool aIsSleepOutfit) noexcept
     if (!pBase)
         return;
 
-    BGSOutfit* pDefaultOutfit = pBase->outfits[aIsSleepOutfit ? 1:0];
+    BGSOutfit* pDefaultOutfit = aIsSleepOutfit ? pBase->sleepOutfit : pBase->defaultOutfit;
     if (!pDefaultOutfit)
         return;
 
@@ -560,7 +620,8 @@ void Actor::EquipOutfit(bool aIsSleepOutfit) noexcept
         if (!pArmor)
             continue;
 
-        spdlog::debug(__FUNCTION__ ": equipping {:X} on actor {:X} {}", pArmor->formID, formID, baseForm->GetName());
+        spdlog::debug(__FUNCTION__ ": equipping {:X} on actor {:X} {}", pArmor->formID, formID,
+                      baseForm ? baseForm->GetName() : "<no base form>");
         pEquipManager->Equip(this, pArmor, nullptr, 1, nullptr, false, true, false, false);  
     }
 
@@ -1000,7 +1061,7 @@ bool TP_MAKE_THISCALL(HookSpawnActorInWorld, Actor)
     const auto* pNpc = Cast<TESNPC>(apThis->baseForm);
     if (pNpc)
     {
-        spdlog::info("Spawn Actor: {:X}, and NPC {}", apThis->formID, pNpc->fullName.value);
+        spdlog::debug("Spawn Actor: {:X}, and NPC {}", apThis->formID, pNpc->fullName.value);
     }
 
     return TiltedPhoques::ThisCall(RealSpawnActorInWorld, apThis);
@@ -1122,7 +1183,7 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
         if (apExtraData)
             apThis->GetItemFromExtraData(item, apExtraData);
 
-        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item)));
+        QueueActorInventoryChange(apThis, InventoryChangeEvent(apThis->formID, std::move(item)), apOldOwner);
     }
 
     TiltedPhoques::ThisCall(RealAddInventoryItem, apThis, apItem, apExtraData, aCount, apOldOwner);
@@ -1145,7 +1206,7 @@ void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t
         // The inventory change event should always be sent to the server, otherwise the server inventory won't be updated.
         bool shouldUpdateClients = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
 
-        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), false, shouldUpdateClients));
+        QueueActorInventoryChange(apThis, InventoryChangeEvent(apThis->formID, std::move(item), false, shouldUpdateClients));
     }
 
     return TiltedPhoques::ThisCall(RealPickUpObject, apThis, apObject, aCount, aUnk1, aUnk2);
@@ -1167,7 +1228,7 @@ void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* ap
     if (apExtraData)
         apThis->GetItemFromExtraData(item, apExtraData);
 
-    World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), true));
+    QueueActorInventoryChange(apThis, InventoryChangeEvent(apThis->formID, std::move(item), true));
 
     ScopedInventoryOverride _;
 
@@ -1322,19 +1383,29 @@ bool Actor::IsSpeakingInScene()
     const bool isTalking = IsTalking(); 
     const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish logs in 2-party
 
-    spdlog::debug(__FUNCTION__ ": isSpeakingInScene {}, isTalking {}, voiceRecoveryTime {}, isLeader {}, formId {:X}, name {}", isSpeakingInScene, isTalking, GetVoiceRecoveryTime(), isLeader, formID, baseForm->GetName());
+    spdlog::debug(__FUNCTION__ ": isSpeakingInScene {}, isTalking {}, voiceRecoveryTime {}, isLeader {}, formId {:X}, name {}", isSpeakingInScene, isTalking, GetVoiceRecoveryTime(), isLeader, formID,
+                  baseForm ? baseForm->GetName() : "<no base form>");
 
     return isSpeakingInScene;
 }
 
-char TP_MAKE_THISCALL(HookActorProcess, Actor, float a2)
+char TP_MAKE_THISCALL(HookActorProcess, Actor, float aDeltaTime)
 {
-    // Only process AI if we own the actor
-
+    // Suppress local movement for remote actors, but keep their controller's
+    // timing valid while doing so. Returning early without this leaves the
+    // controller on a zero timestep, which is the state the position-update path
+    // in ForcePosition then divides by.
     if (apThis->GetExtension()->IsRemote())
-            return 0;
+    {
+        if (apThis->currentProcess)
+        {
+            if (auto* pController = apThis->currentProcess->GetCharController())
+                pController->UpdateStepTiming(aDeltaTime);
+        }
+        return 0;
+    }
 
-    return TiltedPhoques::ThisCall(RealActorProcess, apThis, a2);
+    return TiltedPhoques::ThisCall(RealActorProcess, apThis, aDeltaTime);
 }
 
 TP_THIS_FUNCTION(TAddDeathItems, void, Actor);

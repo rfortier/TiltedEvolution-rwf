@@ -1,832 +1,1004 @@
-## [1.38.3](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.38.2...v1.38.3) (2022-07-01)
+# 更新日志
 
-## [1.38.2](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.38.1...v1.38.2) (2022-06-29)
+本项目的更新记录以 **GitHub Releases** 为准:
 
-## [1.38.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.38.0...v1.38.1) (2022-06-28)
+> https://github.com/komAAmok/SkyrimTogetherNext/releases
 
+每个 tag(形如 `v1.0.20`)对应一个 Release,附上版本号相同的两个包——
+客户端 mod 与专用服务器。逐条提交的历史见 `git log` 与各次 PR。
 
-### Bug Fixes
+## v1.1.8(2026-09-28)
 
-* disable buttons for non leader ([c2a4221](https://github.com/tiltedphoques/TiltedEvolution/commit/c2a4221ea86a05f75a81955eac79096da4bcc67c))
-* group ui not showing up ([02b2ec6](https://github.com/tiltedphoques/TiltedEvolution/commit/02b2ec6c526b65419cc170f7cfa8ac9ad3aebb5f))
-* pw protected servers showing on list ([bb55224](https://github.com/tiltedphoques/TiltedEvolution/commit/bb55224ac6495751b4d4e7e435dc1d277c1f6cc0))
+### 修复:任意玩家一条聊天消息即可打崩专用服务器
 
-# [1.38.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.37.1...v1.38.0) (2022-06-27)
+**现象**:专用服务器上,一个**还没建好角色**的玩家(刚连上、角色创建失败,或
+角色被删除后重连)发一条聊天消息,服务端进程直接终止。
 
+**根因**:`Player::GetCharacter()` 返回的是
+`std::optional<entt::entity>`,它在 `CharacterService` 创建角色**之前一直是空**。
+`OverlayService::HandleChatMessage`(`Code/server/Services/OverlayService.cpp`)
+把它**直接解引用**后交给脚本回调:
 
-### Bug Fixes
+```cpp
+auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(
+    *acMessage.pPlayer->GetCharacter(), acMessage.Packet.ChatMessage);
+```
 
-* healthbar not always showing ([e4bbba7](https://github.com/tiltedphoques/TiltedEvolution/commit/e4bbba7a20667305542513f462abd51888324499))
-* invite buttons after relaunch party ([a942002](https://github.com/tiltedphoques/TiltedEvolution/commit/a9420021799dea7cfc2732e1d5089a012886af8b))
-* owner undefined check ([65a2df8](https://github.com/tiltedphoques/TiltedEvolution/commit/65a2df80461e32410078fe890ac8b83648f74b91))
-* player unload event ([6616036](https://github.com/tiltedphoques/TiltedEvolution/commit/661603653ebc9a11c5db09572d706d52db9a1cf0))
-* re-enable invite buttons ([b5450d5](https://github.com/tiltedphoques/TiltedEvolution/commit/b5450d5b9269e56fc80b52746e8d41fd16e0fb1a))
-* teleport button ([e286d26](https://github.com/tiltedphoques/TiltedEvolution/commit/e286d268fe3d92d5a0aea094921fa4803b6f99d5))
-* ui not showing sometimes ([d58d771](https://github.com/tiltedphoques/TiltedEvolution/commit/d58d7719bd3a8879982510faad50fcb70cf7e1f9))
+解引用空的 `optional` 是未定义行为:MSVC release 下取到的是一个**构造出来的
+垃圾实体**,脚本层再拿它去 `ctx().at<T>()` 就崩。这不是"玩家操作不当":
+`SendChatMessageRequest` 任何已连接客户端都能发,与是否建好角色无关。
 
+**判据是仓库自己的既有约定**——同一个调用在三处都有判空,只有这一处漏了:
 
-### Features
+| 位置 | 是否判空 |
+| --- | --- |
+| `WeatherService::OnWeatherChange` | ✅ `if (!...GetCharacter()) return;` |
+| `PlayerService::OnPlayerRespawnRequest` | ✅ `if (!character) return;` |
+| `OverlayService::HandleChatMessage` | ❌ **本次缺陷** |
 
-* better party auto-hide and ui logic ([1a300ab](https://github.com/tiltedphoques/TiltedEvolution/commit/1a300ab2bd02d86bff891498a61626d5cd3bee55))
-* password protected servers ([b7676de](https://github.com/tiltedphoques/TiltedEvolution/commit/b7676ded513d7805fa81586f605c1f8a90ec7707))
-* UI mock service ([151ffba](https://github.com/tiltedphoques/TiltedEvolution/commit/151ffba312e0556862409cdc9ef29a29bccc1955))
+这与 v1.1.4 修掉的 `CommandService::OnSetTimeCommand` 是**同一类**:
+一条远程报文触发服务端空指针,判据也是"旁边三处都判了、这一处没判"。
 
-## [1.37.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.37.0...v1.37.1) (2022-06-23)
+**修复**:把脚本回调放进判空分支。**只跳过脚本回调,不吞掉消息** ——
+`onChatMessage` 拿到的是实体,传一个默认构造的实体等于把垃圾指针交给脚本;
+而下面的广播(`sendPlayerMessage`)自己已经判空,所以该玩家的全局/队伍聊天
+照常送达。**修崩溃,不改行为。**
 
+**验证**:改后全仓库再查一遍 `*...GetCharacter()` 的解引用点,只剩
+`WeatherService` 与 `PlayerService` 的两处,且三处**都在自己的判空分支里**;
+客户端侧同口径(`.value()` 与 `*optional`)逐个核对,全部有前置 `has_value()`
+/判空。
 
-### Bug Fixes
+### 修复:1.6.x 上 esp 与主菜单 logo 都在,但 F2 菜单打不开
 
-* enemies not dying after hitting 0 hp ([853bc8d](https://github.com/tiltedphoques/TiltedEvolution/commit/853bc8d3f84c665a42df0fb9afd95cb33b22b37f))
+**现象**:游戏 1.6.1170 + SKSE 2.2.6 下,SkyrimTogetherNext 看起来装好了
+(Creations 菜单里能看到 esp,主菜单有 logo),**但游戏内按 F2 没有任何反应**。
 
-# [1.37.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.36.0...v1.37.0) (2022-06-23)
+**根因**:`SkyrimTogetherSKSE.dll` 其实**一次都没被 SKSE 加载过**。
+`skse64.log` 里那一行就是判据:
 
+```text
+plugin SkyrimTogetherSKSE.dll (00000000  00000000) no version data 0 (handle 0)
+```
 
-### Bug Fixes
+`handle 0` 表示 SKSE 根本没把它加进加载列表。SKSE 2.2.x 的
+`PluginManager::ScanPlugins` 按名字查找 **`SKSEPlugin_Version`** 这个导出;
+**找不到就直接记 `no version data` 并跳过,没有回退到旧的 `SKSEPlugin_Query`**。
+而本 DLL 只导出了 `Query`/`Load`。
 
-* buttons enabled ([1fda760](https://github.com/tiltedphoques/TiltedEvolution/commit/1fda7605f871e3010f509fc1b95ca4431d35b503))
-* disable invite button if in party ([f956f95](https://github.com/tiltedphoques/TiltedEvolution/commit/f956f95770de4ca9d19dbe802f3af6236f729f17))
-* group ui data ([bdafbe7](https://github.com/tiltedphoques/TiltedEvolution/commit/bdafbe73fff406387324b88937e7771f53f0b533))
-* health bar not showing up ([327d712](https://github.com/tiltedphoques/TiltedEvolution/commit/327d7121584e55a6cd4f5fa736cf4d8e5928210d))
-* health percentage rounding ([17b4140](https://github.com/tiltedphoques/TiltedEvolution/commit/17b414002e01e19603c998cc7d3c06da9ee35189))
-* setCell for ui display ([b99af4c](https://github.com/tiltedphoques/TiltedEvolution/commit/b99af4c0df394554cffab2e9f85b452a81221493))
+后果是链条式的:`SKSEPlugin_Load` 从未执行 → 运行时
+(`SkyrimTogetherRuntime.dll`)**从未被部署** → F2 菜单永不出现。
+esp 与 logo 是普通 mod 文件,不受影响,所以"看起来装好了"。
 
+**为什么本地测不出来**:SKSE 2.0.x(游戏 1.5.97)**从不读这个导出**,仍然走
+`Query`,所以同一个 DLL 在 1.5.97 上一直是好的。
 
-### Features
+**修复**:`Code/skse_bootstrap/main.cpp` 增加 `SKSEPlugin_Version` 导出,
+声明**版本无关**(`kVersionIndependent_Signatures` +
+`kVersionIndependentEx_NoStructUse`)。这两个标志缺一不可:少了后者,
+SKSE 1.6.629+ 会答 `only compatible with versions earlier than 1.6.629`;
+少了前者,1.7.99+ 会要求 V5 地址库。本 DLL 不解析任何引擎地址,所以版本无关
+是如实描述,也避免了每出一版游戏就要改列表、重编译。
 
-* invite party members through main ui ([6043c34](https://github.com/tiltedphoques/TiltedEvolution/commit/6043c34569de0e5a81ddcee9816ac789c5d9b742))
-* launch and leave party through ui ([038b288](https://github.com/tiltedphoques/TiltedEvolution/commit/038b2883edde56e67b07c4f6ed923d6fd1eb1a6c))
-* player health bars in party ui ([5cc0910](https://github.com/tiltedphoques/TiltedEvolution/commit/5cc09108af563a9ccf8fea92d89d9aae53754f35))
-* public debug ui ([415e6f2](https://github.com/tiltedphoques/TiltedEvolution/commit/415e6f2536750b836748b62a5a0732f2f561ef2d))
-* sort group member list ([46e9bcb](https://github.com/tiltedphoques/TiltedEvolution/commit/46e9bcb87c8b29978d009354d22a0dfc78372f37))
+新增门禁 `Code/plugins/tools/check_skse_bootstrap.py`,**8 种失败模式各自反向验证**
+(含本次真实缺陷、导出被命名空间修饰、结构体字段换序、两个标志缺失、
+把标志只写在注释里)。完整取证见 `docs/PITFALLS.md` §42。
 
-# [1.36.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.35.2...v1.36.0) (2022-06-21)
+### 修复:引导页里 OStim Together 是灰的、根本点不动(装好前置也没用)
 
+**现象**:MO2 引导页里 `OStim Together` 灰掉、无法勾选,而且**先把 OStim
+Standalone 装好也照样是灰的**。
 
-### Features
+**根因不是"前置没装",而是向导里一条永远不可能成立的判断。** MO2 只把
+FOMOD 的 `fileDependency` 拿去比对**插件列表**(esp/esm/esl),指向别的东西时
+它一律判为缺失,并在日志里明说:
 
-* dont sync vanilla home chests ([415b6ae](https://github.com/tiltedphoques/TiltedEvolution/commit/415b6aea5ed3929ff3985aef84dc59a22455b4d2))
+```text
+A dependency on non esp/esm/esl SKSE/Plugins/OStim.dll will always find it as missing.
+```
 
-## [1.35.2](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.35.1...v1.35.2) (2022-06-15)
+上一版把 `detectFile` 写成了 `SKSE/Plugins/OStim.dll`,于是 `Active` 与
+`Inactive` 两个分支都不可能命中,`NotUsable` 永远生效——**这条判断跟装没装无关**。
+
+**修复**:
 
+1. `detectFile` 改指前置真实携带的插件文件 `OStim.esp`;
+2. `merge_fomod.py` 增加门禁:拒绝非 esp/esm/esl 的 `detectFile`
+   (反向验证:改回 `OStim.dll` → exit 1 并指名 `plugins.json`);
+3. 顺带修掉拒绝信息比代码旧一个版本的问题:`SelectGraphLayout` 已接受
+   OStimNG `7.5.1.x`,而拒绝文案仍称最新只到 `7.5.0.2`——真被拒绝的玩家
+   会被告知去装一个比他手上更旧的版本。文案现改为
+   `7.4.0.3 (7.4c), 7.5.0.2 (7.5b) and 7.5.1.x`,并新增
+   `check_ostim_support_message.py` 把**文案与选择器双向绑死**
+   (四种漂移各自反向验证 → 均 exit 1)。
+
+完整取证与命令见 `docs/PITFALLS.md` §41。
+
+### 修复:消息门面只在 1.6.1170 上加载,其余版本静默失效
+
+**现象**:上一条(bootstrap 缺 `SKSEPlugin_Version`)修好之后,1.6.1170 上
+`SkyrimTogetherSKSE.dll` 能加载了,但**插件层的同步依然是死的**——桥接日志里
+反复刷同一行,永不成功:
+
+```text
+send resolver pass failed in 4453 ms; waiting for mapped STR 1.8.0 runtime
+ProxyResolver waiting: spans=20 transport=no loaded=no unloaded=no
+```
+
+**根因是同一类缺陷的另两副面孔**,而且**都在开发机(1.5.97)上看不见**:
+
+1. **`STRPluginMessagingBridge.dll` 没有导出 `SKSEPlugin_Query`**。
+   SKSE 2.0.x(1.5.97)要求 `Query` 与 `Load` **同时存在**,少一个就判
+   `does not appear to be an SKSE plugin`——本仓库 1.5.97 的 `skse64.log`
+   里就有这一行:
+
+   ```text
+   plugin D:\game\SkyrimSE\Data\SKSE\Plugins\\STRPluginMessagingBridge.dll does not appear to be an SKSE plugin
+   ```
+
+2. **三个门面 DLL 的 `compatibleVersions` 只写了 `1.6.1170`**,而
+   `versionIndependence` 为 `0`。SKSE 2.2.x 对非版本无关的插件,会把这个列表
+   拿去和**精确的运行版本**比对,于是 `1.6.317/640/1130/1179` 与
+   `1.7.99/104`——**每一个本包都提供了地址库的版本**——全部被判
+   `disabled, incompatible with current version of the game`。
+
+两条都在同一处放大:**门面是所有伴侣插件取传输层的入口**(伴侣插件用
+`LoadLibraryW` 按名加载它)。门面在某个版本上被 SKSE 跳过,那一条游戏线上
+所有插件的同步一起失效。
+
+**为什么 1.6.1170 上是好的**:列表恰好命中,所以这个缺陷只有换一个游戏版本
+才暴露——这是本次会话第三次撞上"本地测不出"。
+
+**修复**(`Code/plugins/patches/STRPluginMessagingAPI/0002-*.patch`,子模块只走补丁):
 
-### Bug Fixes
-
-* freeze and several crashes ([4ad660d](https://github.com/tiltedphoques/TiltedEvolution/commit/4ad660de7812efc157991b813fd2cd59ec251d1a))
-* missing player characters ([6fb4a9c](https://github.com/tiltedphoques/TiltedEvolution/commit/6fb4a9c4f1275236fd2e1b3c5beb0473c74f9d96))
-
-## [1.35.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.35.0...v1.35.1) (2022-06-14)
-
-# [1.35.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.34.0...v1.35.0) (2022-06-13)
-
-
-### Bug Fixes
-
-* actually send the data to ui ([8a39e8f](https://github.com/tiltedphoques/TiltedEvolution/commit/8a39e8f5f789258128dec8eb57300a1a1cb83fc0))
-* add missing entt::scoped_connection ([b4c5dbb](https://github.com/tiltedphoques/TiltedEvolution/commit/b4c5dbbba7485d17ea9ebbce66a2bb1813088870))
-* adjust playerList styling ([765487b](https://github.com/tiltedphoques/TiltedEvolution/commit/765487b03cb3642dd78481db92abb4043518f773))
-* build error ([a130136](https://github.com/tiltedphoques/TiltedEvolution/commit/a1301362cb391c325ba936db8a4a8db13d3ed6d0))
-* build errors ([cfcb75e](https://github.com/tiltedphoques/TiltedEvolution/commit/cfcb75ebcb5114029467396fba204a5f681f0f4d))
-* ci linux ([2d6bb43](https://github.com/tiltedphoques/TiltedEvolution/commit/2d6bb43d4c38d71793bfe2e6920e54dd0e5d30a7))
-* crash ([e5cc47e](https://github.com/tiltedphoques/TiltedEvolution/commit/e5cc47e17082c4acadfe96af5426ec0af9a39e5a))
-* entt crash ([780fe20](https://github.com/tiltedphoques/TiltedEvolution/commit/780fe20a576df21bf5ebe7272c680400d1052e00))
-* extra entt listener for updates to PlayerComponent ([1b032cf](https://github.com/tiltedphoques/TiltedEvolution/commit/1b032cfaffbc80ee1cd1184a58533271636aed4c))
-* invisible players ([feac82e](https://github.com/tiltedphoques/TiltedEvolution/commit/feac82ec57a8735d6bc6527966c32081fe94010e))
-* listen to RemotePlayerDespawnedEvent ([0aa9cc2](https://github.com/tiltedphoques/TiltedEvolution/commit/0aa9cc2546ec1bccadfad90d5edac672ec0b15f7))
-* map to level instead of serverid the second time ([a7d86b1](https://github.com/tiltedphoques/TiltedEvolution/commit/a7d86b133c9f695389110001cf63cd6803d3142f))
-* no worldspace in interiors ([3406433](https://github.com/tiltedphoques/TiltedEvolution/commit/34064338f4b667540eb45bff0b2f4e718fa9ee0b))
-* player removed event ([81069ca](https://github.com/tiltedphoques/TiltedEvolution/commit/81069cacbd798087a86299d9898d937827ff55cb))
-* PlayerComponent for local player ([e9962ce](https://github.com/tiltedphoques/TiltedEvolution/commit/e9962ceded3faf6e71bf334e4500c2a160e0eedd))
-
-
-### Features
-
-* infrastructure for teleport button ([297d028](https://github.com/tiltedphoques/TiltedEvolution/commit/297d0281d46fb0a088e674ebd91eace21cf0650a))
-* net debug data for ui ([8d79a75](https://github.com/tiltedphoques/TiltedEvolution/commit/8d79a759e062ead4f073ef803a905bd7bbefaa4a))
-* player world presence event for party UI ([5b4d5d1](https://github.com/tiltedphoques/TiltedEvolution/commit/5b4d5d1bf7dc8b59a146303c108183b25aa64b92))
-* set initial health on player load ([8c66ac1](https://github.com/tiltedphoques/TiltedEvolution/commit/8c66ac12d16592629ca71a9b33bdc18ecf15c06d))
-* sync level ups in UI ([d325373](https://github.com/tiltedphoques/TiltedEvolution/commit/d325373b2916c61ed927df04dea4e0ef301448b7))
-
-# [1.34.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.33.3...v1.34.0) (2022-06-11)
-
-
-### Bug Fixes
-
-* actor stuck on traveling through door ([6cd70c5](https://github.com/tiltedphoques/TiltedEvolution/commit/6cd70c544745bbdb7804cafb0780f22be35578d4))
-* build error ([497d679](https://github.com/tiltedphoques/TiltedEvolution/commit/497d6792d9fc901ae4eef1f89fc1e2665f1ce8fc))
-* build error ([677daaa](https://github.com/tiltedphoques/TiltedEvolution/commit/677daaaffcc3ccecbd41bc00ad0a0052f277755b))
-* conjure familiar ghost effect apply ([5651b65](https://github.com/tiltedphoques/TiltedEvolution/commit/5651b655d662323fed2a80a5a642564a3aadd060))
-* disable xmake ccache as it is broken ([ec019da](https://github.com/tiltedphoques/TiltedEvolution/commit/ec019da33063a5959c4fcfb9148f8e93386765ef))
-* don't tp temporaries ([b1912d8](https://github.com/tiltedphoques/TiltedEvolution/commit/b1912d8085005a863d18235d0c8f1d8c87130a68))
-* double applying of RemoteComponent ([c6bf19c](https://github.com/tiltedphoques/TiltedEvolution/commit/c6bf19c7d460c191293a685f2cef71a86c1ece5d))
-* double queue of event ([3f53434](https://github.com/tiltedphoques/TiltedEvolution/commit/3f53434457eae479415597d0f021a04f7ef91ec2))
-* entity actor mover ([046aadd](https://github.com/tiltedphoques/TiltedEvolution/commit/046aadd8ff7b2fca7e2992d473be5c9e6372eacc))
-* form id comparison ([a11649e](https://github.com/tiltedphoques/TiltedEvolution/commit/a11649ed87b2ab96d10ad9a0d365d60d0af235d5))
-* isOwner bool on assignment ([563cf47](https://github.com/tiltedphoques/TiltedEvolution/commit/563cf472df2b8eb99e46fbdca92f4119c43f5fc7))
-* MoveActor bug ([81b338b](https://github.com/tiltedphoques/TiltedEvolution/commit/81b338bfecf7e316205b5d9473a1baa7b60818a1))
-* potential disconnect crash ([c1870b9](https://github.com/tiltedphoques/TiltedEvolution/commit/c1870b9af94f50dc2765e1704d5ee08134e0dc4c))
-* properly update magic equipment ([197f0cc](https://github.com/tiltedphoques/TiltedEvolution/commit/197f0cc3050abc62571898204b99d35ed6769704))
-* server crash ([b93cb7f](https://github.com/tiltedphoques/TiltedEvolution/commit/b93cb7f59f193c98e18d218450586b88fbaae1fe))
-* the door problem (again) ([77c0098](https://github.com/tiltedphoques/TiltedEvolution/commit/77c009864eee163a2721d0c8976259a8ad781970))
-* transfer temp actors ([a5c3ad7](https://github.com/tiltedphoques/TiltedEvolution/commit/a5c3ad72e180cbbd592ba0931f4b4bb8c93b6aa5))
-* wrongful ownership transfer ([991337b](https://github.com/tiltedphoques/TiltedEvolution/commit/991337bb01762ed6ab7b6c9192ce2f5db71530a4))
-
-
-### Features
-
-* improved quest debugger ([397e971](https://github.com/tiltedphoques/TiltedEvolution/commit/397e9717a980332d6418437d19636b66870439d2))
-* party leader hosts all actors ([0bb89bc](https://github.com/tiltedphoques/TiltedEvolution/commit/0bb89bc7bae1e66bcb63838db4bcf6e1271f573b))
-* transfer ownership to party leader on creation ([7c6a9ed](https://github.com/tiltedphoques/TiltedEvolution/commit/7c6a9ed45e5786266357ec21176310719bf92753))
-
-## [1.33.3](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.33.2...v1.33.3) (2022-05-29)
-
-## [1.33.2](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.33.1...v1.33.2) (2022-05-28)
-
-
-### Bug Fixes
-
-* magic effect crash ([f53ca46](https://github.com/tiltedphoques/TiltedEvolution/commit/f53ca468581fad38274c507f2ae13ef398a0282e))
-
-## [1.33.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.33.0...v1.33.1) (2022-05-26)
-
-
-### Bug Fixes
-
-* helper menu ([ef88e13](https://github.com/tiltedphoques/TiltedEvolution/commit/ef88e1335de2e9501fe099f6b47a7630e23835dc))
-
-# [1.33.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.32.0...v1.33.0) (2022-05-26)
-
-
-### Bug Fixes
-
-* build error ([a155e54](https://github.com/tiltedphoques/TiltedEvolution/commit/a155e545ae840e613203be1fea74e18e84dc5790))
-* duplicating quest items ([2b7c2d9](https://github.com/tiltedphoques/TiltedEvolution/commit/2b7c2d97f5cde192feb4968f2e8df551c25d9d15))
-* implicit cast crash ([b9247f6](https://github.com/tiltedphoques/TiltedEvolution/commit/b9247f66b7ff916bcbdf8038b3bf262fd9910a1d))
-* lockpick not syncing ([a7fc37b](https://github.com/tiltedphoques/TiltedEvolution/commit/a7fc37b1267a1e308bc71aa85c167b47ae01e867))
-* more cell id fixes ([4513476](https://github.com/tiltedphoques/TiltedEvolution/commit/45134760560acf6255053b9704050e8eab2129aa))
-* quest items and lock sync bugs ([cf582f5](https://github.com/tiltedphoques/TiltedEvolution/commit/cf582f50602b218d9565a8614c64793183a9e76f))
-* worldspace object sync and crash fix ([dbdfa00](https://github.com/tiltedphoques/TiltedEvolution/commit/dbdfa00fa8182bcfb6380cd89af9953c9956df0f))
-
-
-### Features
-
-* cool death fade ([51929ac](https://github.com/tiltedphoques/TiltedEvolution/commit/51929acba1f1d829f9acd7dee784165bc3a1589f))
-* update inventory UI listing ([c9c2bce](https://github.com/tiltedphoques/TiltedEvolution/commit/c9c2bceb27b011e78876e4804bd420f32c3550be))
-
-# [1.32.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.31.1...v1.32.0) (2022-05-25)
-
-
-### Bug Fixes
-
-* gold duplication bug ([6629f8c](https://github.com/tiltedphoques/TiltedEvolution/commit/6629f8c82e36578de584e45097d05d9f4cf621c5))
-
-
-### Features
-
-* pay and clear crime fines on death ([e6f47dd](https://github.com/tiltedphoques/TiltedEvolution/commit/e6f47dd7441a8d58cc449ae94c54c8450f53629c))
-
-## [1.31.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.31.0...v1.31.1) (2022-05-24)
-
-
-### Bug Fixes
-
-* double damage on projectiles ([bdd7baf](https://github.com/tiltedphoques/TiltedEvolution/commit/bdd7baffadfcb9c4c5c3dcb10e7237ca50108722))
-* invisibility ([b1b233f](https://github.com/tiltedphoques/TiltedEvolution/commit/b1b233f97ad47df0a583653568b89c777006973d))
-* ward spell not disappearing ([ef86bde](https://github.com/tiltedphoques/TiltedEvolution/commit/ef86bde884118b36959b6960c899dc29b274e85f))
-
-# [1.31.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.30.2...v1.31.0) (2022-05-24)
-
-
-### Features
-
-* player stands up after death ([f9d6fcd](https://github.com/tiltedphoques/TiltedEvolution/commit/f9d6fcdec577a49f66ab090eeeaa88825c23e506))
-
-## [1.30.2](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.30.1...v1.30.2) (2022-05-24)
-
-
-### Bug Fixes
-
-* chose arch when building ([440f2c0](https://github.com/tiltedphoques/TiltedEvolution/commit/440f2c06f006dc395cd36904c34a743d267494e5))
-* docker args should live forever ([8aab802](https://github.com/tiltedphoques/TiltedEvolution/commit/8aab8027531c5ce1c168900577187c2707e56cf5))
-* libc++ version ([55be85c](https://github.com/tiltedphoques/TiltedEvolution/commit/55be85cb9a89a9eb72478f746d296d55640bfddc))
-* raspberry pi again ([7a5f200](https://github.com/tiltedphoques/TiltedEvolution/commit/7a5f200af1c29e433be4821c9d5a123a38c8cd18))
-* raspberrypi build ([b09ae83](https://github.com/tiltedphoques/TiltedEvolution/commit/b09ae838b7ef60e8065e76c1eeaedb75b24df275))
-* runner for raspberry pi needs libssl ([8fda608](https://github.com/tiltedphoques/TiltedEvolution/commit/8fda60859679631e4de3603805ad39031cdf7dd4))
-
-## [1.30.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.30.0...v1.30.1) (2022-05-19)
-
-# [1.30.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.29.1...v1.30.0) (2022-05-16)
-
-
-### Bug Fixes
-
-* Ensure taskdialog always shows ([832daff](https://github.com/tiltedphoques/TiltedEvolution/commit/832daff0f5181b84dfc682eef1cba23802f39513))
-
-
-### Features
-
-* Only process input when ST window is active. ([828e7ba](https://github.com/tiltedphoques/TiltedEvolution/commit/828e7bae4edcb53e27b1c1c0221e509de6fbad6b))
-
-## [1.29.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.29.0...v1.29.1) (2022-05-11)
-
-
-### Bug Fixes
-
-* entt corruption bug ([e977810](https://github.com/tiltedphoques/TiltedEvolution/commit/e9778106098bf3114c1c223a9752a6eceb7b4883))
-* nvcamera crash ([5b12535](https://github.com/tiltedphoques/TiltedEvolution/commit/5b1253520d364cbcbab592f0950791c19b887c52))
-* style and bugs ([4c4ceab](https://github.com/tiltedphoques/TiltedEvolution/commit/4c4ceab31f7763af886031dad84e2bc4cabfe635))
-* update health server side ([f49753e](https://github.com/tiltedphoques/TiltedEvolution/commit/f49753ecde2db8e267cae362ee8d534e742bcd48))
-
-# [1.29.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.28.0...v1.29.0) (2022-05-11)
-
-
-### Bug Fixes
-
-* :angry: ([9829284](https://github.com/tiltedphoques/TiltedEvolution/commit/98292840c55f3f3e41cb0ddcb56bae3293c0b99f))
-* actor not dying after kill move ([489a1f8](https://github.com/tiltedphoques/TiltedEvolution/commit/489a1f83b31eb2117f240482c69363b5925d1eb6))
-* add missing \ ([7f6b5f8](https://github.com/tiltedphoques/TiltedEvolution/commit/7f6b5f8d6b29ee326c8102036be9a6c9519304c4))
-* build error ([78bd5f1](https://github.com/tiltedphoques/TiltedEvolution/commit/78bd5f1a04471032bff320b3084ff23b4d1d6536))
-* Cast breaking with const/volatile ([df8f648](https://github.com/tiltedphoques/TiltedEvolution/commit/df8f64860d6e98b020ef428d2b00bdbe65034309))
-* crash and mopo light bug ([76ccb07](https://github.com/tiltedphoques/TiltedEvolution/commit/76ccb0725a1ddce94294c7d4ed3271a60390f974))
-* crashes in inventory and projectile systems ([6a0ef9c](https://github.com/tiltedphoques/TiltedEvolution/commit/6a0ef9c0b53014c9bb092a4c0e79b27110d5ecbd))
-* destroy party on disconnect ([3944b58](https://github.com/tiltedphoques/TiltedEvolution/commit/3944b58171627041baa1c10efdb60da1e0ba2351))
-* disable input hook in title screen ([1548e48](https://github.com/tiltedphoques/TiltedEvolution/commit/1548e480c1730d42c053cefe5b4f3cd23881ee50))
-* disable SSL verification server side as users are having a hard time installing certificates :'( ([c370743](https://github.com/tiltedphoques/TiltedEvolution/commit/c3707430280d8bcf5375552cf069af3121a38c99))
-* disconnect and reconnect crash ([69f2201](https://github.com/tiltedphoques/TiltedEvolution/commit/69f2201c445e4226ab46da9484666786d7818373))
-* docker build ([cd2f1b6](https://github.com/tiltedphoques/TiltedEvolution/commit/cd2f1b655b49fb856b5a89b47b10a47977bd3899))
-* docker copy ([798c232](https://github.com/tiltedphoques/TiltedEvolution/commit/798c232ebb00755907047c10e71a81f4e2dfc108))
-* docker runner needs the same C environment as builder ([b8cbf2e](https://github.com/tiltedphoques/TiltedEvolution/commit/b8cbf2e8874587c4f5e03dc5d3ff3e04f9d1bfce))
-* dragon breath weapon sync ([4f86c01](https://github.com/tiltedphoques/TiltedEvolution/commit/4f86c01cbb60073be79cb44a877c1a23911f1412))
-* entt corruption ([a73dcaf](https://github.com/tiltedphoques/TiltedEvolution/commit/a73dcaf7d1fdba16154a720b5fccb95d67ecd4ca))
-* entt crash ([cc4291c](https://github.com/tiltedphoques/TiltedEvolution/commit/cc4291cdd0107d8083ea8d896ed315ae8483647d))
-* execution arrow fix. ([b1f95a9](https://github.com/tiltedphoques/TiltedEvolution/commit/b1f95a92de70af61b54d2c055dbf0f0b226912db))
-* fix? ([56f0de5](https://github.com/tiltedphoques/TiltedEvolution/commit/56f0de5222936259101a6955b83366841a17a883))
-* install script ([6279301](https://github.com/tiltedphoques/TiltedEvolution/commit/6279301a8f6ce078f1b32909d59839b31d549bfc))
-* invalid ids sent by the client ([ca45005](https://github.com/tiltedphoques/TiltedEvolution/commit/ca45005dd925c6f4352be93fdde85e0dac98596b))
-* inventory related crashes ([568b6c6](https://github.com/tiltedphoques/TiltedEvolution/commit/568b6c6ac2bea1227d27b8f512cefa511136e0f2))
-* invisible players ([aa004c0](https://github.com/tiltedphoques/TiltedEvolution/commit/aa004c00af3fd78fc2fac3edd4d7e98d385d70b6))
-* issue with waitingfor3d ([f4a528f](https://github.com/tiltedphoques/TiltedEvolution/commit/f4a528f512f9c25302538ae3cde75a6f28b93d00))
-* linux build ([6c71ba3](https://github.com/tiltedphoques/TiltedEvolution/commit/6c71ba3dfc151ab9148dd8b4f07dcdd09c7cbb8f))
-* Log related issues ([7232adf](https://github.com/tiltedphoques/TiltedEvolution/commit/7232adf669f378ee43906bd467d4728036bb5712))
-* logic bugs. ([5b1c596](https://github.com/tiltedphoques/TiltedEvolution/commit/5b1c5962c2681207a8f110882af3b5de5c855126))
-* memory issue with packets ([6cb2392](https://github.com/tiltedphoques/TiltedEvolution/commit/6cb23926bdee8cfa3d3d82399751dbc384d564e4))
-* missing file save ([4f73e08](https://github.com/tiltedphoques/TiltedEvolution/commit/4f73e08cc9e1658187516f0297b01036f56c833f))
-* overlay issues when device is lost ([c8ed2ac](https://github.com/tiltedphoques/TiltedEvolution/commit/c8ed2acbb05565d65730cb08cdcf7fd03fc7ffc6))
-* player death handling sliding bug ([7704b44](https://github.com/tiltedphoques/TiltedEvolution/commit/7704b445ec90bb2f04667d3df1267bc6dccb2126))
-* potential entt corruption client side ([183f1df](https://github.com/tiltedphoques/TiltedEvolution/commit/183f1df954282eff7a81b1648de1790748e48dbd))
-* properly apply magic pvp ([1431cf4](https://github.com/tiltedphoques/TiltedEvolution/commit/1431cf4379194f614100c3bdccb51de08a481f7c))
-* remote player sliding after death ([181b19b](https://github.com/tiltedphoques/TiltedEvolution/commit/181b19b1d707cc9ac687e61c7e2c4d40808abade))
-* remove more unused includes ([58ce7c9](https://github.com/tiltedphoques/TiltedEvolution/commit/58ce7c987df5cc84280aef59ac6e4615ed7eafa1))
-* remove stack allocator where memory can overrun ([967439d](https://github.com/tiltedphoques/TiltedEvolution/commit/967439d4bdec6eb8b831aada64db9f039ecc49c0))
-* sentry upload & /crash to test ([87b2362](https://github.com/tiltedphoques/TiltedEvolution/commit/87b23624a2b3260f984fc34788095d8191e084d3))
-* server console now gets closed when stdin is closed ([943fc1d](https://github.com/tiltedphoques/TiltedEvolution/commit/943fc1d3c6c024abbfe9060a58d4e7b24cf0cef6))
-* server side entt corruption ([fa2afe5](https://github.com/tiltedphoques/TiltedEvolution/commit/fa2afe5d545db3dc85abc39cac5ec16492b6ee30))
-* spdlog 1.10 build & regex bug ([94016fb](https://github.com/tiltedphoques/TiltedEvolution/commit/94016fb436814bde200c7dd79e2a751f4b396efa))
-* symbol uploads ([b216e3f](https://github.com/tiltedphoques/TiltedEvolution/commit/b216e3f44d99055b9e5237dc9934e959a824ee82))
-* windows build ([8e4dd91](https://github.com/tiltedphoques/TiltedEvolution/commit/8e4dd91213048d0b71ea33fd5e2d422190bf081f))
-
-
-### Features
-
-* add doxyfile with base configuration ([828ec1a](https://github.com/tiltedphoques/TiltedEvolution/commit/828ec1ac3b2140a11e6589d17596928b45ff0c26))
-* EnableGreetings for npcs server setting ([9c4d951](https://github.com/tiltedphoques/TiltedEvolution/commit/9c4d9517eb8acbedb1431388d662f6729138bc72))
-* forcefully trigger voice lines ([671cf08](https://github.com/tiltedphoques/TiltedEvolution/commit/671cf0852817c7047384db7b5beb6155c8f2de64))
-* linux server now with crash handler ([677a505](https://github.com/tiltedphoques/TiltedEvolution/commit/677a505eda9bde5bff484afbb2c1c46cdd9d191b))
-* new dialog. ([eeb67e8](https://github.com/tiltedphoques/TiltedEvolution/commit/eeb67e81773d11208e20f8e5e042466745e94ca5))
-* Port the game server to run dedicated. ([e2e08f8](https://github.com/tiltedphoques/TiltedEvolution/commit/e2e08f8079f60f4ff37c2279dde549aa1050130c))
-* quest sync through stages ([b4609ed](https://github.com/tiltedphoques/TiltedEvolution/commit/b4609ed80341a241d38b60d6730885b5621a7bb0))
-* respawn at temple on death ([8906c1f](https://github.com/tiltedphoques/TiltedEvolution/commit/8906c1f943d10b7cedbc2520471fa13b87da3a71))
-* sentry crash handling ([799269a](https://github.com/tiltedphoques/TiltedEvolution/commit/799269ad982c2b16a143484810de7065f81db537))
-* server decides game difficulty ([df053b2](https://github.com/tiltedphoques/TiltedEvolution/commit/df053b2aed6b17f1910a11b68834932f77dcb6d7))
-* server side pvp setting ([7ffe66b](https://github.com/tiltedphoques/TiltedEvolution/commit/7ffe66be8e842c458369821a67088d04dd207494))
-* SetStage debugger ([1ca9f4f](https://github.com/tiltedphoques/TiltedEvolution/commit/1ca9f4f8899a90294f09f6f8376a7d10ccd764ed))
-* settings menu for HUD ([0641c5c](https://github.com/tiltedphoques/TiltedEvolution/commit/0641c5cbb9137093dc2f09856dfe9e8cbd746abb))
-* SettingService (volume, mute audio, etc.) ([a214061](https://github.com/tiltedphoques/TiltedEvolution/commit/a214061edeec2b7580be60e21545c1f4f018d2c9))
-* SKSE & MO2 policies. ([6b33705](https://github.com/tiltedphoques/TiltedEvolution/commit/6b33705b0e45591a195fad547099d20f0017ca21))
-* **SKSE:** Support new SKSE init procedure. ([1928f34](https://github.com/tiltedphoques/TiltedEvolution/commit/1928f34ac33700dba6c721b21908a06fc4f6ad94))
-* spawn at start of dungeon on death ([a3fc821](https://github.com/tiltedphoques/TiltedEvolution/commit/a3fc821137f8d7a3b1ab818aef5b476ff63b9ff4))
-* spawn random encounters ([cfca1cb](https://github.com/tiltedphoques/TiltedEvolution/commit/cfca1cbaae778b4e47d916bf5604b559379288f5))
-* string caching ([862e46b](https://github.com/tiltedphoques/TiltedEvolution/commit/862e46bc48f44ace369e2d67dfdf72c41f550c6f))
-* subtitle sync ([8145a0a](https://github.com/tiltedphoques/TiltedEvolution/commit/8145a0a2bd9254b47d657aefdd5a698a8c29a554))
-* sync player dialogue through chat ([e811196](https://github.com/tiltedphoques/TiltedEvolution/commit/e811196c086a8619208897532cb9e5826c639ca4))
-* sync quest items ([99b16c4](https://github.com/tiltedphoques/TiltedEvolution/commit/99b16c4bbed7899a5f2e4a79827f92a2aba03db2))
-* teleport command to players in different cell ([147fa7c](https://github.com/tiltedphoques/TiltedEvolution/commit/147fa7c3778cb6735b80e4a66e603d24bd00c573))
-* **threading:** Name all game threads & own threads. ([d397a62](https://github.com/tiltedphoques/TiltedEvolution/commit/d397a62e86359cac3eed809d3b66340905b96b2f))
-* **usvfs:** 500IQ hook (yes really) ([b02f9a1](https://github.com/tiltedphoques/TiltedEvolution/commit/b02f9a10e667c77c252cb2c622e37fd9ab40c24a))
-
-# [1.28.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.27.0...v1.28.0) (2022-04-17)
-
-
-### Bug Fixes
-
-* hide ST cursor on closing menu ([b1b9904](https://github.com/tiltedphoques/TiltedEvolution/commit/b1b9904299594d28a5dd532b0379d438e0c2b34b))
-* remove white windows cursor in game ([c3ba18a](https://github.com/tiltedphoques/TiltedEvolution/commit/c3ba18acfb6ac7e4c1cdc318a3dc1ff2cdfef042))
-* server message crash ([645edf1](https://github.com/tiltedphoques/TiltedEvolution/commit/645edf1f14d145e50eff6272fd4a82e38a4133e4))
-
-
-### Features
-
-* added "back" button to serverlist ([ca86c4b](https://github.com/tiltedphoques/TiltedEvolution/commit/ca86c4bac9fb5fcd63b10267df9a51a61d89471c))
-* chat ([1034eae](https://github.com/tiltedphoques/TiltedEvolution/commit/1034eae3cc41b90ec641ca6f547b845ca10e65f4))
-* mark servers as in/compatible in server-list ([a684e3f](https://github.com/tiltedphoques/TiltedEvolution/commit/a684e3f5a6d1ec55e7abd3298db8358f61bb54b1))
-* teleport command ([c80ec80](https://github.com/tiltedphoques/TiltedEvolution/commit/c80ec80166afc704ea994213f75588b0e332d996))
-* update angular & cleanup ([1644d8e](https://github.com/tiltedphoques/TiltedEvolution/commit/1644d8e1d7e89574a347992e7a41fa2b00ed39b7))
-
-# [1.27.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.26.0...v1.27.0) (2022-04-17)
-
-
-### Bug Fixes
-
-* i believe in you, linux ([4e1d1e3](https://github.com/tiltedphoques/TiltedEvolution/commit/4e1d1e3a83229cc66495fc11b849bd02a948b7f1))
-* **ModPolicy:** Make sure there are no workarounds possible. ([7272ea4](https://github.com/tiltedphoques/TiltedEvolution/commit/7272ea416498f42fc586ef19dcc6379aa009ddee))
-* respect the cvar flags. ([8cb1131](https://github.com/tiltedphoques/TiltedEvolution/commit/8cb11318a6f7f6c62643108b55b7a070f5d12657))
-
-
-### Features
-
-* :ghost: Message ([0dfd986](https://github.com/tiltedphoques/TiltedEvolution/commit/0dfd9864a8315e8500a8ead4c5a25776e57c7495))
-* ModPolicy V1 draft. ([31f441c](https://github.com/tiltedphoques/TiltedEvolution/commit/31f441cd70718c5cc46c4c23f05aa3204347d12a))
-* Unify allocators. ([a130722](https://github.com/tiltedphoques/TiltedEvolution/commit/a13072230efc96b048c8f5f53dbe78fb9a4a95b1))
-
-# [1.26.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.25.0...v1.26.0) (2022-04-17)
-
-
-### Bug Fixes
-
-* windoze icons only ([28f66db](https://github.com/tiltedphoques/TiltedEvolution/commit/28f66db84e52f09f2aa94c606cedadb40dda9792))
-
-
-### Features
-
-* BSRandom for funny name. ([d26ac07](https://github.com/tiltedphoques/TiltedEvolution/commit/d26ac07e88ebffb14d073c694552f487b4ec7b3d))
-* New higher res app icons. ([f742413](https://github.com/tiltedphoques/TiltedEvolution/commit/f742413745cd80dfa35947d49d789d57693dd5d7))
-
-# [1.25.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.24.1...v1.25.0) (2022-04-16)
-
-
-### Bug Fixes
-
-* add missing return. ([cdbcf6d](https://github.com/tiltedphoques/TiltedEvolution/commit/cdbcf6d87b509303a328507691543f952a7ec14f))
-
-
-### Features
-
-* **SE:** Multi game version support for script extender ([e84ef59](https://github.com/tiltedphoques/TiltedEvolution/commit/e84ef59df6c5ed75ad627b038d5111de000a9639))
-
-## [1.24.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.24.0...v1.24.1) (2022-04-13)
-
-
-### Bug Fixes
-
-* awful fix for weapon draw sync not working ([370c261](https://github.com/tiltedphoques/TiltedEvolution/commit/370c2610fa43eacfe9a3f6e9e0319d1c934e8994))
-
-# [1.24.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.23.0...v1.24.0) (2022-04-09)
-
-
-### Bug Fixes
-
-* armor unequip ([a39febb](https://github.com/tiltedphoques/TiltedEvolution/commit/a39febbde738b5b287b0450c0483071f412f3396))
-* definitively fix WaitingFor3D bug ([ef580ac](https://github.com/tiltedphoques/TiltedEvolution/commit/ef580ac32f9fdf201c1001e07a1be1d6257d7aa1))
-* dropping items ([aac8d8f](https://github.com/tiltedphoques/TiltedEvolution/commit/aac8d8f24a1c167b91366f1806af28d3f279f25d))
-* equipment update bug ([24d22c6](https://github.com/tiltedphoques/TiltedEvolution/commit/24d22c69b5e92e78cfea21a1c406c703e93a0dc1))
-* SetWeaponDrawn on 3D loaded ([e7919f9](https://github.com/tiltedphoques/TiltedEvolution/commit/e7919f90d0fb0d1f3b1e4973beb8feb84a5dacf8))
-* temp fix for entt problem ([4089d04](https://github.com/tiltedphoques/TiltedEvolution/commit/4089d041966b63fde65350a74e98d9183bcafd22))
-* unequip crash ([092a14f](https://github.com/tiltedphoques/TiltedEvolution/commit/092a14f2c3690cfa38c9ba55d824c7f19e567e42))
-
-
-### Features
-
-* armor equip sync ([24d255b](https://github.com/tiltedphoques/TiltedEvolution/commit/24d255b83e6e96aca5b19434ddbd93947065c726))
-* dont sync quest items ([e59d47f](https://github.com/tiltedphoques/TiltedEvolution/commit/e59d47f95d796922a4336108c0c91280857cfb99))
-
-# [1.23.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.22.1...v1.23.0) (2022-03-29)
-
-
-### Bug Fixes
-
-* activation duplication bug ([cf7a39e](https://github.com/tiltedphoques/TiltedEvolution/commit/cf7a39e10f75c47b8309ffb4de2da527f66cff30))
-* AE EquipManager hooks ([44fba81](https://github.com/tiltedphoques/TiltedEvolution/commit/44fba81663de586102937627fcecafea8f6a91c6))
-* drop object count ([972e864](https://github.com/tiltedphoques/TiltedEvolution/commit/972e864618020da081a1ca75ca34dc216840952d))
-* linux build ([76c7cf3](https://github.com/tiltedphoques/TiltedEvolution/commit/76c7cf33eb98e2f1af3dcd3802d43c5952f870d6))
-* null crash ([b87775d](https://github.com/tiltedphoques/TiltedEvolution/commit/b87775df2057e59b2d0824d1e6f6398611b564e3))
-* remove item ([573d136](https://github.com/tiltedphoques/TiltedEvolution/commit/573d1365a123881b834c1bf0cc84296e57a9333e))
-* send base id of object instead of refr id ([e5b00af](https://github.com/tiltedphoques/TiltedEvolution/commit/e5b00af16db2791797c565914346311da080ba6d))
-
-
-### Features
-
-* major improvements to equip sync ([04673a2](https://github.com/tiltedphoques/TiltedEvolution/commit/04673a2834d7e08a853cd248a7ba72642a647eb0))
-
-## [1.22.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.22.0...v1.22.1) (2022-03-21)
-
-# [1.22.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.21.0...v1.22.0) (2022-03-21)
-
-
-### Features
-
-* adapt code base to support unitybuild ([2e98a3e](https://github.com/tiltedphoques/TiltedEvolution/commit/2e98a3ef93f68d7dd2620f6d5ccea6a537e3db7e))
-
-# [1.21.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.20.0...v1.21.0) (2022-03-20)
-
-
-### Bug Fixes
-
-* bug in xp sync ([edb1feb](https://github.com/tiltedphoques/TiltedEvolution/commit/edb1febba167671b3b20fd4f8b8ebe9300203e11))
-
-
-### Features
-
-* sync combat xp with party ([a1c8149](https://github.com/tiltedphoques/TiltedEvolution/commit/a1c8149c9ebffcf71bfc5986e69fb3f246eeb893))
-
-# [1.20.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.19.0...v1.20.0) (2022-03-20)
-
-
-### Bug Fixes
-
-* build error ([e52d8bf](https://github.com/tiltedphoques/TiltedEvolution/commit/e52d8bf567705daeeb004ab4ac81d92d6739fd3d))
-* build errors ([8f0cd0a](https://github.com/tiltedphoques/TiltedEvolution/commit/8f0cd0a1ea2573ffbfe04117398f5d11706f07f4))
-* build errors ([8935919](https://github.com/tiltedphoques/TiltedEvolution/commit/893591952a9a2e3be52619614b1fb7ea7575394e))
-* build fixes ([86319bc](https://github.com/tiltedphoques/TiltedEvolution/commit/86319bc55ac581e7f6cd442ca9e4a56274a2b43c))
-* deadlock issue with AddItem ([c5412d2](https://github.com/tiltedphoques/TiltedEvolution/commit/c5412d2c12943d8c086f3e54e185aaff6372799b))
-* death bug ([b4fab96](https://github.com/tiltedphoques/TiltedEvolution/commit/b4fab965b62ef8a9845a9e2ec2ed95c5229bc1d0))
-* forgot TESCondition ([ff9adeb](https://github.com/tiltedphoques/TiltedEvolution/commit/ff9adeb74af8dfab937aa6a3eb334e6b66d5f122))
-* health on remote actors going back up ([b63ce95](https://github.com/tiltedphoques/TiltedEvolution/commit/b63ce9599ada077b0cfb7c0552179e11519df618))
-* memory leak ([6bd8c51](https://github.com/tiltedphoques/TiltedEvolution/commit/6bd8c517e69c08b48860d4d482ac91d1b285483b))
-* object, not a ptr ([bfdc267](https://github.com/tiltedphoques/TiltedEvolution/commit/bfdc267c3c3e62dbc9f064f8735e7a6069a4a1bf))
-* permanent fix for waiting spawn ([1f1b605](https://github.com/tiltedphoques/TiltedEvolution/commit/1f1b6055e42c7685522e41d87bb1fd46d20e9e2c))
-* serialization bugs ([d2f4077](https://github.com/tiltedphoques/TiltedEvolution/commit/d2f4077f22b245d823e1dc576a7358af67b778e0))
-* SpellItem struct ([3687b61](https://github.com/tiltedphoques/TiltedEvolution/commit/3687b615432ff7e2ad260b3fd7fa1aa6d3880b3b))
-* temp fix for waiting spawn ([b614ba9](https://github.com/tiltedphoques/TiltedEvolution/commit/b614ba93fa857676f35357bb84776f98f97099f9))
-
-
-### Features
-
-* Actor::SetFullContainer() ([1110e42](https://github.com/tiltedphoques/TiltedEvolution/commit/1110e42b206e34beccc6c57e4d9cf0bea360a3b3))
-* GetContainer() proof of concept ([b4aa6ef](https://github.com/tiltedphoques/TiltedEvolution/commit/b4aa6ef089d45d8a87b51fe5a1d52941c32c1b38))
-* serializing custom enchantments ([0bc2e1b](https://github.com/tiltedphoques/TiltedEvolution/commit/0bc2e1b7f844022d2297b6d0910126365157e067))
-* successfully transfer inventory to dummy ([2695ed0](https://github.com/tiltedphoques/TiltedEvolution/commit/2695ed069a1a7de54e2f1ee1c76a016c03b067ca))
-* sync enchantments ([1c9be42](https://github.com/tiltedphoques/TiltedEvolution/commit/1c9be4236a64b2ba4aa4b90d7e37b4ffec4afd10))
-* TESObjectREFR::AddItem() ([f96ae17](https://github.com/tiltedphoques/TiltedEvolution/commit/f96ae176aab5a8b30da41d2af8f542e2f3d47ff0))
-
-# [1.19.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.18.1...v1.19.0) (2022-03-16)
-
-
-### Features
-
-* werewolf and vampire lord sync ([d0a387d](https://github.com/tiltedphoques/TiltedEvolution/commit/d0a387d7d64c8f5545f77a2bd3cf8f43631a435c))
-
-## [1.18.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.18.0...v1.18.1) (2022-03-09)
-
-
-### Bug Fixes
-
-* w2s component view inline bug ([03975c7](https://github.com/tiltedphoques/TiltedEvolution/commit/03975c70ab4ca24ced1066482643404cb65d13f5))
-* weapon draw sync ([d764a31](https://github.com/tiltedphoques/TiltedEvolution/commit/d764a31baaab762263c8497fb428a6b4318c05ab))
-
-
-### Reverts
-
-* Revert "feat: flush out npc idles" ([f7ab817](https://github.com/tiltedphoques/TiltedEvolution/commit/f7ab8178b15e93ee29a488a5f6b125e60a5bad55))
-
-# [1.18.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.17.0...v1.18.0) (2022-03-09)
-
-
-### Bug Fixes
-
-* build errors ([4e42a81](https://github.com/tiltedphoques/TiltedEvolution/commit/4e42a8192c78a01225efbb430f8beffb907637f2))
-* health and death sync bug ([126edee](https://github.com/tiltedphoques/TiltedEvolution/commit/126edee366be750c7acb718f0916dcd314617f5f))
-* null crash ([a5a582c](https://github.com/tiltedphoques/TiltedEvolution/commit/a5a582c2af4999dc7c34764823e8e68a2fdd2b9e))
-* queued effects ([96d835e](https://github.com/tiltedphoques/TiltedEvolution/commit/96d835eb9d8b5877ad9f032dc1027e35e93d346e))
-* slow time shout sync ([a3d9f5d](https://github.com/tiltedphoques/TiltedEvolution/commit/a3d9f5dd89d719bc4e8ee08a0177d6b83c8de6d4))
-
-
-### Features
-
-* heal other players through spells ([be4436f](https://github.com/tiltedphoques/TiltedEvolution/commit/be4436f62032a914f03956267744cfdb0e8f4870))
-* Menu/UI reverse, port primitives from LCR ([a0f675a](https://github.com/tiltedphoques/TiltedEvolution/commit/a0f675a5f6c0a1b8c134c50dac661fbd0aa2c86c))
-* Unpause skills + mapmenu ([b829f47](https://github.com/tiltedphoques/TiltedEvolution/commit/b829f47c54884e1b4fe3209a4420da07c34845f9))
-* Unpausing non Offscreen Render target game menus. ([59e0cef](https://github.com/tiltedphoques/TiltedEvolution/commit/59e0cefbac5c217aca89358ed722a2e61f34aedb))
-
-# [1.17.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.16.0...v1.17.0) (2022-02-12)
-
-
-### Features
-
-* lazy loading from version db to give the process time to initialize it ([225bbad](https://github.com/tiltedphoques/TiltedEvolution/commit/225bbad523baa9f1b1b0e95824031b78f0aa8eee))
-
-# [1.16.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.15.0...v1.16.0) (2022-02-12)
-
-
-### Bug Fixes
-
-* More scaling stuff. ([d3d6053](https://github.com/tiltedphoques/TiltedEvolution/commit/d3d605371ca8bd45e676c5daf899a55a614a3d8d))
-
-
-### Features
-
-* clipboard driver 1 ([226efd1](https://github.com/tiltedphoques/TiltedEvolution/commit/226efd12166d4b23aa272f3a58e0ab8fda73b5e3))
-
-# [1.15.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.14.0...v1.15.0) (2022-02-12)
-
-
-### Features
-
-* address library for RTTI as well ([35fb2ba](https://github.com/tiltedphoques/TiltedEvolution/commit/35fb2ba313deb34710a5499a9eb0b7fe9b04a6d0))
-* Use address library instead of hardcoded addresses ([6b2afeb](https://github.com/tiltedphoques/TiltedEvolution/commit/6b2afebce3cf1545137c84adfd75ae4840828625))
-* weird pointers now use address library as well ([543a379](https://github.com/tiltedphoques/TiltedEvolution/commit/543a3793b11294e11db3082b6e6fca5744e84b4c))
-
-# [1.14.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.13.0...v1.14.0) (2022-02-12)
-
-
-### Bug Fixes
-
-* address submodule clusterfuck ([2fafe5d](https://github.com/tiltedphoques/TiltedEvolution/commit/2fafe5d7c7b2e88dfe0e2ad1d46da12f1fecab35))
-
-
-### Features
-
-* Always exit the server gracefully on windows. ([a3394bd](https://github.com/tiltedphoques/TiltedEvolution/commit/a3394bd26ecc71269e74d055f73a6d337f590985))
-
-# [1.13.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.12.0...v1.13.0) (2022-02-09)
-
-
-### Bug Fixes
-
-* build error ([7c8c017](https://github.com/tiltedphoques/TiltedEvolution/commit/7c8c017096a5f08bcd6beabeffc5143be5329d5e))
-* build errors ([92f8dbf](https://github.com/tiltedphoques/TiltedEvolution/commit/92f8dbf578f3d39ed729e224b1d1774cf987a89c))
-* crash when allocating too much data in a single packet ([d672708](https://github.com/tiltedphoques/TiltedEvolution/commit/d6727085c1932306d02c87a31dd5ec5a2c6a7c8e))
-* linux build ([6d340a0](https://github.com/tiltedphoques/TiltedEvolution/commit/6d340a08c75215ca367133e768ac4cf3cd663b27))
-* linux build should not include imgui ([6359122](https://github.com/tiltedphoques/TiltedEvolution/commit/63591224f0531386cc46ebb8a6e5b91430194e9d))
-* linux build vs lower case ([0e8b386](https://github.com/tiltedphoques/TiltedEvolution/commit/0e8b386fdc10941306f7ac217f5a9da447276c27))
-* linux now builds ! ([46f85be](https://github.com/tiltedphoques/TiltedEvolution/commit/46f85be9399926f22947f845e5982281dd20c4f6))
-* Project builds, proper namespace naming conventions and some warning fixes ([5ccf173](https://github.com/tiltedphoques/TiltedEvolution/commit/5ccf1733bfc102628374b2492d84c3ba097d8b66))
-* Tests now build correctly on first build ([23801f5](https://github.com/tiltedphoques/TiltedEvolution/commit/23801f50b96c79839721c1908b699366be86a43a))
-
-
-### Features
-
-* Build a reference map of navmesh chunks for each worldspace/cell ([b16ec88](https://github.com/tiltedphoques/TiltedEvolution/commit/b16ec88e1a51e732724c50c36048ba721af96fa6))
-* Docker image can now be built ([3ef8308](https://github.com/tiltedphoques/TiltedEvolution/commit/3ef8308529c4840b78c0342b6c82ea85bf89ad91))
-* docker-compose ([8d4b802](https://github.com/tiltedphoques/TiltedEvolution/commit/8d4b8026d881b8bf507eadf93c729e7b0ce53e27))
-* docker-compose now forward port correctly ([c85d138](https://github.com/tiltedphoques/TiltedEvolution/commit/c85d13828baa19b7632b57b063da69976415574d))
-* load world data on the server ([e6d8d28](https://github.com/tiltedphoques/TiltedEvolution/commit/e6d8d28d7e6c5c62e42ef80a83dd98a3ef3192ec))
-* Parse navmesh and geometry ([80c70b5](https://github.com/tiltedphoques/TiltedEvolution/commit/80c70b50d5562cee3919991e5750083035cccaef))
-
-# [1.12.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.11.0...v1.12.0) (2022-01-24)
-
-
-### Bug Fixes
-
-* Attempt to make linux build. ([ed9fa0a](https://github.com/tiltedphoques/TiltedEvolution/commit/ed9fa0ae41117f709d1d18068f124b8bafa6eb2d))
-* Block SKSE Plugin Preloader for compatabiliy reasons. ([0d5d0e4](https://github.com/tiltedphoques/TiltedEvolution/commit/0d5d0e4cef885fd8946bcb3619c3d8bf40999961))
-* change some naming. ([fb876c0](https://github.com/tiltedphoques/TiltedEvolution/commit/fb876c033f6ad911e74855953cc0e76636c38d2c))
-* Imgui end scope. ([5493a52](https://github.com/tiltedphoques/TiltedEvolution/commit/5493a52b5c98f05eeb2f79e8afe91972f4fb50a1))
-* Repair my monke code ([f9491fe](https://github.com/tiltedphoques/TiltedEvolution/commit/f9491fe4a0d48824c17586fecd95e9e753adc65d))
-
-
-### Features
-
-* Deny load for unsupported game versions. ([0a1e7cb](https://github.com/tiltedphoques/TiltedEvolution/commit/0a1e7cb12042a83453cccebec3c56e877800b196))
-* rip 'allocator' ([2695f2f](https://github.com/tiltedphoques/TiltedEvolution/commit/2695f2fe81402139095af7f94058d9e4d650fc9f))
-* Selectable entity for component view debug, hudmenuutils. ([5b2e063](https://github.com/tiltedphoques/TiltedEvolution/commit/5b2e06399dcacfec70b1f84ae176d3ff51a49b0e))
-* Smarter input handling for skyrim. ([68e188b](https://github.com/tiltedphoques/TiltedEvolution/commit/68e188bae36838c4f2628fe292366fdc212ec142))
-* world to screen with hud matrix for skyrim. Cxx20 updates for client. ([4825286](https://github.com/tiltedphoques/TiltedEvolution/commit/4825286c8227ad82e903080bfa03ab768eef0c2c))
-
-# [1.11.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.10.0...v1.11.0) (2022-01-23)
-
-
-### Bug Fixes
-
-* merge conflict ([c2b082f](https://github.com/tiltedphoques/TiltedEvolution/commit/c2b082f40e4a145226299af06a1dfc842884e36b))
-* merge conflicts ([7f299e9](https://github.com/tiltedphoques/TiltedEvolution/commit/7f299e9c6655f6c9c0b9f6c6adab181f09b2884d))
-
-
-### Features
-
-* AI sync for Fallout 4 ([d86dfda](https://github.com/tiltedphoques/TiltedEvolution/commit/d86dfdaedd4d14c26e360223758118b637e97dd7))
-* first step in syncing AI packages ([de84956](https://github.com/tiltedphoques/TiltedEvolution/commit/de84956e489a9f145afd7957cdaa63a4e7a06aa8))
-* more ugly debuggers (force dont look) ([77b85e9](https://github.com/tiltedphoques/TiltedEvolution/commit/77b85e914664d4cd43fee63504df793baf54091a))
-* reverse engineered TESAIForm ([59cf6a2](https://github.com/tiltedphoques/TiltedEvolution/commit/59cf6a2a56bbde2a2e273b28b65bacbd42992ab4))
-* sync TESPackage by actor ownership ([a2aa136](https://github.com/tiltedphoques/TiltedEvolution/commit/a2aa1362985440854d5e17d676bcfe97d413e90b))
-
-# [1.10.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.9.0...v1.10.0) (2022-01-21)
-
-
-### Bug Fixes
-
-* build error ([e7c1f9a](https://github.com/tiltedphoques/TiltedEvolution/commit/e7c1f9a9ab83e994ed848d9a122dd11922521915))
-* build errors ([4826b8b](https://github.com/tiltedphoques/TiltedEvolution/commit/4826b8b4db1f8170e789f60e8b385092632c6d39))
-* moved opcode check ([f168015](https://github.com/tiltedphoques/TiltedEvolution/commit/f168015c01b36dacec8d9e4a014ff37bbfc967e7))
-* variable naming convention ([47f3e70](https://github.com/tiltedphoques/TiltedEvolution/commit/47f3e7093bd31a09e2d84742767e369e9e34f57a))
-
-
-### Features
-
-* remote horses are now synced ([a8a267a](https://github.com/tiltedphoques/TiltedEvolution/commit/a8a267a9229e8a239bd6d6411590b2171d1d0871))
-* take control of remote horse ([400c12e](https://github.com/tiltedphoques/TiltedEvolution/commit/400c12e0a6065e021a7a2ace7744c2e283347aba))
-* trigger mounting ([6fe7d4a](https://github.com/tiltedphoques/TiltedEvolution/commit/6fe7d4a04f0f898d303e43d1b9c37714c1535a57))
-
-# [1.9.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.8.0...v1.9.0) (2022-01-21)
-
-
-### Bug Fixes
-
-* compression bug in es parser ([426a251](https://github.com/tiltedphoques/TiltedEvolution/commit/426a25147c65b3436aee49806d1f624e1605540d))
-* script property parsing ([3018ad7](https://github.com/tiltedphoques/TiltedEvolution/commit/3018ad761eb098573113e0b245d590e9740f23a0))
-* static var rename ([6919096](https://github.com/tiltedphoques/TiltedEvolution/commit/69190962da08c63ed2222cbfb7bd144ec4638d94))
-
-
-### Features
-
-* another attempt at full inventory control ([4f8fbe0](https://github.com/tiltedphoques/TiltedEvolution/commit/4f8fbe0cf9b0386f75f3002cdd2aac88f01b8f6a))
-* base id assignment for parsed records ([dee225a](https://github.com/tiltedphoques/TiltedEvolution/commit/dee225a22f4700420e9c0e595201a2c97f73eced))
-* chunk sorting and parsing on REFR records ([8c196f5](https://github.com/tiltedphoques/TiltedEvolution/commit/8c196f523d71242a95266c52375c89d47e70cdef))
-* copy parse chunks ([47e0441](https://github.com/tiltedphoques/TiltedEvolution/commit/47e04410994b976c7be0d1a3a2ba8c914fb89b9d))
-* ESLoader setup ([3f8dd1b](https://github.com/tiltedphoques/TiltedEvolution/commit/3f8dd1bcc72a6af35276fc76d3301adc2d5a3be4))
-* fetch es files from Data/ ([39bfed8](https://github.com/tiltedphoques/TiltedEvolution/commit/39bfed88439f6d365dc02eaf2685ac89a10b528e))
-* index parent esms and handle overwritten records ([7866a42](https://github.com/tiltedphoques/TiltedEvolution/commit/7866a42bdf24a21362830a08009e35eebdb32b31))
-* integrated es parser into server ([7bd1acd](https://github.com/tiltedphoques/TiltedEvolution/commit/7bd1acd3bf5b4415a5445efb2c29a4adc7ae25d8))
-* iterate and parse chunks in record ([173e3ee](https://github.com/tiltedphoques/TiltedEvolution/commit/173e3ee30ceb84a724d5101f1012881a103baaf9))
-* load esm data and record base ([a208a85](https://github.com/tiltedphoques/TiltedEvolution/commit/a208a851ea08822a9d1308067f569ca6d8280b61))
-* load game settings on server ([b0e1c33](https://github.com/tiltedphoques/TiltedEvolution/commit/b0e1c33dab4c1b4f75cb329acc50b6f43fb8388b))
-* parse climate records ([dde6f16](https://github.com/tiltedphoques/TiltedEvolution/commit/dde6f1686e920b34776767aaeb7e8b683b5ad4d3))
-* parse containers and decoded scripts data ([1ff6f73](https://github.com/tiltedphoques/TiltedEvolution/commit/1ff6f73ff341072c7e45c28bfb4cb8c1284f94cc))
-* parse group headers ([46eb291](https://github.com/tiltedphoques/TiltedEvolution/commit/46eb2915ac054bdcbb1815ad27888c1a1bd3c180))
-* parse map markers ([fb45e77](https://github.com/tiltedphoques/TiltedEvolution/commit/fb45e7761ca57c3fabef9d3de143e60853d21b17))
-* parse NPCs ([5ce7919](https://github.com/tiltedphoques/TiltedEvolution/commit/5ce79195df3a592b289967f7a85d45dc339231c3))
-* parse records and groups, and fetch fields ([a3e69f2](https://github.com/tiltedphoques/TiltedEvolution/commit/a3e69f2fa30dbe0ab1f11bb0f8dbf8b2ce6918b3))
-* RecordCollection ([98c0825](https://github.com/tiltedphoques/TiltedEvolution/commit/98c0825e492b46670f3bfc30a046c98e70867454))
-* sort files by esm/esp/esl ([e4ec55a](https://github.com/tiltedphoques/TiltedEvolution/commit/e4ec55a49479f6bbff67d7286534c8be96ba1a05))
-* store cell records ([8b4021d](https://github.com/tiltedphoques/TiltedEvolution/commit/8b4021d19e4fca8106dd1e5930b1c64f55740451))
-* working es parser ([ee5271e](https://github.com/tiltedphoques/TiltedEvolution/commit/ee5271eb5fadb66521e5f8f1ed4665a1157288c3))
-
-# [1.8.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.7.0...v1.8.0) (2022-01-17)
-
-
-### Features
-
-* Serverlist tags support and a few bugfixes. ([37c4348](https://github.com/tiltedphoques/TiltedEvolution/commit/37c4348d7de7847e1c92f3c880c28490bdfbe19e))
-
-# [1.7.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.6.0...v1.7.0) (2022-01-15)
-
-
-### Bug Fixes
-
-* Incorrect arg name fix ([b08d26b](https://github.com/tiltedphoques/TiltedEvolution/commit/b08d26ba073f89fbc3f4bf12059d1787b06ca8b6))
-
-
-### Features
-
-* Added coding guidelines ([5c413ae](https://github.com/tiltedphoques/TiltedEvolution/commit/5c413ae5363f2050348feb4dd8d117727710681c))
-* Modified arg names and checking event opcodes first ([6d5c175](https://github.com/tiltedphoques/TiltedEvolution/commit/6d5c17536f4dd8d6d8754ed024b4f179c210824e))
-
-# [1.6.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.5.1...v1.6.0) (2022-01-15)
-
-
-### Bug Fixes
-
-* Docker compose not using the correct output path for server list service ([4c87f3f](https://github.com/tiltedphoques/TiltedEvolution/commit/4c87f3f28c78c1abfe1e4900f3b9c7548c5b6267))
-* Eliminate warnings. ([2080cb2](https://github.com/tiltedphoques/TiltedEvolution/commit/2080cb2b5cdf54f8672fe62ba525ceea49bda3a7))
-* improve error handling for the server list service ([2d4defa](https://github.com/tiltedphoques/TiltedEvolution/commit/2d4defae507205f1fce651b088efe8e66ebb1ad2))
-* re-enable SSL for masterlist endpoint. ([4fa7149](https://github.com/tiltedphoques/TiltedEvolution/commit/4fa714999bbc62894eaf1af14db18c7296b8bc18))
-* server admin console now relies exclusively on xmake ([b2304a4](https://github.com/tiltedphoques/TiltedEvolution/commit/b2304a4a8692057a52189f149a356f3a4c680d39))
-
-
-### Features
-
-* Console commands POC ([0e8d9e8](https://github.com/tiltedphoques/TiltedEvolution/commit/0e8d9e8a5fcd5731ffc8795a2d4e1935e2560730))
-* Console component ([cf7283d](https://github.com/tiltedphoques/TiltedEvolution/commit/cf7283dce052166b16e88af5c4e2010a6f1a6b30))
-* EULA validation for server owners. ([d5148f1](https://github.com/tiltedphoques/TiltedEvolution/commit/d5148f1c2dce5f485348561c8d6474e033d50942))
-* libbase setting<t> draft ([085fc9c](https://github.com/tiltedphoques/TiltedEvolution/commit/085fc9c4601fc334a9dacc503719fc9531a09705))
-* server settings ini poc code. ([f2efe42](https://github.com/tiltedphoques/TiltedEvolution/commit/f2efe42a6670817efaea45c9fe5201d63982a493))
-* Test coverage for console component ([de73919](https://github.com/tiltedphoques/TiltedEvolution/commit/de73919e24c50b7c7c4cc975f59a69ca0af5aca4))
-* Upgrade api endpoint with icon, desc, tick support; re-enable list service. ([2873b39](https://github.com/tiltedphoques/TiltedEvolution/commit/2873b399a6cfb7d820d2fba8a023118bf0b01817))
-
-## [1.5.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.5.0...v1.5.1) (2021-12-20)
-
-
-### Bug Fixes
-
-* projectile related crashes ([48eec06](https://github.com/tiltedphoques/TiltedEvolution/commit/48eec065e282898bdbd02ed7a2ad195665cd92d7))
-
-# [1.5.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.4.1...v1.5.0) (2021-12-11)
-
-
-### Features
-
-* progress on leveled actor sync ([94d4039](https://github.com/tiltedphoques/TiltedEvolution/commit/94d4039174b565398ff5d4482b6be33c6f6e527f))
-
-## [1.4.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.4.0...v1.4.1) (2021-12-11)
-
-
-### Bug Fixes
-
-* inventory crash fix ([7358e7f](https://github.com/tiltedphoques/TiltedEvolution/commit/7358e7f031418efef456d0f6218d8fa64e24ddf0))
-
-# [1.4.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.3.0...v1.4.0) (2021-12-10)
-
-
-### Bug Fixes
-
-* distrib player messages bug ([3f37634](https://github.com/tiltedphoques/TiltedEvolution/commit/3f37634a36b416a0d3c1aad4f9b7bf4cc1f1ed46))
-
-
-### Features
-
-* updated mod to AE patch 1 ([912cae8](https://github.com/tiltedphoques/TiltedEvolution/commit/912cae8c91d65bb51ad100e3584a89f8b7d0c88a))
-
-# [1.3.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.2.1...v1.3.0) (2021-12-07)
-
-
-### Bug Fixes
-
-* debugger logic bugs ([2bcb30e](https://github.com/tiltedphoques/TiltedEvolution/commit/2bcb30e9a8275cf32ca42b652112185ec8a051fc))
-* fallout 4 build error ([a13154b](https://github.com/tiltedphoques/TiltedEvolution/commit/a13154bc73d856897d81467ffb58b387df88be85))
-* server id lookup bug ([efba5dd](https://github.com/tiltedphoques/TiltedEvolution/commit/efba5dd40666596bd6c2e158bba42b0abaa9ab67))
-
-
-### Features
-
-* debug TESContainer ([0c48cc5](https://github.com/tiltedphoques/TiltedEvolution/commit/0c48cc5a087d88641abbd3a808146c9e29acfc72))
-* half drawn bow sync ([120ea21](https://github.com/tiltedphoques/TiltedEvolution/commit/120ea21b1e08558f5ffb3909182f9c6f73e662fb))
-* inventory debugger tool ([bdc2315](https://github.com/tiltedphoques/TiltedEvolution/commit/bdc231557c8f1f89a5378fc734257af6f0825414))
-* major improvements to equip sync ([cb8fbcd](https://github.com/tiltedphoques/TiltedEvolution/commit/cb8fbcdada88f8cba130d1343e28dbf7ce910a59))
-* perfect magic projectile sync ([da1a7e2](https://github.com/tiltedphoques/TiltedEvolution/commit/da1a7e2fced7e4be621e5d91084905aea065f095))
-* reverse engineered extra data for skyrim containers ([19ea6a2](https://github.com/tiltedphoques/TiltedEvolution/commit/19ea6a2f67d0ea6b2d73c7716cfa4977bb8255bb))
-
-## [1.2.1](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.2.0...v1.2.1) (2021-11-29)
-
-
-### Bug Fixes
-
-* removed 'skeever butt' dialogue from players ([60fd7bd](https://github.com/tiltedphoques/TiltedEvolution/commit/60fd7bda6684813a80b2ede828172f96d5a6d54e))
-
-# [1.2.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.1.0...v1.2.0) (2021-11-25)
-
-
-### Bug Fixes
-
-* fix 'dragonsoul colected' bug ([8c56bfc](https://github.com/tiltedphoques/TiltedEvolution/commit/8c56bfc55a5be9c1d2cb2b5bcd80bc48f00b32e1))
-* fps drop bug ([199b51c](https://github.com/tiltedphoques/TiltedEvolution/commit/199b51c81558884fdb46c3b6e3ec38f8d31be2ad))
-* new addresses for object animations ([6e042c1](https://github.com/tiltedphoques/TiltedEvolution/commit/6e042c156540a6d580cbbd54546df49dbee96926))
-* remote SetPlayer() added in reused spawn data ([da3a10e](https://github.com/tiltedphoques/TiltedEvolution/commit/da3a10eb6c8d8d46d11e4b23d1fec2881cad0fa4))
-
-
-### Features
-
-* MagicService ([bf77eae](https://github.com/tiltedphoques/TiltedEvolution/commit/bf77eaed105cbbc62811f4200b850a1273b90ef3))
-* reverse engineered fallout 4 magic classes ([b05b415](https://github.com/tiltedphoques/TiltedEvolution/commit/b05b4151e5134986c94c08b2e5da7043c6c4d820))
-* script to fetch addresses for new AE patch ([8684497](https://github.com/tiltedphoques/TiltedEvolution/commit/868449716295d5fe8ab5fa2b792407d3a1ebcc2d))
-* shitty object anim sync implementation ([6202563](https://github.com/tiltedphoques/TiltedEvolution/commit/6202563ebfc10d5402c90ae946cefa5ec89c9f7f))
-* sneak sync in fallout 4 ([cce6f47](https://github.com/tiltedphoques/TiltedEvolution/commit/cce6f47ee7015cfe26fa209068fbac3efffb9269))
-* sneak sync in skyrim ([5be1768](https://github.com/tiltedphoques/TiltedEvolution/commit/5be17680332fa7bae39bf2fd805b4cdff8a599fc))
-
-# [1.1.0](https://github.com/tiltedphoques/TiltedEvolution/compare/v1.0.0...v1.1.0) (2021-11-22)
-
-
-### Bug Fixes
-
-* crash fix ([8842773](https://github.com/tiltedphoques/TiltedEvolution/commit/88427732874fae9234c9ce526518b9c36dc95feb))
-* fallout 4 crash fix ([1e2bd32](https://github.com/tiltedphoques/TiltedEvolution/commit/1e2bd32b05382f31bcc1094289acca799c571504))
-* fix crash when casting spell on object ([4ed0172](https://github.com/tiltedphoques/TiltedEvolution/commit/4ed0172dea8f5fb8801e15a4e5172eac55bb9f55))
-
-
-### Features
-
-* debug animation variables ([55bb7bc](https://github.com/tiltedphoques/TiltedEvolution/commit/55bb7bc936a41c39464fd9f95b2f8c1707ae5093))
-
-# 1.0.0 (2021-11-19)
-
-
-### Bug Fixes
-
-* converted some remaining AE addresses ([dcac1f8](https://github.com/tiltedphoques/TiltedEvolution/commit/dcac1f89e1fd320005a21c3c20b205286cd80f36))
-* **magic:** re enabled magic sync ([48bc450](https://github.com/tiltedphoques/TiltedEvolution/commit/48bc450c567ad9114206f24f990ed084db9d4413))
-* **projectiles:** build fixes ([01e4afa](https://github.com/tiltedphoques/TiltedEvolution/commit/01e4afacae427df63c73e5d4f617275efbda6922))
-* Repair ActorMediator for AE ([dfa1b79](https://github.com/tiltedphoques/TiltedEvolution/commit/dfa1b791139741ebce94fd9852b807cd741c179c))
-
-
-### Features
-
-* AE sigma grindset (testing needed) ([8eaca85](https://github.com/tiltedphoques/TiltedEvolution/commit/8eaca8587a0b0b0699a449d9bf56cd5c35a9b429))
-* **ai:** reverse engineered AI stuff ([16a999a](https://github.com/tiltedphoques/TiltedEvolution/commit/16a999ae6a24af71c1528310f09cfd36beef71a5))
-* **anims:** fixed anims by hand (life is pain) ([a9a7ea2](https://github.com/tiltedphoques/TiltedEvolution/commit/a9a7ea25691b24327a4d392ddd3c6b63abb7e3c0))
-* equip sync works for real now ([c8e324f](https://github.com/tiltedphoques/TiltedEvolution/commit/c8e324f2d3f0536c36f11d701ff804f3caaf7a7b))
-* fallout 4 shitty projectile sync ([3f304bb](https://github.com/tiltedphoques/TiltedEvolution/commit/3f304bb9dd0629e2cdf49ea58ca73981f3775a80))
-* implemented equip sync for fallout 4 ([088892e](https://github.com/tiltedphoques/TiltedEvolution/commit/088892e05c0b7c70c180d28347c216211d9628ad))
-* Import the new versioning system ([5a23cca](https://github.com/tiltedphoques/TiltedEvolution/commit/5a23cca660fe73e77605149b42fdcec7c0735aa2))
-* **magic:** AddTargetEvent ([e4f0393](https://github.com/tiltedphoques/TiltedEvolution/commit/e4f0393290fecbbb09f57d6d68ab802b61f2ae1c))
-* **magic:** filter magic effects by archetype ([6ff5c98](https://github.com/tiltedphoques/TiltedEvolution/commit/6ff5c98a4215d5752633fbf996f06f716852b681))
-* **magic:** intercept SummonCreatureEffect ([9fa92ac](https://github.com/tiltedphoques/TiltedEvolution/commit/9fa92ac0c9be2c922a43d632c3ac1897d52bbf98))
-* **magic:** magic effects are now synced ([0df4fff](https://github.com/tiltedphoques/TiltedEvolution/commit/0df4fffad8f982ceeb6713b25996c4e166adcce4))
-* **magic:** reverse engineerd MagicTarget system ([e60ef88](https://github.com/tiltedphoques/TiltedEvolution/commit/e60ef88d78871bd078c6024f5f6b26ec047958c1))
-* script to convert to Anniversary update ([a53644e](https://github.com/tiltedphoques/TiltedEvolution/commit/a53644e0a7dae5eebe878d56e4d944ed26708001))
-
-
-### Reverts
-
-* Revert "Sync AttachArrow events" ([ea83570](https://github.com/tiltedphoques/TiltedEvolution/commit/ea835706e166ba2334554049c60b0a1ccd4b9158))
-* Revert "Reverse engineerd AttachArrow for skyrim" ([e503975](https://github.com/tiltedphoques/TiltedEvolution/commit/e5039750eb0a8649bf71aad294ef75f5ff2d4c9c))
-* Revert "Skyrim dwarven sphere animation sync" ([6bfa413](https://github.com/tiltedphoques/TiltedEvolution/commit/6bfa413c4a426cd37a3b0891f12f416d00c45108))
-* Revert "Extra boolean buffer" ([656f3d4](https://github.com/tiltedphoques/TiltedEvolution/commit/656f3d4d5f24d45fa8bc2f06ec4fb24af39b9e06))
-* Revert "Cleanup" ([fc105e0](https://github.com/tiltedphoques/TiltedEvolution/commit/fc105e0bb0ee4ca0cdc2aaf69a00cdd99b3517a3))
-* Revert "added debugoutput for inventory events" ([2ec1aa4](https://github.com/tiltedphoques/TiltedEvolution/commit/2ec1aa400af0a6e7f404ae0da9929f2f14b2b00c))
+1. 三个 DLL 改为声明**版本无关**(`kVersionIndependent_Signatures` +
+   `kVersionIndependentEx_NoStructUse`)。门面**只做签名/锚点扫描**:不含任何
+   游戏头文件、不出现任何 `RE::` 类型、没有硬编码地址,所以版本无关是如实描述,
+   而不是为了让门禁通过;
+2. `STRPluginMessagingBridge.dll` 与 `STRPluginMessagingDiagnostic.dll` 补上
+   `SKSEPlugin_Query`(返回 `true`,与 API 门面一致);
+3. 三处 `kRuntime_1_6_1170` 列表与不再需要的前置声明一并清掉。
+
+**新增门禁** `Code/plugins/tools/check_skse_entry_points.py`:把 SKSE 两族的
+准入规则**回放**在每个手写插件 × **每一个随包发布的运行时**上。
+插件按"SKSE 看到的名字"分组而不是按文件,因为 API 门面的版本数据与
+`Query`/`Load` 分处两个文件。**反向验证**:还原补丁 → 5 条失败(桥接缺 Query、
+三个列表不覆盖);把 bootstrap 的导出改名 → 6 条失败(缺 `Version`)。
+
+完整取证见 `docs/PITFALLS.md` §43。
+
+## v1.1.7(2026-09-27)
+
+### 修复:v1.1.6 的远程仓库编译全红 —— 三处「只有 CI 才会说的话」
+
+**现象**:`v1.1.6` 打 tag 后,四条流水线全挂 —— `Build windows`、`Release build`、
+`Playable Skyrim Together Build` 三个都死在同一步 `Build the OStimNG prerequisite`,
+`Plugin gates` 死在 `Verify the plugin source snapshots`。而**本地 13 个门禁全绿**,
+因为这两处失败都发生在本地看不⻅的地方。
+
+#### A. 那一步的 PowerShell 根本没被解析
+
+```text
+Write-Host "COMMONLIB_SSE_FOLDER=$env:COMMONLIB_SSE_FOLDER      ← 少一个收尾引号
+Write-Host "COMMONLIB_SSE_FOLDER=$env:COMMONLIB_SSE_FOLDER"     ← 下一行是完整的重复
+```
+
+PowerShell 对**整段 `run:` 块**先解析再执行,一个未闭合的字符串会让整块**语法失败**,
+于是这一步在任何命令执行前就退出 1,日志里连一行 CMake 输出都没有。三条流水线
+共用同一段 `run:`(windows.yml 是被 `release.yml` 与 `windows-playable-build.yml`
+复用的 reusable workflow),所以**一处笔误红三条**。
+
+#### B. 那一步依赖的路径,在钉住的那个提交里已经被删掉了
+
+```text
+$commonlib = 'plugins/OStimNG/skse/extern/CommonLibSSE-NG'
+if (-not (Test-Path (Join-Path $commonlib 'CMakeLists.txt'))) { throw ... }
+```
+
+OStimNG 的 `skse/CMakeLists.txt` 会断言 `COMMONLIB_SSE_FOLDER` 并 `add_subdirectory()`
+它,所以构建 OStimNG **需要 CommonLibSSE-NG 的源码检出**,而不是插件链的那份 vcpkg 包。
+这条路径过去由 OStimNG 自己的 `skse/extern/CommonLibSSE-NG` gitlink 提供 —— 而
+`f20db82`("updated compiler",OStimNG 转向 vcpkg 的那一次)**删掉了这个 gitlink**。
+我们钉的 `3954683b` 在它之后,于是路径在钉住的树里**不存在**,断言必然抛。
+
+**修法**:把修订钉在 `Code/plugins/plugins.json` 的 `commonLibSseNg` 里,紧挨着它必须匹配的
+OStimNG pin,由 CI 读取并 `fetch`。选 `v8.1.0`(`3c0f5a87`)不是随手挑的:
+OStimNG 自己的 `126fc52` 就是"fixed build configs, skseapi definition and trampoline for
+**commonlib 8.1.0**",而钉住的源码用到 `SKSE_EXPORT`、`GetTrampoline`、
+`SkyrimVM::GetVMRuntimeData()`、`MessageBoxMenu::QueueMessage` —— 逐个在 `v8.1.0` 里核对过。
+
+同一处还修掉三个**本来也会让这一步失败**的配置错误:
+
+| 原来 | 问题 | 现在 |
+| --- | --- | --- |
+| `cmake -S ... -B plugins/OStimNG/build -A x64` | 手写的 `-A` 覆盖不了预设:OStimNG 用 **Ninja** 生成器 | `cmake -S plugins/OStimNG/skse --preset release` |
+| 同上 | 没有 `VCPKG_OVERLAY_PORTS`,而 OStimNG 的 `clib-util` **不在上游 vcpkg**(baseline 与 master 都 404),manifest 解析不了 | 预设自带 `${sourceDir}/cmake/ports/` |
+| 构建 `plugins/OStimNG/build` | 预设的 `binaryDir` 是 `${sourceDir}/build/${presetName}`,实际产物在 `skse/build/release` | 构建前断言 `CMakeCache.txt` 在正确的树里 |
+| `Get-ChildItem 'plugins/*/vcpkg.json'` | **只找一层**,而 OStimNG 的 manifest 在 `plugins/OStimNG/skse/`,于是它 pin 的 `e3ed4186` 从不被 fetch,而 vcpkg 的 `builtin-baseline` 只跑 `git show`、没有回退 ⇒ 在 `--depth 1` 的 vcpkg 里必然 `failed to \`git show\` versions/baseline.json` | 改为 `-Recurse -Filter 'vcpkg.json'`(overlay ports 没有 `builtin-baseline`,会被守卫跳过) |
+
+另外补上 `extern/openvr`:CommonLibSSE-NG 在 `ENABLE_SKYRIM_VR` 打开时会把
+`extern/openvr/headers` 加进包含路径并链接 `lib/win64/openvr_api.lib`,而 OStimNG
+强制打开三个运行时。它是 CommonLibSSE-NG 自己的子模块,用**它钉住的 gitlink sha** 直接
+`fetch`(`submodule update` 在这个 `git init` + 单提交 `fetch` 出来的检出里解析不出 URL,
+会报 `no url found for submodule path`)。
+
+#### C. 备份里少了一个文件,因为插件自己的 .gitignore 说了算
+
+```text
+snapshots/plugins/OStimNG/.gitignore:553:gfxfontlib.swf
+```
+
+快照**原样保留插件的 `.gitignore`**(它本身是被备份的源码,且门禁要求它与钉住提交逐字节一致),
+而嵌套的 `.gitignore` **优先于**根目录 `.gitignore` 里的 `!/snapshots/**` 否定规则。
+于是 `gfxfontlib.swf`(111 KB,在 `flash/` 下)**在本地存在、却从未进过 git**。
+本地的 `verify` 看的是工作区,于是绿;CI 是干净检出,文件不在,于是红 ——
+**同一个门禁在两台机器上量的是两件事**。
+
+**修法**:`snapshot` 用 `git add --force` 暂存(这是唯一能无视 ignore 规则的机制),
+并把被覆盖的规则打进 `UPSTREAM.json` 的 `ignoredRulesOverridden`;`verify` 改问
+**"git 是否记录了这个文件"**而不是"磁盘上有没有"。
+
+### 新增两个门禁(各反向验证过)
+
+| 门禁 | 拦什么 | 反向验证 |
+| --- | --- | --- |
+| `check_workflow_shell.py` | `.github/workflows/` 里任何 pwsh 块**语法不通过** | 把那个收尾引号删掉 → 精确指出文件、步骤、行号,exit 1 |
+| `check_ostimng_build.py` | 清单没钉 CommonLibSSE-NG,或 CI 步骤不再读它 | 删 pin / 换成 tag / 改掉字段名 → 三种都 exit 1 |
+
+`check_workflow_shell.py` 用 PowerShell 自己的解析器,覆盖全部 35 个块;
+`${{ ... }}` 先替换成字面量再解析,否则 GitHub 表达式会被当成语法错误误报。
+
+### 顺带修掉三个同类问题
+
+- `plugin_snapshot.py update` 仍在用"根目录有没有 `CMakeLists.txt`"判断子模块是否检出,
+  于是 OStimNG 每次都被静默跳过(`not checked out, skipped`)—— 而这正是重钉时必须覆盖的
+  那一个前置。§39.5 说"统一为 `is_checked_out()`",但当时只改了 `snapshot` 与 `verify`。
+- `UPSTREAM.json` 的 `upstream` 读的是 `.git/config`(只在子模块初始化后才有条目),
+  所以 OStimNG 那份记成了**空字符串**。改读 `.gitmodules`(受版本控制的普通内容)。
+- `snapshot` 每次都会重写 8 份 `UPSTREAM.json`,把 `ignoredRulesOverridden` 写成空数组,
+  产生无意义的 diff。现在只在非空时写入。
+
+### 门禁全绿(13 项)
+
+`strpm_contract`、`plugin_snapshot verify`、`plugin_patches verify`、`papyrus_archive`、
+`check_exports`、`check_transport_compat`、`check_skee_abi`、`check_ostimng_versions`、
+`check_ostimng_build`、`check_workflow_shell`、`check_facegen_scope`、`check_docs`、`merge_fomod check`。
+## v1.1.6(2026-09-27)
+
+### 修复:两处「刚进游戏就闪退」—— 一处在我们的运行时,一处在 RaceMenu 接口版本
+
+**现象**:MO2 + SKSE 打开游戏「一小会儿就直接闪退」。日志里三种崩溃,其中两种反复出现,
+都是 `EXCEPTION_ACCESS_VIOLATION`,而且两次读到的都是 `0x14`
+(即 `TESForm::formID` 的偏移)附近那个**不可能是地址**的数:
+
+```
+# A（三次）skee64.dll+0x81be8                  mov eax, [r14+0x14]   target 0x15
+# B（一次）  SkyrimTogetherRuntime_1_5.dll+0x16CFA8  mov eax, [r15+0x14]   target 0x14
+```
+
+**A:RaceMenu 的接口按名字取,布局没人核对。** 插件发 `kMessageExchangeInterface` 拿到
+`IInterfaceMap`,再 `QueryInterface("Overlay")` —— 这一步**只按名字查表,不校验布局**。
+实测本机的 `skee64.dll` 里 `.?AVOverlayInterface@@` 的 vtable 是**版本 1**(23 槽),
+而两个插件声明的是**版本 2**:插件以为槽位 `[11]` 是 `GetOverlayCount`,
+DLL 那里其实是 `RevertHeadOverlays`。于是 `GetOverlayCount(Spell, ...)` 把
+`rdx = 1`(枚举值 `OverlayType::Spell`)当成 `TESObjectREFR*` 传进去,
+读 `[1+0x14]` = `0x15` → 闪退。
+
+这也解释了**为什么能进游戏**:四次 `Normal` 调用的 `rdx = 0`,
+而 v1 的 `RevertHeadOverlays` 开头恰好有 `testq %rdx,%rdx; je`,
+所以它们**全部安全返回**;只有 `Spell` 才踩中 —— 正是「玩一小会儿才崩」。
+
+**修法**:两个插件(补丁形式,见 `Code/plugins/patches/`)在采用接口前**先查 `GetVersion()`**,
+版本不足就拒绝该接口并打印明确错误,而不是继续调用。`GetVersion()` 在每种布局里都是槽位 `[1]`,
+是唯一能在调用其它方法之前安全调用的方法。`IBodyMorphInterface` 只追加,所以版本 4 的声明对版本 5 仍有效,
+门禁写成 `>= 4` 而非 `== 5`。
+
+**B:引擎用空指针调用装备钩子来清空槽位。** `Code/client/Games/Skyrim/EquipManager.cpp` 的六个钩子里,
+只有 `apActor` 判了空。法术/龙吼四个直接读 `apSpell->formID` / `apShout->formID`,
+而**引擎清空一只手时就是用空形式调用它们**的 → 读 `[0+0x14]` → 闪退。
+(物品那两个钩子的 `pSlot` 早就写了 `?: 0` 三元写法,说明这个坑当时知道,只是没推广过去。)
+
+**修法**:六个钩子统一判空,且为空时**原样转发给原函数**而不是返回 `nullptr`
+(返回 `nullptr` 会让引擎以为「这次装备被取消」,与清空槽位的行为不符);
+`pEquipSlot` 同样补上 `?: 0`。
+
+### 新增门禁:SKEE 接口声明的顺序与版本
+
+新增 `Code/plugins/tools/check_skee_abi.py`(已接入 `plugins.yml`):
+把两个插件声明的 SKEE 方法**顺序**逐槽与 RaceMenu 的真实顺序比对,并要求每份声明都带
+版本门禁。**反向验证过三种改坏方式**,每一种都会被它抓到:删掉 `RevertOverlay`、
+对调 `GetOverlayCount`/`GetOverlayFormat`、移除版本门禁。
+
+**顺带修掉门禁自己开的一个洞**:门禁**拒绝**接口时只是把指针置空,并**没有**让所有人停止使用它。
+`MorphSyncService::Start()` 在 BodyMorph 接口不可用时确实直接返回,所以同步线程不会启动 ——
+但 `main.cpp` 里**传输层是独立启动的**,`Start()` 失败不会回滚它,于是远端包照收,
+`HandleMorphPacket()` → `TryApplyRemote()` 的漂移分支仍然会执行 `_bodyMorph->ClearMorphs()`
+等四个调用,**全是没判空的解引用**。这条链上 `CaptureMorphs()` 和 `TickOnGameThread()` 都判了空,
+只有「网络上来的那一条」没判 —— 于是它看起来像已经修好了。
+MorphSyncTogether 侧补上这一处判空;
+**OStimTogether 侧查过了,不需要改** —— `RaceMenuOverlayBridge` 里每个取用缓存接口指针的函数
+(如 `ApplyRemoteOverlayChunk` / `RefreshLocalOverlayGeometry`)开头都有
+`if (!overlay || !overrides) { ... return; }`,被拒绝的接口根本走不到调用点。
+判空按「四个调用是一笔事务」处理:进门就返回,
+而不是只做其中一部分把代理留在改了一半的形态上。
+
+**被拒绝之后会掉什么功能** —— 实测本机那份 `skee64.dll`(FileVersion 4.0.0.0,2020-10-04)的
+`GetVersion()`:`BodyMorph` 报 **4**(门禁要求 `>= 4`,**通过**),`Overlay`/`Override` 报 **1**(要求 `>= 2`,拒绝)。
+所以**身体/面部 morph 同步照常工作**,只是覆盖层那一半(阴毛/体毛/面部覆盖层)不再同步;
+两个被拒绝的接口各打一条 `error` 日志说明原因。要不要写 v1 兼容层、以及为什么不该写,见 `docs/PITFALLS.md` §37.6。
+
+> 详细取证(反汇编、`target address` 的读法、两个布局的逐槽对照、拒绝接口之后的残留解引用)见 `docs/PITFALLS.md` §37。
+
+### 修复:自定义种族的头不显示(任何「头不是本机生成的」角色)
+
+**现象**:用**自带头部 `.nif`/`.tri` 的自定义种族**时,头是**隐形**的 ——
+没有用 RaceMenu 雕刻、没有套预设、没有动任何滑块,只是把种族自带的头部网格直接用上。
+报告者补了一条关键线索:**同一套自定义头部网格配原版种族是正常显示的**
+(Nolvus v6 给原版种族换的就是 HPH High Poly Head + Expressive Facegen),
+而这一切在 **STR 1.7.1.42 上都是好的**。所以既不是 `.nif`/`.tri` 本身的问题,也不只是「自定义种族」四个字,
+而是**「这张脸不是在本机生成的」**。
+
+**根因:上游 #764 删掉了「强制运行时生成脸」那一行。**
+
+引擎用 `bUseFaceGenPreprocessedHeads`(默认 **1**)决定角色的头从哪来:
+从磁盘上预先烘焙好的 `Data\meshes\actors\character\FaceGenData\FaceGeom\<插件>\<formid>.nif` 加载,
+还是**当场生成**。远端玩家的外观是**序列化后传过来、在本机重建**的,
+它描述的那张脸**从没在本机生成过**,所以磁盘上**不存在**匹配的烘焙网格 ——
+引擎照默认路径去找、找不到,头就是空的。
+
+自定义种族踩得最狠,因为**它的头只以种族自带的 `.nif`/`.tri` 形式存在,从来没有 FaceGenData**;
+而原版种族即使换了自定义头部网格,那些烘焙资源仍然对得上,所以「原版种族 + 自定义头」正常 ——
+这正是报告里「vanilla races with custom head meshes work fine」的由来。
+
+1.7.1 之所以是好的,是因为它**每帧**都在执行:
+
+```cpp
+// Every frame make sure we won't use preprocessed facegen
+POINTER_SKYRIMSE(uint32_t, bUseFaceGenPreprocessedHeads, 378620);
+*bUseFaceGenPreprocessedHeads = 0;
+```
+
+上游 PR #764(`7e09f8b4`,`Now respects bUseFaceGenPreprocessedHeads flag.`)把这行删了,
+为的是修**原版角色**的脖子接缝、黑脸与头部错配(v1.8.0 发布说明:
+`Re-enabled bUseFaceGenPreprocessedHeads; this fixes occasional mismatched heads,
+face discoloration and facegen mods`)。
+**本仓库每个 1.1.x 都含这个删除,而报告者说好的 1.7.1 不含** —— 版本边界与报告完全吻合
+(`git merge-base --is-ancestor 7e09f8b4` 对 v1.1.0/1.1.1/1.1.5/HEAD 为真,对 v1.7.1 为假)。
+
+仓库里其实**一直躺着一个专为此写的函数**:`Code/client/Games/Skyrim/Actor.cpp` 的
+`Actor::QueueUpdate()` —— 它把该 INI 置 0、调用引擎的 Actor 更新、再把值放回去,
+正是「按需强制一次运行时生成」。但它**从未被任何调用点引用**
+(1.0.x 到 1.8.x、以及上游 master/dev 全部 ref 都 grep 过,只有它自己的定义),
+因为当年走的是「每帧全局清零」那条路。
+
+**修法:把「清零」收窄到真正需要它的角色上。**
+
+`CharacterService` 新增一个**窗口**:
+
+- `SetRemoteFaceGenForce(true)` 在**两个**「外观来自网络」的生成路径上、
+  **在把 actor 交给引擎之前**调用(引擎要到**下一帧**才建身体,晚一步就晚了);
+- 它先把**当前值存下来**,关窗时**存回原值**,不写死成 1 ——
+  这个设置不是我们拥有的,玩家自己关过就得保持关着;
+- `UpdateRemoteFaceGenWindow()` **每帧**从 `WaitingFor3D` 推导窗口该不该开:
+  只看 `FormId == GameId{}`(即 base 是**在本机从缓冲区重建**的)那些角色。
+  用「推导」而不是「配对开关」是故意的 —— 断线、生成失败、角色被删都会自动掉出这个视图,
+  不需要谁记得去关,与它下面那个早就在等同一个组件的 `RunSpawnUpdates` 一致。
+
+于是**两边都满足**:本机生成的角色(玩家的,以及所有磁盘上就有烘焙头的 NPC)
+继续走 #764 想要的预处理路径,脖子接缝那个修复不被回退;
+只有**头从网络来**的角色改用运行时生成 —— 也就是那些隐形的头。
+
+### 新增门禁:预处理头部开关的作用域
+
+新增 `Tools/Scripts/check_facegen_scope.py`(读源码前**先剥注释**),查五件事:
+
+1. **全局清零不准回来** —— 它正是 #764 回退掉的东西,
+   在 `TiltedOnlineApp.cpp` 里重新加回会被抓(那里长的注释里提到该设置不算);
+2. **每个写这个开关的地方都必须「先存后还原」** —— 包括那个没被调用的 `Actor::QueueUpdate()`,
+   它是个正确的存/还原,门禁要求它保持正确;
+3. **窗口必须按「来自网络」定界**(等 3D + 空的 FormId),否则不是恒开就是恒关;
+4. **窗口必须在 `Actor::Create` 之前打开** —— 身体是后面那一帧才建的;
+5. **每帧必须关窗**,以及**取 INI 前必须判空**。
+
+**反向验证过十种改坏方式**,每一种都被抓到:重新加回全局清零;
+两处生成路径各自把开窗挪到 `Actor::Create` 之后;去掉每帧关窗;
+把窗口放大成「所有等待中的角色」;把 `FormId` 比较反过来;
+从视图里去掉 `RemoteComponent`;去掉 INI 判空;两个「先存后还原」各丢掉一次还原。
+
+> 其中「把 `FormId` 比较反过来」**最初逃过了第一版门禁** —— 那一版只查标记是否存在、
+> 不查它是不是那个比较,已改成用正则校验比较本身。改坏方式能被自己写的门禁漏掉,
+> 只有真去改一遍才会发现。
+
+> 详细取证(上游 #764 的完整正文、`merge-base --is-ancestor` 逐个 tag 的版本边界、
+> 以及为什么 tint 纹理那条路不是原因)见 `docs/PITFALLS.md` §38。
+### 新增:OStimNG 作为 OStim Together 的前置 mod 纳入本仓库结构
+
+OStim Standalone 的源码以 `plugins/OStimNG`(子模块,`3954683`)进入本仓库,并在
+`Code/plugins/plugins.json` 的 `prerequisites` 中登记——它不是随包插件,而是
+OStim Together 依赖的运行时。
+
+**为什么是"前置"而不是"打包"**:OStimNG 自己的 `data/` 是 256 MB 的动画、贴图与音效
+(974 个 `.hkx` 153 MB、338 个 `.dds` 71 MB),本仓库既不构建、也不打补丁、更不出货。
+把源码纳入结构是为了**钉住版本、可打补丁、可校验**,不是为了替玩家分发资源。
+
+**快照只备份代码**:`snapshotScope` 在清单里显式声明,只备份 `skse/`、`flash/` 等
+700 个文件 2.4 MB。是否备份由"本项目是否消费它"决定,而不是由一个体积阈值决定。
+
+### 新增门禁:`check_ostimng_versions.py`——"1.5.x 到 1.7.x"从声称变成校验
+
+OStimNG 通过 SKSE 地址库解析引擎地址,而 `REL::ID()` 在 id 缺失时**不是软失败,是
+加载即中止**(CommonLibSSE-NG `REL/IDDB.cpp` 的 `report_id_lookup_failure`)。
+所以"支持 1.5.x 到 1.7.x"是关于**随包地址库里 id 覆盖率**的断言,本门禁逐条核对:
+
+- `RELOCATION_ID(se, ae)` 的 SE id 必须在**每一个** pre-AE 地址库(10 个,含 1.5.97)里;
+- 其 AE id 必须在**每一个** AE 地址库(14 个,含 1.6.1170 / 1.7.104)里。
+
+当前 33 个 `RELOCATION_ID` 站点全部通过。**反向验证过**:把任一 id 改成不存在的值,
+门禁 exit 1 并指名文件与行号。
+
+### 修复:OStimNG 在 1.5.80/1.5.97 上会改坏一条 6 字节指令
+
+`GameHooks.h` 的三处 hook 用 `write_call<5>` / `write_branch<5>`,它们**只覆盖 5 字节**,
+因此只有当站点本身是 5 字节 rel32 分支时才安全。实测 1.5.97 的 `SkyrimSE.exe`:
+
+| 站点 | SE 偏移 | 首字节 | 真实指令 | 结果 |
+| --- | --- | --- | --- | --- |
+| IsThirdPerson | `+0x132` | `E8` | `call rel32`(5B) | 正常安装 |
+| **GetHeading** | `+0x152` | `FF` | **`call [rax+0x520]`(6B)** | **改坏** |
+| PackageStart | `+0x47` | `E9` | `jmp rel32`(5B) | 正常安装 |
+
+`write_call<5>` 在 GetHeading 处会把 6 字节指令劈开:末尾 1 字节 `00` 变成孤立尾巴,
+而且它用 `disp32` 中间四个字节反推"原函数地址",得到 `0x63a8e7`——一个纯属巧合落在
+`.text` 里的地址。
+
+**修法**:打补丁后每处先核对首字节是否等于期望的 opcode,不符则**跳过该 hook 并 warn**,
+而不是写进去。补丁落在 `Code/plugins/patches/OStimNG/`(子模块不可推送,CI 又用
+`--force` 检出,工作区改动会被丢弃)。已用真实 1.5.97 二进制验证:GetHeading 跳过,
+另两处照常安装。
+
+### 修复:OStim Together「没激活」——日志里现在会指名缺 OStim
+
+**根因不是配置,是前置根本没装**。实测该安装的 `skse64.log` 里**只有
+`OStimTogether.dll`,没有 `OStim.dll`**;MO2 的 21 个 mod 里没有任何 OStim;
+`OStimTogether.log` 逐条记录 `OStim.dll module not found` 与十余条
+`unavailable`/`missing`,而插件本身照常 READY。
+
+也就是说:"没激活"的观感,来自**插件加载成功、但每个子系统都自行关闭**,且没有任何
+面向玩家的说明。三处修复:
+
+1. 缺 OStim 时改为 `critical`,并写明要装 OStim Standalone、要确认 `OStim.dll` 与
+   `OStim.esp` 已启用;
+2. FOMOD 向导里 OStim Together 的类型改为**依赖型**:检测 `SKSE/Plugins/OStim.dll`
+   ——`Active` → Recommended,`Inactive` → CouldBeUsable(装了没勾),缺失 → NotUsable;
+3. 描述文字在两种语言下都点名"需要先安装 OStim Standalone"。
+
+### 修复:七个插件的联机同步"装上就是死的"——门面不再只看 ini
+
+出货 ini 把 `STRBridgeModule` 指向桥接,而桥接在本框架内**结构性地收不到任何包**:
+它的接收端在 `SkyrimSE.exe` 自己的分配区里找 `TransportService` 的 RTTI,而本框架的
+`TransportService` 住在独立模块里,于是解析器永不就绪、每次 `send()` 返回
+`kNotConnected`。本次实测再次确认:该安装的 `STRPluginMessagingBridge.log` 反复打印
+`receive resolver: TransportService RTTI type descriptor not uniquely resolved`,
+而 `OStimTogether.log` 记录 `backend=str-bridge knownPeers=0`。
+
+**修法**:给门面打补丁——在读取 ini 指定模块**之前**,先探测**已加载**的框架运行时
+(两个版本名都试),探测到就用它。关键约束:**只用 `GetModuleHandleW`,绝不用
+`LoadLibraryW`**。两个运行时是不同 ABI,且任何安装后两者都躺在游戏根目录,盲目
+`LoadLibrary` 会把跨 ABI 映像拉进进程(这正是 §32.6 记录过的风险)。探测不到时行为
+与原先完全一致,独立桥接场景不受影响。
+
+该行为已由 `check_transport_compat.py` 的新断言绑定:文档必须描述"已加载运行时探测",
+补丁必须同时提到两个运行时名,且**新增代码里不得出现 `LoadLibraryW`**。三种回归都
+反向验证过。
+
+## v1.1.5(2026-09-27)
+
+### 文档约定:已修的缺陷不再写进 README
+
+两个 README 里那节「曾经误报为冲突、现已兼容:KiLoader / KreatE」**已删除**,
+同时把这条约定写进 `CODE_GUIDELINES.md`(新增「Where a fix is explained, and
+where it is not」一节),以后照此办理。
+
+**为什么删**:README 回答的是「装哪个版本、什么能用、出问题怎么办」。
+一个**已经修好**的缺陷不属于这三者 —— 修复出货之后读者没有任何可做的动作,
+于是那一段只会被读一次,然后永久占着位置,把玩家真正要看的内容越推越远;
+更糟的是它会**过时成一段关于没人再跑的构建的描述**。
+
+**以后放哪里**:
+
+| 内容 | 去处 |
+| --- | --- |
+| 缺陷已修(包括被广泛误报的、用户点名问过的) | `CHANGELOG.md`;细节值得留就进 `docs/PITFALLS.md` |
+| 玩家必须**动手**的变化 | README:要装的版本、支持的游戏版本、**仍然存在**的冲突、安装步骤、该看的日志 |
+| 已修缺陷在 README 的痕迹 | 至多版本表里一行 |
+| 「不要启用这个 Mod」清单 | 只列**仍然冲突**的;修好就删掉,不留作历史 |
+
+**判据**(写之前先问):*这个修复出货之后,读者会因此做什么不一样的事?*
+答案是「没有」,就写进 CHANGELOG,不写进 README。
+
+> 顺带把 1.1.5 那一行从「修复叙事」压回一行摘要:版本表是索引,不是事故报告。
+### 修复:插件补丁里的 fmt 占位符写错,导致 CI 编译失败
+
+**现象**:`Build windows` 与 `Playable Skyrim Together Build` 两个工作流都红,
+标注为 `companion plugin build failed: DAVSyncTogether (build)`,编译错误是
+`DAVConfigIndex.cpp(109,17): error C7595: 'fmt::v12::fstring<...>::fstring': call to
+immediate function is not a constant expression`。
+
+**根因**:错在**本仓库自己的补丁文件**,不在插件源码里。
+`Code/plugins/patches/DAVSyncTogether/0001-config-index-enumeration.patch` 里那两条
+日志的占位符写成了 `path=\"{\"} \" error=\"{\"}` —— **转义引号写进了花括号里面**。
+C++ 编译器看到的是 `path="{"} " error="{"}`;`fmt` 在**编译期**解析格式串时,
+把花括号里的 `"` 当成**格式说明符**,而 `std::string` 没有对应它的 formatter,
+于是直接编译失败。写成 `path=\"{}\" error=\"{}\"` 即两个正常占位符,问题消失。
+
+**为什么 CI 挡不住、本地也看不见**:
+
+- `git apply` 只看补丁**能不能打上**。这条补丁语法完全正确、上下文完全匹配,
+  `PATCH VERIFY OK` 一路绿灯 —— 它根本不知道打进去的 C++ 编不过;
+- 本地没有 Windows SDK 与 vcpkg,`fmt` 的编译期检查跑不起来,
+  所以这个错误**只在 Windows 构建里、十几分钟之后**才现身。
+
+**修法**:补丁里两行占位符改回 `\"{}\"`。**补丁语义一字未动**,
+只是把转义引号移到花括号外面;`git diff` 恰好 2 行。
+
+**顺带加了一条门禁**(`Code/plugins/tools/plugin_patches.py`):`verify` 与 `check`
+现在会**逐行扫补丁的新增行**,凡是花括号里出现引号的占位符一律报错,并直接指出
+正确写法。规则刻意收得很窄 —— 真正的格式说明符是宽度/精度/类型字母,
+引号出现在里面**必然是转义写错了**,所以不会误伤合法写法。反向验证过:
+把补丁改回原来的写法,门禁立刻报出两处(第 25、34 行)。
+
+> **教训**:补丁能应用 ≠ 补丁编得过。`git apply` 的绿灯只证明文本能对上,
+而**唯一的真值来源是编译器**。这类「本地绿、远端红」的坑,
+要么在本地补齐工具链,要么把判据写成门禁 —— 这次选了后者,
+因为它是**可判定**的:花括号里不该有引号。
+
+### 修复:KiLoader / KreatE 的「不兼容」弹窗(它们本来并不冲突)
+
+**现象**:装了 KiLoader(以及依赖它的 KreatE / AELAS)之后,启动游戏弹
+`KiLoader initialization failed`,细节是两条 `Couldn't open logging file`,
+第二条 `std::system_error: The process cannot access the file because it is being
+used by another process`。看起来像本框架与 KiLoader 不兼容,上游也有同样的
+报告([TiltedEvolution#766](https://github.com/tiltedphoques/TiltedEvolution/issues/766),
+至今 open,回复是「无法承诺支持 KiLoader」)。
+
+**根因**(证据来自报错文本本身,不是推测):
+
+1. 报错里的进程名是 **`KiLoaderTPProcess`** —— 那是**本框架的 CEF 辅助进程**
+   `TPProcess.exe` 的名字,不是游戏进程。也就是说 KiLoader 是在**我们的辅助进程里**
+   被拉起来的;
+2. 为什么会被拉起来:`TPProcess.exe` 位于**游戏根目录**,Windows 解析它的导入表时
+   **先搜 exe 所在目录**,再搜 `System32`;而 `libcef.dll` 按名字延迟加载
+   `dxgi.dll`、`d3d11.dll`、`d3d12.dll`、`dcomp.dll`(自写 PE 解析读延迟导入表确认)。
+   这四个正是 ENB、ReShade、SpecialK、Community Shaders 用来挂代理的名字,于是
+   辅助进程加载的是**游戏根目录的 ENB 代理**,ENB 再带起 `enbseries\` 下的卫星 DLL,
+   `KiLoaderSatelliteENB` 随之拉起一份 KiLoader;
+3. 为什么那一份必死:KiLoader 的日志路径按**当前进程名**推导,于是它去开
+   `Data\KiLoader\KiLoader.log` —— 而游戏进程**整场**都占着这个文件
+   (报错第一行的 `AppData\Local\KiLoaderTPProcess\Logs\KiLoader.log` 同样来自
+   进程名)。同一个框架的两份实例无法共用该文件,第二份在启动阶段即失败。
+
+所以这**不是**功能冲突,而是辅助进程误加载了不属于它的 DLL,再由 KiLoader 如实报出
+了这个碰撞。
+
+**修法**:`Code/tp_process/main.cpp` 在 `CefExecuteProcess` 之前,按**完整路径**加载
+`System32` 的 `dxgi.dll`、`d3d11.dll`、`d3d12.dll`、`dcomp.dll` —— 这四个既是
+`libcef.dll` **延迟导入表**里的名字(直接读 PE 得到,其余延迟导入都是 USER32/SHELL32
+这类不可能被 mod 占用的系统名),也正是图形框架会占用的代理名。加载器在搜索任何目录
+之前会先按**基名**匹配已加载模块,因此随后的按名加载(延迟导入正是按名)直接命中它们,
+不再落到游戏根目录。
+
+两个细节是**实测**出来的,不是照抄:
+
+- **顺序必须 `dxgi` 在前**:`System32\d3d11.dll` 静态导入 `dxgi.dll`,先加载 `d3d11`
+  会让它自己的依赖解析到游戏根目录的代理,加载失败并报 `ERROR_BAD_EXE_FORMAT (193)`。
+  本机用一份同名的假代理复现:先 `d3d11` → 193;先 `dxgi` → 两者都正确落到 `System32`。
+  (`d3d12.dll` / `dcomp.dll` **不**导入 `dxgi`,这点也实测过,所以只有前两个的相对顺序
+  是硬要求);
+- **不能改用 `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`**:本框架自己的
+  overlay 运行时(`libEGL.dll`、`libGLESv2.dll`、`vk_swiftshader.dll`、
+  `d3dcompiler_47.dll`)同样部署在游戏根目录并**按名**加载,收紧搜索路径会把
+  「辅助进程误加载 ENB」换成「overlay 起不来」。只钉这四个名字即可,
+  因为 `libcef.dll` 的延迟导入表里,只有这四个是第三方会占用名字的图形 DLL。
+
+**未走的路(以及为什么)**:把 `d3d11.dll` / `dxgi.dll` 从游戏根目录删掉、或让 ENB
+改用别的代理名,都是在要求玩家改自己的 mod 列表;给辅助进程换一个不在游戏根目录的
+路径,则要动 CEF 的 `browser_subprocess_path` 与打包布局,收益不抵风险。
+
+> **教训**:「两个 mod 不兼容」这个结论,在**报错里的进程名不是游戏进程**时就要先怀疑。
+> 本例里 `KiLoaderTPProcess` 这一处字样已经指出肇事者是我们自己的辅助进程;
+> 顺着「谁在这个进程里、它为什么在这里」查,比顺着「KiLoader 和谁冲突」查快得多。
+
+### 版本策略:把 **1.1.1** 指定为稳定版(推荐版本回到 1.1.1)
+
+两个 README 的横幅推荐版本改为 **1.1.1**,并在版本表里用
+`**1.1.1** ⭐ **稳定版**` 单独标出;其余版本行**取消加粗**,保持普通样式,
+让「哪一个是稳定版」一眼可辨。中英文两版同步。
+
+> **这一条与 §35 的记录并不矛盾,是同一个判据的两种用法。** §35 里门禁抓到的
+> 「推荐版本落后两版」,指的是**无人维护造成的漂移**:横幅停在 `1.1.1`、
+> 而最新 tag 已经到 `1.1.4`,谁也不知道该装哪个。现在横幅回到 `1.1.1`,
+> 是**有理由的选择**,并且这个理由写在横幅里、由门禁绑住(见下):
+> `1.1.2 ~ 1.1.4` 照常出货、照常可联机,只是**未被指定为稳定版**。
+> 两者的区别不在数字,在于**说不说得清为什么**。
+
+门禁相应扩了 `recommended-version` 这条(没有新开一条检查):横幅指定的推荐版本,
+必须**正是**版本表里标了 ⭐ 稳定版的那一行。这样「横幅说 1.1.1」与「表格标 1.1.1」
+不会各自漂移,也顺带保证表里**恰好只有一行**是稳定版 —— 两行都标、或一行都没标,
+都会红。四条分支(横幅与标记不一致 / 两行都标 / 一行都没标 / 中英各自不一致)
+都做了反向验证。
+
+同时把版本表行的识别放宽到允许数字后面跟稳定版标记(`**1.1.1** ⭐ **稳定版**`),
+但**只允许这一个标记**:第一版放宽成「数字后面跟任意内容」时,
+`| 1.5.3 ~ 1.5.97(老 SE) |` 这类**游戏版本表**的行也会被当成版本表行,
+于是缺行可以用无关的行蒙混过去 —— 正是这条检查存在的意义被它自己绕开了。
+已收紧为只匹配 `⭐ **稳定版**` / `⭐ **stable**`,并做了反向验证。
+
+### 文档与约束:让"文档更新"成为可检查的规则
+
+`CODE_GUIDELINES.md` 新增一节 **Documentation is part of the change**:
+**每次版本修改必须在同一个提交里更新文档**,并且发 tag 之前必须先过一遍
+`Tools/Scripts/check_docs.py`。光写规则没用,所以规则配了一条门禁
+(已接入 `plugins.yml`,并在 `docs/RELEASE-AND-MO2.md` 的发版步骤里前置)。
+
+新增 `Tools/Scripts/check_docs.py`,四项检查:
+
+| 检查 | 断言 |
+| --- | --- |
+| `coverage` | 所有引用 1.5.x 覆盖率的文档都必须引用**当前**数字;历史口径必须显式标注"已被取代/当时" |
+| `version-tables` | 两个 README 的版本表必须覆盖 CHANGELOG 的每一个版本,且两者**互不矛盾** |
+| `tags-have-sections` | 每个已打的 tag 都必须在 CHANGELOG 里有对应小节 |
+| `recommended-version` | 推荐版本必须真实存在(有 CHANGELOG 小节),中英一致 |
+
+**它立刻抓到了四处真实问题**,都已修:
+
+- **`v1.1.3` 打了 tag 却没有 CHANGELOG 小节** —— 该版本的内容只存在于两个
+  README 的版本表里,CHANGELOG 里既没有 `## v1.1.3` 也没有任何小节。
+  已补写完整小节;
+- **`v1.1.4` 在两个 README 的版本表里都没有行** —— 版本表停在 1.1.3;
+- **覆盖率数字是旧口径**:`README.md`、`README_EN.md`、`Tools/ida/README.md`、
+  `docs/LAN-RADMIN-GUIDE.md` 都还写着 3080/3069/11 个,而生成器给的是
+  **3082/3069/13 个**;
+- **推荐版本落后两个版本**:横幅写着 `1.1.1`,而最新 tag 是 `1.1.4`。
+
+另外把"未映射 id 是**函数**还是**数据**"这条区分写进了两个 README 与
+`docs/LAN-RADMIN-GUIDE.md`:函数 id 的桩"调用即返回 0"可以安全调用,
+数据 id 不能走同一条路(桩是可执行内存,当数据读会读到机器码)。
+这正是 §34 那处修复背后的判据,值得让读者也看得到。
+
+门禁本身写错过两次,**两次都是自测发现的**,都已修正:
+
+- 第一版只检查"文档里出现过正确数字",于是**同一文档里新旧两个值并存时它会通过**
+  ——正是它要防的漂移形态。改为枚举文档中**所有**覆盖率形状的数字逐个比对;
+- 第二版又太紧:把 `Tools/ida/README.md` 里**有意保留的历史口径**
+  (已标注 `Superseded`)误报,还把 `3698/3698 offsets validated` 这个
+  **另一个指标**误判成 id 覆盖率。改为"历史口径必须显式标注为历史",
+  并排除两边相等的 pair。
+
+还有一处**通过得太容易**的坑:该检查依赖 `git tag`,而 `actions/checkout@v4`
+**默认不取 tag**,那样它会跑零次并报告成功。已在 CI 侧显式加
+`fetch-depth: 0` 与 `fetch-tags: true`,并在门禁侧加了"一个本仓库的 tag
+都看不见就直接报错"的守卫。
+
+顺带记下一个此前没人写下来的事实:**tag 命名空间是共享的**。上游与本仓库
+都用 `v1.1.x`,且指向不同提交(本仓库 `v1.1.0` = `03cf2cbb`,
+上游 = `fd8748f0`),所以"这个 tag 是不是我们的"必须显式列出系列
+(`OWN_TAG_SERIES`)而不是靠名字判断。
+
+### 同步上游 #901:Havok 控制器时间步长(未发布,来自上游 dev)
+
+上游 `dev` 上有 2 个 v1.8.2 之后的提交,其中 `fbf72883`(#901)修的是
+**远端 actor 的 Havok 控制器时间步长为 0** 导致的物理污染:
+
+远端 actor 跳过原生移动处理,新建的 controller 因此停在 `deltaTime = 0`。
+插值位置更新仍会重置速度,**除以 0 产生非有限加速度**,再传播进接触质量修正 ——
+表现就是"物体和 NPC 碰撞后、踩到散落物品后**异常滑行**"。修法是两条:
+在远端移动处理里刷新 controller 时序,以及在强制位置更新前刷新、拿不到有效步长时
+推迟 controller 定位。涉及 7 个文件(3 个新增)。
+
+**1.5.x 适配(两处,都不是猜的)**:
+
+- 新增的 3 个文件里,`hkStepInfo` 是**纯数据布局**,与版本无关,原样照搬;
+  `bhkCharacterController::stepInfo` 的 **0x80 偏移是实测出来的**,不是照抄上游:
+  本机有一份真实的 1.5.97 `SkyrimSE.exe`,在其 `.text` 里搜"加载物理步长全局 +
+  求倒数 + 通过同一寄存器写 +0x88 与 +0x8C"这一模式,**全镜像只有一处**
+  (RVA `0xDBFDD4`,所属函数 `0xDBF630`)。该 RVA 在
+  `version-1-5-97-0.bin` 里是真实符号(id `76436`),它读的全局
+  (`0x1E083A8`)也是(id `512261`)—— 两头都有名字,不是插值猜出来的。
+  0x88/0x8C 即 `deltaTime`/`invDeltaTime`,所以 `stepInfo` 就在 0x80,
+  与上游对 1.6.x/1.7.x 的断言一致,**该成员在两代之间没有移动,故不像 `Actor`
+  那样需要版本分支**;
+- 两个新 id 在 **1.5.97 上都没有映射**(已核对:`39856`、`389089`;
+  同一对 id 在 1.6.317/640/1170/1179 与 1.7.99/104 的库里**全部有映射**,
+  所以 1.6.x/1.7.x 走的就是上游原路径)。两者性质不同,处理也不同:
+  - `39856`(`AIProcess::GetCharController`,`AIProcess.cpp:14`)是**函数 id**。
+    `VersionDb.h:60-62` 明文写着桩的契约是"调用它返回 0 而不是崩",
+    所以按本仓库既有写法用 `POINTER_SKYRIMSE` + `ThisCall` 是**正确且一致**的,
+    未映射时自然得到 `nullptr`,两个调用点都判空跳过刷新;
+  - `389089`(物理步长那个 **float 全局**,id 是**数据 id**)**不能**这样写:
+    未映射时桩是一段**可执行内存**(`48 31 C0 0F 57 C0 C3`),`*stub()` 是
+    **把它自己的机器码当 float 读**。实测那几个字节解码为 `1.895e-29`,
+    恰好被 `UpdateDeltaTime` 的 `<= 0.0001` 规则挡掉 —— 但那是**桩的编码
+    碰巧**,不是契约:换一段解码成大有限值的桩,就会被当成合法步长直接写进
+    controller。故改用 `FindAddressById` 显式解析、失败返回 0,与
+    `GarbageCollector::Get()`、`LeveledNpcSystem::CanRecordPick()` 处理各自
+    未映射数据 id 的做法一致;
+
+**顺带修掉一处我自己引入的空指针面**:上游的 `ForcePosition` 没有解引用
+`GetExtension()`,而本仓库的 `Actor::GetExtension()` (`Actor.cpp:285-298`)
+在既非 `ExActor` 也非 `ExPlayerCharacter` 时**返回 nullptr**。直接照搬会在
+"本来就是要让它更安全的这条路径"上新增一个解引用。已按同文件
+`HookSetPosition`(`:201`)的写法判空。
+
+验证:`hkStepInfo` 的退化阶梯用 g++ 编成可执行并**分进程**跑过两种映射状态
+(静态缓存"只问一次",同一进程内换映射不会重算,这点也是实测发现的):
+1.6.x/1.7.x 有映射 → `deltaTime=0.0166667 / inv=60`;1.5.x 无映射 →
+退回移动步长 `0.02 / inv=50`,连移动步长也没有时保留 controller 里已有的值。
+另用 g++ 把改过的逻辑连同一份最小 shim 编译运行过,确认签名与调用约定无误。
+
+## v1.1.4(2026-09-26)
+
+同步上游 **v1.8.2**(3 个提交,分叉点 `e0002073`),并按本仓库的多版本逻辑改写了两处
+会在 1.5.x 上失效的写法。
+
+### 上游同步
+
+- **#899 按"原始 NPC + 房主选中的模板"重建等级化 NPC**:此前远端角色的 base 被**直接**
+  换成房主选中的模板,丢掉了只存在于原始 NPC 上的数据(守卫的名字、默认装备等)。
+  现在走引擎自己的 `CreateTemplateActorBase(原始, 模板)`,与单机解析结果一致;
+  旧的临时 base 交给引擎的 `GarbageCollector` 回收(与 `RecalcLeveledActor` 同一套策略,
+  但**不动**旧实现留下的静态 pick);
+- **#893 排除各派系的监狱储物容器**:入狱时没收的赃物/随身物品容器按派系各存一份,
+  同步它们等于让一个玩家的物品进另一个玩家的储物箱。现在遍历 `ModManager::factions`
+  收集这些容器指针并从对象同步里排除(只比较指针,不读它们的内容);
+
+### 1.5.x 兼容(本次同步的主要风险)
+
+- **`GarbageCollector::Get()` 不再解引用零返回桩**:单例 id `400329` 在 1.5.97
+  映射表里**不存在**,而 `POINTER_SKYRIMSE` 对未映射 id 返回的是"零返回桩"——
+  照抄上游会变成**解引用地址 0**。已改为直查地址库,未映射返回 `nullptr`,
+  调用点判空后保留旧 base(泄漏一个临时 form,不崩);
+- **修掉一个上游引入的每帧 Disable/Enable 死循环**:上游用 `GetLeveledPick() == pPick`
+  判断"重建完成",而这个值读的是 `SetLeveledCreature`(id `20231`,1.5.97 **未映射**)
+  写进去的 extra data ⇒ 比较**永远为假**,`WaitingFor3D` 会每帧重新禁用再启用该角色。
+  新增 `LeveledNpcSystem::CanRecordPick()`(只查一次并缓存),不可写时退回本仓库原有路径
+  并把完成判定切回 `baseForm == pPick`;
+- `TESObjectREFR::SetBaseForm` 更名为上游的 `SetObjectReference`(仅改名,布局不变);
+- `TESFaction` 补 `CrimeData` / `ModManager::factions`:偏移不是猜的——
+  form 数组自 `0x10` 起、每项 `0x18`、按 FormType 索引,Faction(11)→`0x118`
+  与既有 Quest(77)→`0x748` 互相印证,三个 `static_assert` 同时钉住;
+
+### 插件层专项审计
+
+- **服务端可被任意玩家一条聊天命令打崩**:`CommandService::OnSetTimeCommand` 对
+  `m_adminSessions` 里每个连接调 `PlayerManager::GetByConnectionId(session)->GetId()`,
+  **不判空**。认证流程里连接 id 在 `GameServer.cpp:896` 先进集合,玩家行到 `:977`
+  才建立,而 `:947`(mod 策略不符)、`:983`(重复认证)都会提前返回且**不回头清理集合**
+  ——集合只在断线时(`:612`)擦除。该集合的其余所有读者都判了空,其中
+  `GameServer.cpp:496-502` 还专门为此打印 `"Admin session not found"`。已改为取到即判、
+  失败即 `continue`;
+- **修正一处会误导部署的文档**:`docs/COMPANION-PLUGINS.md` 声称"出货的 ini 指向框架运行时,
+  所以按名字加载门面的插件仍然走原生传输"——与 `976f9702` 之后的实际出货值**完全相反**
+  (ini 里是 `STRBridgeModule=STRPluginMessagingBridge.dll`)。已改写为事实,并写明
+  七个随包插件**无一例外**都按名字找门面 DLL、因而**都落在聊天隧道桥接上**;
+- `check_transport_compat.py` 增加两条断言,把该文档与**实际出货的 ini 取值**绑死
+  (文档必须出现 ini 里的真实值;不得再声称指向框架运行时)。已做反向验证:注入这两种
+  回归后门禁均 `exit 1` 并指名道姓;
+- **已查明但未改动**(插件仓库是钉死的子模块,本仓库不推送,改了进不了 CI 与发布):
+  `STRBridgeModule` 只有**一个**键,而运行时按游戏版本有两个名字
+  (`SkyrimTogetherRuntime.dll` / `SkyrimTogetherRuntime_1_5.dll`),门面的加载器又是
+  精确模块名匹配 —— 单份 ini 表达不了两者。两条候选修法都**需要实机验证**,
+  本轮不翻转行为,已连同证据与边界写入 `docs/PITFALLS.md` §32;
+- **新增本仓库自持的插件补丁机制**(见下),并用它修掉了
+  `DAVSyncTogether` 的一处崩溃:`DAVConfigIndex::Load()` 里
+  `recursive_directory_iterator` 的构造落在循环内 `try` **之外**,而 `Load()` 由
+  `OnSKSEMessage(kDataLoaded)` 直接调用、`main.cpp` 又没有 handler ⇒
+  `filesystem_error` 逃出 SKSE 消息回调即 `std::terminate`。触发条件很平常:
+  `Data/SKSE/Plugins/DynamicArmorVariants` **存在但不是目录**(残留的同名文件)。
+  已改用 `error_code` 重载,枚举失败只记一行日志;
+- **删掉 `IEDSyncTogether` 的 `RelayHost` 子选项**:它唯一的作用是打开旧 UDP 传输,
+  而该传输**根本没被编译**(CMake SOURCES 里没有 `UdpTransport.cpp`/`StrTransport.cpp`/
+  `SyncService.cpp`/`Config.cpp`),勾了也不会有任何效果——与其留一个装样子,
+  不如删掉。同时把"随包的 `IEDSyncTogether.ini` 目前是惰性的"写进清单
+  `payloadNote`,免得有人报"我的配置被忽略"。
+
+### 新增:本仓库自持的插件补丁机制
+
+七个插件是**钉死的子模块**,指向本仓库**没有权限推送**的仓库(已实测:
+`git push --dry-run` 对 `Caelvanost/DAVSyncTogether` 返回 `403`;两个上游的 HEAD
+又恰好等于当前 pin,所以也没有"等上游修"这条路)。而 CI 的
+`git submodule update --init --force --recursive --depth=1` 会**丢弃工作树里的一切改动**
+—— 于是"在子模块里改一行"这种修法**永远进不了包**。
+
+新增 `Code/plugins/patches/<plugin>/*.patch` + `Code/plugins/tools/plugin_patches.py`
+把这条件拆掉:补丁是本仓库的**普通内容**,照常 review、照常随包发布,在插件被
+configure/build **之前**应用到子模块工作树上。
+
+| 命令 | 用途 | 在哪跑 |
+| --- | --- | --- |
+| `apply` | 应用全部补丁(**幂等**:已应用则跳过) | `windows.yml`,紧跟 checkout、在 build 之前 |
+| `verify` | 每个补丁都必须仍能打到 pin 上 | `plugins.yml`,与其它门禁并列 |
+| `check` | 当前工作树里补丁是否已应用 | 本地 |
+| `revert` | 反向应用,回到 pin | 本地 |
+
+`verify` 用 `git apply --check --cached`(对**索引**而不是工作树),所以"已经应用了"
+**掩盖不了**"这个补丁已经配不上新的 pin"——这正是重新 pin 时最需要拦住的失误。
+
+同时改了 `plugin_snapshot.py`:快照门禁原来比对**工作树**,补丁一应用它就误报
+"snapshot differs"。现在它通过 `git show <pin>:<path>` 读**pin 的那个提交**的内容,
+量的仍然是"备份是否还等于被构建的那个提交",而不是"工作树是否干净"。
+两种状态(已打/未打)都实测通过,篡改快照仍然会被抓住。
+
+### 清单
+
+- `Tools/missing_1_5_97_ids.txt`:新增三个未映射 id(`20231`、`36460`、单例 `400329`),
+  覆盖率 **3069/3080(99.6%)**。顺带修掉生成器 `collect_codebase_ids()` 的两个口径错误
+  (`*.[ch]pp` 通配漏掉全部 301 个 `.h`;注释掉的调用被当成活的),旧口径 3075 因此
+  既漏 8 个又虚增 3 个;
+- `docs/PITFALLS.md` §3.1:记录本次同步的两处判断与查证手段。
+
+## v1.1.3(2026-09-26)
+
+**插件生态落地**:把剩余三个插件按同一配方并入,可选插件由 3 个增至 6 个。
+
+> 本节是**补写**的。`v1.1.3` 当时打了 tag,却没有在 CHANGELOG 里留下任何小节——
+> 该版本的内容只存在于两个 README 的版本表里。`Tools/Scripts/check_docs.py`
+> 的 `tags-have-sections` 检查把这类"打了 tag 却无人可读"的发布挡住了,
+> 本节即由该检查发现后补齐。
+
+- 并入 `AnimSyncTogether`(动画图谱变量/事件同步)、`DAVSyncTogether`
+  (Dynamic Armor Variants 外观同步)、`TradeTogether`(玩家间物品与金币交易),
+  子模块、契约校验、打包清单、CI 构建、耐久快照、安装向导六处同步更新;
+- 删除 FOMOD 里那段**两条指引都是死路**的 OStim 提示(上游既无 release 也无 tag,
+  该脚本又从不进包),中英文改为只描述功能;
+- 修复**自己引入的发布阻断**:两个插件 pin 的 vcpkg baseline 在 CI 的
+  `--depth 1` 克隆里取不到,而 vcpkg 的 builtin registry 路径**没有 fetch 回退**,
+  已改为按 manifest 反推 baseline 再逐个 fetch;
+- **OStim 的两个 Papyrus 脚本终于能编了**:改用开源编译器
+  `russo-2025/papyrus-compiler`(pin tag + SHA-256),补 12 个基础类型 stub
+  (`plugins/` 是 gitlink,只能放本仓库),`OSKSE.pex` / `OStimTogetherNative.pex`
+  随包出货,**Add Actor 同意门控真正可用**;
+- 顺带修掉 `OStimTogether_OCum.esp` **出货却不带脚本**的缺口(补 4 个 `Form` +
+  1 个 `Game` stub,`OStimTogetherOCum.pex` 接入同一编译通道),并让打包脚本支持
+  **子选项的 artifacts**(原先静默忽略);
+- `GameFiles/Skyrim/scripts/source/` 的 10 个出货脚本补上可复现的编译入口,
+  其中 `SkyrimTogetherVerifyLaunchScript.psc` 修掉编译器不支持的 `\n` 转义
+  (它会**静默产出字面反斜杠**);归档 papyrus-compiler 源码到 `snapshots/tools/` 并加门禁。
+
+## v1.1.2(2026-09-26)
+
+第四轮审计:全仓复查 + 插件层专项,以及**一次真实缺陷的回滚**。
+
+### 稳定性修复(全部为可复现的空指针)
+
+- **服务端可被远程打崩**:同一连接上发第二次 `AuthenticationRequest` 时
+  `PlayerManager::Create` 返回 `nullptr`,而调用点直接解引用。已改为拒绝重复认证;
+- **`PlayerService` 三个每帧路径**在载入/主菜单(此时没有玩家)解引用空玩家指针:
+  `RunRespawnUpdates`、`RunBeastFormDetection`、`RunDifficultyUpdates`;同文件另两处
+  本来就判空,这三处漏了;
+- **`DiscoveryService::DetectGridCellChange`**:`GetParentCellEx()` 与坐标回退
+  **都**可能为空,而下一行直接读 `pCell->formID`。同文件另外两处对同一个调用都判了空;
+- **`CalculateHealthPercentage`**:每帧传入 `PlayerCharacter::Get()`,函数内部不判空;
+- **`WeatherService`** 三处 `Sky::Get()->` 未判空(其中一处由服务端消息驱动),
+  同文件另外两处判了空;
+- **`OverlayService`/`PartyService`/`InputService` 五处 `GetOverlayApp()->`**:
+  该指针在 `Create()` 之前为空,而组队事件正是连接后立刻会到的;
+- **`baseForm` 空指针**:仓库自己的调试视图里就写着 `if (!pRefr->baseForm)`,
+  但 12 处日志/分支直接解引用它(含每帧的裸体检查与网络驱动的物体/魔法/角色路径);
+- **`EntitiesView` 一个死守卫**:先写 `"UNNAMED"` 又在下一行无条件 `sprintf_s` 覆盖它,
+  等于没判。
+
+### 插件层(专项)
+
+- **ProxyResolver 的映射监听器从来没被调用过**:`OStimTogether` 与 `IEDSyncTogether`
+  都注册了 `registerListener`,而框架只把回调存起来、从不触发;OStim 的反向映射
+  (`_connectionByProxy`)因此永远是空的,而它的注释写着这条映射是 "Required"。
+  现在由 `on_construct/on_destroy<PlayerComponent>` 触发 `kAdded`/`kRemoved`
+  (`FormIdComponent` 每实体只写一次、拆除时移除,所以这两类事件就是全部迁移);
+- **`setLogCallback` 存了不用**:插件装上的回调永远不会被调用。现在框架自己的
+  插件层诊断(丢弃超长 channel / 超限载荷)会通过它发出,且**在锁外**调用;
+- **`setLocalDisplayName` 存了不用**:如实注明这是**有意不上线**的——
+  发送者显示名只能来自服务端认证过的登录名,否则任何插件都能冒充别人;
+- **服务端限流桶泄漏**:`m_buckets` 以单调递增、永不复用的 `PlayerId` 为键且从不清理,
+  长开的服务器会一直涨。现在随玩家行一起移除。
+
+### 快捷键:只保留 F2
+
+按需求把**除 F2 以外的所有游戏内快捷键**注释或禁用:
+
+| 键 | 原用途 | 处理 |
+|---|---|---|
+| **F2** | 联机菜单 | **保留**(唯一) |
+| 右 Ctrl | F2 的别名 | **移除**(第二个绑定=第二个要维护的东西) |
+| F3 | 调试菜单栏 | `#if 0`;`toggleDebugUI` 绑定仍在,变成纯 opt-in |
+| F4 | 揭示其他玩家 | 移除按键;`reveal players` 按钮照常工作 |
+| F6 | Discord 覆盖层解锁 | 置于 `if (false && …)`,并在注释里写明重新启用覆盖层时不得复活 |
+| F7/F8 | 开发快捷方式 | 保持 `#if 0` |
+
+### 版本支持(1.5.x / 1.6.x / 1.7.x)
+
+- 复核 `VersionDb` 三条加载路径:format 1(1.5.x,SE id 经 ae-to-se 映射表翻译)、
+  format 2(1.6.x AE)、format 5(1.7.99+ 密集偏移数组);
+- **34 个地址库文件还原**(见上),1.5.x 的 10 个 `.bin` + 10 张映射表、
+  1.6.x/1.7.x 的 13 个 `versionlib` 全部在位;
+- `GamePatch::At` 的按版本偏移与 `legacyMeasuredOn` 前缀校验保持原样(1.5.97 之外的
+  1.5.x 不会被套用 1.5.97 的偏移)。
+
+### 上一轮遗留
+
+- **修复地址库文件误删**:上一个提交在搬移 `STRPluginMessagingAPI.ini` 时,
+  连带删掉了 `GameFiles/Skyrim/SKSE/Plugins/` 下**全部 34 个**地址库文件
+  (`version-*.bin` 10 个、`versionlib-*.bin` 13 个、`versionlib-ae-to-se-*.map` 11 个)。
+  打包路径直接吃 `GameFiles/Skyrim/`,少了它们玩家一启动就会"地址库失败"并退出。
+  **34 个文件已按删除前的 blob 哈希逐一还原**;
+- **`#if 0` 逐块判读**:22 处 → **删 15 留 7**。留下的 7 处都是"改 0 为 1"型开关
+  (F6/F7/F8、旧战斗瞄准 ×3、地图菜单、imgui 上游 ×2),判据是**块外有没有为它留位置**;
+- **debug 天气开关从未生效**:`Sky` 三个 hook 里的 `s_shouldUpdateWeather` 判据
+  全在 `#if 0` 里,开关写了个没人读的变量。判据已启用(该变量只由 debug 窗口写,
+  而该窗口在 release 版被裁掉,所以对发布版无影响);
+- **EF 哨兵结论写进代码**:查清 SKSE 插件路径**本来就不需要** `_initterm_e` 哨兵
+  (SKSE 已先加载 EF,我们的 hook 装在其 thunk 之上),只补注释、不改逻辑;
+- **发布冻结解除**:`RELEASE-FREEZE.md` 删除,README 中英横幅同步移除;
+  `release.yml` 的 guard 保留(冻结文件仍是唯一开关)。
+
+- **修复地址库文件误删**:上一个提交在搬移 `STRPluginMessagingAPI.ini` 时,
+  连带删掉了 `GameFiles/Skyrim/SKSE/Plugins/` 下**全部 34 个**地址库文件
+  (`version-*.bin` 10 个、`versionlib-*.bin` 13 个、`versionlib-ae-to-se-*.map` 11 个)。
+  打包路径直接吃 `GameFiles/Skyrim/`,少了它们玩家一启动就会"地址库失败"并退出。
+  **34 个文件已按删除前的 blob 哈希逐一还原**;
+- **`#if 0` 逐块判读**:22 处 → **删 15 留 7**。留下的 7 处都是"改 0 为 1"型开关
+  (F6/F7/F8、旧战斗瞄准 ×3、地图菜单、imgui 上游 ×2),判据是**块外有没有为它留位置**;
+- **debug 天气开关从未生效**:`Sky` 三个 hook 里的 `s_shouldUpdateWeather` 判据
+  全在 `#if 0` 里,开关写了个没人读的变量。判据已启用(该变量只由 debug 窗口写,
+  而该窗口在 release 版被裁掉,所以对发布版无影响);
+- **EF 哨兵结论写进代码**:查清 SKSE 插件路径**本来就不需要** `_initterm_e` 哨兵
+  (SKSE 已先加载 EF,我们的 hook 装在其 thunk 之上),只补注释、不改逻辑;
+- **发布冻结解除**:`RELEASE-FREEZE.md` 删除,README 中英横幅同步移除;
+  `release.yml` 的 guard 保留(冻结文件仍是唯一开关)。**本次不打 tag。**
+
+## v1.1.1(2026-09-25)
+
+第三轮审计。本轮换了两条新判据(容器迭代中改动、链式解引用),并复核了
+前两轮修改本身。
+
+- **链式解引用**:`VisitInteriorCell` 里的
+  `PlayerCharacter::Get()->GetParentCellEx()->formID` 在 **load 全程**会取到空
+  cell(`VisitCell()` 只在入口判过玩家存在,进内层就不再判);`VisitExteriorCell`
+  的坐标回退也可能为空。两处都已补；
+- **`Actor::Create`** 取玩家后**连续解引用三次**,已改为取到即判、失败即返回；
+- **`DebugService`** 对 `Actor::Create` 的返回值从未判空就连续解引用,
+  且 `PlayerCharacter::Get()` 与 `baseForm` 同样未判——一并补上；
+- **修正上一轮自己引入的缺陷**:`Actor::Create` 的玩家判空曾被插在
+  `New()` **之后**,提前返回会泄漏刚分配的 actor。已改为**先判空、再分配**；
+- 容器迭代类判据(10 处)逐个核对后确认**全部安全**:代码库统一采用
+  "先收集、后改动"或"循环外 clear"。
+
+## v1.1.0(2026-09-25)
+
+性能与同步的算法级改进,以及两轮全仓库审计。
+
+- **插值改 Catmull-Rom**:远端玩家移动由线性改为三次曲线,线段交界处方向连续;
+  丢包时不再"冻结—跳变",改为沿最后速度做**有界外推**(上限 1.25),并对
+  播放头落后窗口的情形补了下限 0,避免反向外推;
+- **帧循环 16 ms → 8 ms**:`SetTimer` 按 15.625 ms 系统 tick 向上取整,
+  16 ms 实为 31.25 ms(约 32 次/秒),8 ms 落在单个 tick 内(约 64 次/秒),
+  远端玩家采样率翻倍;
+- **移动更新复杂度**:`OnReferencesMoveRequest` 由 O(更新数 × 实体数)
+  降为 O(实体数 + 更新数)(先建 serverId 索引再查表);
+- **修复重复生成同一远程玩家**导致引擎在 `SkyrimSE.exe+0x23d000` 解引用空指针
+  的崩溃;重复守卫补 `LocalComponent` 检查;
+- **全仓库 `GetById` 解引用审计**(两轮,判据不同):修复 15 处无守卫解引用,
+  含 `Actor::Create` 对玩家的连续三次解引用、`PlayerService`/`PartyService`
+  对硬编码全局的写入(断线路径也写,退出时崩)、`VisitInteriorCell`
+  在 loading 期间对空 cell 的链式解引用等;
+- 热路径日志降级:启动首秒曾写 220 行,现降至 debug。
+
+## 历史沿革
+
+本项目 fork 自 [TiltedEvolution](https://github.com/tiltedphoques/TiltedEvolution),
+其 GitHub fork 链为 `tiltedphoques/TiltedEvolution` → `rfortier/TiltedEvolution-rwf`
+→ 本仓库。
+
+本文件此前保存的是**上游 2022 年 7 月之前**由工具自动生成的 changelog
+(最后一条为 v1.38.3,2022-07-01),与本仓库使用的版本号体系(`1.0.x`)无关,
+留在根目录容易让打包/报错的人对不上号,因此移除;需要那段历史可查上游仓库,
+或本仓库的 git 历史(该文件在移除此内容前已被完整提交过)。
