@@ -1,0 +1,167 @@
+--- a/src/SKSEPluginVersionCompat.h
++++ b/src/SKSEPluginVersionCompat.h
+@@ -25,6 +25,37 @@ namespace STRPMSKSE
+     // 0x01064920 == SkyrimSE.exe 1.6.1170.
+     inline constexpr std::uint32_t kRuntime_1_6_1170 = 0x01064920;
+ 
++    // The SKSEPlugin_Query signature, for the plugins whose file did not have
++    // one. SKSE 2.0.x (1.5.97) requires SKSEPlugin_Query *and* SKSEPlugin_Load
++    // and logs "does not appear to be an SKSE plugin" when either is missing -
++    // it never looks at SKSEPlugin_Version, so a plugin exporting only the
++    // 2.2.x entry points is skipped outright on 1.5.97.
++    struct SKSEInterface;
++
++    struct PluginInfo
++    {
++        std::uint32_t infoVersion;
++        const char* name;
++        std::uint32_t version;
++    };
++
++    inline constexpr std::uint32_t kPluginInfoVersion = 1;
++
++    // versionIndependence flags, from SKSE64's PluginAPI.h.
++    //
++    // The facade declares version independence rather than a runtime list. It
++    // resolves everything by signature and anchor scanning - it includes no
++    // game header, names no RE:: type and contains no absolute address - so
++    // there is no address-library or structure dependency for SKSE to check.
++    //
++    // Listing runtimes is what the previous revision did, with 1.6.1170 alone.
++    // SKSE 2.2.x matches that list against the exact running RUNTIME_VERSION,
++    // so every other runtime the package ships libraries for - 1.6.640,
++    // 1.6.1179 and the whole 1.7.x line - answered "disabled, incompatible
++    // with current version of the game".
++    inline constexpr std::uint32_t kVersionIndependent_Signatures = 1 << 1;
++    inline constexpr std::uint32_t kVersionIndependentEx_NoStructUse = 1 << 0;
++
+     inline constexpr std::uint32_t kPluginVersion_0_5_1 = 0x00050001;
+     inline constexpr std::uint32_t kPluginVersion_0_6_0 = 0x00060000;
+     inline constexpr std::uint32_t kPluginVersion_0_6_1 = 0x00060001;
+--- a/src/STRPluginMessagingAPISKSEMetadata.cpp
++++ b/src/STRPluginMessagingAPISKSEMetadata.cpp
+@@ -1,6 +1,9 @@
+ #include "SKSEPluginVersionCompat.h"
+ #include "STRPMProxyResolverRuntime.h"
+ 
++// The entry point SKSE 2.2.x looks up by name. SKSE 2.0.x (1.5.97) ignores
++// this export entirely and calls SKSEPlugin_Query, which this file's sibling
++// STRPluginMessagingAPIRuntime.cpp defines.
+ extern "C" __declspec(dllexport) STRPMSKSE::PluginVersionData SKSEPlugin_Version =
+ {
+     STRPMSKSE::PluginVersionData::kVersion,
+@@ -8,8 +11,8 @@ extern "C" __declspec(dllexport) STRPMSKSE::PluginVersionData SKSEPlugin_Version
+     "STRPluginMessagingAPI",
+     "Caelvanost",
+     "",
+-    0,
+-    0,
+-    { STRPMSKSE::kRuntime_1_6_1170, 0 },
++    STRPMSKSE::kVersionIndependentEx_NoStructUse,
++    STRPMSKSE::kVersionIndependent_Signatures,
++    {},
+     0
+ };
+--- a/src/STRPluginMessagingBridgeSKSE.cpp
++++ b/src/STRPluginMessagingBridgeSKSE.cpp
+@@ -28,6 +28,9 @@
+ #include "STRPMProxyResolverBootstrapV2.h"
+ #include "STRPMProxyResolverTrace.h"
+ 
++// Used unqualified by SKSEPlugin_Load below, which SKSE 2.0.x and 2.2.x both
++// call. Kept file-local rather than relying on the facade header so this
++// translation unit still compiles against a bare SKSE interface.
+ struct SKSEInterface;
+ 
+ namespace
+@@ -248,6 +251,28 @@ namespace
+     }
+ }
+ 
++// SKSE 2.0.x (1.5.97) requires BOTH SKSEPlugin_Query and SKSEPlugin_Load, and
++// logs "does not appear to be an SKSE plugin" when either is missing. This file
++// only ever exported Load, so on 1.5.97 the bridge was skipped outright - that
++// log line is in this repository's own 1.5.97 skse64.log.
++//
++// Query is a no-op returning true, matching the API facade: the gate that
++// matters on 1.5.97 is CheckPluginCompatibility, and returning false here would
++// reject the plugin before Load ever runs.
++extern "C" __declspec(dllexport) bool SKSEPlugin_Query(
++    const STRPMSKSE::SKSEInterface*,
++    STRPMSKSE::PluginInfo* apInfo)
++{
++    if (apInfo == nullptr) {
++        return false;
++    }
++
++    apInfo->infoVersion = STRPMSKSE::kPluginInfoVersion;
++    apInfo->name = "STRPluginMessagingBridge";
++    apInfo->version = STRPMSKSE::kPluginVersion_0_9_3;
++    return true;
++}
++
+ extern "C" __declspec(dllexport) STRPMSKSE::PluginVersionData SKSEPlugin_Version =
+ {
+     STRPMSKSE::PluginVersionData::kVersion,
+@@ -255,9 +280,9 @@ extern "C" __declspec(dllexport) STRPMSKSE::PluginVersionData SKSEPlugin_Version
+     "STRPluginMessagingBridge",
+     "Caelvanost",
+     "",
+-    0,
+-    0,
+-    { STRPMSKSE::kRuntime_1_6_1170, 0 },
++    STRPMSKSE::kVersionIndependentEx_NoStructUse,
++    STRPMSKSE::kVersionIndependent_Signatures,
++    {},
+     0
+ };
+ 
+--- a/src/STRPluginMessagingDiagnosticSKSE.cpp
++++ b/src/STRPluginMessagingDiagnosticSKSE.cpp
+@@ -16,6 +16,9 @@
+ #include <string_view>
+ #include <thread>
+ 
++// Used unqualified by SKSEPlugin_Load below, which SKSE 2.0.x and 2.2.x both
++// call. Kept file-local rather than relying on the facade header so this
++// translation unit still compiles against a bare SKSE interface.
+ struct SKSEInterface;
+ 
+ namespace
+@@ -450,6 +453,23 @@ namespace
+     }
+ }
+ 
++// SKSE 2.0.x needs Query and Load together, and this file had no Query and a
++// version list that covered only 1.6.1170, so the diagnostic plugin was
++// unreachable on 1.5.97 as well.
++extern "C" __declspec(dllexport) bool SKSEPlugin_Query(
++    const STRPMSKSE::SKSEInterface*,
++    STRPMSKSE::PluginInfo* apInfo)
++{
++    if (apInfo == nullptr) {
++        return false;
++    }
++
++    apInfo->infoVersion = STRPMSKSE::kPluginInfoVersion;
++    apInfo->name = "STRPluginMessagingDiagnostic";
++    apInfo->version = STRPMSKSE::kPluginVersion_0_9_3;
++    return true;
++}
++
+ extern "C" __declspec(dllexport) STRPMSKSE::PluginVersionData SKSEPlugin_Version =
+ {
+     STRPMSKSE::PluginVersionData::kVersion,
+@@ -457,9 +477,9 @@ extern "C" __declspec(dllexport) STRPMSKSE::PluginVersionData SKSEPlugin_Version
+     "STRPluginMessagingDiagnostic",
+     "Caelvanost",
+     "",
+-    0,
+-    0,
+-    { STRPMSKSE::kRuntime_1_6_1170, 0 },
++    STRPMSKSE::kVersionIndependentEx_NoStructUse,
++    STRPMSKSE::kVersionIndependent_Signatures,
++    {},
+     0
+ };
+ 

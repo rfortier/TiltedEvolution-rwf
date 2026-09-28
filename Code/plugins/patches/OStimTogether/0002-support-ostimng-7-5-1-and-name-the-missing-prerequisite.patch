@@ -45,3 +45,13 @@
              return false;
          }
  
+@@ -1227,7 +1247,7 @@
+         if (_graphLayout ==
+             OStimInternalProbe::GraphLayout::Unsupported) {
+             SKSE::log::critical(
+-                "OStim bridge: unsupported OStim.dll {}; supported versions are 7.4.0.3 (7.4c) and 7.5.0.2 (7.5b)",
++                "OStim bridge: unsupported OStim.dll {}; supported versions are 7.4.0.3 (7.4c), 7.5.0.2 (7.5b) and 7.5.1.x",
+                 dllVersion->ToString());
+             return false;
+         }
+

@@ -28,6 +28,65 @@
 #include <string>
 #include <vector>
 
+// Mirrors SKSEPluginVersionData from SKSE64's PluginAPI.h. Kept private so this
+// dll stays dependency free - it must load before anything has been deployed.
+//
+// Declared outside the anonymous namespace on purpose: it types an exported
+// variable, and a type with internal linkage on an exported symbol is a
+// linkage mismatch the standard does not sanction.
+//
+// SKSE 2.2.x does NOT call SKSEPlugin_Query. PluginManager::ScanPlugins looks up
+// this export by name and, when it is absent, logs "no version data" and never
+// adds the plugin to the load list - there is no legacy fallback. That is
+// exactly what SkyrimTogetherSKSE.dll hit on 1.6.1170: the log line
+// "plugin SkyrimTogetherSKSE.dll (00000000  00000000) no version data 0
+// (handle 0)" is SKSE saying it skipped the file, so SKSEPlugin_Load never ran,
+// the runtime was never deployed, and the F2 menu never appeared while the esp
+// files still showed up in the Creations menu.
+//
+// SKSE 2.0.x (1.5.97) never looks for this export and still uses
+// SKSEPlugin_Query, which is why the same dll kept working there.
+//
+// This dll resolves no engine addresses and touches no game structure - it only
+// deploys files and loads the real runtime - so it declares version
+// independence rather than a list of runtimes. That is what the companion
+// plugins do, and for the same reason: a list would have to be edited and the
+// dll rebuilt for every game patch, and it would reject the runtimes this
+// package already supports but that nobody remembered to add (1.6.1179 GOG,
+// 1.6.659 GOG, 1.6.678 Epic). The version gate that matters is inside
+// SkyrimTogetherRuntime.dll, which resolves addresses through the address
+// library and refuses a runtime it has no library for.
+//
+// The flag pair is not interchangeable:
+//   kVersionIndependent_Signatures says "no address library dependency", which
+//     skips SKSE's CheckAddressLibrary and, on 1.7.99+, the AddressLibraryV5
+//     requirement that would otherwise reject this dll with "must be
+//     recompiled for new address library".
+//   kVersionIndependentEx_NoStructUse is required alongside it, because any
+//     version-independent plugin on 1.6.629+ is rejected with "only compatible
+//     with versions earlier than 1.6.629" unless it either claims the post-629
+//     structure layout or declares that it uses no structures at all.
+struct SksePluginVersionData
+{
+    enum
+    {
+        kVersion = 1,
+
+        kVersionIndependent_Signatures = 1 << 1,
+        kVersionIndependentEx_NoStructUse = 1 << 0,
+    };
+
+    uint32_t dataVersion;
+    uint32_t pluginVersion;
+    char name[256];
+    char author[256];
+    char supportEmail[252];
+    uint32_t versionIndependenceEx;
+    uint32_t versionIndependence;
+    uint32_t compatibleVersions[16];
+    uint32_t seVersionRequired;
+};
+
 namespace
 {
 // skse64 plugin api (stable ABI since 2.0)
@@ -39,6 +98,7 @@ struct SksePluginInfo
 };
 
 constexpr uint32_t kSksePluginInfoVersion = 1;
+
 constexpr wchar_t kRuntimeDirName[] = L"SkyrimTogetherRuntime";
 constexpr wchar_t kClientDllName[] = L"SkyrimTogetherRuntime.dll";
 constexpr wchar_t kClientDllLegacyName[] = L"SkyrimTogetherRuntime_1_5.dll";
@@ -539,6 +599,39 @@ bool StartClient(const std::filesystem::path& acGameRoot)
 } // namespace
 
 extern "C" {
+// The export SKSE 2.2.x requires before it will load this dll at all. See the
+// comment on SksePluginVersionData for why its absence is silent, and for why
+// this declares version independence instead of listing runtimes.
+//
+// compatibleVersions stays empty: SKSE only reads it when the plugin is not
+// version independent, and leaving it zeroed keeps the struct identical to the
+// one CommonLibSSE generates for the companion plugins.
+__declspec(dllexport) SksePluginVersionData SKSEPlugin_Version = {
+    SksePluginVersionData::kVersion,
+    1, // pluginVersion, matching SKSEPlugin_Query's info->version
+    "SkyrimTogether",
+    "",
+    "",
+    SksePluginVersionData::kVersionIndependentEx_NoStructUse,
+    SksePluginVersionData::kVersionIndependent_Signatures,
+    {},
+    0,
+};
+
+// The two flags are the whole fix: without either one SKSE rejects the entry on
+// 1.6.629+ with "only compatible with versions earlier than 1.6.629", and
+// without the Signatures flag it fails on 1.7.99+ demanding the V5 address
+// library. Both failures look identical from the outside - no F2 menu - so the
+// values are pinned here rather than left to a log line. Asserted on the named
+// constants, because an exported variable is not a constant expression.
+constexpr auto kDeclaredIndependence = SksePluginVersionData::kVersionIndependent_Signatures;
+constexpr auto kDeclaredIndependenceEx = SksePluginVersionData::kVersionIndependentEx_NoStructUse;
+static_assert(kDeclaredIndependence & 0b010,
+              "must claim Signatures, or 1.7.99+ rejects the plugin");
+static_assert(kDeclaredIndependenceEx & 0b001,
+              "must claim NoStructUse, or 1.6.629+ rejects the plugin");
+static_assert(SksePluginVersionData::kVersion == 1, "SKSE requires dataVersion 1");
+
 __declspec(dllexport) bool SKSEPlugin_Query(const void*, SksePluginInfo* apInfo)
 {
     if (!apInfo)

@@ -70,13 +70,13 @@
                                     <patterns>
                                         <pattern>
                                             <dependencies operator="And">
-                                                <fileDependency file="SKSE/Plugins/OStim.dll" state="Active" />
+                                                <fileDependency file="OStim.esp" state="Active" />
                                             </dependencies>
                                             <type name="Recommended" />
                                         </pattern>
                                         <pattern>
                                             <dependencies operator="And">
-                                                <fileDependency file="SKSE/Plugins/OStim.dll" state="Inactive" />
+                                                <fileDependency file="OStim.esp" state="Inactive" />
                                             </dependencies>
                                             <type name="CouldBeUsable" />
                                         </pattern>
@@ -331,13 +331,13 @@
                                     <patterns>
                                         <pattern>
                                             <dependencies operator="And">
-                                                <fileDependency file="SKSE/Plugins/OStim.dll" state="Active" />
+                                                <fileDependency file="OStim.esp" state="Active" />
                                             </dependencies>
                                             <type name="Recommended" />
                                         </pattern>
                                         <pattern>
                                             <dependencies operator="And">
-                                                <fileDependency file="SKSE/Plugins/OStim.dll" state="Inactive" />
+                                                <fileDependency file="OStim.esp" state="Inactive" />
                                             </dependencies>
                                             <type name="CouldBeUsable" />
                                         </pattern>

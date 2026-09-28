@@ -29,7 +29,7 @@
       "id": "OStimNG",
       "displayName": "OStim Standalone (OStimNG)",
       "submodule": "plugins/OStimNG",
-      "detectFile": "SKSE/Plugins/OStim.dll",
+      "detectFile": "OStim.esp",
     "commonLibSseNg": {
       "repository": "https://github.com/alandtse/CommonLibVR",
       "commit": "3c0f5a87c3b166c9a6712d5c3bd180e9ac5ad0fd",

@@ -7,6 +7,166 @@
 每个 tag(形如 `v1.0.20`)对应一个 Release,附上版本号相同的两个包——
 客户端 mod 与专用服务器。逐条提交的历史见 `git log` 与各次 PR。
 
+## v1.1.8(2026-09-28)
+
+### 修复:任意玩家一条聊天消息即可打崩专用服务器
+
+**现象**:专用服务器上,一个**还没建好角色**的玩家(刚连上、角色创建失败,或
+角色被删除后重连)发一条聊天消息,服务端进程直接终止。
+
+**根因**:`Player::GetCharacter()` 返回的是
+`std::optional<entt::entity>`,它在 `CharacterService` 创建角色**之前一直是空**。
+`OverlayService::HandleChatMessage`(`Code/server/Services/OverlayService.cpp`)
+把它**直接解引用**后交给脚本回调:
+
+```cpp
+auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(
+    *acMessage.pPlayer->GetCharacter(), acMessage.Packet.ChatMessage);
+```
+
+解引用空的 `optional` 是未定义行为:MSVC release 下取到的是一个**构造出来的
+垃圾实体**,脚本层再拿它去 `ctx().at<T>()` 就崩。这不是"玩家操作不当":
+`SendChatMessageRequest` 任何已连接客户端都能发,与是否建好角色无关。
+
+**判据是仓库自己的既有约定**——同一个调用在三处都有判空,只有这一处漏了:
+
+| 位置 | 是否判空 |
+| --- | --- |
+| `WeatherService::OnWeatherChange` | ✅ `if (!...GetCharacter()) return;` |
+| `PlayerService::OnPlayerRespawnRequest` | ✅ `if (!character) return;` |
+| `OverlayService::HandleChatMessage` | ❌ **本次缺陷** |
+
+这与 v1.1.4 修掉的 `CommandService::OnSetTimeCommand` 是**同一类**:
+一条远程报文触发服务端空指针,判据也是"旁边三处都判了、这一处没判"。
+
+**修复**:把脚本回调放进判空分支。**只跳过脚本回调,不吞掉消息** ——
+`onChatMessage` 拿到的是实体,传一个默认构造的实体等于把垃圾指针交给脚本;
+而下面的广播(`sendPlayerMessage`)自己已经判空,所以该玩家的全局/队伍聊天
+照常送达。**修崩溃,不改行为。**
+
+**验证**:改后全仓库再查一遍 `*...GetCharacter()` 的解引用点,只剩
+`WeatherService` 与 `PlayerService` 的两处,且三处**都在自己的判空分支里**;
+客户端侧同口径(`.value()` 与 `*optional`)逐个核对,全部有前置 `has_value()`
+/判空。
+
+### 修复:1.6.x 上 esp 与主菜单 logo 都在,但 F2 菜单打不开
+
+**现象**:游戏 1.6.1170 + SKSE 2.2.6 下,SkyrimTogetherNext 看起来装好了
+(Creations 菜单里能看到 esp,主菜单有 logo),**但游戏内按 F2 没有任何反应**。
+
+**根因**:`SkyrimTogetherSKSE.dll` 其实**一次都没被 SKSE 加载过**。
+`skse64.log` 里那一行就是判据:
+
+```text
+plugin SkyrimTogetherSKSE.dll (00000000  00000000) no version data 0 (handle 0)
+```
+
+`handle 0` 表示 SKSE 根本没把它加进加载列表。SKSE 2.2.x 的
+`PluginManager::ScanPlugins` 按名字查找 **`SKSEPlugin_Version`** 这个导出;
+**找不到就直接记 `no version data` 并跳过,没有回退到旧的 `SKSEPlugin_Query`**。
+而本 DLL 只导出了 `Query`/`Load`。
+
+后果是链条式的:`SKSEPlugin_Load` 从未执行 → 运行时
+(`SkyrimTogetherRuntime.dll`)**从未被部署** → F2 菜单永不出现。
+esp 与 logo 是普通 mod 文件,不受影响,所以"看起来装好了"。
+
+**为什么本地测不出来**:SKSE 2.0.x(游戏 1.5.97)**从不读这个导出**,仍然走
+`Query`,所以同一个 DLL 在 1.5.97 上一直是好的。
+
+**修复**:`Code/skse_bootstrap/main.cpp` 增加 `SKSEPlugin_Version` 导出,
+声明**版本无关**(`kVersionIndependent_Signatures` +
+`kVersionIndependentEx_NoStructUse`)。这两个标志缺一不可:少了后者,
+SKSE 1.6.629+ 会答 `only compatible with versions earlier than 1.6.629`;
+少了前者,1.7.99+ 会要求 V5 地址库。本 DLL 不解析任何引擎地址,所以版本无关
+是如实描述,也避免了每出一版游戏就要改列表、重编译。
+
+新增门禁 `Code/plugins/tools/check_skse_bootstrap.py`,**8 种失败模式各自反向验证**
+(含本次真实缺陷、导出被命名空间修饰、结构体字段换序、两个标志缺失、
+把标志只写在注释里)。完整取证见 `docs/PITFALLS.md` §42。
+
+### 修复:引导页里 OStim Together 是灰的、根本点不动(装好前置也没用)
+
+**现象**:MO2 引导页里 `OStim Together` 灰掉、无法勾选,而且**先把 OStim
+Standalone 装好也照样是灰的**。
+
+**根因不是"前置没装",而是向导里一条永远不可能成立的判断。** MO2 只把
+FOMOD 的 `fileDependency` 拿去比对**插件列表**(esp/esm/esl),指向别的东西时
+它一律判为缺失,并在日志里明说:
+
+```text
+A dependency on non esp/esm/esl SKSE/Plugins/OStim.dll will always find it as missing.
+```
+
+上一版把 `detectFile` 写成了 `SKSE/Plugins/OStim.dll`,于是 `Active` 与
+`Inactive` 两个分支都不可能命中,`NotUsable` 永远生效——**这条判断跟装没装无关**。
+
+**修复**:
+
+1. `detectFile` 改指前置真实携带的插件文件 `OStim.esp`;
+2. `merge_fomod.py` 增加门禁:拒绝非 esp/esm/esl 的 `detectFile`
+   (反向验证:改回 `OStim.dll` → exit 1 并指名 `plugins.json`);
+3. 顺带修掉拒绝信息比代码旧一个版本的问题:`SelectGraphLayout` 已接受
+   OStimNG `7.5.1.x`,而拒绝文案仍称最新只到 `7.5.0.2`——真被拒绝的玩家
+   会被告知去装一个比他手上更旧的版本。文案现改为
+   `7.4.0.3 (7.4c), 7.5.0.2 (7.5b) and 7.5.1.x`,并新增
+   `check_ostim_support_message.py` 把**文案与选择器双向绑死**
+   (四种漂移各自反向验证 → 均 exit 1)。
+
+完整取证与命令见 `docs/PITFALLS.md` §41。
+
+### 修复:消息门面只在 1.6.1170 上加载,其余版本静默失效
+
+**现象**:上一条(bootstrap 缺 `SKSEPlugin_Version`)修好之后,1.6.1170 上
+`SkyrimTogetherSKSE.dll` 能加载了,但**插件层的同步依然是死的**——桥接日志里
+反复刷同一行,永不成功:
+
+```text
+send resolver pass failed in 4453 ms; waiting for mapped STR 1.8.0 runtime
+ProxyResolver waiting: spans=20 transport=no loaded=no unloaded=no
+```
+
+**根因是同一类缺陷的另两副面孔**,而且**都在开发机(1.5.97)上看不见**:
+
+1. **`STRPluginMessagingBridge.dll` 没有导出 `SKSEPlugin_Query`**。
+   SKSE 2.0.x(1.5.97)要求 `Query` 与 `Load` **同时存在**,少一个就判
+   `does not appear to be an SKSE plugin`——本仓库 1.5.97 的 `skse64.log`
+   里就有这一行:
+
+   ```text
+   plugin D:\game\SkyrimSE\Data\SKSE\Plugins\\STRPluginMessagingBridge.dll does not appear to be an SKSE plugin
+   ```
+
+2. **三个门面 DLL 的 `compatibleVersions` 只写了 `1.6.1170`**,而
+   `versionIndependence` 为 `0`。SKSE 2.2.x 对非版本无关的插件,会把这个列表
+   拿去和**精确的运行版本**比对,于是 `1.6.317/640/1130/1179` 与
+   `1.7.99/104`——**每一个本包都提供了地址库的版本**——全部被判
+   `disabled, incompatible with current version of the game`。
+
+两条都在同一处放大:**门面是所有伴侣插件取传输层的入口**(伴侣插件用
+`LoadLibraryW` 按名加载它)。门面在某个版本上被 SKSE 跳过,那一条游戏线上
+所有插件的同步一起失效。
+
+**为什么 1.6.1170 上是好的**:列表恰好命中,所以这个缺陷只有换一个游戏版本
+才暴露——这是本次会话第三次撞上"本地测不出"。
+
+**修复**(`Code/plugins/patches/STRPluginMessagingAPI/0002-*.patch`,子模块只走补丁):
+
+1. 三个 DLL 改为声明**版本无关**(`kVersionIndependent_Signatures` +
+   `kVersionIndependentEx_NoStructUse`)。门面**只做签名/锚点扫描**:不含任何
+   游戏头文件、不出现任何 `RE::` 类型、没有硬编码地址,所以版本无关是如实描述,
+   而不是为了让门禁通过;
+2. `STRPluginMessagingBridge.dll` 与 `STRPluginMessagingDiagnostic.dll` 补上
+   `SKSEPlugin_Query`(返回 `true`,与 API 门面一致);
+3. 三处 `kRuntime_1_6_1170` 列表与不再需要的前置声明一并清掉。
+
+**新增门禁** `Code/plugins/tools/check_skse_entry_points.py`:把 SKSE 两族的
+准入规则**回放**在每个手写插件 × **每一个随包发布的运行时**上。
+插件按"SKSE 看到的名字"分组而不是按文件,因为 API 门面的版本数据与
+`Query`/`Load` 分处两个文件。**反向验证**:还原补丁 → 5 条失败(桥接缺 Query、
+三个列表不覆盖);把 bootstrap 的导出改名 → 6 条失败(缺 `Version`)。
+
+完整取证见 `docs/PITFALLS.md` §43。
+
 ## v1.1.7(2026-09-27)
 
 ### 修复:v1.1.6 的远程仓库编译全红 —— 三处「只有 CI 才会说的话」

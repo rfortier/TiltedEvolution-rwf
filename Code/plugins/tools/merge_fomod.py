@@ -175,6 +175,16 @@ def _file_dependency(parent, path: str, state: str):
     return dependencies
 
 
+# MO2 resolves a fileDependency against its plugin list, which holds only
+# esp/esm/esl. A dependency on anything else is logged as
+# "A dependency on non esp/esm/esl X will always find it as missing" and can
+# never match any state, so every pattern misses and the entry keeps
+# defaultType. Pointing this at SKSE/Plugins/OStim.dll is what made OStim
+# Together permanently NotUsable - greyed out in the wizard and unselectable -
+# no matter what the player had installed.
+PLUGIN_SUFFIXES = (".esp", ".esm", ".esl")
+
+
 def _prerequisite_type(parent, prerequisite: dict):
     """Type the entry by whether its prerequisite is actually installed.
 
@@ -183,6 +193,8 @@ def _prerequisite_type(parent, prerequisite: dict):
     type for it (CouldBeUsable) separate from "not installed at all"
     (NotUsable). Expressing that is what turns the prerequisite from prose in a
     README into something the installer tells the user about.
+
+    detectFile therefore has to name a plugin, not a DLL - see PLUGIN_SUFFIXES.
     """
     descriptor = _sub(parent, "typeDescriptor")
     dependency = _sub(descriptor, "dependencyType")
@@ -356,6 +368,18 @@ def cmd_check(args) -> int:
     output = ROOT / OUTPUT_REL
 
     failures: list[str] = []
+
+    # A detectFile MO2 cannot resolve makes its plugin permanently unselectable
+    # rather than merely mistyped, so this is checked before anything else.
+    for prerequisite in manifest.get("prerequisites", []):
+        detect = prerequisite.get("detectFile", "")
+        if not detect.lower().endswith(PLUGIN_SUFFIXES):
+            failures.append(
+                f'{MANIFEST_REL}: prerequisite {prerequisite.get("id")} detects '
+                f'{detect!r}, which is not a plugin (esp/esm/esl). MO2 resolves a '
+                f'fileDependency only against its plugin list, so this always reads '
+                f'as missing and the entry it types can never be selected'
+            )
     if not output.is_file():
         failures.append(f"{OUTPUT_REL} does not exist; run generate")
         actual = None

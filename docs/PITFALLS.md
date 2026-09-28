@@ -4076,3 +4076,534 @@ CI    verify → 干净检出 → 文件不在 → 红
 所以补的不只是两个修复,而是两个门禁:一个**解析**工作流里的脚本,
 一个**绑定**清单与 CI 步骤。它们各自对应上表的一行。
 
+## 41. 2026-09-28 场次:引导页里 OStim Together 是灰的 —— 一条永远不可能成立的判断
+
+> **锚点**:本节的修复落在 `Code/plugins/plugins.json`(`detectFile`)、
+> `Code/plugins/tools/merge_fomod.py`(门禁)、
+> `Code/plugins/patches/OStimTogether/0002-...patch`(拒绝文案)、
+> 以及新门禁 `Code/plugins/tools/check_ostim_support_message.py`。
+
+### 41.1 根因:MO2 的 `fileDependency` 只认插件文件
+
+**现象**:MO2 引导页里 `OStim Together` **灰的、点不动**,而且
+**先把前置装好也照样是灰的**。
+
+MO2 自己的日志把原因写全了(`mo_interface.log`):
+
+```text
+A dependency on non esp/esm/esl SKSE/Plugins/OStim.dll will always find it as missing.
+[fomodinstallerdialog.cpp:392] "缺少前置：文件 'SKSE/Plugins/OStim.dll' 应为 已激活，当前为 缺少！"
+```
+
+§39.1 的第 2 条修法把向导改成"依赖型",但 `detectFile` 写的是
+`SKSE/Plugins/OStim.dll`。**MO2 只把 `fileDependency` 拿去比对插件列表**
+(esp/esm/esl),非插件文件它**永远判为缺失**——于是 `Active` 与 `Inactive`
+两个 pattern 都不可能命中,`defaultType NotUsable` 永远生效。
+
+关键在于:**这条判断跟"前置装没装"完全无关**,所以"提前装好还是灰的"
+正是它该有的表现,不是玩家操作错。
+
+**本机反证**(三样全齐,向导照旧报缺):
+
+| 检查 | 位置 | 结果 |
+| --- | --- | --- |
+| 前置是否安装 | MO2 `mods/OStim Standalone/` | 已装,`OStim.dll` 7.5.1.2 |
+| 插件是否加载 | `skse64.log` | `OStim.dll ... loaded correctly (handle 85)` |
+| 插件是否激活 | `profiles/Default/plugins.txt` | `*OStim.esp` 已激活 |
+
+**修法**:`detectFile` 改指 `OStim.esp`(前置真实携带的插件文件),
+`merge_fomod.py` 增加门禁拒绝非 esp/esm/esl 的 `detectFile`,
+反向验证:改回 `OStim.dll` → exit 1 并指名 `plugins.json`。
+
+> **教训**:`fileDependency` 的 `state` 只对插件文件有定义。"检测前置是否安装"
+> 这件事在 FOMOD 里**做不到通用文件级判断**——只能挑前置携带的那个 esp。
+> 一个"永远不成立"的条件比"没有条件"更糟:它看起来像在保护用户。
+
+### 41.2 拒绝信息比代码晚了一个版本
+
+`SelectGraphLayout` 接受 `7.5.1.x` 之后(补丁 0002),拒绝路径打印的仍是
+`supported versions are 7.4.0.3 (7.4c) and 7.5.0.2 (7.5b)` ——
+一个**真被拒绝**的玩家,读到的建议比他手上的版本还旧。
+
+拒绝信息是这条路径上**唯一**会被读到的东西,却没有任何东西与之绑定:
+编译器不管散文,文档也不描述选择器。
+
+**修法**:补丁 0002 内把文案改为 `7.4.0.3 (7.4c), 7.5.0.2 (7.5b) and 7.5.1.x`,
+并新增 `check_ostim_support_message.py`,把**文案与选择器双向绑死**。
+
+> **改在哪很重要**:`plugins/OStimTogether` 是子模块,CI 用
+> `git submodule update --init --force` 检出,**工作树里的改动会被丢弃**。
+> 这条文案属于上游固定内容,只能改**补丁文件**。验证方式是把补丁
+> `revert` 掉,确认子模块 `git status` 为空——空才说明"本地看到的改动
+> 全部来自补丁",而不是某次手工编辑的残留。
+
+**反向验证**(四种漂移,每种都必须 exit 1):
+
+| 漂移 | 结果 |
+| --- | --- |
+| 文案漏掉 7.5.1.x(**本次的真实缺陷**) | exit 1,指名"选择器接受 7.5.1.x,文案没写" |
+| 选择器不再接受 7.5.1.x,文案仍承诺 | exit 1 |
+| 文案写了一个没人接受的版本 | exit 1 |
+| 拒绝路径完全不写版本 | exit 1 |
+
+> **教训**:一条"只给人看"的字符串,如果它的内容**必须与代码一致**,
+> 那它就是可校验的声明,应该由门禁绑定——否则它只会越来越旧。
+
+### 41.3 本轮新增的门禁与反向验证
+
+| 门禁 | 拦什么 | 反向验证 |
+| --- | --- | --- |
+| `merge_fomod.py`(扩展) | 非 esp/esm/esl 的 `detectFile` 让入口永久灰掉 | 改回 `OStim.dll` → exit 1 |
+| `check_ostim_support_message.py` | 拒绝信息与选择器脱节 | 四种漂移 → 均 exit 1 |
+
+### 41.4 顺带查清:为什么"用 OStimNG 源码编译"解决不了这个问题
+
+用户提出的方案是"从 `D:\sktest\OStimNG` 编译出前置,不依赖前置 mod"。
+逐条核对后**三条都不成立**,记在这里免得再走一遍:
+
+1. **编译产物就是 `OStim.dll`**,而它**已经在位且已加载**(见 §41.1 的表)。
+   灰掉的原因从来不是它不在。
+2. **运行时依赖删不掉**:`OStimTogether` 是 OStim 的 API 消费者,
+   源码里 16 处 `GetModuleHandleW(L"OStim.dll")`。
+   "不依赖前置"等于把 OStim 重写进 OStimTogether,那是另一个项目。
+3. **本机编不了**:`OStimNG/skse/CMakeLists.txt` 要求
+   `COMMONLIB_SSE_FOLDER` + `VCPKG_ROOT` + MSVC。实测本机
+   **无 `cl.exe`、无 VC 工具集、无 vcpkg**,且检出里
+   `skse/vendor`、`skse/extern/CommonLibSSE-NG`、`skse/imgui` 都不存在。
+
+顺带确认 `OStimNG/data/OStim.esp` 与已安装的 `OStim.esp`
+**SHA256 完全相同**——源码里那份 esp 就是正品,不需要额外处理。
+
+## 42. 2026-09-28 场次:1.6.1170 上 esp 与 logo 都在,但 F2 菜单打不开
+
+> **锚点**:本节的修复落在 `Code/skse_bootstrap/main.cpp`,
+> 新门禁 `Code/plugins/tools/check_skse_bootstrap.py`。
+
+### 42.1 根因:那个 DLL 一次都没被加载过
+
+**现象**:游戏 1.6.1170 + SKSE 2.2.6。Creations 菜单能看到 esp,主菜单有 logo,
+**按 F2 毫无反应**。
+
+`skse64.log` 里一行定案:
+
+```text
+plugin SkyrimTogetherSKSE.dll (00000000  00000000) no version data 0 (handle 0)
+```
+
+**`handle 0` 表示 SKSE 从未把它加进加载列表**。对照同一份日志里正常加载的插件:
+
+```text
+plugin AnimSyncTogether.dll (00000001 AnimSyncTogether 000C0010) loaded correctly (handle 1)
+plugin OStim.dll (00000001 OStim 07050012) loaded correctly (handle 85)
+```
+
+正常的是 `loaded correctly (handle N)`,`N >= 1`。
+
+### 42.2 为什么"没加载"会表现成"装好了但没反应"
+
+`SkyrimTogetherSKSE.dll` **不是**联机运行时,它是一个 **bootstrap**:
+负责把 `SkyrimTogetherRuntime.dll` 部署到游戏根目录,再 `LoadLibrary` 起来
+(`Code/skse_bootstrap/main.cpp`)。所以链条是:
+
+```text
+SKSE 不加载 bootstrap
+  -> SKSEPlugin_Load 从不执行
+  -> 运行时从不被部署
+  -> F2 菜单永不出现
+```
+
+而 esp 与主菜单 logo 是**普通 mod 文件**,由游戏自己读,与 SKSE 无关 ——
+所以"看起来装好了"。这个"一半正常"的表现正是最容易被误诊成
+"版本不兼容"或"mod 冲突"的形状。
+
+### 42.3 SKSE 2.2.x 没有 `SKSEPlugin_Query` 回退
+
+SKSE 自己的源码(`ianpatt/skse64`,`v2.2.6` 标签,`skse64/PluginManager.cpp`)
+`ScanPlugins`:
+
+```cpp
+auto * version = (const SKSEPluginVersionData *)GetResourceLibraryProcAddress(
+    resourceHandle, "SKSEPlugin_Version");
+if(version) { ... CheckPluginCompatibility ... m_plugins.push_back(plugin); }
+else        { LogPluginLoadError(plugin, "no version data", 0, false); }
+```
+
+**只看 `SKSEPlugin_Version` 这一个导出名**;缺失即跳过,**没有任何 `Query` 回退**。
+而本 DLL 在 v1.1.7 里的导出表(实测 PE 导出表)只有两个:
+
+```text
+SKSEPlugin_Load
+SKSEPlugin_Query
+SKSEPlugin_Version   *** ABSENT ***
+```
+
+**为什么本地测不出来**:SKSE 2.0.x(`v2.0.20`)的 `ScanPlugins` 里
+**根本没有 `SKSEPlugin_Version` 这个字符串**,它仍然 `GetProcAddress(handle,
+"SKSEPlugin_Query")`。所以同一个 DLL 在 1.5.97 上一直是好的 ——
+**这个缺陷只在 1.6.x 上存在,而本地跑的是 1.5.97**。
+
+### 42.4 同一份包里,只有它没有这个导出
+
+把 v1.1.7 包里每个 SKSE 插件 DLL 的导出表读出来对照:
+
+| DLL | `SKSEPlugin_Version` | 1.6.1170 上结果 |
+| --- | --- | --- |
+| AnimSyncTogether | 有(版本无关) | loaded correctly |
+| DAVSyncTogether | 有(版本无关) | loaded correctly |
+| IEDSyncTogether | 有(版本无关) | loaded correctly |
+| MorphSyncTogether | 有(版本无关) | loaded correctly |
+| OStimTogether | 有(版本无关) | loaded correctly |
+| STRPluginMessagingAPI | 有(显式列表) | loaded correctly |
+| TradeTogether | 有(版本无关) | loaded correctly |
+| **SkyrimTogetherSKSE.dll** | **无** | **`no version data`(handle 0)** |
+
+八个插件都声明了版本无关,**只有框架自己的 bootstrap 漏了**。
+
+### 42.5 修法,以及为什么选"版本无关"而不是版本列表
+
+补丁在 `Code/skse_bootstrap/main.cpp` 增加导出,声明:
+
+```cpp
+kVersionIndependent_Signatures       // 1 << 1
+kVersionIndependentEx_NoStructUse    // 1 << 0
+```
+
+两个标志**缺一不可**,而且失败症状与本次完全相同(都是"没有 F2"):
+
+| 缺哪个 | SKSE 的回答 |
+| --- | --- |
+| `NoStructUse`(且无 `StructsPost629`) | `disabled, only compatible with versions earlier than 1.6.629` |
+| `Signatures`(且无 `AddressLibraryPostAE`) | 1.7.99+ 要求 `AddressLibraryV5`,答 `must be recompiled for new address library` |
+
+**为什么不用显式版本列表**:本 DLL 不解析任何引擎地址、不碰任何游戏结构,
+只做文件部署和 `LoadLibrary`。列一份表意味着**每出一版游戏都要改代码重编译**,
+而且会**误拒本包本来就支持、只是没人想起来加的运行时**
+(包里实际带着 `versionlib-1-6-1179-0.bin`、`versionlib-1-6-659-0.bin`,
+以及 1.6.678 Epic —— 都不在最初的列表里)。真正的版本门禁在
+`SkyrimTogetherRuntime.dll` 内部:它通过地址库解析地址,没有对应库就拒绝。
+八个同包插件也都是这么声明的。
+
+### 42.6 验证:不是"看着对",是编译出来读导出表
+
+本机没有 MSVC,用 w64devkit 的 g++ 做了两件事:
+
+1. **语法与静态断言**:`-std=c++20 -Wall -Wextra -fsyntax-only` → exit 0。
+   过程中编译器**抓到了我自己写的两个真错**:对非 `constexpr` 的导出变量做
+   `static_assert`(已改为断言具名常量)。
+2. **编成真 DLL,解出导出表与数据**:
+
+```text
+exports: SKSEPlugin_Load, SKSEPlugin_Query, SKSEPlugin_Version
+dataVersion           = 1
+name                  = 'SkyrimTogether'
+versionIndependence   = 0x2   Signatures=True
+versionIndependenceEx = 0x1   NoStructUse=True
+```
+
+再按 SKSE 2.2.6 的 `CheckPluginCompatibility` 逐条复演,全部 PASS,
+结论为 SKSE 会记 `loaded correctly`。
+
+> **教训**:一个"加载失败但不报错"的插件,症状会和"版本不兼容"、
+> "mod 冲突"、"配置错"全都长得一样。**先读 `handle` 号**:
+> `handle 0` 是"SKSE 根本没碰它",不是"它跑了但没干活"。
+
+### 42.7 本轮新增的门禁与反向验证
+
+| 门禁 | 拦什么 | 反向验证 |
+| --- | --- | --- |
+| `check_skse_bootstrap.py` | 导出缺失/被修饰/结构体换序/标志不全 | 8 种失败模式 → 均 exit 1 |
+
+八种模式包含:导出整个缺失(**本次真实缺陷**)、导出落在命名空间里(名字被修饰)、
+`versionIndependence` 与 `Ex` 换序、两个标志都缺、只缺 `Signatures`、
+只缺 `NoStructUse`、`SKSEPlugin_Query` 不再导出(会让 1.5.97 直接失效)、
+**把标志只写在注释里**(门禁先剥注释,专门拦这种"看起来设了"的假通过)。
+
+---
+
+## 43. 2026-09-28 场次:修好 F2 之后同步依然是死的 —— 同一类缺陷的另两副面孔
+
+§42 修完后,1.6.1170 上 `SkyrimTogetherSKSE.dll` 能加载了。但**插件层的同步
+仍然是死的**,桥接日志里反复刷同一行、永不成功:
+
+```text
+send resolver pass failed in 4453 ms; waiting for mapped STR 1.8.0 runtime
+ProxyResolver waiting: spans=20 transport=no loaded=no unloaded=no
+```
+
+### 43.1 先判因果:这一行是"下游症状",不是独立缺陷
+
+链条逐段取证:
+
+| 环节 | 证据 |
+| --- | --- |
+| bootstrap 被 SKSE 跳过 | `no version data 0 (handle 0)`(§42) |
+| → 运行时从未部署 | `skse64.log` 里**没有** `SkyrimTogetherRuntime` 任何一行 |
+| → 门面找不到框架运行时 | `GetLoadedFrameworkRuntime()` 用 `GetModuleHandleW` 探测两个名字,均未加载 → 返回 `nullptr` |
+| → 门面退回加载 bridge | `STRPluginMessagingAPIRuntime.cpp:908` 的三元表达式 |
+| → bridge 扫不到 `TransportService` | 它只扫 `SkyrimSE.exe` 自己的分配,而框架的 `TransportService` 在**另一个模块**里 |
+
+所以这一行**不需要单独修**:bootstrap 修好后运行时会被部署,门面走框架传输,
+bridge 根本不会被用到。**先修上游,再回头确认下游是否自愈**——这次它自愈了。
+
+### 43.2 但顺着"同包插件准入"往下查,又揪出两条
+
+把 SKSE 两族的准入规则写成回放脚本,对**每个手写插件 × 每个随包运行时**跑一遍,
+得到下面这张表(✅ = 加载,❌ = 被跳过):
+
+| 插件 | 1.5.97 | 1.6.317 | 1.6.640 | 1.6.1130 | 1.6.1170 | 1.6.1179 | 1.7.99 | 1.7.104 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 六个 CommonLib 伴侣插件 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `STRPluginMessagingAPI` | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `STRPluginMessagingBridge` | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `SkyrimTogetherSKSE`(修复前) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+**复演脚本第一版是错的**,值得记下来:我先按 SKSE `master` 的规则写,结果
+六个**真实日志里明明加载成功**的插件被判 `must be recompiled for new address
+library`。原因是 master 多了一条 `GetBuildTime()` 启发式
+(`1748217600` = 2025-05-26 之后的构建豁免),而**用户跑的 v2.2.6 里根本没有
+这段代码**。**拿 master 的规则去判一个旧版本 bin 的行为,会造出一整片假阳性。**
+
+### 43.3 缺陷 A:`STRPluginMessagingBridge.dll` 没有 `SKSEPlugin_Query`
+
+SKSE 2.0.x 的 `ScanPlugins`(`v2.0.20`,第 269-311 行)要求**两个都在**:
+
+```cpp
+plugin.query = GetProcAddress(plugin.handle, "SKSEPlugin_Query");
+plugin.load  = GetProcAddress(plugin.handle, "SKSEPlugin_Load");
+if(plugin.query && plugin.load) { ... } else {
+    _MESSAGE("plugin %s does not appear to be an SKSE plugin", pluginPath.c_str());
+}
+```
+
+本仓库**自己 1.5.97 机器的日志里就有这行**,只是当时没被当成缺陷:
+
+```text
+plugin D:\game\SkyrimSE\Data\SKSE\Plugins\\STRPluginMessagingBridge.dll does not appear to be an SKSE plugin
+```
+
+导出表实测对比(从 v1.1.7 发布包解出):
+
+```text
+DLL                          Query   Load   Version   结论
+STRPluginMessagingAPI         True  True     True    ok
+STRPluginMessagingBridge     False  True     True    1.5.97 上被跳过
+SkyrimTogetherSKSE            True  True    False    1.6.x/1.7.x 上被跳过
+```
+
+### 43.4 缺陷 B:三个门面的 `compatibleVersions` 只写了 `1.6.1170`
+
+另一条更隐蔽。三个门面 DLL 声明 `versionIndependence = 0`,而
+`compatibleVersions` 里只有 `{ kRuntime_1_6_1170, 0 }`。SKSE 的规则是:
+
+```cpp
+bool versionIndependent = version.versionIndependence
+                        & (kVersionIndependent_AddressLibraryPostAE
+                         | kVersionIndependent_Signatures);
+if(!versionIndependent) {
+    // 与 RUNTIME_VERSION 精确比对,不是"同一大版本"
+}
+```
+
+`versionIndependence = 0` → `versionIndependent = false` → **精确比对**。
+于是 `1.6.317 / 640 / 1130 / 1179` 与 `1.7.99 / 104`(本包**每一个都带了
+地址库**)全部被判:
+
+```text
+disabled, incompatible with current version of the game
+```
+
+**为什么 1.6.1170 上是好的**:列表恰好命中它。**这个缺陷只有换一个游戏版本
+才暴露** —— 本次会话第三次撞上"本地测不出"。
+
+放大效应:门面是**所有伴侣插件取传输层的入口**(它们用 `LoadLibraryW`
+按名加载)。门面在一条游戏线上被跳过 → 那条线上所有插件的同步一起失效。
+
+### 43.5 修法
+
+子模块只走补丁(`Code/plugins/patches/STRPluginMessagingAPI/0002-*.patch`):
+
+1. 三个 DLL 改为**版本无关**:`kVersionIndependent_Signatures` +
+   `kVersionIndependentEx_NoStructUse`;
+2. bridge 与 diagnostic 补上 `SKSEPlugin_Query`(返回 `true`,与 API 门面一致);
+3. 清掉 `kRuntime_1_6_1170` 列表与不再需要的前置声明。
+
+**为什么版本无关是如实描述,而不是为了让门禁通过**:实测门面源码
+**不包含任何游戏头文件**(`#include <RE/...>` 零处)、**不出现任何 `RE::`
+类型**、**没有任何硬编码地址**(唯一的 `0x...` 是插件版本号常量)。它只做
+签名/锚点扫描。列版本表反而会**误拒本包本来就支持的运行时**。
+
+> **注意 `struct SKSEInterface;` 的坑**:把 `Query` 加进 bridge 时,我顺手删掉了
+> 文件里的前置声明。编译器**当场拦下**——`SKSEPlugin_Load` 用的是**不带命名空间
+> 的裸名** `const SKSEInterface*`。删掉就必须同时改 `Load` 的签名。
+> 这类改动**必须过一遍真实编译器**,肉眼看"加了 Query 就对了"会漏。
+
+### 43.6 新增门禁 `check_skse_entry_points.py`,以及它的两次自我返工
+
+把 SKSE 两族的准入规则**回放**在每个手写插件 × 每个随包运行时上。
+
+两个设计决定:
+
+- **按"SKSE 看到的名字"分组,不按文件**。API 门面的版本数据在
+  `...SKSEMetadata.cpp`、`Query`/`Load` 在 `...APIRuntime.cpp`,按文件分组会
+  把同一个 DLL 拆成两半,各自"缺一半导出"而假报错。
+- **运行时列表从随包的 `versionlib-*.bin` 推导**,不写死。新增一个地址库,
+  门禁自动开始要求插件覆盖它。
+- **先剥注释再匹配**。本次三条缺陷里有两条,旁边就写着**正确描述该规则的
+  注释**;不剥注释会"照着说明通过"。
+
+门禁自己写错过两次,都靠反向验证暴露:第一次把 `SKSEPlugin_Load`(它**不带
+插件名字面量**)当成需要名字的导出,导致四个插件全报"缺 Load";第二次在
+**版本无关**的插件上仍去比对版本列表——而 SKSE 在版本无关时**根本不读这个
+列表**。
+
+### 43.7 反向验证
+
+| 场景 | 结果 |
+| --- | --- |
+| 还原 `STRPluginMessagingAPI` 补丁 | **FAILED (5)** —— 桥接缺 `Query`、三个列表不覆盖 |
+| 把 bootstrap 的 `SKSEPlugin_Version` 改名(还原 §42 的缺陷) | **FAILED (6)** —— 含"no exported SKSEPlugin_Version" |
+| 补丁就位 | **OK** —— 4 个手写插件、13 个随包运行时 |
+
+### 43.8 顺带查清、确认无害的一项
+
+客户端 AE 地址库覆盖度按运行时逐一统计(3082 个代码 id):
+
+| 运行时 | 覆盖 | 缺失 |
+| --- | --- | --- |
+| 1.5.97 | 3069/3082 | 13(已在 `Tools/missing_1_5_97_ids.txt` 记录) |
+| 1.6.1170 | 3079/3082 | 3 |
+| 1.6.1179 | 3078/3082 | 4 |
+| 1.7.104 | 3079/3082 | 3 |
+
+缺的 4 个全是 **RTTI 定位器**:`392519 NiObjectNET`、`394235 CreationClubMenu`、
+`398437 NiParticleSystem`、`400159 CCallbackBase`。它们**只在 1.5.97 的
+ae-to-se 映射表里存在**,在 1.6.1130+ 与 1.7.x 的库里没有 —— 正是
+"本地能跑、玩家那边不行"的形状。
+
+#### 别再去 `Tools/ida` 里翻这 4 个 id 了(2026-09-28 已排查)
+
+项目里确实有 1.6.1170 的逆向产物,但**范围不含 RTTI**,原因是覆盖面而不是数据质量:
+
+| 文件 | 规模 | 采集口径 | 含这 4 个? |
+| --- | --- | --- | --- |
+| `Tools/ida/st_target_meta_1170.json` | 91 条 | **代码里真正调用的目标** | ❌ |
+| `Tools/ida/st_targets_workbench.json` | 93 条 | 同上(`ae_id` + `var`) | ❌ |
+| `Tools/ida/st_overrides_all.tsv` | — | **值是 1.5.97 的 RVA** | 有,但方向相反 |
+
+那 91/93 条是按调用点采集的(`setWornData`、`setHealth`、`setChargeData`、
+`s_constructor`……),**RTTI 定位器不是调用点**,所以从来没进过逆向范围。
+
+**而且即便逆向出来也补不上**,因为它不是"没逆向出来",是**地址库里根本没有
+这条 id**。实测:
+
+```text
+邻居:  392518 = 0x203B928    392519 = (整条不存在)    392520 = 0x203B970
+```
+
+是 **id 空洞,不是偏移为 0**;`394235`、`398437` 同样(`428461` 个 id 里有
+`4903` 个空洞是常态)。且 `1.6.659` 的偏移 `0x1EA3228` 在 `1.6.1170` 里
+**任何 id 下都不存在** —— 不是重编号,是官方库没给编号。
+
+**为什么 1.5.97 那边有**:`versionlib-ae-to-se-1-5-97-0.map` 是**本仓库自己
+生成**的(`st_overrides_all.tsv` 就是它的输入之一),想加什么就加什么;
+而 `versionlib-*.bin` 是 **SKSE 官方发布的文件**,改它会让哈希对不上,
+`CheckAddressLibrary` 也可能不认。
+
+所以这 4 个 id 在 1.6.1130+/1.7.x 上**在不改官方库的前提下无法补**。真要
+`Cast` 到这几个类型,只能换不依赖 RTTI 的判定方式(vtable 比较等),
+不能指望补地址库。
+
+**但实测确认当前无害**:把全部 37 个 `Cast<...>` 目标类型与三套运行时逐一比对,
+**每一个都能解析**;这 4 个类型既不是 `Cast<>` 的目标也不是来源
+(`Cast<T,U>` 会用到**源类型**的 RTTI,所以要按实参查而不是只看返回类型),
+且 `RttiLocator<T>::Get()` 对它们零调用。`Cast()` 本身有 null 守卫。
+
+**结论:记为潜伏项,不修。** 一旦有人写 `Cast<NiObjectNET>`,它会**静默返回
+`nullptr`** 而不是崩溃 —— 这正是需要在评审时盯住的那类改动。
+
+> **教训**:§42 与 §43 是**同一个根因家族**的三种表现,而三次都满足
+> "在开发机上完全正常"。凡是"按游戏版本/运行时分支"的声明与导出,
+> 都必须用**回放规则 + 每个随包运行时**去验,不能靠本地跑一遍。
+> 判据是**导出表与准入规则**,不是"我这儿好好的"。
+
+---
+
+## 44. 2026-09-28 场次:一条聊天消息打崩专用服务器 —— 判据是「旁边三处都判了空」
+
+> **锚点**:本节的修复落在 `Code/server/Services/OverlayService.cpp`。
+
+### 44.1 缺陷:`GetCharacter()` 是 optional,被直接解引用
+
+```cpp
+// Code/server/Services/OverlayService.cpp(修复前)
+auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(
+    *acMessage.pPlayer->GetCharacter(), acMessage.Packet.ChatMessage);
+```
+
+`Player::GetCharacter()`(`Code/server/Game/Player.h`)返回的是
+`std::optional<entt::entity>`,而 `m_character` **只在
+`CharacterService::OnCharacterCreated`(`CharacterService.cpp:659`)里被赋值** ——
+也就是角色创建成功之后。
+
+于是「已连接、但还没建好角色」的玩家(刚连上、角色创建失败、角色被删后重连)
+发一条聊天消息,这里就解引用一个**空的 optional**。这是未定义行为:MSVC
+release 下 `optional::operator*` 不检查,取到的是未初始化的存储,脚本层再拿
+这个实体去 `ctx().at<T>()` 就崩。
+
+**这不是「玩家操作不当」**:`SendChatMessageRequest` 是任何已连接客户端都能发的
+报文,与是否建好角色无关。
+
+### 44.2 判据:同一个调用在别处都判了空,只有这一处没判
+
+| 位置 | 代码 | 判空 |
+| --- | --- | --- |
+| `WeatherService::OnWeatherChange` | `if (!acMessage.pPlayer->GetCharacter()) return;` | 是 |
+| `PlayerService::OnPlayerRespawnRequest` | `if (!character) return;` | 是 |
+| `OverlayService::HandleChatMessage` | `*acMessage.pPlayer->GetCharacter()` | **否(本次缺陷)** |
+
+这和 v1.1.4 修掉的 `CommandService::OnSetTimeCommand` 是**同一类**:
+一条远程报文触发服务端空指针,而**判据不是「我觉得这里可能空」,是「同一份代码里
+旁边的调用都判了」**。这条判据可机械执行,不依赖对玩法时序的猜测。
+
+### 44.3 修法:只跳过脚本回调,不吞掉消息
+
+```cpp
+if (const auto character = acMessage.pPlayer->GetCharacter())
+{
+    auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(
+        *character, acMessage.Packet.ChatMessage);
+    if (canceled)
+        return;
+}
+
+sendPlayerMessage(acMessage.Packet.MessageType, acMessage.Packet.ChatMessage, acMessage.pPlayer);
+```
+
+`onChatMessage` 拿到的是**实体**,传一个默认构造的实体等于把垃圾指针交给脚本,
+所以这一段必须跳过;而下面的广播不需要调用者自己的角色 ——
+`sendPlayerMessage` 内部对 `GetCharacter()` **已经判了空**(只影响 `kLocalChat`
+的范围查询)—— 所以该玩家的**全局/队伍聊天照常送达**。
+
+**修崩溃,不改行为**:如果直接把整个函数 `return` 掉,等于「没建好角色就不能说话」,
+那是把一次崩溃换成一次静默的功能缺失。
+
+### 44.4 复核命令(照抄)
+
+```powershell
+# 1. 服务端所有 optional 解引用点(应只剩三处,且都在自己的判空分支里)
+Select-String -Path Code/server/**/*.cpp -Pattern '\*[A-Za-z_]+->GetCharacter\(\)'
+
+# 2. GetCharacter 的赋值点(应只有一处,即角色创建成功之后)
+Select-String -Path Code/server/**/*.cpp -Pattern 'SetCharacter'
+
+# 3. 客户端同口径:`.value()` 必须有前置 has_value()
+Select-String -Path Code/client/Services/**/*.cpp -Pattern '\.value\(\)'
+```
+
+复核结果:客户端 16 处 `.value()` 全部有前置 `has_value()` 守卫(或等价判空);
+服务端 3 处 `*...GetCharacter()` 全部落在自己的判空分支内。
+
+> **教训**:`std::optional` 的解引用在 release 下**不报错、不返回 nullptr**,
+> 它取到的是垃圾值 —— 比裸指针的 null 更难查,因为崩溃点离缺陷点很远
+> (这里崩在脚本层)。**同一个调用在仓库里出现多次时,「其他几处判没判」就是
+> 最省事也最可靠的判据。**

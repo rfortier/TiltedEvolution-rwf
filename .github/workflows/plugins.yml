@@ -153,6 +153,40 @@ jobs:
         shell: pwsh
         run: python Code/plugins/tools/check_skee_abi.py
 
+      # The refusal message is the only thing a player whose OStim runtime was
+      # rejected ever reads, and nothing else binds it to the selector that
+      # rejects them. The patch that added OStimNG 7.5.1.x support left it
+      # naming 7.5.0.2 as the newest supported version, so a player refused on
+      # 7.5.1 was told to install an OStim older than the one they already had.
+      - name: Verify the OStim support message matches the selector
+        shell: pwsh
+        run: python Code/plugins/tools/check_ostim_support_message.py
+
+      # SkyrimTogetherSKSE.dll is the loader that deploys and starts the
+      # multiplayer runtime, and SKSE 2.2.x refuses to load a plugin that does
+      # not export SKSEPlugin_Version - it logs "no version data" and moves on,
+      # with no fallback to the legacy SKSEPlugin_Query this dll used to export
+      # alone. The result is the esp files and the main-menu logo appearing
+      # normally while the F2 menu never opens. SKSE 2.0.x (1.5.97) never reads
+      # the export, which is why local testing on 1.5.x cannot see this.
+      - name: Verify the SKSE bootstrap is loadable
+        shell: pwsh
+        run: python Code/plugins/tools/check_skse_bootstrap.py
+
+      # The bootstrap above is one instance of a class this package has now paid
+      # for three times: a plugin that satisfies one SKSE family and is skipped
+      # outright by the other. SKSE 2.2.x (1.6.x/1.7.x) reads SKSEPlugin_Version
+      # by name with no fallback to Query; SKSE 2.0.x (1.5.97) reads Query and
+      # Load together and never looks for Version; and a version-dependent plugin
+      # has its compatibleVersions list matched against the exact running build,
+      # so a list holding one runtime rejects every other one this package ships
+      # an address library for. This replays those rules over every hand-written
+      # plugin and every shipped runtime, because none of the three reproduces on
+      # the 1.5.97 machine the package is developed on.
+      - name: Verify every plugin loads on every supported game line
+        shell: pwsh
+        run: python Code/plugins/tools/check_skse_entry_points.py
+
       # OStimNG is the prerequisite OStim Together drives, and it resolves
       # engine addresses through the SKSE address library. An id absent from the
       # library for the runtime actually running does not degrade: REL::ID()
