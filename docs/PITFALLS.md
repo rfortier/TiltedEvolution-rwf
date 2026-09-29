@@ -6429,3 +6429,310 @@ python Tools\Scripts\check_docs.py
 > 另一条:「从线里读出来的 id」永远要问一句「它属于谁」。`OnPartyKick` 查了「这个人存在吗」和「我是队长吗」,
 > 却没查「这个人在我的队里吗」—— 前两个问题都能用**请求者自己的**状态回答,只有第三个需要把两个对象
 > 放在一起看,而正是它决定了 `erase` 的下标合不合法。
+## 57. 2026-09-29 场次:注解解析只判了「正例」,其余全部落进越界分支 —— 而这条注解能从网络重放
+
+> **锚点**:本节修复落在 OStimNG 子模块(`plugins/OStimNG`,pin
+> `3954683bbdfcd34b2f9157012ed0c446d6eefd1e`)。该子模块本项目不拥有、也无法推送,所以按既有做法
+> 做成 `Code/plugins/patches/OStimNG/0002-guard-the-animation-event-path.patch`。
+> **`snapshots/**` 一个字都没动** —— 它存的是 pin 的原样,`plugin_snapshot.py verify` 会卡住。
+
+### 57.1 缺陷:`OStimEvent` 只认「2 个字段」这一种正例
+
+**现象**:OStimNG 场景里,一条字段数不是 2 的 `OStimEvent` 注解会让插件读越界;任何一段数字
+写错的注解会让 `std::stoi` 抛异常,而异常从 `RE::BSTEventSink` 的事件槽逃出去 ⇒ `std::terminate`。
+
+**根因**(`plugins/OStimNG/skse/src/Core/Thread.cpp:849-856`,修复前行号):
+
+```cpp
+std::vector<std::string> payloadVec = stl::string_split(a_event->payload.c_str(), ',');
+if (payloadVec.size() == 2) {
+    int actorIndex = GetActor(actor)->index;
+    callEvent(payloadVec[0], actorIndex, std::stoi(payloadVec[1]), actorIndex);
+} else {
+    callEvent(payloadVec[0], std::stoi(payloadVec[1]), std::stoi(payloadVec[2]), std::stoi(payloadVec[3]));
+}
+```
+
+注解有两个合法形状,写在 `data/SKSE/Plugins/OStim/list of annotations.txt:14-19`:
+`OStimEvent.[event],[target]` 与 `OStimEvent.[event],[actor],[target],[performer]`。
+代码把第一个判成正例,**把「不是它」当成了「就是第二个」**。
+
+`stl::string_split`(`skse/src/Util.cpp:48-61`)会丢掉尾部的空 token:
+
+```cpp
+// plugins/OStimNG/skse/src/Util.cpp:48-61
+std::vector<std::string> string_split(const std::string& text, char sep) {
+    std::vector<std::string> tokens;
+    size_t start = 0, end = 0;
+
+    while ((end = text.find(sep, start)) != std::string::npos) {
+        tokens.push_back(text.substr(start, end - start));
+
+        start = end + 1;
+    }
+
+    if (text.substr(start) != "") tokens.push_back(text.substr(start));
+
+    return tokens;
+}
+```
+
+于是 `""` → size 0、`"a,"` → size 1、`"a,b,c"` → size 3 —— 三种都不是 2,三种都落进 `else`,
+前两种读 `payloadVec[1..3]` 越界,第三种读 `payloadVec[3]` 越界。**这条 `else` 是唯一出口**,
+它同时承担了「第二种合法形状」和「所有不合法输入」两种语义。
+
+### 57.2 判据:payload 由谁决定,以及同一个仓库里已有的正确写法
+
+**判据一,payload 不是只有本地动画图能给。** 注解文本确实写在 behaviour 数据里
+(`data/Nemesis_Engine/mod/ostim/0_master/#0106.txt:1222`),但同一条 tag 也能**从网络重放**:
+
+```cpp
+// plugins/AnimSyncTogether/src/STRPMClient.cpp:436-437
+const RE::BSFixedString inputEvent{ tag.c_str() };
+const bool replayed = actor->NotifyAnimationGraph(inputEvent);
+```
+
+唯一过滤是 `:394` 的 `SyncRules::...ShouldSyncEvent(tag)`。⇒ 远端客户端能决定这段 payload,
+它不是一个「只可能被作者写错」的输入。**这一条决定了缺陷的等级**,不是「作者手滑」而是
+「对端可控」。
+
+**判据二,同一个文件里已经有判空的正确写法。** `skse/src/Papyrus/PapyrusScenes.h` 里
+`:18-28` 的 `GetActor` 先判 `thread` 再判 `actor`,而紧邻的 `:10` / `:15` 两个入口**一个都不判**:
+
+```cpp
+// plugins/OStimNG/skse/src/Papyrus/PapyrusScenes.h(修复前)
+void AddActor(RE::StaticFunctionTag*, int64_t a_threadId, RE::Actor* a_actor) {
+    auto tm = Threading::ThreadManager::GetSingleton();
+    tm->GetThread(a_threadId)->AddActor(a_actor);          // :10 不判
+}
+
+void RemoveActor(RE::StaticFunctionTag*, int64_t a_threadId) {
+    auto tm = Threading::ThreadManager::GetSingleton();
+    tm->GetThread(a_threadId)->RemoveActor();              // :15 不判
+}
+
+Threading::ThreadActor* GetActor(int64_t a_threadId, RE::Actor* a_actor) {
+    auto thread = Threading::ThreadManager::GetSingleton()->GetThread(a_threadId);
+    if (thread) {                                          // :19 同一个文件,做对了
+        auto actor = thread->GetActor(a_actor);
+        if (actor) {
+            return actor;
+        }
+    }
+    logger::error("Actor {} not found in thread {}", a_actor->GetDisplayFullName(), a_threadId);
+    return nullptr;
+}
+```
+
+**判据三,同构的另一条入口做了范围校验。** `skse/src/Papyrus/PapyrusThread.h:275-281`:
+
+```cpp
+void CallEvent(RE::StaticFunctionTag*, int threadID, std::string eventName, int actor, int target, int performer) {
+    Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+    if (thread) {
+        int size = thread->getActors().size(); // need to convert to unsigned int before comparing or shit goes sideways
+        if (actor < 0 || actor >= size || target >= size || performer >= size) {
+            return;
+        }
+```
+
+`ProcessEvent` 这条**同构的入口**不做(它只判 `a_event` 与 `a_event->holder`,见 `:828-830`)。
+⇒ 判据是**「同一个仓库里已经有做对的写法」**,不是「看起来像不像会空」。
+
+**判据四,`GetActor` 明确会返回 nullptr。** `skse/src/Core/Thread.cpp:458-463`:
+
+```cpp
+ThreadActor* Thread::GetActor(int a_position) {
+    for (auto& i : m_actors) {
+        if (i.first == a_position) return &i.second;
+    }
+    return nullptr;
+}
+```
+
+而 `ProcessEvent` 里有 **10 处** `GetActor(actor)->X()`(修复前行号:`:848 :858 :860 :864 :868
+:870 :872 :874 :876 :898 :900 :902 :904 :907`)。`GetActor(actor)` 的输入是**事件里的 holder**,
+它来自 `a_event->holder`,与 `m_actors` 里有没有这个人无关。
+
+### 57.3 修法:一个不抛异常的解析器,加每个入口先判空
+
+新增一个不抛异常的注解数字解析器(用 `std::from_chars`,不经过异常):
+
+```cpp
+// plugins/OStimNG/skse/src/Core/Thread.cpp(修复后,:26-53)
+#include <charconv>
+
+namespace {
+    // Animation graph annotations are plain text, and the OStimEvent tag can be
+    // replayed from the network, so payload numbers are parsed without throwing:
+    // a malformed annotation must not escape a noexcept event sink as an
+    // exception.
+    bool parseAnnotationInt(const std::string& a_text, int& a_out, int a_base = 10) {
+        const char* begin = a_text.data();
+        const char* end = begin + a_text.size();
+
+        while (begin != end && (*begin == ' ' || *begin == '\t')) {
+            ++begin;
+        }
+
+        if (begin != end && *begin == '+') {
+            ++begin;
+        }
+
+        if (a_base == 16 && end - begin >= 2 && begin[0] == '0' && (begin[1] == 'x' || begin[1] == 'X')) {
+            begin += 2;
+        }
+
+        if (begin == end) {
+            return false;
+        }
+
+        int value = 0;
+        const auto result = std::from_chars(begin, end, value, a_base);
+        if (result.ec != std::errc{}) {
+            return false;
+        }
+
+        const char* rest = result.ptr;
+        while (rest != end && (*rest == ' ' || *rest == '\t')) {
+            ++rest;
+        }
+
+        if (rest != end) {
+            return false;
+        }
+
+        a_out = value;
+        return true;
+    }
+}
+```
+
+`OStimEvent` 分支改成**只接受 2 与 4 两种字段数**,其余丢弃 —— 注意两个形状各自解析成功才调用:
+
+```cpp
+// plugins/OStimNG/skse/src/Core/Thread.cpp(修复后,:908-935)
+ThreadActor* threadActor = GetActor(actor);
+if (!threadActor) {
+    return RE::BSEventNotifyControl::kContinue;
+}
+
+if (tag == "OStimClimax") {
+    threadActor->climax();
+} else if (tag == "OStimEvent") {
+    // The annotation is either event,target or
+    // event,actor,target,performer. Anything else is malformed and is
+    // dropped instead of being indexed past the end of the split.
+    std::vector<std::string> payloadVec = stl::string_split(a_event->payload.c_str(), ',');
+    if (payloadVec.size() == 2) {
+        int target = 0;
+        if (parseAnnotationInt(payloadVec[1], target)) {
+            callEvent(payloadVec[0], threadActor->index, target, threadActor->index);
+        }
+    } else if (payloadVec.size() == 4) {
+        int actorIndex = 0;
+        int targetIndex = 0;
+        int performerIndex = 0;
+        if (parseAnnotationInt(payloadVec[1], actorIndex) && parseAnnotationInt(payloadVec[2], targetIndex) && parseAnnotationInt(payloadVec[3], performerIndex)) {
+            callEvent(payloadVec[0], actorIndex, targetIndex, performerIndex);
+        }
+    }
+}
+```
+
+同一族在这次一并修掉的还有:
+
+- `ProcessEvent` 里 10 处 `GetActor(actor)->` 全部走函数入口取一次的 `threadActor`;同一段里
+  9 处 `std::stoi` 全部换成 `parseAnnotationInt`(`OStimUndressPartial` / `OStimRedressPartial`
+  走 base 16;`OStimSetLooking` 两段各自解析成功才 `insert`;`OStimBendSoS` 解析成功才
+  `offsetSoSBend`;`OStimPeak` 还加了 `action >= 0 && action <= 255` 的范围校验,
+  因为 `Graph::Action::Action::actionIndex` 是 `uint8_t`,`std::stoi` 的结果直接隐式截断)。
+- `initContinue` 的 `GetActor(0)->getActor().getLightLevel()` 与 `loop()` 的
+  `GetActor(0)->getActor().isInSameCell(...)` 各改成先落局部再判空。`loop()` 每帧可达
+  (`skse/src/Core/ThreadManager.cpp:47 it.second->loop();`)。
+- `RemoveActor()` 开头加 `if (m_actors.empty()) { return; }`,再对 `GetActor(index)` 判空 ——
+  修复前它算的是 `int index = m_actors.size() - 1;`(空 `std::map` 上是 `SIZE_MAX`)。
+- `NodeHandler::handlePeakAnnotation` 与 `nodeChanged` 各自把 `thread->getCurrentNodeInternal()`
+  先落局部再判空。`m_currentNode` 的声明带 `= nullptr`(`skse/src/Core/Thread.h:125`),
+  而 `handlePeakAnnotation` 从 `ProcessEvent` 的 `OStimPeak` 分支进来,**与 `Thread::loop()` 的
+  `if (!m_currentNode) { return; }` 无关** —— 那条守卫在另一个调用栈上。
+- `NodeHandler::threadEnd()` 在 `delete this` 之前先清掉宿主指针:
+
+  ```cpp
+  // plugins/OStimNG/skse/src/Threading/Thread/NodeHandler.cpp(修复后,:85-89)
+  void NodeHandler::threadEnd() {
+      EventUtil::invokeListeners(threadEndListeners);
+      if (thread) {
+          thread->clearNodeHandler();
+      }
+      delete this;
+  }
+  ```
+
+  `nodeHandler` 是 `Thread` 的 **private** 成员(`skse/src/Core/Thread.h:149`),外部写不到,
+  所以在 `Thread.h:116` 旁边加了一个 public 的 `inline void clearNodeHandler() { nodeHandler = nullptr; }`。
+  修复前 `delete this` 之后 `Thread::nodeHandler` 仍是**悬垂指针**,而 `getNodeHandler()` 是
+  public、`ProcessEvent` 的 `OStimPeak` 分支还会用它。
+- `LoopPeakHandler::speedChanged()` 逐级判空并给下标做范围校验:
+
+  ```cpp
+  // plugins/OStimNG/skse/src/Threading/Thread/Peak/Loop/LoopPeakHandler.cpp(修复后)
+  void LoopPeakHandler::speedChanged() {
+      if (!nodeHandler) {
+          return;
+      }
+
+      Threading::Thread* thread = nodeHandler->getThread();
+      if (!thread) {
+          return;
+      }
+
+      Graph::Node* currentNode = thread->getCurrentNodeInternal();
+      if (!currentNode) {
+          return;
+      }
+
+      int speed = thread->getCurrentSpeed();
+      if (speed < 0 || speed >= static_cast<int>(currentNode->speeds.size())) {
+          return;
+      }
+
+      scale = currentNode->speeds[speed].displaySpeed;
+  }
+  ```
+
+  修复前是一行三重解引用加一个不判范围的下标:
+  `scale = nodeHandler->getThread()->getCurrentNodeInternal()->speeds[nodeHandler->getThread()->getCurrentSpeed()].displaySpeed;`
+- `PeakSoundPlayer` 的构造函数逐级判空后才注册监听(`SoundPlayerParams::actor` 默认是 `nullptr`)。
+- `ThreadActor.cpp:402` 的 `thread->GetActor(i)->getActor()` 前插判空并 `continue`。
+- `AlignMenu.cpp:110` 把 `GetSingleton()->currentThread->GetActor(selectedSlot)->getActor().getName()`
+  拆成三步判空,名字先落到 `std::string` 再构造 `RE::GFxValue`(三目表达式两侧类型不同会编译不过;
+  局部名用 `alignThread` 是因为同文件 `:83` 已经有 `currentThread`)。
+
+### 57.4 复核命令(照抄)
+
+```powershell
+git -C plugins/OStimNG show 3954683bbdfcd34b2f9157012ed0c446d6eefd1e:skse/src/Core/Thread.cpp | Select-String -Pattern 'GetActor\(actor\)->|std::stoi|payloadVec.size'
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py apply
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\plugin_snapshot.py verify
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:pin 上 `GetActor(actor)->` **10 处**、`std::stoi` **9 处**、`payloadVec.size() == 2` 1 处
+(这一条正是 `plugin_patches.py verify` 的输入 —— 它用 `git apply --check --cached` 对着 **pin**
+而不是工作树校验,所以工作树已经被 `apply` 过也能照跑);
+`PATCH VERIFY OK`(**10** 个补丁)、`PATCH CHECK OK`、`SNAPSHOT OK`(8 个插件)、
+`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+补丁自身:`Code/plugins/patches/OStimNG/0002-guard-the-animation-event-path.patch`,
+**8 个文件、16 个 hunk、+202/-51 行、LF-only、无 BOM**。改后 `Thread.cpp` 里
+`GetActor(actor)` 只剩 1 处(新增的那次赋值)、`std::stoi` **0 处**。
+
+> **教训**:「只判正例,其余全落 `else`」的写法,把一个**枚举**问题(这段文本属于哪个形状)
+> 换成了**布尔**问题(它是不是形状 A)。而 `else` 里写的是形状 B 的解析 —— 于是「不是 A」被
+> 静默当成「是 B」,越界读的就是 B 才有的那几个字段。判据不在 `if` 那一行,而在**`else` 的
+> 入口有没有自己的条件**:当 `else` 分支假设了比 `if` 更强的前提时,它必须把这个前提**写出来**。
+> 另一条:同一个仓库里往往已经有做对的同构写法(`PapyrusScenes.h` 的 `GetActor`、
+> `PapyrusThread.h` 的范围校验),**「别处怎么写的」比「这里看起来会不会空」可靠得多**。

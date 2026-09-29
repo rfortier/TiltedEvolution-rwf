@@ -888,6 +888,83 @@ if (partyItor != std::end(m_parties))
 → **0 命中**;`Select-String -Path Code\server\Services\PartyService.cpp -Pattern 'm_parties\['`
 → 只剩 `OnPartyCreate` 的 1 处;`python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:OStimNG 的动画事件注解只判了「2 个字段」,其余全部落进越界分支
+
+**现象**:OStimNG 场景里,一条字段数不是 2 的 `OStimEvent` 注解会让插件读越界;
+任何一段数字写错的注解会让 `std::stoi` 抛异常,而异常从 `RE::BSTEventSink`
+的事件槽逃出去 ⇒ `std::terminate`。
+
+**根因**:`plugins/OStimNG/skse/src/Core/Thread.cpp:849-856`(修复前)只判了
+`payloadVec.size() == 2`,**其余全部落进 `else`**:
+
+```cpp
+// plugins/OStimNG/skse/src/Core/Thread.cpp(修复前)
+std::vector<std::string> payloadVec = stl::string_split(a_event->payload.c_str(), ',');
+if (payloadVec.size() == 2) {
+    int actorIndex = GetActor(actor)->index;
+    callEvent(payloadVec[0], actorIndex, std::stoi(payloadVec[1]), actorIndex);
+} else {
+    callEvent(payloadVec[0], std::stoi(payloadVec[1]), std::stoi(payloadVec[2]), std::stoi(payloadVec[3]));
+}
+```
+
+注解语法有两个合法形状,写在 `data/SKSE/Plugins/OStim/list of annotations.txt:14-19`:
+`OStimEvent.[event],[target]` 与 `OStimEvent.[event],[actor],[target],[performer]`。
+代码把第一个判成正例,**把「不是它」当成了「就是第二个」**。而
+`stl::string_split`(`skse/src/Util.cpp:47-62`)会丢掉尾部的空 token,于是
+`""` → size 0、`"a,"` → size 1、`"a,b,c"` → size 3 —— 三种都不是 2,三种都落进
+`else`,前两种读 `payloadVec[1..3]` 越界、第三种读 `[3]` 越界。
+
+**payload 由谁决定**:注解文本写在动画图的 behaviour 数据里
+(`data/Nemesis_Engine/mod/ostim/0_master/#0106.txt:1222`),但同一条 tag 也能
+**从网络重放** —— `plugins/AnimSyncTogether/src/STRPMClient.cpp:436-437` 把收到的
+字符串直接 `actor->NotifyAnimationGraph(inputEvent)`,唯一过滤是
+`:394` 的 `SyncRules::...ShouldSyncEvent(tag)`。所以**远端客户端能决定这段 payload**。
+
+**判据在同一个文件里**:`skse/src/Papyrus/PapyrusScenes.h:18-28` 的 `GetActor`
+先判 `thread` 再判 `actor`,而紧邻的 `:10` / `:15` 两个入口**一个都不判**;
+`skse/src/Papyrus/PapyrusThread.h:279` 对 `actor`/`target`/`performer` 三个下标
+做了范围校验,`ProcessEvent` 这条**同构的入口**不做。⇒ 判据是
+**「同一个文件里已经有判空的正确写法」**,不是「看起来像不像会空」。
+
+同一族在这次一并修掉的还有:`GetActor(actor)->` 在 `ProcessEvent` 里 **10 处**直接
+解引用(而 `skse/src/Core/Thread.cpp:458-463` 明确 `return nullptr;`);
+`getCurrentNodeInternal()`(`skse/src/Core/Thread.h:125 Graph::Node* m_currentNode = nullptr;`)
+在 `NodeHandler::handlePeakAnnotation` 与 `nodeChanged` 里两处直接解引用;
+`NodeHandler::threadEnd()` 的 `delete this` 之后 `Thread::nodeHandler` 仍是**悬垂指针**
+(而 `getNodeHandler()` 是 public、`nodeHandler` 是 private,外部无法置空);
+`LoopPeakHandler::speedChanged()` 三重解引用加一个不判范围的下标;
+`PeakSoundPlayer` 构造函数三层解引用;`RemoveActor()` 在空 `m_actors` 上算
+`size() - 1`。
+
+**修法**:新增一个不抛异常的注解数字解析器,并把每个入口改成先判空再取值:
+
+```cpp
+// plugins/OStimNG/skse/src/Core/Thread.cpp(修复后)
+namespace {
+    bool parseAnnotationInt(const std::string& a_text, int& a_out, int a_base = 10) {
+        const char* begin = a_text.data();
+        const char* end = begin + a_text.size();
+        ...
+        const auto result = std::from_chars(begin, end, value, a_base);
+        if (result.ec != std::errc{}) {
+            return false;
+        }
+        ...
+    }
+}
+```
+
+**交付方式**:该修复落在**本项目不拥有、也无法推送**的子模块里,所以按既有做法做成
+`Code/plugins/patches/OStimNG/0002-guard-the-animation-event-path.patch`,
+由 `plugin_patches.py apply` 在配置与构建前打到子模块工作树上 —— CI 的
+`git submodule update --init --force --recursive --depth=1` 会丢弃任何只存在于工作树的改动。
+
+**验证**:`python Code/plugins/tools/plugin_patches.py verify` → `PATCH VERIFY OK`(10 个补丁
+全部能打到各自的 pin 上);`check` → `PATCH CHECK OK`;
+`python Code/plugins/tools/plugin_snapshot.py verify` → `SNAPSHOT OK`;
+`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

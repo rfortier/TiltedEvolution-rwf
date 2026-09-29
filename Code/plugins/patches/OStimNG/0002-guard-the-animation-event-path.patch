@@ -1,0 +1,425 @@
+diff --git a/skse/src/Core/Thread.cpp b/skse/src/Core/Thread.cpp
+--- a/skse/src/Core/Thread.cpp
++++ b/skse/src/Core/Thread.cpp
+@@ -24,6 +24,53 @@
+ #include "Util/StringUtil.h"
+ #include "Util.h"
+ 
++#include <charconv>
++
++namespace {
++    // Animation graph annotations are plain text, and the OStimEvent tag can be
++    // replayed from the network, so payload numbers are parsed without throwing:
++    // a malformed annotation must not escape a noexcept event sink as an
++    // exception.
++    bool parseAnnotationInt(const std::string& a_text, int& a_out, int a_base = 10) {
++        const char* begin = a_text.data();
++        const char* end = begin + a_text.size();
++
++        while (begin != end && (*begin == ' ' || *begin == '\t')) {
++            ++begin;
++        }
++
++        if (begin != end && *begin == '+') {
++            ++begin;
++        }
++
++        if (a_base == 16 && end - begin >= 2 && begin[0] == '0' && (begin[1] == 'x' || begin[1] == 'X')) {
++            begin += 2;
++        }
++
++        if (begin == end) {
++            return false;
++        }
++
++        int value = 0;
++        const auto result = std::from_chars(begin, end, value, a_base);
++        if (result.ec != std::errc{}) {
++            return false;
++        }
++
++        const char* rest = result.ptr;
++        while (rest != end && (*rest == ' ' || *rest == '\t')) {
++            ++rest;
++        }
++
++        if (rest != end) {
++            return false;
++        }
++
++        a_out = value;
++        return true;
++    }
++}
++
+ namespace Threading {
+     Thread::Thread(int threadID, ThreadStartParams params) : m_threadId{threadID}, furniture{params.furniture} {
+         nodeHandler = new Threading::Threads::NodeHandler(this);
+@@ -140,7 +187,8 @@ namespace Threading {
+             UI::Scene::SceneMenu::GetMenu()->Show();
+         }
+ 
+-        if (!MCM::MCMTable::onlyLightInDark() || GetActor(0)->getActor().getLightLevel() < 20) {
++        ThreadActor* firstActor = GetActor(0);
++        if (!MCM::MCMTable::onlyLightInDark() || (firstActor && firstActor->getActor().getLightLevel() < 20)) {
+             logger::info("trying to add facelights");
+             for (auto& [index, actor] : m_actors) {
+                 if (!actor.getActor().hasLight()) {
+@@ -338,8 +386,16 @@ namespace Threading {
+     }
+ 
+     void Thread::RemoveActor() {
++        if (m_actors.empty()) {
++            return;
++        }
++
+         int index = m_actors.size() - 1;
+         ThreadActor* actor = GetActor(index);
++        if (!actor) {
++            return;
++        }
++
+         removeActorSink(actor->getActor().form);
+         actor->free();
+ 
+@@ -410,7 +466,8 @@ namespace Threading {
+     void Thread::loop() {
+         //std::shared_lock<std::shared_mutex> readLock(nodeLock);
+ 
+-        if (!playerThread && !GetActor(0)->getActor().isInSameCell(GameAPI::GameActor::getPlayer())) {
++        ThreadActor* firstActor = GetActor(0);
++        if (!playerThread && (!firstActor || !firstActor->getActor().isInSameCell(GameAPI::GameActor::getPlayer()))) {
+             stop();
+             return;
+         }
+@@ -566,7 +623,7 @@ namespace Threading {
+         roles.performer = GetActor(performerIndex);
+ 
+         GameAPI::GameSound sound = graphEvent->getSound();
+-        if (sound) {
++        if (sound && roles.actor) {
+             sound.play(roles.actor->getActor(), MCM::MCMTable::getSoundVolume());
+         }
+ 
+@@ -608,10 +665,16 @@ namespace Threading {
+             }   
+         }
+ 
+-        Graph::RoleMap<GameAPI::GameActor> gameRoles;
+-        gameRoles.actor = roles.actor->getActor();
+-        gameRoles.target = roles.target->getActor();
+-        gameRoles.performer = roles.performer->getActor();
++        Graph::RoleMap<GameAPI::GameActor> gameRoles{};
++        if (roles.actor) {
++            gameRoles.actor = roles.actor->getActor();
++        }
++        if (roles.target) {
++            gameRoles.target = roles.target->getActor();
++        }
++        if (roles.performer) {
++            gameRoles.performer = roles.performer->getActor();
++        }
+ 
+         GameAPI::GameEvents::sendOStimEvent(m_threadId, graphEvent, gameRoles);
+     }
+@@ -844,71 +907,101 @@ namespace Threading {
+ 
+         std::string tag = a_event->tag.c_str();
+ 
++        ThreadActor* threadActor = GetActor(actor);
++        if (!threadActor) {
++            return RE::BSEventNotifyControl::kContinue;
++        }
++
+         if (tag == "OStimClimax") {
+-            GetActor(actor)->climax();
++            threadActor->climax();
+         } else if (tag == "OStimEvent") {
++            // The annotation is either event,target or
++            // event,actor,target,performer. Anything else is malformed and is
++            // dropped instead of being indexed past the end of the split.
+             std::vector<std::string> payloadVec = stl::string_split(a_event->payload.c_str(), ',');
+             if (payloadVec.size() == 2) {
+-                int actorIndex = GetActor(actor)->index;
+-                callEvent(payloadVec[0], actorIndex, std::stoi(payloadVec[1]), actorIndex);
+-            } else {
+-                callEvent(payloadVec[0], std::stoi(payloadVec[1]), std::stoi(payloadVec[2]), std::stoi(payloadVec[3]));
++                int target = 0;
++                if (parseAnnotationInt(payloadVec[1], target)) {
++                    callEvent(payloadVec[0], threadActor->index, target, threadActor->index);
++                }
++            } else if (payloadVec.size() == 4) {
++                int actorIndex = 0;
++                int targetIndex = 0;
++                int performerIndex = 0;
++                if (parseAnnotationInt(payloadVec[1], actorIndex) && parseAnnotationInt(payloadVec[2], targetIndex) && parseAnnotationInt(payloadVec[3], performerIndex)) {
++                    callEvent(payloadVec[0], actorIndex, targetIndex, performerIndex);
++                }
+             }
+         } else if (tag == "OStimUndress") {
+-            GetActor(actor)->undress();
++            threadActor->undress();
+         } else if (tag == "OStimRedress") {
+-            GetActor(actor)->redress();
++            threadActor->redress();
+         } else if (tag == "OStimUndressPartial") {
+             std::string payload = a_event->payload.c_str();
+-            int mask = std::stoi(payload, nullptr, 16);
+-            GetActor(actor)->undressPartialInternal(mask);
++            int mask = 0;
++            if (parseAnnotationInt(payload, mask, 16)) {
++                threadActor->undressPartialInternal(mask);
++            }
+         } else if (tag == "OStimRedressPartial"){
+             std::string payload = a_event->payload.c_str();
+-            int mask = std::stoi(payload, nullptr, 16);
+-            GetActor(actor)->redressPartialInternal(mask);
++            int mask = 0;
++            if (parseAnnotationInt(payload, mask, 16)) {
++                threadActor->redressPartialInternal(mask);
++            }
+         } else if (tag == "OStimRemoveWeapons") {
+-            GetActor(actor)->removeWeapons();
++            threadActor->removeWeapons();
+         } else if (tag == "OStimAddWeapons") {
+-            GetActor(actor)->addWeapons();
++            threadActor->addWeapons();
+         } else if (tag == "OStimEquipObject"){
+-            GetActor(actor)->equipObject(a_event->payload.c_str());
++            threadActor->equipObject(a_event->payload.c_str());
+         } else if (tag == "OStimUnequipObject") {
+-            GetActor(actor)->unequipObject(a_event->payload.c_str());
++            threadActor->unequipObject(a_event->payload.c_str());
+         } else if (tag == "OStimSetLooking") {
+             std::vector<std::string> payloadVec = stl::string_split(a_event->payload.c_str(), ',');
+             std::unordered_map<int, Trait::FaceModifier> eyeballOverride;
+             if (!payloadVec.empty()) {
+-                float value = std::stoi(payloadVec[0]);
+-                int type = 9;
+-                if (value < 0) {
+-                    value *= -1;
+-                    type = 10;
++                int parsed = 0;
++                if (parseAnnotationInt(payloadVec[0], parsed)) {
++                    float value = parsed;
++                    int type = 9;
++                    if (value < 0) {
++                        value *= -1;
++                        type = 10;
++                    }
++                    eyeballOverride.insert({type, {.type = type, .baseValue = value}});
+                 }
+-                eyeballOverride.insert({type, {.type = type, .baseValue = value}});
+             }
+             if (payloadVec.size() == 2){
+-                float value = std::stoi(payloadVec[1]);
+-                int type = 11;
+-                if (value < 0) {
+-                    value *= -1;
+-                    type = 8;
++                int parsed = 0;
++                if (parseAnnotationInt(payloadVec[1], parsed)) {
++                    float value = parsed;
++                    int type = 11;
++                    if (value < 0) {
++                        value *= -1;
++                        type = 8;
++                    }
++                    eyeballOverride.insert({type, {.type = type, .baseValue = value}});
+                 }
+-                eyeballOverride.insert({type, {.type = type, .baseValue = value}});
+             }
+-            GetActor(actor)->setLooking(eyeballOverride);
++            threadActor->setLooking(eyeballOverride);
+         } else if (tag == "OStimUnsetLooking") {
+-            GetActor(actor)->unsetLooking();
++            threadActor->unsetLooking();
+         } else if (tag == "OStimResetLooking") {
+-            GetActor(actor)->resetLooking();
++            threadActor->resetLooking();
+         } else if (tag == "OStimPlayExpression") {
+-            GetActor(actor)->playEventExpression(a_event->payload.c_str());
++            threadActor->playEventExpression(a_event->payload.c_str());
+         } else if (tag == "OStimBendSoS") {
+-            int bend = std::stoi(a_event->payload.c_str());
+-            GetActor(actor)->offsetSoSBend(bend);
++            int bend = 0;
++            if (parseAnnotationInt(a_event->payload.c_str(), bend)) {
++                threadActor->offsetSoSBend(bend);
++            }
+         } else if (tag == "OStimResetSoS") {
+-            GetActor(actor)->offsetSoSBend(0);
++            threadActor->offsetSoSBend(0);
+         } else if (tag == "OStimPeak") {
+-            nodeHandler->handlePeakAnnotation(std::stoi(a_event->payload.c_str()));
++            int action = 0;
++            if (nodeHandler && parseAnnotationInt(a_event->payload.c_str(), action) && action >= 0 && action <= 255) {
++                nodeHandler->handlePeakAnnotation(static_cast<actionIndex>(action));
++            }
+         }
+ 
+         return RE::BSEventNotifyControl::kContinue;
+diff --git a/skse/src/Core/Thread.h b/skse/src/Core/Thread.h
+--- a/skse/src/Core/Thread.h
++++ b/skse/src/Core/Thread.h
+@@ -113,6 +113,7 @@ namespace Threading {
+ 
+         inline GameAPI::GamePosition getCenter() { return center; }
+ 
++        inline void clearNodeHandler() { nodeHandler = nullptr; }
+         inline Threading::Threads::NodeHandler* getNodeHandler() { return nodeHandler; }
+     
+         virtual RE::BSEventNotifyControl ProcessEvent(const RE::BSAnimationGraphEvent* a_event, RE::BSTEventSource<RE::BSAnimationGraphEvent>* a_eventSource) override;
+diff --git a/skse/src/Core/ThreadActor.cpp b/skse/src/Core/ThreadActor.cpp
+--- a/skse/src/Core/ThreadActor.cpp
++++ b/skse/src/Core/ThreadActor.cpp
+@@ -399,7 +399,12 @@ namespace Threading {
+             if (voiceSet.postSceneDialogue) {
+                 bool first = true;
+                 for (int i = 0; i < index; i++) {
+-                    GameAPI::GameActor partner = thread->GetActor(i)->getActor();
++                    ThreadActor* threadActor = thread->GetActor(i);
++                    if (!threadActor) {
++                        continue;
++                    }
++
++                    GameAPI::GameActor partner = threadActor->getActor();
+                     if (!partner.isPlayer() && partner.getVoice() == actor.getVoice()) {
+                         first = false;
+                         break;
+diff --git a/skse/src/Papyrus/PapyrusScenes.h b/skse/src/Papyrus/PapyrusScenes.h
+--- a/skse/src/Papyrus/PapyrusScenes.h
++++ b/skse/src/Papyrus/PapyrusScenes.h
+@@ -7,12 +7,19 @@ namespace PapyrusScenes {
+ 
+     void AddActor(RE::StaticFunctionTag*, int64_t a_threadId, RE::Actor* a_actor) {
+         auto tm = Threading::ThreadManager::GetSingleton();
+-        tm->GetThread(a_threadId)->AddActor(a_actor);
++        auto thread = tm->GetThread(a_threadId);
++        if (thread) {
++            thread->AddActor(a_actor);
++        }
+     }
+ 
+     void RemoveActor(RE::StaticFunctionTag*, int64_t a_threadId) {
+         auto tm = Threading::ThreadManager::GetSingleton();
+-        tm->GetThread(a_threadId)->RemoveActor();
++        auto thread = tm->GetThread(a_threadId);
++        if (thread) {
++            thread->RemoveActor();
++        }
++    }
+     }
+ 
+     Threading::ThreadActor* GetActor(int64_t a_threadId, RE::Actor* a_actor) {
+diff --git a/skse/src/Sound/ActionSound/PeakSoundPlayer.cpp b/skse/src/Sound/ActionSound/PeakSoundPlayer.cpp
+--- a/skse/src/Sound/ActionSound/PeakSoundPlayer.cpp
++++ b/skse/src/Sound/ActionSound/PeakSoundPlayer.cpp
+@@ -5,7 +5,15 @@
+ 
+ namespace Sound {
+     PeakSoundPlayer::PeakSoundPlayer(SoundPlayerParams params) : SoundPlayer(params) {
+-        params.actor->getThread()->getNodeHandler()->registerPeakListener([this](::actionIndex index) { peak(index); });
++        if (params.actor) {
++            Threading::Thread* thread = params.actor->getThread();
++            if (thread) {
++                Threading::Threads::NodeHandler* nodeHandler = thread->getNodeHandler();
++                if (nodeHandler) {
++                    nodeHandler->registerPeakListener([this](::actionIndex index) { peak(index); });
++                }
++            }
++        }
+     }
+ 
+     void PeakSoundPlayer::loop() {}
+diff --git a/skse/src/Threading/Thread/NodeHandler.cpp b/skse/src/Threading/Thread/NodeHandler.cpp
+--- a/skse/src/Threading/Thread/NodeHandler.cpp
++++ b/skse/src/Threading/Thread/NodeHandler.cpp
+@@ -15,7 +15,12 @@ namespace Threading {
+         }
+ 
+         void NodeHandler::handlePeakAnnotation(actionIndex index) {
+-            for (Graph::Action::Action& action : thread->getCurrentNodeInternal()->actions) {
++            Graph::Node* currentNode = thread->getCurrentNodeInternal();
++            if (!currentNode) {
++                return;
++            }
++
++            for (Graph::Action::Action& action : currentNode->actions) {
+                 if (action.index == index) {
+                     if (!action.doPeaks || !action.peaksAnnotated) {
+                         return;
+@@ -54,8 +59,13 @@ namespace Threading {
+             climaxListeners.clear();
+             threadEndListeners.clear();
+ 
+-            for (Graph::Action::Action& action : thread->getCurrentNodeInternal()->actions) {
+-                if (action.attributes->peakType && action.doPeaks && !action.peaksAnnotated) {
++            Graph::Node* currentNode = thread->getCurrentNodeInternal();
++            if (!currentNode) {
++                return;
++            }
++
++            for (Graph::Action::Action& action : currentNode->actions) {
++                if (action.attributes && action.attributes->peakType && action.doPeaks && !action.peaksAnnotated) {
+                     actionIndex index = action.index;
+                     Peak::PeakHandlerParams params{this, [this, index]() { sendPeak(index); }};
+                     Threading::ThreadActor* actor = thread->GetActor(action.roles.actor);
+@@ -73,6 +83,9 @@ namespace Threading {
+ 
+         void NodeHandler::threadEnd() {
+             EventUtil::invokeListeners(threadEndListeners);
++            if (thread) {
++                thread->clearNodeHandler();
++            }
+             delete this;
+         }
+     }
+diff --git a/skse/src/Threading/Thread/Peak/Loop/LoopPeakHandler.cpp b/skse/src/Threading/Thread/Peak/Loop/LoopPeakHandler.cpp
+--- a/skse/src/Threading/Thread/Peak/Loop/LoopPeakHandler.cpp
++++ b/skse/src/Threading/Thread/Peak/Loop/LoopPeakHandler.cpp
+@@ -28,7 +28,27 @@ namespace Threading {
+             }
+ 
+             void LoopPeakHandler::speedChanged() {
+-                scale = nodeHandler->getThread()->getCurrentNodeInternal()->speeds[nodeHandler->getThread()->getCurrentSpeed()].displaySpeed;
++                if (!nodeHandler) {
++                    return;
++                }
++
++                Threading::Thread* thread = nodeHandler->getThread();
++                if (!thread) {
++                    return;
++                }
++
++                Graph::Node* currentNode = thread->getCurrentNodeInternal();
++                if (!currentNode) {
++                    return;
++                }
++
++                int speed = thread->getCurrentSpeed();
++                if (speed < 0 || speed >= static_cast<int>(currentNode->speeds.size())) {
++                    return;
++                }
++
++                scale = currentNode->speeds[speed].displaySpeed;
++            }
+             }
+         }
+     }
+diff --git a/skse/src/UI/Align/AlignMenu.cpp b/skse/src/UI/Align/AlignMenu.cpp
+--- a/skse/src/UI/Align/AlignMenu.cpp
++++ b/skse/src/UI/Align/AlignMenu.cpp
+@@ -107,7 +107,11 @@ namespace UI::Align {
+             RE::GFxValue alignmentInfo;
+             GetAlignmentInfo(alignmentInfo);
+ 
+-            const RE::GFxValue actorName = RE::GFxValue{ UI::UIState::GetSingleton()->currentThread->GetActor(selectedSlot)->getActor().getName() };
++            Threading::Thread* alignThread = UI::UIState::GetSingleton()->currentThread;
++            Threading::ThreadActor* slotActor = alignThread ? alignThread->GetActor(selectedSlot) : nullptr;
++            const std::string slotActorName = slotActor ? slotActor->getActor().getName() : std::string{};
++
++            const RE::GFxValue actorName = RE::GFxValue{ slotActorName };
+             const RE::GFxValue actorSlot = selectedSlot;
+ 
+             auto gender = "*";
