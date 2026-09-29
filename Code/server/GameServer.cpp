@@ -633,13 +633,17 @@ void GameServer::OnDisconnection(const ConnectionId_t aConnectionId, EDisconnect
         notify.Username = pPlayer->GetUsername();
         SendToPlayers(notify);
 
-        entt::entity playerCharacter = pPlayer->GetCharacter().value_or(static_cast<entt::entity>(0));
+        // A player that disconnects before it ever got a character has no entity to
+        // remove. Zero is not a null identifier here: it is the first entity the
+        // registry hands out, so a player without a character would otherwise match
+        // whichever entity happens to carry that id and destroy someone else's actor.
+        const auto playerCharacter = pPlayer->GetCharacter();
 
         // Cleanup all entities that we own
         auto ownerView = m_pWorld->view<OwnerComponent>();
         for (auto entity : ownerView)
         {
-            if (entity == playerCharacter)
+            if (playerCharacter && entity == *playerCharacter)
             {
                 m_pWorld->GetDispatcher().enqueue(CharacterRemoveEvent(World::ToInteger(entity)));
                 continue;

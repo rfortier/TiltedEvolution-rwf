@@ -4729,3 +4729,136 @@ python Tools\Scripts\check_docs.py
 > 另外两条通用教训:(1)`noexcept` 链里的任何 `throw` 都不是「错误处理」而是
 > **`std::terminate`**,所以守卫只能夹紧或早退;(2)解析**先于**认证是常态,
 > 所以解码器必须按「对端是敌手」来写,不能按「对端是自己人」来写。
+
+## 46. 2026-09-29 场次:玩家断开连接时销毁了别人的角色 —— 判据是「`optional<entt::entity>` 绝不能 `value_or(0)`」
+
+> **锚点**:本节的修复落在 `Code/server/GameServer.cpp`(`OnDisconnection`)。
+
+### 46.1 缺陷:用 `0` 冒充「这个玩家没有角色」
+
+```cpp
+// Code/server/GameServer.cpp(修复前)
+entt::entity playerCharacter = pPlayer->GetCharacter().value_or(static_cast<entt::entity>(0));
+
+// Cleanup all entities that we own
+auto ownerView = m_pWorld->view<OwnerComponent>();
+for (auto entity : ownerView)
+{
+    if (entity == playerCharacter)      // ← 没有角色时,这里等于 entity == 0
+    {
+        m_pWorld->GetDispatcher().enqueue(CharacterRemoveEvent(World::ToInteger(entity)));
+        continue;
+    }
+    ...
+}
+```
+
+`Player::GetCharacter()` 返回 `std::optional<entt::entity>`,在 `CharacterService`
+创建角色**之前一直是空**。把它 `value_or(0)` 拍平成一个整数之后,「没有角色」
+与「角色恰好是 0 号实体」就**不可区分**了。
+
+**EnTT 里 `0` 不是空值**。空值是「entity 位全 1」:
+
+```cpp
+// skypjack/entt v3.10.0, src/entt/entity/entity.hpp
+static constexpr entity_type entity_mask = 0xFFFFF;          // :35
+static constexpr version_type version_mask = 0xFFF;          // :36
+static constexpr entity_type reserved = entity_mask | (version_mask << entity_shift);   // :73
+static constexpr entity_type to_entity(const value_type value) { return (to_integral(value) & entity_mask); }   // :91
+```
+
+而 `0` 恰恰是 `registry::create()` 交出的**第一个实体**(`construct(0, 0) == 0`)——
+在服务端就是**第一个玩家的角色**。于是:
+
+| 断开的玩家 | `playerCharacter` | `entity == playerCharacter` 命中谁 | 走的分支 |
+| --- | --- | --- | --- |
+| 有角色 | 自己的实体 | 自己 | `CharacterRemoveEvent` ✅ |
+| **没有角色** | **`0`** | **0 号实体(通常是别人的角色)** | **`CharacterRemoveEvent`** ❌ |
+
+第二条本该走 `OwnershipTransferEvent`(把角色转交给别人),实际却**把别人的角色
+直接销毁了** —— 那个玩家会看到自己的角色凭空消失,或客户端开始报找不到实体。
+
+**触发条件很平常**:玩家在**还没建好角色**的时候断开 —— 连上后被踢、角色创建失败、
+或角色已被删除后掉线。
+
+### 46.2 判据:「有角色 / 没角色」在同一个函数里分得很清楚,只有这一处拍平成了整数
+
+| 位置 | 写法 | 判定 |
+| --- | --- | --- |
+| `Code/server/Services/OverlayService.cpp:75` | `if (const auto character = acMessage.pPlayer->GetCharacter())` | ✅ |
+| `Code/server/Services/PlayerService.cpp:157` | `if (!pPlayer->GetCharacter()) return;` | ✅ |
+| `Code/server/Services/CommandService.cpp:100` | `auto character = pTargetPlayer->GetCharacter(); if (character)` | ✅ |
+| `Code/server/GameServer.cpp:636` | `GetCharacter().value_or(static_cast<entt::entity>(0))` | ❌ 本次缺陷 |
+
+两条**可机械执行**的判据:
+
+1. **`optional<entt::entity>` 绝不能 `value_or(0)`** —— EnTT 里没有「0 号空实体」
+   这个概念, `0` 是**第一个活实体**;
+2. **`optional` 一旦被 `value_or` 拍平,`optional` 承载的那个信息就永久丢了** ——
+   后面所有比较都退化成整数比较,而整数里**没有**「缺失」这个取值。
+
+全仓 `value_or(` **只有这一处**(`Select-String 'value_or\('` 于 `Code` 全目录)。
+`static_cast<entt::entity>(0)` / `entt::entity{0}` / `entt::null` 同样**零命中** ——
+说明这不是「仓库习惯」,而是一次孤立的写法。
+
+### 46.3 修法:保留 `optional`,在比较处判空
+
+```cpp
+// Code/server/GameServer.cpp(修复后)
+// A player that disconnects before it ever got a character has no entity to
+// remove. Zero is not a null identifier here: it is the first entity the
+// registry hands out, so a player without a character would otherwise match
+// whichever entity happens to carry that id and destroy someone else's actor.
+const auto playerCharacter = pPlayer->GetCharacter();
+
+// Cleanup all entities that we own
+auto ownerView = m_pWorld->view<OwnerComponent>();
+for (auto entity : ownerView)
+{
+    if (playerCharacter && entity == *playerCharacter)
+    {
+        m_pWorld->GetDispatcher().enqueue(CharacterRemoveEvent(World::ToInteger(entity)));
+        continue;
+    }
+    ...
+}
+```
+
+**修崩溃,不改行为**:有角色的玩家断开时走的路径一条没变 —— `playerCharacter`
+为真时 `*playerCharacter` 就是原来的那个实体。
+
+同一提交里顺带删掉一处死代码:`Code/server/Services/CharacterService.cpp` 的
+`OnReferencesMoveRequest` 里 `const auto movementCopy = movementComponent;`
+**拷贝之后全函数再无引用**(逐行确认过)。
+
+### 46.4 复核命令(照抄)
+
+```powershell
+# 1. optional 拍平:应当零命中
+Get-ChildItem -Path Code -Recurse -Include *.cpp,*.h |
+  Select-String -Pattern 'value_or\('
+
+# 2. 「0 号空实体」这个写法本身:应当零命中
+Get-ChildItem -Path Code -Recurse -Include *.cpp,*.h |
+  Select-String -Pattern 'static_cast<entt::entity>\(0\)|entt::entity\{0\}|entt::null'
+
+# 3. 有角色 / 没角色的三处正确写法仍在
+Get-ChildItem -Path Code\server -Recurse -Include *.cpp |
+  Select-String -Pattern 'GetCharacter\(\)'
+
+# 4. 改动面与文档门禁
+git diff --shortstat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`value_or(` **零命中**;`static_cast<entt::entity>(0)` / `entt::entity{0}` /
+`entt::null` **零命中**;`GetCharacter()` 的 14 个引用点逐个核对,解引用全部落在
+自己的判空分支内;`git diff --shortstat -- Code` = `2 files changed, 6 insertions(+), 4 deletions(-)`;
+`python Tools\Scripts\check_docs.py` → `DOC CHECK OK` / `10 changelog version(s)`。
+
+> **教训**:`std::optional` 存在的意义就是「**没有值**」这个状态本身,
+> 而 `value_or` 会**把这个状态抹掉**。凡是把 `optional` 拍平成一个「不可能取到的
+> 哨兵值」的地方,都要先问一句:**这个哨兵值真的不可能出现吗?** 这里 `0` 不但可能,
+> 而且是**第一个**被分配出去的实体 —— 哨兵与合法值撞在一起,缺陷就变成了「偶尔
+> 销毁别人的角色」,离缺陷点很远,查起来极难。
+> 判据可以简化成一句话:**`optional` 拍平的地方,就是信息丢失的地方。**

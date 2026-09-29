@@ -94,6 +94,57 @@ for (size_t i = 0; i < modCount; ++i)   // ← 与 13 位计数一致
 `git diff --shortstat` = `39 files changed, 396 insertions(+), 120 deletions(-)`;
 `python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:断开连接时,「还没有角色的玩家」会销毁别人的角色
+
+**现象**:玩家在**还没建好角色**的时候断开连接(连上后被踢、角色创建失败、或角色已被
+删除后掉线),服务端会把**另一个玩家**的角色实体销毁掉 —— 那个玩家会看到自己的角色
+凭空消失,或客户端开始报找不到实体。
+
+**根因**:`GameServer::OnDisconnection` 用 `0` 冒充「没有角色」:
+
+```cpp
+// Code/server/GameServer.cpp(修复前)
+entt::entity playerCharacter = pPlayer->GetCharacter().value_or(static_cast<entt::entity>(0));
+...
+if (entity == playerCharacter)      // ← 没有角色时,这里等于 entity == 0
+```
+
+`entt::entity` 的 `0` **不是空值**。EnTT 的空值是「entity 位全 1」
+(`skypjack/entt v3.10.0` 的 `src/entt/entity/entity.hpp`:`entity_mask = 0xFFFFF`、
+`reserved = entity_mask | (version_mask << entity_shift)`),而 `0` 恰恰是
+`registry::create()` 交出的**第一个实体** —— 正常情况下就是第一个玩家的角色。
+于是「没有角色」的玩家断开时 `entity == 0` 命中该实体,走的是
+`CharacterRemoveEvent` 而不是 `OwnershipTransferEvent`,**别人的角色被直接销毁**。
+
+**判据是仓库自己的既有约定**:同一个函数里「有角色 / 没角色」分得很清楚,
+只有这一处把 `optional` 拍平成了整数:
+
+| 位置 | 写法 | 判定 |
+| --- | --- | --- |
+| `Code/server/Services/OverlayService.cpp:75` | `if (const auto character = acMessage.pPlayer->GetCharacter())` | ✅ |
+| `Code/server/Services/PlayerService.cpp:157` | `if (!pPlayer->GetCharacter()) return;` | ✅ |
+| `Code/server/Services/CommandService.cpp:100` | `auto character = pTargetPlayer->GetCharacter(); if (character)` | ✅ |
+| `Code/server/GameServer.cpp:636` | `GetCharacter().value_or(static_cast<entt::entity>(0))` | ❌ 本次缺陷 |
+
+可机械执行的判据:**`optional<entt::entity>` 绝不能 `value_or(0)`** ——
+EnTT 里没有「0 号空实体」这个概念。全仓 `value_or(` 只有这一处。
+
+**修复**:保留 `optional`,在比较处判空:
+
+```cpp
+// Code/server/GameServer.cpp(修复后)
+const auto playerCharacter = pPlayer->GetCharacter();
+...
+if (playerCharacter && entity == *playerCharacter)
+```
+
+**修崩溃,不改行为**:有角色的玩家断开时走的路径一条没变。
+
+**验证**:`Select-String 'value_or\('` 全仓**零命中**;
+`static_cast<entt::entity>(0)` / `entt::entity{0}` / `entt::null` 同样**零命中**;
+`git diff --shortstat -- Code` = `2 files changed, 6 insertions(+), 4 deletions(-)`;
+`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

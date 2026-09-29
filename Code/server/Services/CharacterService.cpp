@@ -390,8 +390,6 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
 
         movementComponent.Tick = message.Tick;
 
-        const auto movementCopy = movementComponent;
-
         auto& update = entry.second;
         auto& movement = update.UpdatedMovement;
 
