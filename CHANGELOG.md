@@ -437,6 +437,80 @@ constexpr size_t kMaxQueuedActions = 256;
 不再被 `if (!pActor)` 跳过;`kMaxQueuedActions` 只在 `AnimationSystem.cpp` 定义一处;
 `python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:队伍里的三处空指针 —— 「查询队伍的接口自己会造出一个空队伍」
+
+服务端有三个和「玩家队伍」有关的解引用,根因都是**把「组件里存着一个 id」当成「队伍一定存在」**。
+
+**第一处**:`PartyService::GetPlayerParty` 是所有人查队伍的唯一入口,它用的是 `operator[]`:
+
+```cpp
+// Code/server/Services/PartyService.cpp(修复前)
+    if (inviterPartyComponent.JoinedPartyId)
+        return &m_parties[*inviterPartyComponent.JoinedPartyId];
+```
+
+`m_parties` 是 `TiltedPhoques::Map<uint32_t, Party>`,`operator[]` 在 key 不存在时会**默认构造一个
+`Party` 并插进去**。于是一个「id 已经失效」的玩家调用这个函数,不会拿到 `nullptr`,而是拿到一个
+**成员为空、`LeaderPlayerId` 为 0 的假队伍**,同时往 `m_parties` 里塞了一条永远清不掉的垃圾。
+同文件的 `GetById`(`:36-43`)**用的是 `find` 并返回 `nullptr`**,调用方 `WeatherService.cpp:23`/`:39`
+和 `CharacterService.cpp:782` 也都写了 `if (!pParty) return;` —— 只有这一处不同,判据就是同文件内的
+两种写法不一致。
+
+**第二处**:`QuestService::OnQuestChanges` 拿到返回值后**直接解引用,全程没有判空**:
+
+```cpp
+// Code/server/Services/QuestService.cpp(修复前,:40-42)
+    PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
+    Player* pLeader = isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
+    auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+```
+
+客户端只在**进了队伍**时才发这个包(`Code/client/Services/Generic/QuestService.cpp` 的三处发送点
+`:72`/`:108`/`:158` 都带 `!m_world.Get().GetPartyService().IsInParty()` 门禁),但**已经在途的请求**
+遇上玩家退队/被踢就会以「没有队伍」到达,而服务端对此不做校验;`GameServer::Kick` 只是标记断开,
+真正的 `OnDisconnection` 要等下一轮事件循环,这个窗口是真实存在的。判据同样在**同一个文件里**:
+`OnQuestSceneChanges`(`:210-211`)写了早退保护 `if (!partyComponent.JoinedPartyId.has_value()) return;`。
+
+修法是只把**依赖队伍的那部分**跳过去,`pLeader`/`SceneMaster` 改用三目表达式,`dedupHistory` 的引用
+从函数头部**下移到 `if` 块内**:
+
+```cpp
+    PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
+    Player* pLeader = pParty == nullptr ? nullptr : (isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId));
+    ...
+    notify.SceneMaster = pParty == nullptr ? 0 : pParty->GetQuestStageDedupHistory().GetSceneMaster();
+    ...
+    if (inParty && pParty != nullptr)
+    {
+        auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+```
+
+**任务日志的记账(quest log)留在 `if` 之外**:`Player::GetQuestLogComponent()` 全仓只有两个消费者
+(`CharacterService.cpp:658` 的赋值和这里),单人/未组队玩家的事件同样要被记录,不能因为「不在队伍」
+整体跳过。`SceneMaster` 写 0 而不是跳过,也与 `QuestStageDedupHistory::m_sceneMaster{0}` 的既有注释
+「PlayerIDs start at 1, so zero is "not set."」一致。
+
+**第三处**:`GameServer::SendToLeader`(`:755`)从来没判过 `apLeader`:
+
+```cpp
+    if (const_cast<Player*>(apLeader)->GetParty().JoinedPartyId != acPartyComponent.JoinedPartyId)
+```
+
+它全仓**只有一个调用点** —— 就是上面 `QuestService.cpp:194` 传进来的 `pLeader`,而那个值来自
+`GetPlayerManager().GetById(pParty->LeaderPlayerId)`,`GetById` 查不到就返回 `nullptr`(队伍会先于玩家行
+存活到 `PlayerLeaveEvent` 跑完)。现按同函数的既有风格加一条早退:
+
+```cpp
+    if (!apLeader)
+    {
+        spdlog::warn("Party leader no longer exists, canceling broadcast.");
+        return;
+    }
+```
+
+**验证**:`Code/server/Services/PartyService.cpp` 的 `GetPlayerParty` 里不再出现 `m_parties[`;
+`QuestService.cpp` 的 `dedupHistory` 引用只在 `if (inParty && pParty != nullptr)` 块内使用;
+`GameServer.cpp` 的 `SendToLeader` 在使用 `apLeader` 之前先判空;`python Tools/Scripts/check_docs.py` 全绿。
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

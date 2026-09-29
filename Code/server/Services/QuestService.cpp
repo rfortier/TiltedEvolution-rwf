@@ -37,9 +37,14 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
     bool isLeader = partyService.IsPlayerLeader(pPlayer);
     auto playerTypeString = isLeader ? "leader" : "player";
     auto partyId = pPlayer->GetParty().JoinedPartyId;
+
+    // The client only sends this while it is in a party, but a request that was
+    // already in flight when the player left or was kicked arrives with no party
+    // at all, and the server does not check. There is nothing to dedup against
+    // and no leader to forward to then, but the quest log below still has to be
+    // updated, so only the party dependent work is skipped.
     PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
-    Player* pLeader = isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
-    auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+    Player* pLeader = pParty == nullptr ? nullptr : (isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId));
 
     // Find the corresponding quest log entry
     auto& questComponent = pPlayer->GetQuestLogComponent();
@@ -50,7 +55,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
     notify.Id = message.Id;
     notify.Stage = message.Stage;
     // notify.Status = message.Status;  // Now set correctly in switch
-    notify.SceneMaster = dedupHistory.GetSceneMaster();
+    notify.SceneMaster = pParty == nullptr ? 0 : pParty->GetQuestStageDedupHistory().GetSceneMaster();
     notify.ClientQuestType = message.ClientQuestType;
 
     // Update QuestComponent. In order to prevent bugs when
@@ -109,8 +114,10 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
     }
 
     // All side effects have been generated. Now just logging and a forwarding decision left.
-    if (inParty)
+    if (inParty && pParty != nullptr)
     {
+        auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+
         if (notify.ClientQuestType == 0 ||
             notify.ClientQuestType == 6) // Types None or Miscellaneous. Hard-coded to avoid including client header file.
         {

@@ -760,6 +760,15 @@ void GameServer::SendToLeader(const ServerMessage& acServerMessage, const PartyC
         return;
     }
 
+    // The leader can be gone already: the caller resolves it from the party's
+    // stored id, and a party outlives the player row it names until the leave
+    // event runs. Send to nobody rather than dereferencing null.
+    if (!apLeader)
+    {
+        spdlog::warn("Party leader no longer exists, canceling broadcast.");
+        return;
+    }
+
     if (const_cast<Player*>(apLeader)->GetParty().JoinedPartyId != acPartyComponent.JoinedPartyId)
     {
         spdlog::warn("Specified party leader belongs to different party? Canceling send");

@@ -5538,4 +5538,146 @@ python Tools\Scripts\check_docs.py
 > 而且裁剪必须放在**所有提前返回之前** —— 放在之后,等于把「actor 解析不出来」
 > 这种最常见的触发条件排除在外,兜底也就形同虚设。
 
+## 51. 2026-09-29 场次:队伍里的三处空指针 —— 判据是「同文件里的另一处写法」
+
+> **锚点**:本节的修复落在 `Code/server/Services/PartyService.cpp`、`Code/server/Services/QuestService.cpp`、`Code/server/GameServer.cpp`。
+
+### 51.1 缺陷:查询接口自己造了一个空队伍,调用方再解引用它
+
+三处解引用,一个根因:**把「组件里存着一个 id」当成「队伍一定存在」**。
+
+第一处,`Code/server/Services/PartyService.cpp:62-71`(修复前):
+
+```cpp
+PartyService::Party* PartyService::GetPlayerParty(Player* const apPlayer) noexcept
+{
+    auto& inviterPartyComponent = apPlayer->GetParty();
+    if (inviterPartyComponent.JoinedPartyId)
+    {
+        return &m_parties[*inviterPartyComponent.JoinedPartyId];
+    }
+
+    return nullptr;
+}
+```
+
+`m_parties` 是 `TiltedPhoques::Map<uint32_t, Party>`(`Code/server/Services/PartyService.h:126`)。
+`operator[]` 在 key 不存在时**默认构造一个 `Party` 并插入**。于是「id 已失效」的玩家调用它,拿到的是
+一个**成员为空、`LeaderPlayerId` 为 0 的假队伍**而不是 `nullptr`,并且 `m_parties` 里多出一条
+永远清不掉的记录(`PartyService.h:89-96` 的 `Party` 里 `uint32_t LeaderPlayerId;` **没有默认初始化器**)。
+
+第二处,`Code/server/Services/QuestService.cpp:40-42`(修复前):
+
+```cpp
+    PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
+    Player* pLeader = isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
+    auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+```
+
+拿到返回值后**直接解引用,全程没有判空**。
+
+第三处,`Code/server/GameServer.cpp:755` 的 `SendToLeader`(修复前):
+
+```cpp
+    if (const_cast<Player*>(apLeader)->GetParty().JoinedPartyId != acPartyComponent.JoinedPartyId)
+```
+
+`apLeader` 从未判空,而它全仓**只有一个调用点** —— 就是第二处传进来的 `pLeader`。
+
+### 51.2 判据:三处都在「同一个文件里的另一处写法」上露馅
+
+| 位置 | 写法 | 判定 |
+| --- | --- | --- |
+| `Code/server/Services/PartyService.cpp:36-43` `GetById` | `m_parties.find(...)`,未命中返回 `nullptr` | ✅ |
+| `Code/server/Services/PartyService.cpp:62-71` `GetPlayerParty` | `m_parties[...]` | ❌ |
+| `Code/server/Services/WeatherService.cpp:23-25` / `:39-41` | `auto* pParty = ...GetPlayerParty(...); if (!pParty) return;` | ✅ |
+| `Code/server/Services/CharacterService.cpp:782-784` | `if (!pParty \|\| std::find(pParty->Members...) == end) return reject(...)` | ✅ |
+| `Code/server/Services/QuestService.cpp:210-211` `OnQuestSceneChanges` | `if (!partyComponent.JoinedPartyId.has_value()) return;` | ✅ |
+| `Code/server/Services/QuestService.cpp:40-42` `OnQuestChanges` | 直接解引用 `pParty` | ❌ |
+
+**触发路径是真实的,不是理论上的**:客户端只在进了队伍时才发 `RequestQuestUpdate`
+(`Code/client/Services/Generic/QuestService.cpp` 的三处发送点 `:72`/`:108`/`:158` 都带
+`!m_world.Get().GetPartyService().IsInParty()` 门禁),但**已经在途的请求**遇上玩家退队/被踢就会以
+「没有队伍」到达服务端,而服务端对此不做校验。`GameServer::Kick` 只标记断开,真正的 `OnDisconnection`
+要等下一轮事件循环 —— 窗口就出在这里。
+
+### 51.3 修法:只跳过依赖队伍的那部分
+
+`GetPlayerParty` 改用 `find`:
+
+```cpp
+        // find, not operator[]: indexing would silently insert a brand new party
+        // with a leader id of zero whenever the id no longer resolves, and every
+        // caller would then treat that empty party as a real one. Reporting "no
+        // party" is what the callers already handle.
+        const auto itor = m_parties.find(*inviterPartyComponent.JoinedPartyId);
+        if (itor != std::end(m_parties))
+            return &itor->second;
+```
+
+`OnQuestChanges` 里 `pLeader` 与 `SceneMaster` 改用三目表达式,`dedupHistory` 的引用**下移到 `if` 块内**:
+
+```cpp
+    PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
+    Player* pLeader = pParty == nullptr ? nullptr : (isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId));
+    ...
+    notify.SceneMaster = pParty == nullptr ? 0 : pParty->GetQuestStageDedupHistory().GetSceneMaster();
+    ...
+    if (inParty && pParty != nullptr)
+    {
+        auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+```
+
+**为什么是 `inParty && pParty != nullptr` 而不是只判 `pParty`**:`IsPlayerInParty` 是「语义上在队伍」的门
+(纯看 `JoinedPartyId.has_value()`),`pParty != nullptr` 只是防解引用。`inParty` 为假时 `partyId` 是 `nullopt`,
+块内 `partyComponent.JoinedPartyId == partyId` 会退化成 `nullopt == nullopt` 而误匹配,所以这道门不能放开。
+
+**为什么任务日志的记账留在 `if` 之外**:`Player::GetQuestLogComponent()` 全仓只有两个消费者 ——
+`Code/server/Services/CharacterService.cpp:658` 的赋值与 `Code/server/Services/QuestService.cpp:50` ——
+单人/未组队玩家的事件同样要被记录,不能因为「不在队伍」整体跳过。`SceneMaster` 写 0 也与
+`Code/server/Services/PartyService.h:81` 的既有注释 `// PlayerIDs start at 1, so zero is "not set."` 一致。
+
+`SendToLeader` 按同函数既有风格加一条早退:
+
+```cpp
+    // The leader can be gone already: the caller resolves it from the party's
+    // stored id, and a party outlives the player row it names until the leave
+    // event runs. Send to nobody rather than dereferencing null.
+    if (!apLeader)
+    {
+        spdlog::warn("Party leader no longer exists, canceling broadcast.");
+        return;
+    }
+```
+
+### 51.4 复核命令(照抄)
+
+```powershell
+# 1. 查询接口不再用 operator[]
+Select-String -Path Code\server\Services\PartyService.cpp -Pattern 'GetPlayerParty|m_parties\[|m_parties.find'
+
+# 2. dedupHistory 的引用只在 if 块内
+Select-String -Path Code\server\Services\QuestService.cpp -Pattern 'pParty|dedupHistory|inParty &&'
+
+# 3. 广播助手先判空再用
+Select-String -Path Code\server\GameServer.cpp -Pattern 'SendToLeader|Party leader no longer exists'
+
+# 4. 改动面与文档门禁
+git diff --stat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`PartyService.cpp:71` 是 `m_parties.find`、`:76` 是 `return nullptr;`;
+`QuestService.cpp:46` 是 `pParty`、`:47` 是三目表达式 `pLeader`、`:58` 是三目表达式 `SceneMaster`、
+`:117` 是 `if (inParty && pParty != nullptr)`、`:119` 是块内的 `auto& dedupHistory`;
+`GameServer.cpp:766-770` 是 `if (!apLeader)` 早退;`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+> **教训**:「查一个可能不存在的对象」这类接口,**返回值类型就是契约** ——
+> 返回指针的接口,调用方就会(也应当)写 `if (!p)`;一旦实现里用了 `operator[]`,
+> 它就从「查询」变成了「查询并创建」,而所有调用方都还按旧契约在写判空,
+> 于是**判空永远为假、假对象被当成真对象用**。判据不在文档里,在同一个文件里:
+> 同一个 `m_parties` 上,`GetById` 用 `find`、`GetPlayerParty` 用 `[]`,两处不一致就是缺陷本身。
+> 反过来,写修复时也别顺手扩大范围 —— 「拿到 null 就整体早退」会把不属于队伍的功能一起关掉
+> (这里是 quest log 记账),正确做法是把**依赖那个对象的部分**圈进 `if` 块,而不是提前 return。
+
 

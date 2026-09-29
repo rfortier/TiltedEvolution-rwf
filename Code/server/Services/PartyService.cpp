@@ -64,7 +64,13 @@ PartyService::Party* PartyService::GetPlayerParty(Player* const apPlayer) noexce
     auto& inviterPartyComponent = apPlayer->GetParty();
     if (inviterPartyComponent.JoinedPartyId)
     {
-        return &m_parties[*inviterPartyComponent.JoinedPartyId];
+        // find, not operator[]: indexing would silently insert a brand new party
+        // with a leader id of zero whenever the id no longer resolves, and every
+        // caller would then treat that empty party as a real one. Reporting "no
+        // party" is what the callers already handle.
+        const auto itor = m_parties.find(*inviterPartyComponent.JoinedPartyId);
+        if (itor != std::end(m_parties))
+            return &itor->second;
     }
 
     return nullptr;
