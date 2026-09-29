@@ -511,6 +511,105 @@ constexpr size_t kMaxQueuedActions = 256;
 **验证**:`Code/server/Services/PartyService.cpp` 的 `GetPlayerParty` 里不再出现 `m_parties[`;
 `QuestService.cpp` 的 `dedupHistory` 引用只在 `if (inParty && pParty != nullptr)` 块内使用;
 `GameServer.cpp` 的 `SendToLeader` 在使用 `apLeader` 之前先判空;`python Tools/Scripts/check_docs.py` 全绿。
+
+### 修复:客户端给远程角色生成脸部时,「没有材质的蒙版着色器」与「纹理工厂返回空」都会被直接写穿
+
+**现象**:部分角色(尤其是外观从网络同步过来的角色)进场时客户端崩溃,崩溃点落在
+`skee64.dll` 之外的**我们自己的运行时**里,读 `BSMaskedShaderMaterial` 时 fault。
+
+**根因**:`FaceGenSystem::Update`(`Code/client/Systems/FaceGenSystem.cpp`)在蒙版着色器分支里
+连取两个**引擎给的指针**却都不判空:
+
+```cpp
+// Code/client/Systems/FaceGenSystem.cpp(修复前,:86-90)
+BSMaskedShaderMaterial* pMaterial = static_cast<BSMaskedShaderMaterial*>(pLightingShader->material);
+
+BSFixedString name("");
+auto pTexture = CreateTexture(name);
+pTexture->buffer = CreateResourceView(s_textureHolder.Get(), 512, 512);
+```
+
+`BSLightingShaderProperty::material` 是裸 `void*`(`Code/client/Games/Skyrim/NetImmerse/BSShaderProperty.h:11`),
+蒙版着色器**可以没有材质**;`CreateTexture` 的签名是
+`using TCreateTexture = NiRenderedTexture*(__fastcall)(BSFixedString& aName);`(`:56`),
+**以返回空表示失败**。两者都在几行之后被写穿 —— `:126` 写 `pMaterial->renderedTexture`、
+`:90` 写 `pTexture->buffer` —— 而本函数在 `noexcept` 帧里,空指针就是直接 fault。
+
+**判据在同一个函数里**:`GetHeadTriBasedGeom`(`:22-51`)把这条链上的**每一个**引擎返回值都判了空
+(`pFaceNode && pActorBase`、`pFacePart`、`pHeadNode`、`pGeometry`),只有进入蒙版分支之后这两处没有。
+
+**修法**:两处各自判空并**先 `pShaderProperty->DecRef()` 再 return**(着色器在上面刚 `IncRef` 过),
+把这一帧跳过去,下一帧自然重试:
+
+```cpp
+        if (!pMaterial)
+        {
+            pShaderProperty->DecRef();
+            return;
+        }
+        ...
+        if (!pTexture)
+        {
+            pShaderProperty->DecRef();
+            return;
+        }
+```
+
+### 修复:服务端把「还没送出去的动作队列」当成已发送,直接清空
+
+**现象**:某个玩家不在场时打出的动作(挥砍、施法),等他走进范围后**永远看不到** —— 不是延迟,是彻底没有。
+
+**根因**:`Code/server/Services/CharacterService.cpp` 的 `ProcessMovementChanges` 在实体循环**结束之后**
+对**全部**实体无条件清空动作队列:
+
+```cpp
+// Code/server/Services/CharacterService.cpp(修复前,:1013-1017)
+    m_world.view<AnimationComponent>().each([](AnimationComponent& animationComponent)
+    {
+        // Remove actions we've sent
+        animationComponent.Actions.clear();
+    });
+```
+
+而「真的送出去了」与「走过这个循环」是两件事,两条路径都只走循环不发送:
+
+- 实体因为 `if (movementComponent.Sent == true) continue;`(`:990`)提前跳过 —— **没有新移动、但队列里有新动作**;
+- 有移动,但内层玩家循环里**没有任何玩家在范围内**(`:1000` 全部 `continue`)。
+
+`animationComponent.Actions` 全仓只有两个读者(这里的读出与清空),写入只有 `:413` 一处,所以清空即**永久丢失**。
+
+**判据在同一个文件里**:同族的 factions 早就改成了「送出才清」——
+`bool queued = false;` → 真正塞进消息时 `queued = true;` → `if (queued) characterComponent.SetDirtyFactions(false);`
+(`:924-945`,注释原文 "Only clear the flag once the change actually went out. An actor that nobody is near
+right now stays dirty, so the next player to come into range still gets it instead of keeping whatever
+factions it spawned with."),只有动作队列这一处还停在旧写法。
+
+**修法**:同一个 `queued` 模式 + 与回放缓存同宽的上界(`kReplayCacheMaxSize = 32`):
+
+```cpp
+        bool actionsQueued = false;
+        ...
+            update.ActionEvents = animationComponent.Actions;
+            actionsQueued = true;
+        ...
+        if (actionsQueued)
+        {
+            animationComponent.Actions.clear();
+        }
+        else if (animationComponent.Actions.size() > kMaxPendingActionEvents)
+        {
+            animationComponent.Actions.erase(animationComponent.Actions.begin(), animationComponent.Actions.end() - kMaxPendingActionEvents);
+        }
+```
+
+新增 `constexpr uint32_t kMaxPendingActionEvents = 32;`(`:48`)。
+**为什么还要加上界**:队列现在**允许跨 tick 保留**,没人靠近的实体就会一直攒;上界与
+`Code/server/Game/Animation/ActionReplayCache.h:19` 的回放缓存一致(32),超出丢最旧的。
+
+**验证**:`Code/client/Systems/FaceGenSystem.cpp` 的蒙版分支里 `pMaterial` 与 `pTexture` 都在使用前判空
+且两条早退都先 `DecRef`;`Code/server/Services/CharacterService.cpp` 里 `Actions.clear()` 只出现在
+`if (actionsQueued)` 块内、`kMaxPendingActionEvents` 在越界时生效;`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

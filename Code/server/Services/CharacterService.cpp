@@ -42,6 +42,10 @@
 namespace
 {
 Console::Setting bEnableXpSync{"Gameplay:bEnableXpSync", "Syncs combat XP within the party", true};
+
+// An actor that nobody is near keeps its pending action events until somebody is, so that backlog has
+// to be bounded the same way the replay cache is. Newest wins.
+constexpr uint32_t kMaxPendingActionEvents = 32;
 }
 
 CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
@@ -986,6 +990,8 @@ void CharacterService::ProcessMovementChanges() const noexcept
         if (movementComponent.Sent == true)
             continue;
 
+        bool actionsQueued = false;
+
         for (auto pPlayer : m_world.GetPlayerManager())
         {
             if (pPlayer == ownerComponent.GetOwner())
@@ -1007,14 +1013,23 @@ void CharacterService::ProcessMovementChanges() const noexcept
             movement.Variables = movementComponent.Variables;
 
             update.ActionEvents = animationComponent.Actions;
+
+            actionsQueued = true;
+        }
+
+        // Only drop the queued actions once they actually went out. An actor that nobody is near right
+        // now keeps them, so the next player to come into range still gets the swing or the cast
+        // instead of the animation simply never happening on their screen. The backlog stays bounded
+        // the same way the replay cache is: newest wins.
+        if (actionsQueued)
+        {
+            animationComponent.Actions.clear();
+        }
+        else if (animationComponent.Actions.size() > kMaxPendingActionEvents)
+        {
+            animationComponent.Actions.erase(animationComponent.Actions.begin(), animationComponent.Actions.end() - kMaxPendingActionEvents);
         }
     }
-
-    m_world.view<AnimationComponent>().each([](AnimationComponent& animationComponent)
-    {
-        // Remove actions we've sent
-        animationComponent.Actions.clear();
-    });
 
     m_world.view<MovementComponent>().each([](MovementComponent& movementComponent) { movementComponent.Sent = true; });
 

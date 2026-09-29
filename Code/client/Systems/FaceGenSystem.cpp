@@ -85,8 +85,25 @@ void FaceGenSystem::Update(World& aWorld, Actor* apActor, FaceGenComponent& aFac
     {
         BSMaskedShaderMaterial* pMaterial = static_cast<BSMaskedShaderMaterial*>(pLightingShader->material);
 
+        // Both pointers below come from the engine: a masked shader can exist without a material, and the texture
+        // factory reports failure by returning null. Each of them is written through a few lines down, and this
+        // function runs in a noexcept frame, so release the shader and let the next frame try again instead of
+        // faulting on a null.
+        if (!pMaterial)
+        {
+            pShaderProperty->DecRef();
+            return;
+        }
+
         BSFixedString name("");
         auto pTexture = CreateTexture(name);
+
+        if (!pTexture)
+        {
+            pShaderProperty->DecRef();
+            return;
+        }
+
         pTexture->buffer = CreateResourceView(s_textureHolder.Get(), 512, 512);
 
         auto& tintsEntries = aFaceGenComponent.FaceTints.Entries;

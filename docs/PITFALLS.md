@@ -5680,4 +5680,181 @@ python Tools\Scripts\check_docs.py
 > 反过来,写修复时也别顺手扩大范围 —— 「拿到 null 就整体早退」会把不属于队伍的功能一起关掉
 > (这里是 quest log 记账),正确做法是把**依赖那个对象的部分**圈进 `if` 块,而不是提前 return。
 
+## 52. 2026-09-29 场次:「走过循环」不等于「送出去了」,以及引擎给的指针不判空
+
+> **锚点**:本节的修复落在 `Code/client/Systems/FaceGenSystem.cpp`、`Code/server/Services/CharacterService.cpp`。
+
+### 52.1 缺陷:动作队列在实体循环结束之后被无条件清空
+
+`ProcessMovementChanges`(`Code/server/Services/CharacterService.cpp`)的实体循环跑完之后,对**全部**实体清空动作队列:
+
+```cpp
+// Code/server/Services/CharacterService.cpp(修复前,:1013-1017)
+    m_world.view<AnimationComponent>().each([](AnimationComponent& animationComponent)
+    {
+        // Remove actions we've sent
+        animationComponent.Actions.clear();
+    });
+```
+
+注释写的是「we've sent」,但这个 `view` **不区分**「送出去了」和「只是走过了循环」。两条路径都只走循环、从不发送:
+
+| 路径 | 位置 | 发生了什么 |
+| --- | --- | --- |
+| 实体提前跳过 | `:986 if (movementComponent.Sent == true) continue;` | **没有新移动、但队列里有新动作**(刚挥砍/施法,而 `Sent` 还是上一轮的 `true`) |
+| 没有玩家在范围内 | `:994 if (!cellIdComponent.IsInRange(...)) continue;` 内层全部落空 | 有移动,但没有任何人会收到 `message.Updates[entity]`,于是 `:1009 update.ActionEvents = animationComponent.Actions;` 从未执行 |
+
+而 `animationComponent.Actions` 全仓**只有两个读者**:这里的读出(`:1009`)与这里的清空(`:1016`),
+写入只有 `:413 animationComponent.Actions.push_back(animationComponent.CurrentAction);` 一处 ——
+所以清空就是**永久丢失**,不是「下一轮补发」。
+
+**触发场景是日常的**:某个玩家在房间里对着墙挥砍,此时没有别人在范围内;随后另一个玩家走进来 ——
+他看到的只是那个角色**静止站着**,那一次挥砍永远不会出现在他屏幕上。
+
+### 52.2 判据:同一个文件里,factions 早就改成了「送出才清」
+
+同一个 `ProcessMovementChanges` 的**上一节**(factions)已经修过一模一样的形状:
+
+```cpp
+// Code/server/Services/CharacterService.cpp:924-945
+    bool queued = false;
+    ...
+        queued = true;
+    ...
+    // Only clear the flag once the change actually went out. An actor that nobody is near right now
+    // stays dirty, so the next player to come into range still gets it instead of keeping whatever
+    // factions it spawned with.
+    if (queued)
+        characterComponent.SetDirtyFactions(false);
+```
+
+判据就是**同文件内两种写法不一致**:factions 有 `queued`,动作队列没有。
+
+### 52.3 修法:同一个 `queued` 模式 + 与回放缓存同宽的上界
+
+```cpp
+        bool actionsQueued = false;
+
+        for (auto pPlayer : m_world.GetPlayerManager())
+        {
+            ...
+            update.ActionEvents = animationComponent.Actions;
+
+            actionsQueued = true;
+        }
+
+        // Only drop the queued actions once they actually went out. An actor that nobody is near right
+        // now keeps them, so the next player to come into range still gets the swing or the cast
+        // instead of the animation simply never happening on their screen. The backlog stays bounded
+        // the same way the replay cache is: newest wins.
+        if (actionsQueued)
+        {
+            animationComponent.Actions.clear();
+        }
+        else if (animationComponent.Actions.size() > kMaxPendingActionEvents)
+        {
+            animationComponent.Actions.erase(animationComponent.Actions.begin(), animationComponent.Actions.end() - kMaxPendingActionEvents);
+        }
+```
+
+新增上界(`:48`):
+
+```cpp
+// An actor that nobody is near keeps its pending action events until somebody is, so that backlog has
+// to be bounded the same way the replay cache is. Newest wins.
+constexpr uint32_t kMaxPendingActionEvents = 32;
+```
+
+**为什么「送出才清」必须配一个上界**:清空原本顺带承担了「没人靠近也不会涨」这个职责,
+改成条件清空之后,一个**长期没有玩家在范围内**的实体(例如玩家挂机时的召唤物、或房主一个人跑图)
+会让队列一直攒下去。上界取 32 与 `Code/server/Game/Animation/ActionReplayCache.h:19` 的
+`static constexpr uint32_t kReplayCacheMaxSize = 32;` 一致 —— 两处都是「最近 N 个动作」,语义相同。
+
+**为什么不在 `Sent == true` 时也清**:那一支的正确行为恰恰相反 —— `Sent` 为真只说明
+**移动**没变,不代表**动作**送过了;此时队列里可能正是这一轮新 push 进去的动作。
+
+### 52.4 缺陷:蒙版着色器分支里两个引擎指针都不判空
+
+`FaceGenSystem::Update`(`Code/client/Systems/FaceGenSystem.cpp`)的蒙版分支:
+
+```cpp
+// Code/client/Systems/FaceGenSystem.cpp(修复前,:86-90)
+BSMaskedShaderMaterial* pMaterial = static_cast<BSMaskedShaderMaterial*>(pLightingShader->material);
+
+BSFixedString name("");
+auto pTexture = CreateTexture(name);
+pTexture->buffer = CreateResourceView(s_textureHolder.Get(), 512, 512);
+```
+
+- `BSLightingShaderProperty::material` 是裸 `void*`(`Code/client/Games/Skyrim/NetImmerse/BSShaderProperty.h:11`),
+  **蒙版着色器可以没有材质**;它在 `:126` 被写穿:`pMaterial->renderedTexture = pTexture;`。
+- `CreateTexture` 的签名是 `using TCreateTexture = NiRenderedTexture*(__fastcall)(BSFixedString& aName);`(`:56`),
+  **以返回空表示失败**;它在 `:90` 就被写穿。
+
+两者都在 `FaceGenSystem::Update` 里,而这个函数是 `noexcept` —— 空指针就是直接 fault,
+异常都没机会抛出。
+
+**判据同样在同一个文件里**:`GetHeadTriBasedGeom`(`:22-51`)把这条链上**每一个**引擎返回值都判了空
+(`if (pFaceNode && pActorBase)`、`if (pFacePart)`、`if (pHeadNode)`、`if (pGeometry) return pGeometry;`),
+只有进入蒙版分支之后这两处没有。
+
+修法:两处各自判空,**先 `DecRef` 再 return**(着色器在上面 `:80` 刚 `IncRef` 过,直接 return 会漏掉引用计数):
+
+```cpp
+        if (!pMaterial)
+        {
+            pShaderProperty->DecRef();
+            return;
+        }
+        ...
+        if (!pTexture)
+        {
+            pShaderProperty->DecRef();
+            return;
+        }
+```
+
+**为什么是 return 而不是继续**:两者都是这一帧拿不到的引擎资源,跳过去之后 `aFaceGenComponent.Generated`
+保持 `false`(`:128` 才置真),下一帧自然会重试 —— 这与函数开头 `if (aFaceGenComponent.Generated) return;`(`:67`)
+的既有节奏一致。
+
+### 52.5 复核命令(照抄)
+
+```powershell
+# 1. 动作队列:清空只在 queued 分支内,上界在 else 分支
+Select-String -Path Code\server\Services\CharacterService.cpp -Pattern 'kMaxPendingActionEvents|actionsQueued|Actions\.clear\(\)'
+
+# 2. 清空不再无条件出现在循环之后
+Select-String -Path Code\server\Services\CharacterService.cpp -Pattern 'view<AnimationComponent>\(\)\.each'
+
+# 3. FaceGen:两处判空都在使用之前,且都先 DecRef
+Select-String -Path Code\client\Systems\FaceGenSystem.cpp -Pattern 'if \(!pMaterial\)|if \(!pTexture\)|DecRef\(\)|renderedTexture|pTexture->buffer'
+
+# 4. 改动面与文档门禁
+git diff --stat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`CharacterService.cpp:48` 是 `constexpr uint32_t kMaxPendingActionEvents = 32;`、
+`:993` 是 `bool actionsQueued = false;`、`:1017` 是 `actionsQueued = true;`、`:1024` 是 `if (actionsQueued)`、
+`:1026` 是块内的 `animationComponent.Actions.clear();`、`:1028` 是 `else if (animationComponent.Actions.size() > kMaxPendingActionEvents)`、
+`:1030` 是 `erase(begin(), end() - kMaxPendingActionEvents)`;原先那个无条件的
+`m_world.view<AnimationComponent>().each(...)` 已不再存在。
+`FaceGenSystem.cpp:92-96` 是 `if (!pMaterial) { pShaderProperty->DecRef(); return; }`、
+`:101-105` 是 `if (!pTexture) { pShaderProperty->DecRef(); return; }`、`:107` 才是 `pTexture->buffer = ...`、
+`:143` 才是 `pMaterial->renderedTexture = pTexture;`;`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+> **教训**:「清理」这个动作**必须挂在「真的做完了」上**,而不是挂在「循环跑完了」上。
+> 这两件事在**正常状态**下才碰巧相等 —— 一旦有 `continue`(跳过没变化的实体)或空的内层循环
+> (没人在范围里),它们就分开了,而代码里没有任何东西会提醒你。
+> 反过来说,**把「无条件清理」改成「条件清理」时,一定要接住原来由清理顺带承担的边界职责** ——
+> 这里就是「没人靠近也不会涨」,所以必须同时补上界,否则修掉的是丢失、换来的是无界增长。
+>
+> 另一条:凡是**引擎给的返回值**(虚表里取出来的指针、以空表示失败的工厂函数),
+> 都得当成可空处理。判据不在文档里,在**同一个函数里已经判空的那几处** ——
+> `GetHeadTriBasedGeom` 层层判空、`CreateTexture` 的调用点却不判,两处不一致就是缺陷本身。
+> 还有一条容易漏的细节:这种早退如果发生在 `IncRef()` 之后,就必须先 `DecRef()` 再 return,
+> 否则引用计数会一帧一帧地涨。
+
+
 
