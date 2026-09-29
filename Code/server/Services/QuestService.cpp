@@ -218,8 +218,12 @@ void QuestService::OnQuestSceneChanges(const PacketEvent<RequestQuestSceneUpdate
     if (!partyComponent.JoinedPartyId.has_value())
         return;
 
+    // The component and the service can disagree: a party id that no party carries any more leaves
+    // this pointer null, and the scene master below would be read through it.
     PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
-    Player* pLeader = isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
+    if (pParty == nullptr)
+        return;
+
     auto& dedupHistory = pParty->GetQuestStageDedupHistory();
 
     // Make sure party knows scene state.

@@ -157,17 +157,24 @@ void PartyService::OnPartyChangeLeader(const PacketEvent<PartyChangeLeaderReques
     auto& inviterPartyComponent = player->GetParty();
     if (inviterPartyComponent.JoinedPartyId) // Ensure not in party
     {
-        Party& party = m_parties[*inviterPartyComponent.JoinedPartyId];
-        if (party.LeaderPlayerId == player->GetId())
+        // find, not operator[]: a JoinedPartyId that no party carries any more would insert a
+        // brand new party with an uninitialised leader id, and the comparison below would then
+        // read it.
+        const auto partyItor = m_parties.find(*inviterPartyComponent.JoinedPartyId);
+        if (partyItor != std::end(m_parties))
         {
-            for (auto& pPlayer : party.Members)
+            Party& party = partyItor->second;
+            if (party.LeaderPlayerId == player->GetId())
             {
-                if (pPlayer->GetId() == pNewLeader->GetId())
+                for (auto& pPlayer : party.Members)
                 {
-                    party.LeaderPlayerId = pPlayer->GetId();
-                    spdlog::debug("[PartyService]: Changed party leader to {}, updating party members.", party.LeaderPlayerId);
-                    BroadcastPartyInfo(*inviterPartyComponent.JoinedPartyId);
-                    break;
+                    if (pPlayer->GetId() == pNewLeader->GetId())
+                    {
+                        party.LeaderPlayerId = pPlayer->GetId();
+                        spdlog::debug("[PartyService]: Changed party leader to {}, updating party members.", party.LeaderPlayerId);
+                        BroadcastPartyInfo(*inviterPartyComponent.JoinedPartyId);
+                        break;
+                    }
                 }
             }
         }
@@ -191,9 +198,18 @@ void PartyService::OnPartyKick(const PacketEvent<PartyKickRequest>& acPacket) no
     auto& inviterPartyComponent = player->GetParty();
     if (inviterPartyComponent.JoinedPartyId) // Ensure not in party
     {
-        Party& party = m_parties[*inviterPartyComponent.JoinedPartyId];
-        if (party.LeaderPlayerId == player->GetId())
+        const auto* pParty = GetById(*inviterPartyComponent.JoinedPartyId);
+        if (pParty != nullptr && pParty->LeaderPlayerId == player->GetId())
         {
+            // The target id arrives straight off the wire, so it can name a member of somebody else's
+            // party. Only a leader may kick, and only a player in their own party.
+            const auto& kickPartyComponent = pKick->GetParty();
+            if (!kickPartyComponent.JoinedPartyId || *kickPartyComponent.JoinedPartyId != *inviterPartyComponent.JoinedPartyId)
+            {
+                spdlog::error("[PartyService]: Player {} is not in the party of {}", message.PartyMemberPlayerId, player->GetId());
+                return;
+            }
+
             spdlog::debug("[PartyService]: Kicking player {} from party", pKick->GetId());
             RemovePlayerFromParty(pKick);
             BroadcastPlayerList(pKick);
@@ -225,7 +241,14 @@ void PartyService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
             if (IsPlayerInParty(player))
             {
                 auto& playerPartyComponent = player->GetParty();
-                Party& party = m_parties[*playerPartyComponent.JoinedPartyId];
+
+                // IsPlayerInParty only says the component carries an id, not that a party still
+                // answers to it, so the id is resolved here instead of indexed with.
+                const auto partyItor = m_parties.find(*playerPartyComponent.JoinedPartyId);
+                if (partyItor == std::end(m_parties))
+                    continue;
+
+                Party& party = partyItor->second;
 
                 party.Members.push_back(acEvent.pPlayer);
                 acEvent.pPlayer->GetParty().JoinedPartyId = *playerPartyComponent.JoinedPartyId;
@@ -268,8 +291,8 @@ void PartyService::OnPartyInvite(const PacketEvent<PartyInviteRequest>& acPacket
             return;
         }
 
-        auto& party = m_parties[*inviterPartyComponent.JoinedPartyId];
-        if (party.LeaderPlayerId != pInviter->GetId())
+        const auto* pParty = GetById(*inviterPartyComponent.JoinedPartyId);
+        if (pParty == nullptr || pParty->LeaderPlayerId != pInviter->GetId())
         {
             spdlog::debug("[PartyService]: Inviter not party leader, cancelling invite.");
             return;
@@ -315,7 +338,14 @@ void PartyService::OnPartyAcceptInvite(const PacketEvent<PartyAcceptInviteReques
         }
 
         auto partyId = *inviterPartyComponent.JoinedPartyId;
-        Party& party = m_parties[partyId];
+        const auto partyItor = m_parties.find(partyId);
+        if (partyItor == std::end(m_parties))
+        {
+            spdlog::debug("[PartyService]: Inviter's party is gone. Cancelling.");
+            return;
+        }
+
+        Party& party = partyItor->second;
 
         if (party.LeaderPlayerId != pInviter->GetId())
         {
@@ -359,24 +389,37 @@ void PartyService::RemovePlayerFromParty(Player* apPlayer) noexcept
     {
         auto id = *pPartyComponent->JoinedPartyId;
 
-        Party& party = m_parties[id];
-        auto& members = party.Members;
-
-        members.erase(std::find(std::begin(members), std::end(members), apPlayer));
-
-        if (members.empty())
+        // find, not operator[]: a party that has already lost its last member is erased, and indexing
+        // would quietly insert a brand new empty one instead of reporting that there is nothing left
+        // to remove this player from.
+        const auto partyItor = m_parties.find(id);
+        if (partyItor != std::end(m_parties))
         {
-            m_parties.erase(id);
-        }
-        else
-        {
-            if (party.LeaderPlayerId == apPlayer->GetId())
+            Party& party = partyItor->second;
+            auto& members = party.Members;
+
+            // Only a member can leave. erase(end()) is undefined behaviour, and a party can be asked to
+            // remove a player it does not contain: the kick handler takes the target id off the wire.
+            const auto memberItor = std::find(std::begin(members), std::end(members), apPlayer);
+            if (memberItor != std::end(members))
             {
-                party.LeaderPlayerId = members.at(0)->GetId(); // Reassign party leader
-                spdlog::debug("[PartyService]: Leader left, reassigned party leader to {}", party.LeaderPlayerId);
+                members.erase(memberItor);
+
+                if (members.empty())
+                {
+                    m_parties.erase(id);
+                }
+                else
+                {
+                    if (party.LeaderPlayerId == apPlayer->GetId())
+                    {
+                        party.LeaderPlayerId = members.at(0)->GetId(); // Reassign party leader
+                        spdlog::debug("[PartyService]: Leader left, reassigned party leader to {}", party.LeaderPlayerId);
+                    }
+                    spdlog::debug("[PartyService]: Updating other party players of removal.");
+                    BroadcastPartyInfo(id);
+                }
             }
-            spdlog::debug("[PartyService]: Updating other party players of removal.");
-            BroadcastPartyInfo(id);
         }
 
         pPartyComponent->JoinedPartyId.reset();

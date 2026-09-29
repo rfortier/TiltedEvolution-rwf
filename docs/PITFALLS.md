@@ -6250,3 +6250,182 @@ python Tools\Scripts\check_docs.py
 > 所以「这个解析器会不会抛」不是一个孤立的问题,要先问「它跑在哪条路径上、那条路径上有没有人接」。
 > 另一条:一个仓库里对**同一批字段**存在两种解析器时,要问「为什么这里不用那个不抛的」——
 > 这里答案是「没人写过」,而不是「这里需要抛」。
+## 56. 2026-09-29 场次:一个容器同时有「查」和「建」两种语义时,查询方会造出它要查的东西
+
+> **锚点**:本节的修复落在 `Code/server/Services/PartyService.cpp` 与 `Code/server/Services/QuestService.cpp`。
+> 本次没有子模块改动,三个文件都在主仓库里,不需要 `Code/plugins/patches/**` 补丁。
+
+### 56.1 缺陷:踢人接口不看对方在不在自己队里,而查询接口会凭空建队
+
+**现象**:服务端的队伍系统有**两个**独立的故障,都由同一批客户端可控的 id 触发。
+
+1. **跨队踢人**:任何一个队伍的队长,可以用 `PartyKickRequest` 把**别的队伍**里的玩家踢出去,
+   只要猜得到对方的 `PlayerId`。被踢的玩家莫名其妙地离开队伍。
+2. **队伍凭空出现**:`GetPlayerParty()` 这类「查询」接口用的是 `m_parties[id]`。`JoinedPartyId`
+   还在、但队伍已经被销毁时,这个下标会**静默插入**一个全新的空队伍 —— 于是每个调用者都会把
+   这个空队伍当成真队伍继续用,而它的 `LeaderPlayerId` 是**未初始化的**。
+
+### 56.2 判据:同一个文件里两种写法并存,其中一种是错的
+
+`Code/server/Services/PartyService.cpp` 里同时存在两种取队伍的方式。`GetById()`(`:36-43`)一直用
+`find` 并判 `end`:
+
+```cpp
+const PartyService::Party* PartyService::GetById(uint32_t aId) const noexcept
+{
+    auto itor = m_parties.find(aId);
+    if (itor != std::end(m_parties))
+        return &itor->second;
+    return nullptr;
+}
+```
+
+而另外七处用的是 `m_parties[...]`(修复前行号):`:160` `OnPartyChangeLeader`、`:194` `OnPartyKick`、
+`:228` `OnPlayerJoin`、`:271` `OnPartyInvite`、`:318` `OnPartyAcceptInvite`、`:362`
+`RemovePlayerFromParty`,以及 `:62-77` 的 `GetPlayerParty()` 本身。**「同一个文件里两种写法并存」
+本身就是判据** —— 它说明其中一种不是有意选的,只是没人回头统一过。
+
+判据一,`erase(std::find(...))` 没有配对 `end()`:
+
+```cpp
+// Code/server/Services/PartyService.cpp(修复前)
+Party& party = m_parties[id];                  // 队伍不存在时会插入一个空队伍
+auto& members = party.Members;
+members.erase(std::find(std::begin(members), std::end(members), apPlayer));  // 找不到时 erase(end())
+```
+
+`std::find` 找不到时返回 `end()`,而 `vector::erase(end())` 是**未定义行为**(空 vector 上会把
+size 减成 `SIZE_MAX`)。跨队踢人时 `apPlayer` 本来就不在 `members` 里,所以这条路径**必然**走到
+`erase(end())` —— 而它恰好是 `if (members.empty())` 成立的那条分支。
+
+判据二,`operator[]` 插入的 `Party` 里 `LeaderPlayerId` 是未定义值:
+
+```cpp
+// Code/server/Services/PartyService.h:89-96(修复前)
+struct Party
+{
+    uint32_t LeaderPlayerId;   // 没有默认初始化
+    TiltedPhoques::Vector<Player*> Members;
+    ...
+};
+```
+
+所以 `if (party.LeaderPlayerId == player->GetId())` 是在**读未初始化内存**。这里没有用「未初始化就
+崩」来定性 —— 它可能恰好等于请求者的 id,也可能不等于,两者都不是可用语义。
+
+判据三,`OnPartyKick` 少一道门。它原本只有两道:`if (!pKick)`(目标存在)与
+`if (party.LeaderPlayerId == player->GetId())`(请求者是队长)。**没有一道门问过「pKick 在不在请求者
+的队伍里」**,而 `PartyMemberPlayerId` 是从线里直接读出来的:
+
+```cpp
+// Code/encoding/Messages/PartyKickRequest.cpp:11
+PartyMemberPlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+```
+
+同一批消息的另外三个字段也全是这样读的(`PartyInviteRequest.cpp:12`、
+`PartyAcceptInviteRequest.cpp:12`、`PartyChangeLeaderRequest.cpp:11`),所以这四个 handler 的输入
+都是**任意 32 位值**,唯一的门就是 `GetById` 能否解析出 `Player*`。
+
+判据四,对照另外两个 handler 看它们做对了什么:`OnPartyChangeLeader`(`:163-172`)在 `party.Members`
+里**找得到才改**(目标必须是本队成员);`OnPartyInvite`(`:271-276`)先判请求者在队里、再判它是队长。
+`OnPartyKick` 是这一族里唯一没有成员归属校验的。
+
+### 56.3 修法:七处 `operator[]` 一次改净,并补上归属校验
+
+七处 `m_parties[...]` 全部改成 `find`/`GetById` + 判空,**只有** `OnPartyCreate` 里 `:117` 那一处
+保留下标 —— 它的 key 刚由 `m_nextId++` 生成,必然不存在,那一次插入是有意的:
+
+```cpp
+// Code/server/Services/PartyService.cpp(修复后,GetPlayerParty)
+// find, not operator[]: indexing would silently insert a brand new party
+// with a leader id of zero whenever the id no longer resolves, and every
+// caller would then treat that empty party as a real one. Reporting "no
+// party" is what the callers already handle.
+const auto itor = m_parties.find(*inviterPartyComponent.JoinedPartyId);
+if (itor != std::end(m_parties))
+    return &itor->second;
+...
+return nullptr;
+```
+
+```cpp
+// Code/server/Services/PartyService.cpp(修复后,RemovePlayerFromParty)
+const auto partyItor = m_parties.find(id);
+if (partyItor != std::end(m_parties))
+{
+    Party& party = partyItor->second;
+    auto& members = party.Members;
+
+    // Only a member can leave. erase(end()) is undefined behaviour, and a party can be asked to
+    // remove a player it does not contain: the kick handler takes the target id off the wire.
+    const auto memberItor = std::find(std::begin(members), std::end(members), apPlayer);
+    if (memberItor != std::end(members))
+    {
+        members.erase(memberItor);
+        ...
+```
+
+```cpp
+// Code/server/Services/PartyService.cpp(修复后,OnPartyKick)
+const auto* pParty = GetById(*inviterPartyComponent.JoinedPartyId);
+if (pParty != nullptr && pParty->LeaderPlayerId == player->GetId())
+{
+    // The target id arrives straight off the wire, so it can name a member of somebody else's
+    // party. Only a leader may kick, and only a player in their own party.
+    const auto& kickPartyComponent = pKick->GetParty();
+    if (!kickPartyComponent.JoinedPartyId || *kickPartyComponent.JoinedPartyId != *inviterPartyComponent.JoinedPartyId)
+    {
+        spdlog::error("[PartyService]: Player {} is not in the party of {}", message.PartyMemberPlayerId, player->GetId());
+        return;
+    }
+
+    spdlog::debug("[PartyService]: Kicking player {} from party", pKick->GetId());
+    RemovePlayerFromParty(pKick);
+    BroadcastPlayerList(pKick);
+}
+```
+
+`OnPlayerJoin`(`:242-259`)那处的 `continue` 是有意的,不是 `break`:那个循环在找「第一个仍在队里的
+玩家」,把一个「`JoinedPartyId` 有值但队伍已经没了」的玩家当成「找到」会**提前收尾**。
+
+`Code/server/Services/QuestService.cpp:223` 的 `pParty` 未判空即解引用一并修掉 —— 那是
+`GetPlayerParty()` 改成返回 `nullptr` 之后**唯一**没跟上的调用点:
+
+```cpp
+// Code/server/Services/QuestService.cpp(修复后,OnQuestSceneChanges)
+// The component and the service can disagree: a party id that no party carries any more leaves
+// this pointer null, and the scene master below would be read through it.
+PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
+if (pParty == nullptr)
+    return;
+
+auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+```
+
+同一行上原本还有一句 `Player* pLeader = isLeader ? pPlayer : ...GetById(pParty->LeaderPlayerId);`,
+在 `OnQuestSceneChanges` 里**从未被使用**(全文件 `pLeader` 只有三处:本行赋值、`:47` 的三目赋值、
+`:201` 的唯一使用点,后者在 `OnQuestChanges` 里)⇒ 直接删除,而不是给它补判空。
+
+### 56.4 复核命令(照抄)
+
+```powershell
+Select-String -Path Code -Include *.cpp,*.h,*.hpp,*.inl -Pattern 'erase\(std::find'
+Select-String -Path Code\server\Services\PartyService.cpp -Pattern 'm_parties\['
+Select-String -Path Code\server\Services\PartyService.cpp -Pattern 'is not in the party of'
+Select-String -Path Code\server\Services\QuestService.cpp -Pattern 'pParty == nullptr'
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`erase(std::find` → **0 命中**;`m_parties[` → 只剩 `OnPartyCreate` 的 1 处
+(`Code/server/Services/PartyService.cpp:117`);`is not in the party of` → 1 处(`:209`);
+`QuestService.cpp` 的 `pParty == nullptr` → 2 处(`:47` 的三目、`:224` 的新判空);
+`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+> **教训**:一个容器同时承担「查」和「建」两种语义时(`operator[]` 两者都做),**查询方会造出它要查
+> 的东西** —— 而且造出来的那个对象往往缺少不变量(这里是未初始化的 `LeaderPlayerId`),于是「查不到」
+> 这个本该被上层处理的情况,被悄悄换成了「查到了一个空的」。这类缺陷的判据不在调用点,而在**同一个类里
+> 两种写法并存**:`GetById` 用 `find`、`GetPlayerParty` 用 `operator[]`,两者对「不存在」的回答不同,
+> 而调用者只能按其中一种写。修法不是给某一处加判空,是把**所有**查询路径统一到会回答「没有」的那一种。
+> 另一条:「从线里读出来的 id」永远要问一句「它属于谁」。`OnPartyKick` 查了「这个人存在吗」和「我是队长吗」,
+> 却没查「这个人在我的队里吗」—— 前两个问题都能用**请求者自己的**状态回答,只有第三个需要把两个对象
+> 放在一起看,而正是它决定了 `erase` 的下标合不合法。

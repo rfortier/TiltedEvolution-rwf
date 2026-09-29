@@ -798,6 +798,96 @@ that can throw, use the nothrow version if available or the unsafe version.";而
 **验证**:`Select-String -Path Code\components\console\CommandSettingsProvider.cpp -Pattern 'std::sto'`
 → **0 命中**;`python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:查询队伍的接口自己会造出一个空队伍,而踢人接口不看对方在不在自己队里
+
+**现象**:服务端的队伍系统有**两个**独立的故障,都由同一批客户端可控的 id 触发:
+
+1. **跨队踢人**:任何一个队伍的队长,可以用 `PartyKickRequest` 把**别的队伍**里的玩家踢出去(只要
+   猜得到对方的 `PlayerId`)。被踢的玩家莫名其妙地离开队伍。
+2. **队伍凭空出现**:`GetPlayerParty()` 这类「查询」接口用的是 `m_parties[id]`。`JoinedPartyId`
+   还在、但队伍已经被销毁时,这个下标会**静默插入**一个全新的空队伍 —— 于是每个调用者都会把
+   这个空队伍当成真队伍继续用,而它的 `LeaderPlayerId` 是**未初始化的**。
+
+**根因**:`Code/server/Services/PartyService.cpp` 里同时存在两种写法 —— `GetById()`(`:36-43`)
+一直用 `find` 并判 `end`,而 `GetPlayerParty()`、`OnPartyChangeLeader`、`OnPartyKick`、
+`OnPlayerJoin`、`OnPartyInvite`、`OnPartyAcceptInvite`、`RemovePlayerFromParty` 七处用的是
+`m_parties[...]`:
+
+```cpp
+// Code/server/Services/PartyService.cpp(修复前)
+Party& party = m_parties[id];                  // 队伍不存在时会插入一个空队伍
+auto& members = party.Members;
+members.erase(std::find(std::begin(members), std::end(members), apPlayer));  // 找不到时 erase(end())
+```
+
+```cpp
+// Code/server/Services/PartyService.h:89-96(修复前)
+struct Party
+{
+    uint32_t LeaderPlayerId;   // 没有默认初始化
+    ...
+};
+```
+
+两条判据:
+
+- `std::find` 找不到时返回 `end()`,而 `vector::erase(end())` 是**未定义行为**(空 vector 上会把
+  size 减成 `SIZE_MAX`)。跨队踢人时 `apPlayer` 本来就不在 `members` 里,所以这条路径**必然**走到
+  `erase(end())` —— 而它恰好是 `if (members.empty())` 成立的那条分支。
+- `operator[]` 插入的新 `Party` 里 `LeaderPlayerId` 是未定义值,紧接着的
+  `if (party.LeaderPlayerId == player->GetId())` 就是**读未初始化内存**。
+
+`OnPartyKick` 原本只有两道门:`if (!pKick)`(目标存在)和 `if (party.LeaderPlayerId ==
+player->GetId())`(请求者是队长)。**没有一道门问过「pKick 在不在请求者的队伍里」**,而
+`PartyMemberPlayerId` 是从线里直接读出来的:
+
+```cpp
+// Code/encoding/Messages/PartyKickRequest.cpp:11
+PartyMemberPlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+```
+
+**修法**:七处 `m_parties[...]` 全部改成 `find`/`GetById` + 判空(只有 `OnPartyCreate` 里 `:117`
+那一处保留下标 —— 它的 key 刚由 `m_nextId++` 生成,必然不存在);`RemovePlayerFromParty` 在 `erase`
+前先判 `std::find` 的结果;`OnPartyKick` 增加成员归属校验:
+
+```cpp
+// Code/server/Services/PartyService.cpp(修复后,OnPartyKick)
+const auto* pParty = GetById(*inviterPartyComponent.JoinedPartyId);
+if (pParty != nullptr && pParty->LeaderPlayerId == player->GetId())
+{
+    const auto& kickPartyComponent = pKick->GetParty();
+    if (!kickPartyComponent.JoinedPartyId || *kickPartyComponent.JoinedPartyId != *inviterPartyComponent.JoinedPartyId)
+    {
+        spdlog::error("[PartyService]: Player {} is not in the party of {}", message.PartyMemberPlayerId, player->GetId());
+        return;
+    }
+    ...
+}
+```
+
+```cpp
+// Code/server/Services/PartyService.cpp(修复后,RemovePlayerFromParty)
+const auto partyItor = m_parties.find(id);
+if (partyItor != std::end(m_parties))
+{
+    Party& party = partyItor->second;
+    auto& members = party.Members;
+    const auto memberItor = std::find(std::begin(members), std::end(members), apPlayer);
+    if (memberItor != std::end(members))
+    {
+        members.erase(memberItor);
+        ...
+```
+
+顺带修掉 `Code/server/Services/QuestService.cpp:223` 的 `pParty` 未判空即解引用 —— 那是
+`GetPlayerParty()` 改成返回 `nullptr` 之后**唯一**没跟上的调用点(同文件 `:46-47` 早就用了
+`pParty == nullptr ? ... : ...` 的三目写法,`Code/server/Services/WeatherService.cpp:23`/`:39`
+两处也都判了空)。
+
+**验证**:`Select-String -Path Code -Include *.cpp,*.h,*.hpp,*.inl -Pattern 'erase\(std::find'`
+→ **0 命中**;`Select-String -Path Code\server\Services\PartyService.cpp -Pattern 'm_parties\['`
+→ 只剩 `OnPartyCreate` 的 1 处;`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器
