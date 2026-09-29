@@ -1,6 +1,7 @@
 #include <Structs/ActorValues.h>
 #include <TiltedCore/Serialization.hpp>
 #include <algorithm>
+#include <cmath>
 
 using TiltedPhoques::Serialization;
 
@@ -12,6 +13,11 @@ bool ActorValues::operator==(const ActorValues& acRhs) const noexcept
 bool ActorValues::operator!=(const ActorValues& acRhs) const noexcept
 {
     return !this->operator==(acRhs);
+}
+
+bool ActorValues::IsValidActorValue(uint32_t aId, float aValue) noexcept
+{
+    return aId <= kMaxActorValueId && std::isfinite(aValue);
 }
 
 void ActorValues::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
@@ -55,7 +61,13 @@ void ActorValues::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     for (uint64_t i = 0; i < count; i++)
     {
         const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-        auto value = Serialization::ReadFloat(aReader);
+        const auto value = Serialization::ReadFloat(aReader);
+
+        // Both fields are read above so that an entry which is dropped here still
+        // consumes its bytes and the rest of the stream stays aligned.
+        if (!IsValidActorValue(key, value))
+            continue;
+
         ActorValuesList.insert({key, value});
     }
 
@@ -63,7 +75,13 @@ void ActorValues::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     for (uint64_t i = 0; i < maxCount; i++)
     {
         const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-        auto value = Serialization::ReadFloat(aReader);
+        const auto value = Serialization::ReadFloat(aReader);
+
+        // Both fields are read above so that an entry which is dropped here still
+        // consumes its bytes and the rest of the stream stays aligned.
+        if (!IsValidActorValue(key, value))
+            continue;
+
         ActorMaxValuesList.insert({key, value});
     }
 }

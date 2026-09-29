@@ -1117,6 +1117,91 @@ else
 **验证**:`Code/tests/encoding.cpp:609 TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")`
 手工造包覆盖 NaN、`-1.0e30f`、`1.0e30f`,并回环一次 `-12.5f`;
 CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求
+### 修复:actor value 的**键**从线上原样读入,而它是引擎表的下标
+
+**现象**:一个客户端发一条 `RequestActorValueChanges`,把 `Values` 的键写成
+`0xFFFFFFFF`,范围内的客户端会拿这个键去 `SetActorValue`/`ForceActorValue`,
+也就是直接写进引擎的 actor value 表下标;值是 `NaN`/`inf` 时,污染的是那个
+actor value 之后**每一次**读取(血量、速度、抗性都由同一张表供给)。
+
+**根因**:这条消息只夹了**条目数**,没夹**键的取值范围**,也没夹值的有限性。
+结构体与四个消息的读侧都是同一形状:
+
+```cpp
+// Code/encoding/Structs/ActorValues.cpp(修复前)
+const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+auto value = Serialization::ReadFloat(aReader);
+ActorValuesList.insert({key, value});
+```
+
+接收端 `Code/client/Services/Generic/ActorValueService.cpp:346` 与 `:376` 只按
+键**挑分支**,没有任何范围校验:
+
+```cpp
+// Code/client/Services/Generic/ActorValueService.cpp:341-346
+if (key == ActorValueInfo::kStamina || key == ActorValueInfo::kMagicka || key == ActorValueInfo::kHealth)
+{
+    pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, key, value);
+    continue;
+}
+pActor->SetActorValue(key, value);
+```
+
+`Actor::SetActorValue`(`Code/client/Games/Skyrim/Actor.cpp:732-735`)把它转发给
+`actorValueOwner.SetValue(aId, aValue)`,而那张表的合法下标只有
+`Code/client/Games/Skyrim/Forms/ActorValueInfo.h:174` 的 `kActorValueCount = 164`
+个。同一个 `ActorValues` 结构体还随角色数据一起走
+(`AssignCharacterResponse.AllActorValues`、`CharacterSpawnRequest.InitialActorValues`),
+经服务端账本(`Code/server/Services/CharacterService.cpp:109`/`:688`/`:883`)
+分发给新加入的玩家,再由 `Code/client/Games/Skyrim/Actor.cpp:836-843`
+逐键写回引擎 —— 一份被污染的账本会把污染复制给每一个后进服的玩家。
+
+**可达性**:`RequestActorValueChanges`/`RequestActorMaxValueChanges` 在服务端
+handler 表里(`Code/server/Services/ActorValueService.cpp:17-18`),两者都有
+`IsCurrentOwner` 门(`:31`/`:58`) —— 也就是说,能触发它的是**那个 actor 的
+当前所有者**,不是任意客户端。但「所有者」这个身份本身是可以在游戏里转移的
+(读档、换角色、`OwnershipEpoch` 递增),而客户端自己的发送侧
+(`Code/client/Services/Generic/ActorValueService.cpp:131`)只发 `0..163` 的键,
+所以越界键**只可能来自被改过的客户端或半途失步的流**。
+
+**修法**:与 `TimeModel`/血量增量同一范式 —— 上界声明在结构体上、夹在**读**侧、
+四个消息与嵌套结构体共用同一个判据:
+
+```cpp
+// Code/encoding/Structs/ActorValues.cpp
+bool ActorValues::IsValidActorValue(uint32_t aId, float aValue) noexcept
+{
+    return aId <= kMaxActorValueId && std::isfinite(aValue);
+}
+```
+
+```cpp
+// Code/encoding/Messages/RequestActorValueChanges.cpp:39-47(修复后)
+const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+const auto value = Serialization::ReadFloat(aReader);
+
+// Both fields are read above so that an entry which is dropped here still
+// consumes its bytes and the rest of the stream stays aligned.
+if (!ActorValues::IsValidActorValue(key, value))
+    continue;
+
+Values.insert({key, value});
+```
+
+`Code/encoding/Structs/ActorValues.h:20` 新增
+`static constexpr uint32_t kMaxActorValueId = static_cast<uint32_t>(kMaxActorValueCount - 1);`,
+与既有的条目数上限 `kMaxActorValueCount` 并列 —— 前者管「能收几条」,后者管
+「下标能到哪」,两者此前被当成了同一个东西。**一处刻意的取舍**:被丢弃的条目
+仍然要**消费掉自己的字节**(键与值都先读出来再判),`continue` 而不是 `break`,
+否则它后面所有字段都会从错误的偏移读起 —— 那是把「一个坏键」换成「整包错位」。
+`Serialize` 侧未改,与 `TimeModel` 的修复同一策略:夹在读侧。
+
+**验证**:`Code/tests/encoding.cpp:670 TEST_CASE("Actor value wire bounds", "[encoding.actor_values]")`
+手工造包覆盖越界键 `0xFFFFFFFF`、`0x12345678`、`NaN` 值,并在包尾放一个
+`0xDEADBEEF` 哨兵 —— 读完之后它必须原样读得到,以此证明被丢弃的条目确实
+消费了自己的字节;另有一段回环一次正常的两键集合。
+CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求
+`All tests passed`。`python Tools/Scripts/check_docs.py` 全绿。
 `All tests passed`。`python Tools/Scripts/check_docs.py` 全绿。
 
 ## v1.1.8(2026-09-28)

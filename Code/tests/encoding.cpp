@@ -16,9 +16,12 @@
 #include <catch2/catch.hpp>
 
 #include <Messages/ClientMessageFactory.h>
+#include <Messages/NotifyActorValueChanges.h>
 #include <Messages/NotifyHealthChangeBroadcast.h>
+#include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
 #include <Messages/ServerMessageFactory.h>
+#include <Structs/ActorValues.h>
 #include <Structs/TimeModel.h>
 #include <Structs/Vector2_NetQuantize.h>
 
@@ -656,6 +659,93 @@ TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")
     sent.Serialize(roundTripWriter);
 
     RequestHealthChangeBroadcast received{};
+    Buffer::Reader roundTripReader(&roundTrip);
+    uint64_t trash;
+    roundTripReader.ReadBits(trash, 8); // pop opcode
+    received.DeserializeRaw(roundTripReader);
+
+    REQUIRE(sent == received);
+}
+
+TEST_CASE("Actor value wire bounds", "[encoding.actor_values]")
+{
+    // A key is an index into the engine's actor value table and the client hands it to
+    // SetActorValue as is, so an index past the end reaches code which never checks it.
+    // A non finite value poisons every later read of the actor value it was written to.
+    REQUIRE(ActorValues::IsValidActorValue(0, 0.f));
+    REQUIRE(ActorValues::IsValidActorValue(ActorValues::kMaxActorValueId, -1.f));
+    REQUIRE_FALSE(ActorValues::IsValidActorValue(ActorValues::kMaxActorValueId + 1, 1.f));
+    REQUIRE_FALSE(ActorValues::IsValidActorValue(0, std::numeric_limits<float>::quiet_NaN()));
+
+    // A dropped entry still has to consume its bytes, otherwise every field behind it
+    // would be read from the wrong offset.
+    Buffer buff(1000);
+    Buffer::Writer writer(&buff);
+    Serialization::WriteVarInt(writer, 7);
+    Serialization::WriteVarInt(writer, 3);
+    Serialization::WriteVarInt(writer, 4);
+    Serialization::WriteVarInt(writer, 1);
+    Serialization::WriteFloat(writer, 12.5f);
+    Serialization::WriteVarInt(writer, 0xFFFFFFFF);
+    Serialization::WriteFloat(writer, 99.f);
+    Serialization::WriteVarInt(writer, 2);
+    Serialization::WriteFloat(writer, std::numeric_limits<float>::quiet_NaN());
+    Serialization::WriteVarInt(writer, 3);
+    Serialization::WriteFloat(writer, -4.f);
+    Serialization::WriteVarInt(writer, 0xDEADBEEF);
+
+    RequestActorValueChanges request{};
+    Buffer::Reader reader(&buff);
+    request.DeserializeRaw(reader);
+
+    REQUIRE(request.Id == 7);
+    REQUIRE(request.OwnershipEpoch == 3);
+    REQUIRE(request.Values.size() == 2);
+    REQUIRE(request.Values[1] == 12.5f);
+    REQUIRE(request.Values[3] == -4.f);
+    REQUIRE(request.Values.count(2) == 0);
+    REQUIRE(request.Values.count(0xFFFFFFFF) == 0);
+    REQUIRE(Serialization::ReadVarInt(reader) == 0xDEADBEEF);
+
+    // The server to client direction carries the same guard.
+    NotifyActorValueChanges notification{};
+    Buffer::Reader notifyReader(&buff);
+    notification.DeserializeRaw(notifyReader);
+
+    REQUIRE(notification.Values.size() == 2);
+    REQUIRE(notification.Values.count(0xFFFFFFFF) == 0);
+
+    // The nested struct which travels with character data behaves the same way.
+    Buffer structBuff(1000);
+    Buffer::Writer structWriter(&structBuff);
+    Serialization::WriteVarInt(structWriter, 2);
+    Serialization::WriteVarInt(structWriter, 0x12345678);
+    Serialization::WriteFloat(structWriter, 5.f);
+    Serialization::WriteVarInt(structWriter, 26);
+    Serialization::WriteFloat(structWriter, 100.f);
+    Serialization::WriteVarInt(structWriter, 1);
+    Serialization::WriteVarInt(structWriter, 24);
+    Serialization::WriteFloat(structWriter, std::numeric_limits<float>::infinity());
+
+    ActorValues values{};
+    Buffer::Reader structReader(&structBuff);
+    values.Deserialize(structReader);
+
+    REQUIRE(values.ActorValuesList.size() == 1);
+    REQUIRE(values.ActorValuesList.count(26) == 1);
+    REQUIRE(values.ActorMaxValuesList.size() == 0);
+
+    // A plausible set still round trips unchanged.
+    Buffer roundTrip(1000);
+    Buffer::Writer roundTripWriter(&roundTrip);
+    RequestActorValueChanges sent{};
+    sent.Id = 7;
+    sent.OwnershipEpoch = 3;
+    sent.Values.insert({24, 120.f});
+    sent.Values.insert({26, 90.f});
+    sent.Serialize(roundTripWriter);
+
+    RequestActorValueChanges received{};
     Buffer::Reader roundTripReader(&roundTrip);
     uint64_t trash;
     roundTripReader.ReadBits(trash, 8); // pop opcode

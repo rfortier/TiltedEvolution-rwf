@@ -37,7 +37,13 @@ void RequestActorValueChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRe
     for (uint64_t i = 0; i < count; i++)
     {
         const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-        auto value = Serialization::ReadFloat(aReader);
+        const auto value = Serialization::ReadFloat(aReader);
+
+        // Both fields are read above so that an entry which is dropped here still
+        // consumes its bytes and the rest of the stream stays aligned.
+        if (!ActorValues::IsValidActorValue(key, value))
+            continue;
+
         Values.insert({key, value});
     }
 }

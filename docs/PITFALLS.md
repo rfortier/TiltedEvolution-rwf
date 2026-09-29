@@ -7076,3 +7076,144 @@ NaN → `0.f`(且 `Id` 仍为 `42`);`-1.0e30f` → `-kMaxHealthDelta`;`NotifyHea
 > 四个里三个都写了所有权门,唯独第四个没写,这种「不对称」比任何外部标准都更能说明
 > 该不该加;但**该加什么要分清**:值域校验属于稳定性,所有权校验属于玩法,前者必须加、
 > 后者要问清楚再动。
+
+## 60. 2026-09-29 场次:一个常量管「能收几条」,另一个管「下标能到哪」 —— 它们此前被当成了同一个东西
+
+> **锚点**:本节修复落在 `Code/encoding/Structs/ActorValues.h`/`.cpp` 与四个消息
+> (`RequestActorValueChanges`/`NotifyActorValueChanges`/`RequestActorMaxValueChanges`/
+> `NotifyActorMaxValueChanges`)的 `.cpp`,以及 `Code/tests/encoding.cpp`。
+> 这条线上流的是「引擎 actor value 表的下标 + 值」,下标被原样交给引擎,所以它同时是
+> **崩溃面**(越界下标进 `SetValue`/`ForceCurrent`)与**失步面**(被污染的账本会随角色数据
+> 复制给每一个后进服的玩家)。
+
+### 60.1 缺陷:条目数夹住了,键与值原样过
+
+**现象**:一个客户端发一条 `RequestActorValueChanges`,把 `Values` 的键写成 `0xFFFFFFFF`,
+范围内的客户端会拿这个键去 `SetActorValue`/`ForceActorValue`,也就是直接写进引擎表的
+下标;值是 `NaN`/`inf` 时,污染的是那个 actor value 之后**每一次**读取 —— 血量、速度、
+抗性都由同一张表供给。同一个 `ActorValues` 结构体还随角色数据走,所以一份被污染的账本
+会被复制给每一个新加入的玩家。
+
+**根因**(修复前):`Code/encoding/Structs/ActorValues.cpp:46-69` 与四个消息的 `DeserializeRaw`
+是同一形状 —— 只夹了**条目数**,键与值直接插入:
+
+```cpp
+// Code/encoding/Structs/ActorValues.cpp(修复前,:57-59)
+const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+auto value = Serialization::ReadFloat(aReader);
+ActorValuesList.insert({key, value});
+```
+
+结构体上唯一的上限常量 `Code/encoding/Structs/ActorValues.h:16 kMaxActorValueCount = 164`
+是**条目数**上限,与键的取值范围无关 —— 这正是本节的核心:两个概念共用一个常量名,
+于是「夹了」的错觉成立。接收端 `Code/client/Services/Generic/ActorValueService.cpp:333-346`
+只按键**挑分支**,没有任何范围校验:
+
+```cpp
+// Code/client/Services/Generic/ActorValueService.cpp:341-346
+if (key == ActorValueInfo::kStamina || key == ActorValueInfo::kMagicka || key == ActorValueInfo::kHealth)
+{
+    pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, key, value);
+    continue;
+}
+pActor->SetActorValue(key, value);
+```
+
+`Code/client/Games/Skyrim/Actor.cpp:732-735 SetActorValue` 转发给
+`actorValueOwner.SetValue(aId, aValue)`,而合法下标只有
+`Code/client/Games/Skyrim/Forms/ActorValueInfo.h:174 kActorValueCount = 164` 个。
+
+### 60.2 判据:「夹了计数」与「夹了下标」是两件事,`& 0xFFFFFFFF` 不是校验
+
+判据不是「这个字段夹过没有」,而是**「它接下来会被当成什么用」**:`count` 被拿去当循环
+上界,`key` 被拿去当**表下标**。同一段代码里前者夹了、后者没夹,读起来却像都处理过了 ——
+因为 `const auto count = std::min<uint64_t>(...kMaxActorValueCount)` 就在上面两行。
+
+第二条判据:**掩码不是校验**。`Serialization::ReadVarInt(...) & 0xFFFFFFFF` 在
+`uint32_t` 上是恒等操作(§58 的教训里已经记过一次),它看起来像「把值收进 32 位」,
+实际什么都没挡。四个消息的 `Id`/`OwnershipEpoch` 也是同一写法。
+
+**同一个仓库里已经有做对的写法**:`Code/encoding/Structs/TimeModel.cpp:15` 的
+`if (!std::isfinite(aValue))`(§58)、`Code/encoding/Messages/PluginMessagingRequest.cpp:39-42`
+的「Never trust the wire length」+ `std::min<T>(...)`(§59 已引)。本节只是把这两条
+用在一个**下标**上。
+
+### 60.3 可达性:能触发的是「那个 actor 的当前所有者」,不是任意客户端
+
+`RequestActorValueChanges`/`RequestActorMaxValueChanges` 在服务端 handler 表里
+(`Code/server/Services/ActorValueService.cpp:17-18`),两者都有 `IsCurrentOwner` 门
+(`:31`/`:58`)—— 也就是说能触发它的是那个 actor 的当前所有者。但客户端自己的发送侧
+(`Code/client/Services/Generic/ActorValueService.cpp:131`)只发 `0..163` 的键,
+所以越界键只可能来自被改过的客户端或半途失步的流。
+
+### 60.4 修法:上界声明在结构体上,判据是一个静态函数,夹在读侧
+
+```cpp
+// Code/encoding/Structs/ActorValues.h(修复后,:18-22)
+// The keys are indices into that same table and the engine is handed them as is,
+// so a peer that names an index past the end reaches code which never checks it.
+static constexpr uint32_t kMaxActorValueId = static_cast<uint32_t>(kMaxActorValueCount - 1);
+
+static bool IsValidActorValue(uint32_t aId, float aValue) noexcept;
+```
+
+```cpp
+// Code/encoding/Structs/ActorValues.cpp(修复后,:18-21)
+bool ActorValues::IsValidActorValue(uint32_t aId, float aValue) noexcept
+{
+    return aId <= kMaxActorValueId && std::isfinite(aValue);
+}
+```
+
+四个消息的 `.cpp` 与 `ActorValues::Deserialize` 的两段循环共用这一个判据:
+
+```cpp
+// Code/encoding/Messages/RequestActorValueChanges.cpp(修复后,:39-47)
+const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+const auto value = Serialization::ReadFloat(aReader);
+
+// Both fields are read above so that an entry which is dropped here still
+// consumes its bytes and the rest of the stream stays aligned.
+if (!ActorValues::IsValidActorValue(key, value))
+    continue;
+
+Values.insert({key, value});
+```
+
+**一处刻意的取舍:被丢弃的条目仍然要消费掉自己的字节。** 键与值都先读出来再判,
+`continue` 而不是 `break` —— 提前退出会把「一个坏键」换成「整包从错误偏移读起」,
+后者更糟。这也是 `Inventory.cpp:186`/`:192` 的既有形状(跳过无效条目但不中断循环)。
+`Serialize` 侧未改,与 `TimeModel`/血量增量的修复同一策略:夹在读侧。
+
+**另一处取舍:不新增所有权门。** 与 §59 同:`IsCurrentOwner` 属于玩法边界,
+值域/下标校验属于稳定性边界。
+
+### 60.5 复核命令(照抄)
+
+```powershell
+git grep -n 'kMaxActorValueId\|IsValidActorValue' -- Code
+git grep -n 'IsValidActorValue' -- Code/encoding/Messages
+git grep -n 'ActorValuesList.insert\|Values.insert' -- Code/encoding
+git grep -n 'kActorValueCount' -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`IsValidActorValue` 声明 1 处、定义 1 处、调用 6 处(四个消息各 1、
+`ActorValues::Deserialize` 两段各 1);`Code/encoding` 里 `std::isfinite` 由 3 处增至 4 处
+(`ActorValues.cpp` 新增一处);`& 0xFFFFFFFF` 的键读取点仍是 6 处(掩码未动,只在其后加了判断);
+`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+**验证**:`Code/tests/encoding.cpp:670 TEST_CASE("Actor value wire bounds", "[encoding.actor_values]")`
+手工造包覆盖越界键 `0xFFFFFFFF`、`0x12345678`、`NaN` 值与 `inf` 值,并在包尾放一个
+`0xDEADBEEF` 哨兵 —— 读完之后它必须原样读得到,以此证明被丢弃的条目确实消费了自己的字节;
+另有一段回环一次正常的两键集合。CI 的 `.github/workflows/windows.yml:594-638` 会跑
+`TPTests.exe` 并要求输出含 `All tests passed`。
+
+> **教训**:当同一段代码里已经有一个 `std::min(..., kMaxXxxCount)` 时,最容易犯的错是
+> 把「夹过了」当成整条路都夹过了 —— 那个常量管的是**能收几条**,和**下标能到哪**是两件事。
+> 判据要落到「这个数接下来被当成什么用」:当循环上界、当表下标、当长度、当判决依据,
+> 四种用法对应四个不同的合法域。第二条:`& 0xFFFFFFFF` 这类掩码在 `uint32_t` 上是恒等
+> 操作,它读起来像校验、实际不是 —— 判断一个字段有没有被校验,要看有没有**分支**,
+> 不是看有没有**运算**。第三条:上界常量要挂在**结构体**上而不是某一个 `.cpp` 里,
+> 因为同一个结构体会被四个消息、服务端账本与两个方向的 `Deserialize` 共用;挂在结构体上,
+> 后来的人改一处就够,挂在 `.cpp` 里则必然漏掉其余五处。
