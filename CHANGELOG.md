@@ -1050,6 +1050,75 @@ float ClampFloat(float aValue, float aMax) noexcept
 CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求
 `All tests passed`。`python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:血量增量既没有范围校验、服务端账本的符号还和客户端相反
+
+**现象**:一个客户端发一条 `RequestHealthChangeBroadcast`,把 `DeltaHealth` 写成
+`-1e38` 或 `-inf`,范围内**所有**客户端都会把那个 actor 的血量算成非正数,
+然后 `pActor->Kill()` —— 非玩家 actor 一律被远程处决;写成 `NaN` 则让
+`ForceActorValue` 收到 NaN。
+
+**根因**:这个字段从线上原样读进来,读侧没有任何值域检查,而它在接收端是
+「加到血量上的增量」,加完还要判死。
+
+```cpp
+// Code/encoding/Messages/RequestHealthChangeBroadcast.cpp(修复前)
+Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+DeltaHealth = Serialization::ReadFloat(aReader);
+```
+
+接收端 `Code/client/Services/Generic/ActorValueService.cpp:295-305`:
+
+```cpp
+const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
+pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
+const float health = pActor->GetActorValue(ActorValueInfo::kHealth);
+if (!pActor->IsDead() && health <= 0.f)
+{
+    ActorExtension* pExtension = pActor->GetExtension();
+    // Players should never be killed
+    if (!pExtension->IsPlayer())
+        pActor->Kill();
+}
+```
+
+同一处还有第二个问题:**服务端账本的符号是反的**。服务端在
+`Code/server/Services/ActorValueService.cpp:90` 用的是
+`ActorValuesList[24] = currentHealth - message.DeltaHealth`,而客户端用的是 `+`,
+两端的约定本来就该一致 —— 客户端的发送侧
+(`Code/client/Games/Skyrim/Actor.cpp:1093`/`:1142`/`:1169`)发的是「受伤为负、
+治疗与回血为正」,所以服务端的减号会把每一次受伤都记成加血。这份账本不是死数据:
+它会经 `InitialActorValues`/`AllActorValues` 分发给新加入的玩家
+(`Code/server/Services/CharacterService.cpp:109`/`:688`/`:883`),再由客户端
+`Actor::SetActorValues` 逐键 `ForceActorValue` 写回引擎。
+
+**可达性**:`RequestHealthChangeBroadcast` 在服务端 handler 表里
+(`Code/server/Services/ActorValueService.cpp:19`),不需要任何所有权即可触发 ——
+同文件另三个 handler(`:31`/`:58`/`:110`)都写了 `IsCurrentOwner`,只有这一个没有。
+
+**修法**:按 `TimeModel` 的同一范式,在**结构体上**声明上界、在**读侧**夹住,
+并且两个方向都夹(客户端发来的 `RequestHealthChangeBroadcast` 与服务端广播的
+`NotifyHealthChangeBroadcast` 各自过一次 `Deserialize`):
+
+```cpp
+// Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp
+if (!std::isfinite(DeltaHealth))
+    DeltaHealth = 0.f;
+else
+    DeltaHealth = std::min(std::max(DeltaHealth, -kMaxHealthDelta), kMaxHealthDelta);
+```
+
+`kMaxHealthDelta = 100000.f` 声明在两个结构体里(`RequestHealthChangeBroadcast.h`
+与 `NotifyHealthChangeBroadcast.h`),注释写明它为什么存在。**不加所有权门**:
+客户端对「打远程玩家」本来就不发广播
+(`Code/client/Games/Skyrim/Actor.cpp:1096-1099` 直接 `return wouldKill;`),而 NPC 的
+所有权归 spawn 方,贸然加门会挡掉合法的 NPC 受击广播 —— 那属于玩法决策,
+不在「稳定性/兼容/同步」的审计范围内。服务端账本的减号同时改成加号,与客户端一致。
+
+**验证**:`Code/tests/encoding.cpp:609 TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")`
+手工造包覆盖 NaN、`-1.0e30f`、`1.0e30f`,并回环一次 `-12.5f`;
+CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求
+`All tests passed`。`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

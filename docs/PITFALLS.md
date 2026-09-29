@@ -6930,3 +6930,149 @@ NaN + `1.0e30f` + 三个 `0xFFFFFFFF` → `0.f` / `kMaxTime` / `kMaxDay` / `kMax
 > 另一条:`& 0xFFFFFFFF` 这类「看起来在做校验」的掩码比没有更危险 —— 它让代码**读起来**像
 > 已经处理过了,而它在 `uint32_t` 上是恒等操作。写的时候要问一句「这个掩码在**这个类型**上
 > 到底做了什么」。
+
+## 59. 2026-09-29 场次:一个「增量」字段既是值又是判决 —— 读侧不夹,它就是远程处决开关
+
+> **锚点**:本节修复落在 `Code/encoding/Messages/RequestHealthChangeBroadcast.h`/`.cpp`、
+> `Code/encoding/Messages/NotifyHealthChangeBroadcast.h`/`.cpp`、
+> `Code/server/Services/ActorValueService.cpp` 与 `Code/tests/encoding.cpp`。
+> 同一个字段在接收端被**加**到血量上,加完的结果又被拿去**判决死亡**,所以它同时是
+> **崩溃面**(NaN 进 `ForceActorValue`)与**失步面**(服务端账本符号与客户端相反)。
+
+### 59.1 缺陷:血量增量从线上原样读入,读侧一个值域校验都没有
+
+**现象**:一个客户端发一条 `RequestHealthChangeBroadcast`,把 `DeltaHealth` 写成 `-1e38`
+或 `-inf`,范围内**所有**客户端都会把那个 actor 的血量算成非正数,然后
+`pActor->Kill()` —— 非玩家 actor 一律被远程处决;写成 `NaN` 则让 `ForceActorValue`
+收到 NaN。
+
+**根因**(修复前):
+
+```cpp
+// Code/encoding/Messages/RequestHealthChangeBroadcast.cpp(修复前,:12-13)
+Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+DeltaHealth = Serialization::ReadFloat(aReader);
+```
+
+字段在接收端的用法(客户端 `Code/client/Services/Generic/ActorValueService.cpp:295-305`):
+
+```cpp
+const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
+pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
+const float health = pActor->GetActorValue(ActorValueInfo::kHealth);
+if (!pActor->IsDead() && health <= 0.f)
+{
+    ActorExtension* pExtension = pActor->GetExtension();
+    // Players should never be killed
+    if (!pExtension->IsPlayer())
+        pActor->Kill();
+}
+```
+
+### 59.2 判据:一个字段同时是「值」和「判决依据」时,它的合法范围由下游的判决决定
+
+判据不是「这个字段的合理范围是多少」,而是**「它加完之后会被谁拿去判决」**。
+`DeltaHealth` 加完立刻进 `health <= 0.f` 这个比较 —— 于是「能加出非正数的量」就是
+「能杀人的量」,而 `-1e38` 在任何血量上都满足它。同族的第二个判据是
+**「非有限值会在下游变成什么」**:NaN 过 `ForceActorValue` 会污染引擎侧的 actor value,
+而 `NaN <= 0.f` 为假(所以不 Kill)—— 同一个字段的两种畸形值走两条不同的坏路。
+
+**同一个仓库里已经有做对的写法**:`Code/encoding/Structs/TimeModel.cpp:15` 的
+`if (!std::isfinite(aValue))`、`Code/client/Games/Skyrim/Havok/hkStepInfo.h:22` 的
+`if (!std::isfinite(aDeltaTime) || aDeltaTime <= 0.0001f)`、以及
+`Code/encoding/Messages/PluginMessagingRequest.cpp:39-42` 的
+「Never trust the wire length」+ `std::min<T>(...)` 钳位。本节只是把这三条既有写法
+用在一个新字段上。
+
+### 59.3 可达性:这个 handler 是同类四个里唯一没有所有权门的
+
+`Code/server/Services/ActorValueService.cpp` 的四个 handler 里,`:31`(`OnActorValueChanges`)、
+`:58`(`OnActorMaxValueChanges`)、`:110`(`OnDeathStateChange`)都写了
+`IsCurrentOwner(acMessage.pPlayer, message.OwnershipEpoch)`,**只有 `:77-100`
+`OnHealthChangeBroadcast` 没有**。`ActorValuesList[24]`(`ActorValueInfo::kHealth = 24`)
+在服务端全仓只有 `:89`/`:90` 两处访问,且这个 handler 里的注释
+`// TODO(cosideci): should server side health not be updated?` 说明作者自己也存疑。
+
+### 59.4 顺带的语义不一致:服务端账本的符号与客户端相反
+
+服务端 `:90` 修复前是 `currentHealth - message.DeltaHealth`,而客户端 `:295` 是 `+ acMessage.DeltaHealth`。
+客户端的发送侧(`Code/client/Games/Skyrim/Actor.cpp:1093`/`:1142`/`:1169`)发的是
+「受伤为负、治疗与回血为正」,所以服务端的减号会把**每一次受伤都记成加血**。
+这份账本不是死数据:它经 `InitialActorValues`/`AllActorValues` 分发给新加入的玩家
+(`Code/server/Services/CharacterService.cpp:109`/`:688`/`:883`),再由客户端
+`Code/client/Games/Skyrim/Actor.cpp:836-843 Actor::SetActorValues` 逐键
+`ForceActorValue(ForceMode::DAMAGE, ...)` 写回引擎 —— 即**新玩家看到的血量会反向漂移**。
+
+### 59.5 修法:边界声明在结构体上,夹在**读**侧,两个方向都夹
+
+按 `Code/encoding/Structs/Factions.h:18-20` 与 §58 的既有做法 —— 常量挂结构体、注释写清
+「为什么是夹不是抛」:
+
+```cpp
+// Code/encoding/Messages/NotifyHealthChangeBroadcast.h(修复后,:10-12)
+// The receiver adds this to an actor's health and kills the actor when the result
+// stops being positive, so an unbounded value is a remote kill switch. A single hit
+// cannot plausibly exceed this, and a peer that claims more gets a clamped hit.
+static constexpr float kMaxHealthDelta = 100000.f;
+```
+
+```cpp
+// Code/encoding/Messages/RequestHealthChangeBroadcast.cpp(修复后,:18-22)
+// Never trust the wire: a NaN or an infinity would follow this value into every
+// arithmetic operation the receiver performs on it.
+if (!std::isfinite(DeltaHealth))
+    DeltaHealth = 0.f;
+else
+    DeltaHealth = std::min(std::max(DeltaHealth, -kMaxHealthDelta), kMaxHealthDelta);
+```
+
+`Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp` 同形 —— **两个方向都夹**:客户端
+发来的请求与服务端广播的通知各自过一次 `Deserialize`,只夹一侧等于没夹。
+
+**一处刻意的取舍:不加所有权门。** 客户端对「打远程玩家」本来就不发广播
+(`Code/client/Games/Skyrim/Actor.cpp:1085-1099`,hittee 是远程玩家时直接 `return wouldKill;`),
+而 NPC 的所有权归 spawn 方,贸然加 `IsCurrentOwner` 会挡掉合法的 NPC 受击广播 ——
+那属于玩法决策,不在「稳定性/兼容/同步」的审计范围内。**值域校验是稳定性的边界,所有权
+校验是玩法的边界**,两者不能混着改。
+
+```cpp
+// Code/server/Services/ActorValueService.cpp(修复后,:89-90)
+auto currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[24];
+actorValuesComponent.CurrentActorValues.ActorValuesList[24] = currentHealth + message.DeltaHealth;
+```
+
+减号改成加号,与客户端 `Code/client/Services/Generic/ActorValueService.cpp:295` 对齐。
+
+### 59.6 复核命令(照抄)
+
+```powershell
+git grep -n 'kMaxHealthDelta' -- Code
+git grep -n 'DeltaHealth' -- Code/encoding/Messages
+git grep -n 'IsCurrentOwner\|ActorValuesList\[24\]' -- Code/server/Services/ActorValueService.cpp
+git grep -n 'std::isfinite' -- Code/encoding
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:修复前两个 `.cpp` 里 `DeltaHealth` 只有 `WriteFloat`/`ReadFloat` 各一处,
+读侧无任何判断;修复后 `kMaxHealthDelta` 在两个结构体里各声明一次、两个 `.cpp` 各使用一次、
+测试引用两处;`IsCurrentOwner` 在 `ActorValueService.cpp` 里仍是 `:31`/`:58`/`:110` 三处
+(本处**刻意不加**);`Code/encoding` 里 `std::isfinite` 由 1 处(`TimeModel.cpp:15`)增至 3 处;
+`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+**验证**:`Code/tests/encoding.cpp:609 TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")`
+用 `Serialization::WriteFloat/WriteVarInt` 手工造畸形包,四段:
+NaN → `0.f`(且 `Id` 仍为 `42`);`-1.0e30f` → `-kMaxHealthDelta`;`NotifyHealthChangeBroadcast`
+收 `1.0e30f` → `kMaxHealthDelta`;以及 `Id = 7` / `-12.5f` 走 `Serialize`→`Deserialize`
+(先 `reader.ReadBits(trash, 8)` 弹掉 opcode)回环相等。CI 的
+`.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求输出含 `All tests passed`。
+
+> **教训**:一个字段的「合法范围」不是它的类型决定的,是**它下游的判决**决定的 ——
+> `float` 能表示 `-1e38`,但「加到血量上再判死」这个下游只接受「不可能加出非正数的量」。
+> 所以审这类字段要顺着它往下读**两跳**:第一跳看它被怎么算(`+ acMessage.DeltaHealth`),
+> 第二跳看算出来的东西被拿去判什么(`health <= 0.f` → `Kill()`)。只读第一跳会得出
+> 「它只是个血量增量」的结论。另一条:**同一个值在两个方向上的畸形后果不同** —— NaN 走
+> 「污染引擎」这条路,`-inf` 走「判决成立」这条路,所以 `std::isfinite` 与幅值钳位
+> **两样都要有**,缺一样就漏一半。最后一条:同文件的兄弟 handler 是最好的对照 ——
+> 四个里三个都写了所有权门,唯独第四个没写,这种「不对称」比任何外部标准都更能说明
+> 该不该加;但**该加什么要分清**:值域校验属于稳定性,所有权校验属于玩法,前者必须加、
+> 后者要问清楚再动。

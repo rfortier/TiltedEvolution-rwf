@@ -16,6 +16,8 @@
 #include <catch2/catch.hpp>
 
 #include <Messages/ClientMessageFactory.h>
+#include <Messages/NotifyHealthChangeBroadcast.h>
+#include <Messages/RequestHealthChangeBroadcast.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Structs/TimeModel.h>
 #include <Structs/Vector2_NetQuantize.h>
@@ -601,6 +603,63 @@ TEST_CASE("TimeModel wire bounds", "[encoding.time_model]")
     TimeModel received{};
     Buffer::Reader roundTripReader(&roundTrip);
     received.Deserialize(roundTripReader);
+
+    REQUIRE(sent == received);
+}
+
+TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")
+{
+    // The receiver adds this delta to the target's health and kills the target when the
+    // result stops being positive, so a NaN poisons the actor value and a large negative
+    // number is a remote kill switch that works on any actor in range.
+    Buffer buff(1000);
+    Buffer::Writer writer(&buff);
+    Serialization::WriteVarInt(writer, 42);
+    Serialization::WriteFloat(writer, std::numeric_limits<float>::quiet_NaN());
+
+    RequestHealthChangeBroadcast nan{};
+    Buffer::Reader reader(&buff);
+    nan.DeserializeRaw(reader);
+
+    REQUIRE(nan.Id == 42);
+    REQUIRE(nan.DeltaHealth == 0.f);
+
+    Buffer huge(1000);
+    Buffer::Writer hugeWriter(&huge);
+    Serialization::WriteVarInt(hugeWriter, 42);
+    Serialization::WriteFloat(hugeWriter, -1.0e30f);
+
+    RequestHealthChangeBroadcast clamped{};
+    Buffer::Reader hugeReader(&huge);
+    clamped.DeserializeRaw(hugeReader);
+
+    REQUIRE(clamped.DeltaHealth == -RequestHealthChangeBroadcast::kMaxHealthDelta);
+
+    // The same clamp guards the server to client direction.
+    Buffer notify(1000);
+    Buffer::Writer notifyWriter(&notify);
+    Serialization::WriteVarInt(notifyWriter, 42);
+    Serialization::WriteFloat(notifyWriter, 1.0e30f);
+
+    NotifyHealthChangeBroadcast notification{};
+    Buffer::Reader notifyReader(&notify);
+    notification.DeserializeRaw(notifyReader);
+
+    REQUIRE(notification.DeltaHealth == NotifyHealthChangeBroadcast::kMaxHealthDelta);
+
+    // A plausible hit still round trips unchanged.
+    Buffer roundTrip(1000);
+    Buffer::Writer roundTripWriter(&roundTrip);
+    RequestHealthChangeBroadcast sent{};
+    sent.Id = 7;
+    sent.DeltaHealth = -12.5f;
+    sent.Serialize(roundTripWriter);
+
+    RequestHealthChangeBroadcast received{};
+    Buffer::Reader roundTripReader(&roundTrip);
+    uint64_t trash;
+    roundTripReader.ReadBits(trash, 8); // pop opcode
+    received.DeserializeRaw(roundTripReader);
 
     REQUIRE(sent == received);
 }

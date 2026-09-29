@@ -6,6 +6,11 @@ struct NotifyHealthChangeBroadcast final : ServerMessage
 {
     static constexpr ServerOpcode Opcode = kNotifyHealthChangeBroadcast;
 
+    // The receiver adds this to an actor's health and kills the actor when the result
+    // stops being positive, so an unbounded value is a remote kill switch. A single hit
+    // cannot plausibly exceed this, and a peer that claims more gets a clamped hit.
+    static constexpr float kMaxHealthDelta = 100000.f;
+
     NotifyHealthChangeBroadcast()
         : ServerMessage(Opcode)
     {
