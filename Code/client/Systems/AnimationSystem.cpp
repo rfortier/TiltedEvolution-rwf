@@ -21,9 +21,26 @@
 
 extern thread_local const char* g_animErrorCode;
 
+namespace
+{
+// Hard bound on the replay queue. It normally drains one action per frame, but
+// nothing drains it while the actor has no 3D yet or its animation graph is not
+// ready, and every snapshot in range keeps appending to it. Newest actions win,
+// the same policy the interpolation window uses.
+constexpr size_t kMaxQueuedActions = 256;
+} // namespace
+
 void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationComponent& aAnimationComponent, const uint64_t aTick) noexcept
 {
     auto& actions = aAnimationComponent.TimePoints;
+
+    while (actions.size() > kMaxQueuedActions)
+        actions.pop_front();
+
+    // An unresolvable actor has nothing to replay, but its queue still has to be
+    // trimmed above, or it grows with every snapshot that mentions it.
+    if (!apActor)
+        return;
 
     const auto it = std::begin(actions);
     if (it != std::end(actions) && it->Tick <= aTick)

@@ -5420,4 +5420,122 @@ python Tools\Scripts\check_docs.py
 > 判据只有一条:凡是靠游标/偏移做增量发送的地方,推进量必须等于写出去的条数;
 > 写成 `cursor = container.size();` 就等于把「这一包截断」升级成「这段数据永久丢失」。
 
+## 50. 2026-09-29 场次:远端动画回放队列没有上界 —— 判据是「同族的插值窗口早就有了 kMaxSamples」
+
+> **锚点**:本节的修复落在 `Code/client/Systems/AnimationSystem.cpp` 与 `Code/client/Services/Generic/CharacterService.cpp`。
+
+### 50.1 缺陷:一个只有一条出口、却有两处入口的队列
+
+`Code/client/Components/RemoteAnimationComponent.h` 里的 `List<ActionEvent> TimePoints`
+是远端角色的动作回放队列。入口两处,都不看长度:
+
+```cpp
+// Code/client/Services/Generic/CharacterService.cpp:689
+animationComponent.TimePoints.push_back(action);
+
+// Code/client/Systems/AnimationSystem.cpp:104
+aAnimationComponent.TimePoints.insert(aAnimationComponent.TimePoints.end(), acReplay.Actions.begin(), acReplay.Actions.end());
+```
+
+出口只有一处:`Code/client/Systems/AnimationSystem.cpp:86` 的 `actions.pop_front();`,条件是
+**队首那一条已经到期**(`:46 if (it != std::end(actions) && it->Tick <= aTick)`)。而在这之前
+还有一道更早的返回:
+
+```cpp
+// Code/client/Systems/AnimationSystem.cpp:49(修复前)
+if (!apActor->animationGraphHolder.IsReady())
+{
+    // Animation graph not ready, keep the action in queue and try again later
+    return;
+}
+```
+
+再加上唯一的调用点 `Code/client/Services/Generic/CharacterService.cpp:1983` 附近的
+
+```cpp
+if (!pActor)
+    continue;
+```
+
+——actor 解析不出来时**连 Update 都不调用**。于是「远端角色刚 spawn、3D 还没加载完」
+「动画图还没就绪」「换 cell 的窗口里 form 查不到」这三种**正常状态**下,队列只进不出,
+而且没有任何一处会裁剪它。喂入速度是服务端 `ProcessMovementChanges` 的 50 Hz × 每条动作
+(`update.ActionEvents = animationComponent.Actions;` 是整份拷贝),积攒的是完整的
+`ActionEvent`(`Code/encoding/Structs/ActionEvent.h`:两个 `CachedString` + 一份
+`AnimationVariables`,后者上界 `kMaxVariableCount = 0x1000`)。
+
+### 50.2 判据:同族的插值窗口有硬上界,动画回放队列没有
+
+| 位置 | 内容 | 判定 |
+| --- | --- | --- |
+| `Code/client/Systems/InterpolationSystem.cpp:19` | `constexpr size_t kMaxSamples = 8;` + `:48-51` 注释「Keep the window bounded. Newest samples win; dropping from the front is what makes this safe against a play head that has stopped advancing.」 | ✅ 同族已有的上界 |
+| `Code/client/Components/InterpolationComponent.h:24` | `List<TimePoint> TimePoints;` 受上面那条上界约束 | ✅ |
+| `Code/client/Components/RemoteAnimationComponent.h` | `List<ActionEvent> TimePoints;` **没有对应上界** | ❌ 本节缺陷 |
+| `docs/PITFALLS.md:1485` | 早已记录插值窗口上限(「并加了 `kMaxSamples = 8` 的硬上限,防时钟重同步时窗口失控」) | 判据出处 |
+
+判据一句话:**一个会被持续喂入、而出口可能被正常状态挡住的队列,必须有一个「只看最近 N 条」的兜底出口。**
+
+### 50.3 修法:裁剪放在所有提前返回之前
+
+```cpp
+// Code/client/Systems/AnimationSystem.cpp
+namespace
+{
+// Hard bound on the replay queue. It normally drains one action per frame, but
+// nothing drains it while the actor has no 3D yet or its animation graph is not
+// ready, and every snapshot in range keeps appending to it. Newest actions win,
+// the same policy the interpolation window uses.
+constexpr size_t kMaxQueuedActions = 256;
+} // namespace
+
+void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationComponent& aAnimationComponent, const uint64_t aTick) noexcept
+{
+    auto& actions = aAnimationComponent.TimePoints;
+
+    while (actions.size() > kMaxQueuedActions)
+        actions.pop_front();
+
+    // An unresolvable actor has nothing to replay, but its queue still has to be
+    // trimmed above, or it grows with every snapshot that mentions it.
+    if (!apActor)
+        return;
+```
+
+`Code/client/Services/Generic/CharacterService.cpp` 的调用点同步改成**无条件调用**:
+
+```cpp
+// Called even when the actor cannot be resolved: the queue has to be
+// trimmed either way, and the snapshots keep appending to it.
+AnimationSystem::Update(m_world, pActor, animationComponent, tick);
+```
+
+上界取 `256`:服务端的 `ActionReplayCache` 上界只有 `kReplayCacheMaxSize = 32`
+(`Code/server/Game/Animation/ActionReplayCache.h:19`),256 条已远超任何合法回放链,
+而「最新优先」与插值窗口的策略一致。
+
+### 50.4 复核命令(照抄)
+
+```powershell
+# 1. 上界只有一处定义,裁剪在所有提前返回之前
+Select-String -Path Code\client\Systems\AnimationSystem.cpp -Pattern 'kMaxQueuedActions|pop_front|if \(!apActor\)'
+
+# 2. 调用点不再被 if (!pActor) 跳过
+Select-String -Path Code\client\Services\Generic\CharacterService.cpp -Pattern 'AnimationSystem::Update|TimePoints.push_back'
+
+# 3. 改动面与文档门禁
+git diff --stat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`AnimationSystem.cpp` 里 `kMaxQueuedActions` 只在 `:30` 定义一次,`:37-38` 是裁剪,
+`:42` 是 `if (!apActor)`;`CharacterService.cpp` 里 `AnimationSystem::Update` 只在 `:1989` 调用一次、
+且前面没有 `if (!pActor)`;`python Tools/Scripts/check_docs.py` → `DOC CHECK OK` / `10 changelog version(s)`。
+
+> **教训**:队列的上界不能靠「正常情况下它会自己排空」来保证 ——
+> 排空的条件(actor 解析得出来、动画图就绪)恰恰是**加载窗口里不成立**的那一条。
+> 判据是横向的:同一个文件族里,插值窗口有 `kMaxSamples`,动作回放队列就该有对应的上界;
+> 只要一个容器「入口在别人手里、出口被正常状态挡着」,就必须有兜底裁剪,
+> 而且裁剪必须放在**所有提前返回之前** —— 放在之后,等于把「actor 解析不出来」
+> 这种最常见的触发条件排除在外,兜底也就形同虚设。
+
 

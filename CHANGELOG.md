@@ -389,6 +389,54 @@ VarInt 对小于 65536 的值**编码字节完全相同**,所以线上格式向�
 **验证**:`Code/encoding/StringCache.cpp` 里不再有 `aStartId = m_idToString.size();`
 这种「无条件推到末尾」的写法;`python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:远端角色的动画回放队列没有上界,动画图没就绪时会一直涨
+
+`RemoteAnimationComponent::TimePoints` 是远端角色的**动作回放队列**:服务端以 50 Hz 把范围内
+每个非 owner 角色的动作整批发下来,客户端逐条塞进这个队列,再由 `AnimationSystem::Update`
+每帧弹出**到期的那一条**去播放。入口有两处,都不看队列有多长:
+
+```cpp
+// Code/client/Services/Generic/CharacterService.cpp:689
+animationComponent.TimePoints.push_back(action);
+// Code/client/Systems/AnimationSystem.cpp:104
+aAnimationComponent.TimePoints.insert(aAnimationComponent.TimePoints.end(), acReplay.Actions.begin(), acReplay.Actions.end());
+```
+
+出口却只有「队首到期就 pop 一条」这一条,而且被两道门挡着:actor 解析不出来时调用点
+直接跳过(`if (!pActor) continue;`),`Actor` 有了但 `animationGraphHolder.IsReady()` 还是假时
+函数提前返回(注释原文「Animation graph not ready, keep the action in queue and try again later」)。
+两道门都是**正常状态** —— 远端角色刚 spawn、模型还没加载完,或者玩家刚切完 cell ——
+但队列在这期间只进不出:动作越积越多,而**没有任何一处会裁剪它**。
+
+判据在**同族的另一个队列**上:`Code/client/Systems/InterpolationSystem.cpp:19` 的插值窗口有
+`constexpr size_t kMaxSamples = 8;`,注释写得很清楚 ——「Keep the window bounded. Newest samples
+win; dropping from the front is what makes this safe against a play head that has stopped
+advancing.」动画回放队列面对的是同一个问题(play head 停了),却没有这个上界。
+
+修法是给队列加硬上界,并把裁剪放在**所有提前返回之前**:
+
+```cpp
+// Code/client/Systems/AnimationSystem.cpp
+constexpr size_t kMaxQueuedActions = 256;
+
+    auto& actions = aAnimationComponent.TimePoints;
+
+    while (actions.size() > kMaxQueuedActions)
+        actions.pop_front();
+
+    // An unresolvable actor has nothing to replay, but its queue still has to be
+    // trimmed above, or it grows with every snapshot that mentions it.
+    if (!apActor)
+        return;
+```
+
+调用点一并改掉:以前 `if (!pActor) continue;` 会让「actor 解析不出来」这种情况连裁剪的机会
+都没有,现在无论 actor 能不能解析都调用 `AnimationSystem::Update`,把裁剪做掉。
+
+**验证**:`Code/client/Services/Generic/CharacterService.cpp` 里 `AnimationSystem::Update` 的调用
+不再被 `if (!pActor)` 跳过;`kMaxQueuedActions` 只在 `AnimationSystem.cpp` 定义一处;
+`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

@@ -1983,9 +1983,9 @@ void CharacterService::RunRemoteUpdates() noexcept
 
         auto* pForm = TESForm::GetById(formIdComponent.Id);
         auto* pActor = Cast<Actor>(pForm);
-        if (!pActor)
-            continue;
 
+        // Called even when the actor cannot be resolved: the queue has to be
+        // trimmed either way, and the snapshots keep appending to it.
         AnimationSystem::Update(m_world, pActor, animationComponent, tick);
     }
 
