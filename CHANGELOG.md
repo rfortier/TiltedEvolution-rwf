@@ -7,6 +7,93 @@
 每个 tag(形如 `v1.0.20`)对应一个 Release,附上版本号相同的两个包——
 客户端 mod 与专用服务器。逐条提交的历史见 `git log` 与各次 PR。
 
+## v1.1.9(2026-09-29)
+
+### 修复:任意客户端一个畸形包即可打崩专用服务器,并修掉一整类「线上计数与实体数不一致」
+
+**现象**:专用服务器上,一个**还没通过认证**的连接发一个畸形的
+`AssignCharacterRequest`,服务端进程直接终止,没有崩溃转储、没有日志。
+
+**根因**:`Factions::Deserialize`(`Code/encoding/Structs/Factions.cpp`)在阵营
+数量超过 511 时**抛异常**:
+
+```cpp
+// Code/encoding/Structs/Factions.cpp(修复前)
+auto npcCount = Serialization::ReadVarInt(aReader);
+if (npcCount > 0x1FF)
+    throw std::runtime_error("Too many NPC factions received !");
+```
+
+而这条调用链**整条都是 `noexcept`**:`AssignCharacterRequest::DeserializeRaw`
+(`Code/encoding/Messages/Message.h:24`)是 `noexcept` 虚函数,
+`CharacterData::Deserialize`、`CharacterSpawnRequest::DeserializeRaw` 同样如此;
+`CODE_GUIDELINES.md:47` 也明文写着 "Don't use exceptions"。于是异常从 `noexcept`
+帧里逃出 ⇒ `std::terminate` ⇒ **进程直接死**,连崩溃处理都没机会跑。
+判据是**解析发生在认证之前**:`GameServer::OnConsume`(`Code/server/GameServer.cpp:592`)
+先 `factory.Extract(reader)` 再 `:600 m_messageHandlers[...]`,而
+`GetByConnectionId` 与 `Kick` 都在 handler 内部 —— 所以**未认证的连接就能触发**。
+
+同一族还有第二副面孔,而且**合法流量**就能触发:计数写在线上,但写侧只写了
+计数的低位、循环却写了全部条目,读侧于是只消费 `count` 条,剩下的字节被当成
+下一条消息解析 —— **整条流从此失步**。最典型的是 `Mods`:
+
+```cpp
+// Code/encoding/Structs/Mods.cpp(修复前)
+const uint16_t modCount = std::min(ModList.size(), size_t(4096)) & 0xFFFF;
+aWriter.WriteBits(modCount, 13);
+for (auto& entry : ModList)   // ← 写的是全部条目,不是 modCount 条
+```
+
+`Tints` 更直接:8 位计数**没有 clamp**,超过 255 个条目即静默截断失步。
+第三副面孔是**复用对象上的累积**:`insert()` / `push_back()` 都不清空,
+消息对象复用一次就把上一包的内容再应用一遍。
+
+**判据是仓库自己的既有约定**——同族缺陷里早就有两处正确写法:
+
+| 位置 | 写法 | 上界来自 |
+| --- | --- | --- |
+| `NotifyFactionsChanges.cpp:27-28` | `if (count >= kMaxChangeCount) return;` | 早退,不抛异常 |
+| `PluginMessagingRequest.cpp:40-42` | `std::min<uint32_t>(size, kMaxPayloadBytes)` | 注释:"Never trust the wire length: a peer can claim more bytes than it sent." |
+| `Factions` / `Mods` / `Tints` / … | 无上界,或计数与循环不一致 | ❌ **本次缺陷** |
+
+判据可机械执行:**「`WriteBits(x.size() & MASK, N)` 后面跟 `for (auto& e : x)`」
+= 计数与实体数必然不一致**;以及**「`ReadVarInt` 出来的计数直接进
+`resize`/`assign`/循环」= 无上界**。
+
+**修复**:38 个 `Code/encoding/**` 文件,统一成两句话 ——
+**读侧读完计数立刻 `std::min` 夹紧(或早退),绝不抛异常;写侧写几条就只循环几条。**
+
+```cpp
+// Code/encoding/Structs/Factions.cpp(修复后)
+const auto npcCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
+NpcFactions.resize(npcCount);
+```
+
+```cpp
+// Code/encoding/Structs/Mods.cpp(修复后)
+for (size_t i = 0; i < modCount; ++i)   // ← 与 13 位计数一致
+```
+
+新增的上界常量全部有出处,不是随手取的数:`kMaxActorValueCount = 164` 就是游戏的
+`kActorValueCount`;`kMaxFactionCount = 0x1FF`、`kMaxObjectCount = 0xFF`、
+`kMaxTintCount = 0xFF`、`kMaxEntryCount = 0xFFFF` 都是**线上计数本身的位宽**;
+`kMaxEntryCount = 0x1000` / `kMaxEffectCount = 0x40` / `kMaxVariableCount = 0x1000`
+是 VarInt 计数的宽上界,给真实数据留足余量(玩家背包、附魔效果、行为图变量
+都在几百以内)。
+
+**同时修掉三处同族缺陷**:`AnimationVariables::String_to_VectorBool`
+(`Code/encoding/Structs/AnimationVariables.cpp:33-42`)的位表外层循环**不检查
+`chars` 边界**,字符串偏短就**读越界**;`Inventory::Entry::Deserialize` 与
+`Inventory::Deserialize` 的 `push_back` 不清空;`MagicEquipment::Deserialize`
+在三个「这个手有没有法术」的 flag 全为假时**保留上一包的法术**,等于把已经
+收起来的法术又装回去。
+
+**验证**:全 `Code/encoding` 再查一遍 `WriteBits(...size()...)` 与
+`WriteVarInt(aWriter, ...size())`,**零命中**;34 个 `ReadVarInt` 读点逐个核对,
+计数语义的全部有上界,非计数的(Id / Tick / DiscordId / MessageType)本就不需要;
+`git diff --shortstat` = `39 files changed, 396 insertions(+), 120 deletions(-)`;
+`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

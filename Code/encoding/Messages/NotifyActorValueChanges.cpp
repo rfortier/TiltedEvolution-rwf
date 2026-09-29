@@ -1,13 +1,22 @@
 #include <Messages/NotifyActorValueChanges.h>
+#include <algorithm>
 
 void NotifyActorValueChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteVarInt(aWriter, Id);
     Serialization::WriteVarInt(aWriter, OwnershipEpoch);
 
-    Serialization::WriteVarInt(aWriter, Values.size());
+    // The reader clamps this count to ActorValues::kMaxActorValueCount, so writing
+    // more entries than that would desynchronise the stream.
+    const auto count = std::min<size_t>(Values.size(), ActorValues::kMaxActorValueCount);
+    Serialization::WriteVarInt(aWriter, count);
+
+    size_t written = 0;
     for (auto& value : Values)
     {
+        if (written++ >= count)
+            break;
+
         Serialization::WriteVarInt(aWriter, value.first);
         Serialization::WriteFloat(aWriter, value.second);
     }
@@ -20,11 +29,15 @@ void NotifyActorValueChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRea
     Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     OwnershipEpoch = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
-    const auto count = Serialization::ReadVarInt(aReader);
-    for (int i = 0; i < count; i++)
+    // A message object can be reused: without this the entries of the previous
+    // message would linger and be applied a second time.
+    Values.clear();
+
+    const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), ActorValues::kMaxActorValueCount);
+    for (uint64_t i = 0; i < count; i++)
     {
-        auto key = Serialization::ReadVarInt(aReader);
+        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
         auto value = Serialization::ReadFloat(aReader);
-        Values.insert({key & 0xFFFFFFFF, value});
+        Values.insert({key, value});
     }
 }

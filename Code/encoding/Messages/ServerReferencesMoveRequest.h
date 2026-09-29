@@ -21,4 +21,9 @@ struct ServerReferencesMoveRequest final : ServerMessage
 
     uint64_t Tick{};
     TiltedPhoques::Map<uint32_t, ReferenceUpdate> Updates{};
+
+    // The server reports every entity the receiving player can see, so this is larger
+    // than the client side limit but still bounded. Never trust the wire length: clamp
+    // instead of reading whatever the packet claims.
+    static constexpr uint64_t kMaxUpdateCount = 0x4000;
 };

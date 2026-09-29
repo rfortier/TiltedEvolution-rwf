@@ -7,6 +7,11 @@
 
 using TiltedPhoques::Serialization;
 
+// The count field is 16 bits wide, so a longer log could not be received anyway:
+// clamp it, or the reader consumes only the low 16 bits worth of entries and then
+// misparses the rest of the packet.
+static constexpr size_t kMaxEntryCount = 0xFFFF;
+
 bool QuestLog::operator==(const QuestLog& acRhs) const noexcept
 {
     return Entries == acRhs.Entries;
@@ -19,13 +24,15 @@ bool QuestLog::operator!=(const QuestLog& acRhs) const noexcept
 
 void QuestLog::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    aWriter.WriteBits(Entries.size() & 0xFFFF, 16);
-    for (auto& e : Entries)
+    const auto count = std::min<size_t>(Entries.size(), kMaxEntryCount);
+    aWriter.WriteBits(count, 16);
+
+    for (size_t i = 0; i < count; ++i)
     {
-        e.Id.Serialize(aWriter);
+        Entries[i].Id.Serialize(aWriter);
 
         // id's can be in the full 16 bit range
-        aWriter.WriteBits(e.Stage, 16);
+        aWriter.WriteBits(Entries[i].Stage, 16);
     }
 }
 

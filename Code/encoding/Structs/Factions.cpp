@@ -1,6 +1,6 @@
 #include <Structs/Factions.h>
 #include <TiltedCore/Serialization.hpp>
-#include <stdexcept>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -17,26 +17,27 @@ bool Factions::operator!=(const Factions& acRhs) const noexcept
 void Factions::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     // Limit the number of factions to send
-    Serialization::WriteVarInt(aWriter, NpcFactions.size() & 0x1FF);
+    const auto npcCount = std::min<uint64_t>(NpcFactions.size(), kMaxFactionCount);
+    Serialization::WriteVarInt(aWriter, npcCount);
 
-    for (auto& entry : NpcFactions)
+    for (uint64_t i = 0; i < npcCount; ++i)
     {
-        entry.Serialize(aWriter);
+        NpcFactions[i].Serialize(aWriter);
     }
 
-    Serialization::WriteVarInt(aWriter, ExtraFactions.size() & 0x1FF);
+    const auto extraCount = std::min<uint64_t>(ExtraFactions.size(), kMaxFactionCount);
+    Serialization::WriteVarInt(aWriter, extraCount);
 
-    for (auto& entry : ExtraFactions)
+    for (uint64_t i = 0; i < extraCount; ++i)
     {
-        entry.Serialize(aWriter);
+        ExtraFactions[i].Serialize(aWriter);
     }
 }
 
-void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader)
+void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    auto npcCount = Serialization::ReadVarInt(aReader);
-    if (npcCount > 0x1FF)
-        throw std::runtime_error("Too many NPC factions received !");
+    // Never trust the wire length, and never throw: this runs inside a noexcept frame.
+    const auto npcCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
 
     NpcFactions.resize(npcCount);
     for (auto& entry : NpcFactions)
@@ -44,9 +45,7 @@ void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader)
         entry.Deserialize(aReader);
     }
 
-    auto extraCount = Serialization::ReadVarInt(aReader) & 0x1FF;
-    if (extraCount > 0x1FF)
-        throw std::runtime_error("Too many extra factions received !");
+    const auto extraCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
 
     ExtraFactions.resize(extraCount);
     for (auto& entry : ExtraFactions)

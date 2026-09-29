@@ -27,5 +27,8 @@ struct Tints
     void Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept;
     void Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept;
 
+    // The count travels in 8 bits, so a well behaved peer can never exceed this.
+    static constexpr size_t kMaxTintCount = 0xFF;
+
     Vector<Entry> Entries;
 };

@@ -1,12 +1,19 @@
 #include <Messages/AssignObjectsResponse.h>
+#include <algorithm>
+
+// The count field is 8 bits wide, so a longer list could not be received anyway:
+// clamp it, or the reader consumes only the low 8 bits worth of entries and then
+// misparses the rest of the packet.
+static constexpr size_t kMaxObjectCount = 0xFF;
 
 void AssignObjectsResponse::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    aWriter.WriteBits(Objects.size() & 0xFF, 8);
+    const auto count = std::min<size_t>(Objects.size(), kMaxObjectCount);
+    aWriter.WriteBits(count, 8);
 
-    for (const auto& object : Objects)
+    for (size_t i = 0; i < count; ++i)
     {
-        object.Serialize(aWriter);
+        Objects[i].Serialize(aWriter);
     }
 }
 

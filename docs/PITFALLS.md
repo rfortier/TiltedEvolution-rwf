@@ -4607,3 +4607,125 @@ Select-String -Path Code/client/Services/**/*.cpp -Pattern '\.value\(\)'
 > 它取到的是垃圾值 —— 比裸指针的 null 更难查,因为崩溃点离缺陷点很远
 > (这里崩在脚本层)。**同一个调用在仓库里出现多次时,「其他几处判没判」就是
 > 最省事也最可靠的判据。**
+
+## 45. 2026-09-29 场次:一个畸形包打崩专用服务器,以及一整类「线上计数与实体数不一致」 —— 判据是「写几条就只循环几条,读到的计数先夹紧再进 resize」
+
+> **锚点**:本节的修复落在 `Code/encoding/**`(39 个文件)。
+
+### 45.1 缺陷:计数写在线上,但读侧不设上界、写侧循环写全量
+
+第一副面孔 —— **异常从 `noexcept` 帧里逃出**,未认证连接即可打崩服务端:
+
+```cpp
+// Code/encoding/Structs/Factions.cpp(修复前)
+void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader)
+{
+    auto npcCount = Serialization::ReadVarInt(aReader);
+    if (npcCount > 0x1FF)
+        throw std::runtime_error("Too many NPC factions received !");   // ← std::terminate
+    NpcFactions.resize(npcCount);
+```
+
+整条调用链都是 `noexcept`:`AssignCharacterRequest::DeserializeRaw` 与
+`CharacterSpawnRequest::DeserializeRaw` 都是 `noexcept` 虚函数
+(`Code/encoding/Messages/Message.h:24`、`:45`),`CharacterData::Deserialize`
+同理,`CODE_GUIDELINES.md:47` 也明文 "Don't use exceptions"。
+**异常从 `noexcept` 帧里逃出 = `std::terminate` = 进程直接死,连崩溃转储都没有。**
+
+第二副面孔 —— **合法流量**就能触发,计数与循环写的条目数不一致:
+
+```cpp
+// Code/encoding/Structs/Mods.cpp(修复前)
+const uint16_t modCount = std::min(ModList.size(), size_t(4096)) & 0xFFFF;
+aWriter.WriteBits(modCount, 13);
+for (auto& entry : ModList)      // ← 写的是全部条目,不是 modCount 条
+```
+
+读侧只消费 `count` 条,多写的字节被当成**下一条消息**解析 ⇒ **整条流从此失步**。
+`Tints` 更直接:`aWriter.WriteBits(Entries.size(), 8)` **没有 clamp**,
+超过 255 个条目即静默截断失步。
+
+第三副面孔 —— **复用对象上的累积**:`insert()` / `push_back()` 都不清空,
+消息对象复用一次就把上一包的内容**再应用一遍**。
+
+### 45.2 判据:仓库里早就有正确写法,同族缺陷却没跟上
+
+| 位置 | 写法 | 判定 |
+| --- | --- | --- |
+| `Code/encoding/Messages/NotifyFactionsChanges.cpp:27-28` | `if (count >= kMaxChangeCount) return;`(早退,不抛) | ✅ |
+| `Code/encoding/Messages/PluginMessagingRequest.cpp:40-42` | `std::min<uint32_t>(size, kMaxPayloadBytes)`,注释 "Never trust the wire length: a peer can claim more bytes than it sent." | ✅ |
+| `Code/encoding/Structs/Factions.cpp:39` | `throw std::runtime_error` | ❌ 本次缺陷 |
+| `Code/encoding/Structs/Mods.cpp:22` | 13 位计数 + `for (auto& entry : ModList)` | ❌ 本次缺陷 |
+| `Code/encoding/Structs/Tints.cpp:29` | `WriteBits(Entries.size(), 8)` 无 clamp | ❌ 本次缺陷 |
+
+两条**可机械执行**的判据:
+
+1. **`WriteBits(x.size() & MASK, N)` 后面跟 `for (auto& e : x)`** ⇒ 计数与实体数必然不一致。
+2. **`ReadVarInt` 出来的计数直接进 `resize`/`assign`/循环** ⇒ 无上界(畸形包可致巨量分配)。
+
+可达性判据:**解析发生在认证之前** ——
+`GameServer::OnConsume`(`Code/server/GameServer.cpp:592`)先 `factory.Extract(reader)`,
+`:600` 才 `m_messageHandlers[...]`,而 `GetByConnectionId` 判空与 `Kick` 都在 handler 内部
+⇒ **未认证连接就能触发**。
+
+### 45.3 修法:读侧读完计数立刻夹紧(或早退),写侧写几条就只循环几条
+
+```cpp
+// Code/encoding/Structs/Factions.cpp(修复后)
+const auto npcCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
+NpcFactions.resize(npcCount);
+```
+
+```cpp
+// Code/encoding/Structs/Mods.cpp(修复后)
+for (size_t i = 0; i < modCount; ++i)      // ← 与 13 位计数一致
+```
+
+**绝不抛异常**:`noexcept` 链里只能 `std::min` 夹紧或早退。
+上界常量**全部有出处**,不是随手取的数:`kMaxActorValueCount = 164` 就是游戏的
+`kActorValueCount`;`0xFF` / `0x1FF` / `0xFFFF` 是**线上计数本身的位宽**;
+`0x1000` / `0x40` 是 VarInt 计数的宽上界(玩家背包、附魔效果、行为图变量都在几百以内)。
+共 21 个新常量、39 个文件。
+
+顺带修掉三处同族缺陷:`AnimationVariables::String_to_VectorBool`
+(`Code/encoding/Structs/AnimationVariables.cpp:33-42`)的位表外层循环**不检查 `chars` 边界**
+(字符串偏短即**读越界**);`Inventory::Entry::Deserialize` 与 `Inventory::Deserialize`
+的 `push_back` 不清空;`MagicEquipment::Deserialize` 在三个 flag 全为假时
+**保留上一包的法术**(等于把收起来的法术又装回去,与
+`Code/client/Games/Skyrim/Actor.cpp:809-834` 的「空 GameId = 这只手没法术」矛盾)。
+
+**修崩溃,不改行为**:被夹紧的是**畸形包**,合法流量走的分支一条没变。
+
+### 45.4 复核命令(照抄)
+
+```powershell
+# 1. 写侧:计数与循环不一致的模式应当零命中
+Select-String -Path Code\encoding\Messages\*.cpp,Code\encoding\Structs\*.cpp `
+  -Pattern 'WriteBits\(.*\.size\(\)|WriteVarInt\(aWriter, .*\.size\(\)\)'
+
+# 2. 读侧:所有 ReadVarInt 计数点,逐个确认已 clamp 或早退
+Select-String -Path Code\encoding\Messages\*.cpp,Code\encoding\Structs\*.cpp `
+  -Pattern 'ReadVarInt\(aReader\)'
+
+# 3. 异常:encoding 层不应再有任何 throw
+Select-String -Path Code\encoding\**\*.cpp,Code\encoding\**\*.h -Pattern 'throw '
+
+# 4. 改动面与文档门禁
+git diff --shortstat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`WriteBits(...size()...)` 与 `WriteVarInt(aWriter, ...size())` **零命中**;
+34 个 `ReadVarInt` 读点逐个核对 —— 计数语义的全部有上界,非计数的
+(Id / Tick / DiscordId / MessageType / 堆叠 Count)本就不需要;
+`Code/encoding` 已无任何 `throw`(全 `Code` 仅剩
+`Code/immersive_launcher/stubs/DllBlocklist.cpp:131-132` 的注释);
+`git diff --shortstat -- Code` = `39 files changed, 396 insertions(+), 120 deletions(-)`;
+`python Tools\Scripts\check_docs.py` → `DOC CHECK OK` / `10 changelog version(s)`。
+
+> **教训**:「计数写在线上」这件事**天然要求读写两侧对同一个上界达成一致**,
+> 而 C++ 里这两侧隔着几百行、还分居不同文件 —— 于是它成了最容易单边漂移的地方。
+> 判据因此可以简化成一句话:**线上有几个 bit 的计数,就只允许有几个 bit 的实体。**
+> 另外两条通用教训:(1)`noexcept` 链里的任何 `throw` 都不是「错误处理」而是
+> **`std::terminate`**,所以守卫只能夹紧或早退;(2)解析**先于**认证是常态,
+> 所以解码器必须按「对端是敌手」来写,不能按「对端是自己人」来写。

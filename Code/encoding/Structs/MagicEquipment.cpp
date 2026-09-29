@@ -40,6 +40,12 @@ void MagicEquipment::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcep
     bool isRightSpellSet = Serialization::ReadBool(aReader);
     bool isShoutSet = Serialization::ReadBool(aReader);
 
+    // The flags say which spells the sender has equipped: an unset one means the hand
+    // is empty, so the field has to be cleared instead of keeping the previous value.
+    LeftHandSpell = GameId{};
+    RightHandSpell = GameId{};
+    Shout = GameId{};
+
     if (isLeftSpellSet)
         LeftHandSpell.Deserialize(aReader);
 

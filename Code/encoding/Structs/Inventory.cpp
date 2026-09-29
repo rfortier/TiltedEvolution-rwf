@@ -1,5 +1,6 @@
 #include <Structs/Inventory.h>
 #include <TiltedCore/Serialization.hpp>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -30,10 +31,13 @@ void Inventory::Entry::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const n
 
     ExtraEnchantId.Serialize(aWriter);
     Serialization::WriteVarInt(aWriter, ExtraEnchantCharge);
-    Serialization::WriteVarInt(aWriter, EnchantData.Effects.size());
-    for (const EffectItem& effect : EnchantData.Effects)
+    // The reader clamps this count to kMaxEffectCount, so writing more entries than
+    // that would desynchronise the stream.
+    const auto effectCount = std::min<size_t>(EnchantData.Effects.size(), kMaxEffectCount);
+    Serialization::WriteVarInt(aWriter, effectCount);
+    for (size_t i = 0; i < effectCount; ++i)
     {
-        effect.Serialize(aWriter);
+        EnchantData.Effects[i].Serialize(aWriter);
     }
 
     Serialization::WriteFloat(aWriter, ExtraHealth);
@@ -59,7 +63,8 @@ void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexc
 
     ExtraEnchantId.Deserialize(aReader);
     ExtraEnchantCharge = Serialization::ReadVarInt(aReader) & 0xFFFF;
-    uint64_t effectCount = Serialization::ReadVarInt(aReader);
+    const auto effectCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxEffectCount);
+    EnchantData.Effects.clear();
     for (uint64_t i = 0; i < effectCount; i++)
     {
         EffectItem effect;
@@ -103,10 +108,13 @@ bool Inventory::Entry::operator!=(const Inventory::Entry& acRhs) const noexcept
 
 void Inventory::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    Serialization::WriteVarInt(aWriter, Entries.size());
-    for (const Entry& entry : Entries)
+    // The reader clamps this count to kMaxEntryCount, so writing more entries than
+    // that would desynchronise the stream.
+    const auto count = std::min<size_t>(Entries.size(), kMaxEntryCount);
+    Serialization::WriteVarInt(aWriter, count);
+    for (size_t i = 0; i < count; ++i)
     {
-        entry.Serialize(aWriter);
+        Entries[i].Serialize(aWriter);
     }
 
     CurrentMagicEquipment.Serialize(aWriter);
@@ -114,7 +122,8 @@ void Inventory::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 
 void Inventory::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    uint32_t count = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    const auto count = std::min<uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFF, kMaxEntryCount);
+    Entries.clear();
     for (uint32_t i = 0; i < count; i++)
     {
         Entry entry;

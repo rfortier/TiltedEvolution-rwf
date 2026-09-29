@@ -1,6 +1,6 @@
 #include <Structs/ReferenceUpdate.h>
 #include <TiltedCore/Serialization.hpp>
-#include <stdexcept>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -18,19 +18,23 @@ void ReferenceUpdate::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const no
 {
     UpdatedMovement.Serialize(aWriter);
 
-    Serialization::WriteVarInt(aWriter, ActionEvents.size());
+    // The reader clamps this count to kMaxActionEventCount, so writing more entries
+    // than that would desynchronise the stream.
+    const auto count = std::min<size_t>(ActionEvents.size(), kMaxActionEventCount);
+    Serialization::WriteVarInt(aWriter, count);
 
-    for (auto& entry : ActionEvents)
+    for (size_t i = 0; i < count; ++i)
     {
-        entry.GenerateDifferential(ActionEvent{}, aWriter);
+        ActionEvents[i].GenerateDifferential(ActionEvent{}, aWriter);
     }
 }
 
-void ReferenceUpdate::Deserialize(TiltedPhoques::Buffer::Reader& aReader)
+void ReferenceUpdate::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
     UpdatedMovement.Deserialize(aReader);
 
-    const auto count = Serialization::ReadVarInt(aReader);
+    // Never trust the wire length, and never throw: this runs inside a noexcept frame.
+    const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActionEventCount);
 
     ActionEvents.resize(count);
 

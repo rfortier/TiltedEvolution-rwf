@@ -1,5 +1,6 @@
 #include <Structs/AnimationVariables.h>
 #include <TiltedCore/Serialization.hpp>
+#include <algorithm>
 #include <iostream>
 
 bool AnimationVariables::operator==(const AnimationVariables& acRhs) const noexcept
@@ -36,7 +37,9 @@ void AnimationVariables::String_to_VectorBool(const TiltedPhoques::String& chars
 
     auto citer = chars.begin();
     auto biter = bools.begin();
-    for (uint32_t mask = 1; biter < bools.end(); mask = 1, citer++)
+    // A short string simply leaves the remaining bits false instead of reading past
+    // its end: the length is not guaranteed to match the caller's expectation.
+    for (uint32_t mask = 1; biter < bools.end() && citer < chars.end(); mask = 1, citer++)
         for (; mask < 0x100 && biter < bools.end(); mask <<= 1)
             *biter++ = (*citer & mask) ? true : false;
 }
@@ -74,30 +77,38 @@ void AnimationVariables::Save(std::ostream& aOutput) const
 //
 void AnimationVariables::GenerateDiff(const AnimationVariables& aPrevious, TiltedPhoques::Buffer::Writer& aWriter) const
 {
-    const size_t sizeChangedVector = Booleans.size() + Integers.size() + Floats.size();
+    // The reader clamps every count to kMaxVariableCount, so emitting more than that
+    // would desynchronise the stream: clamp here as well, and write exactly as many
+    // entries as the counts claim.
+    const auto booleansSize = std::min<size_t>(Booleans.size(), kMaxVariableCount);
+    const auto integersSize = std::min<size_t>(Integers.size(), kMaxVariableCount);
+    const auto floatsSize = std::min<size_t>(Floats.size(), kMaxVariableCount);
+
+    const size_t sizeChangedVector = booleansSize + integersSize + floatsSize;
     auto changedVector = Booleans;
+    changedVector.resize(booleansSize);
     changedVector.reserve(sizeChangedVector);
 
-    for (size_t i = 0; i < Integers.size(); i++)
+    for (size_t i = 0; i < integersSize; i++)
         changedVector.push_back(aPrevious.Integers.size() != Integers.size() || aPrevious.Integers[i] != Integers[i]);
-    for (size_t i = 0; i < Floats.size(); i++)
+    for (size_t i = 0; i < floatsSize; i++)
         changedVector.push_back(aPrevious.Floats.size() != Floats.size() || aPrevious.Floats[i] != Floats[i]);
 
     // Now serialize: VarInts Booleans.size(), Integers.size(), Floats.size(),
     // then the change table bits, then changed Integers, then changed Floats.
-    TiltedPhoques::Serialization::WriteVarInt(aWriter, Booleans.size());
-    TiltedPhoques::Serialization::WriteVarInt(aWriter, Integers.size());
-    TiltedPhoques::Serialization::WriteVarInt(aWriter, Floats.size());
+    TiltedPhoques::Serialization::WriteVarInt(aWriter, booleansSize);
+    TiltedPhoques::Serialization::WriteVarInt(aWriter, integersSize);
+    TiltedPhoques::Serialization::WriteVarInt(aWriter, floatsSize);
 
     TiltedPhoques::String chars;
     VectorBool_to_String(changedVector, chars);
     TiltedPhoques::Serialization::WriteString(aWriter, chars);
 
-    auto biter = changedVector.begin() + Booleans.size();
-    for (size_t i = 0; i < Integers.size(); i++)
+    auto biter = changedVector.begin() + booleansSize;
+    for (size_t i = 0; i < integersSize; i++)
         if (*biter++)
             TiltedPhoques::Serialization::WriteVarInt(aWriter, Integers[i] & 0xFFFFFFFF);
-    for (size_t i = 0; i < Floats.size(); i++)
+    for (size_t i = 0; i < floatsSize; i++)
         if (*biter++)
             TiltedPhoques::Serialization::WriteFloat(aWriter, Floats[i]);
 }
@@ -108,11 +119,11 @@ void AnimationVariables::GenerateDiff(const AnimationVariables& aPrevious, Tilte
 // The Changed? table is scanned and for each true bit, the corresponsing Integer
 // or Float is deserialized.
 // 
-void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader)
+void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    size_t booleansSize = TiltedPhoques::Serialization::ReadVarInt(aReader);
-    size_t integersSize = TiltedPhoques::Serialization::ReadVarInt(aReader);
-    size_t floatsSize   = TiltedPhoques::Serialization::ReadVarInt(aReader);
+    const size_t booleansSize = std::min<uint64_t>(TiltedPhoques::Serialization::ReadVarInt(aReader), kMaxVariableCount);
+    const size_t integersSize = std::min<uint64_t>(TiltedPhoques::Serialization::ReadVarInt(aReader), kMaxVariableCount);
+    const size_t floatsSize   = std::min<uint64_t>(TiltedPhoques::Serialization::ReadVarInt(aReader), kMaxVariableCount);
     if (Integers.size() != integersSize)
         Integers.assign(integersSize, 0);
     if (Floats.size() != floatsSize)

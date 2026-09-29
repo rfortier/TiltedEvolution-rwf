@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Message.h"
+#include <Structs/ActorValues.h>
 
 struct RequestActorMaxValueChanges final : ClientMessage
 {

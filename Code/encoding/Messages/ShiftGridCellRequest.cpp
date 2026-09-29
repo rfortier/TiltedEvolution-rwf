@@ -1,4 +1,10 @@
 #include <Messages/ShiftGridCellRequest.h>
+#include <algorithm>
+
+// The count field is 8 bits wide, so a longer list could not be received anyway:
+// clamp it, or the reader consumes only the low 8 bits worth of entries and then
+// misparses the rest of the packet.
+static constexpr size_t kMaxCellCount = 0xFF;
 
 void ShiftGridCellRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -6,11 +12,12 @@ void ShiftGridCellRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) 
     PlayerCell.Serialize(aWriter);
     CenterCoords.Serialize(aWriter);
 
-    aWriter.WriteBits(Cells.size() & 0xFF, 8);
+    const auto count = std::min<size_t>(Cells.size(), kMaxCellCount);
+    aWriter.WriteBits(count, 8);
 
-    for (const auto& cell : Cells)
+    for (size_t i = 0; i < count; ++i)
     {
-        cell.Serialize(aWriter);
+        Cells[i].Serialize(aWriter);
     }
 }
 

@@ -16,14 +16,16 @@ bool Mods::operator!=(const Mods& acRhs) const noexcept
 
 void Mods::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
+    // The count travels in 13 bits, so the entries that follow must be clamped the same
+    // way, otherwise the reader and the writer disagree about the stream layout.
     const uint16_t modCount = std::min(ModList.size(), size_t(4096)) & 0xFFFF;
     aWriter.WriteBits(modCount, 13);
 
-    for (auto& entry : ModList)
+    for (size_t i = 0; i < modCount; ++i)
     {
-        aWriter.WriteBits(entry.Id, 16);
-        Serialization::WriteBool(aWriter, entry.IsLite);
-        Serialization::WriteString(aWriter, entry.Filename);
+        aWriter.WriteBits(ModList[i].Id, 16);
+        Serialization::WriteBool(aWriter, ModList[i].IsLite);
+        Serialization::WriteString(aWriter, ModList[i].Filename);
     }
 }
 

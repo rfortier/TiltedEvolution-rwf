@@ -1,12 +1,23 @@
 #include <Messages/NotifyObjectInventoryChanges.h>
 #include <TiltedCore/Serialization.hpp>
+#include <algorithm>
+
+// The count field is read back as 8 bits, so a longer map could not be received
+// anyway: clamp it, or the reader consumes only the low 8 bits worth of entries
+// and then misparses the rest of the packet.
+static constexpr size_t kMaxChangeCount = 0xFF;
 
 void NotifyObjectInventoryChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    Serialization::WriteVarInt(aWriter, Changes.size());
+    const auto count = std::min<size_t>(Changes.size(), kMaxChangeCount);
+    Serialization::WriteVarInt(aWriter, count);
 
+    size_t written = 0;
     for (auto& change : Changes)
     {
+        if (written++ >= count)
+            break;
+
         change.first.Serialize(aWriter);
         change.second.Serialize(aWriter);
     }

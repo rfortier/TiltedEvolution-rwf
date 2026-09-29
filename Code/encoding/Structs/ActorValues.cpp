@@ -1,5 +1,6 @@
 #include <Structs/ActorValues.h>
 #include <TiltedCore/Serialization.hpp>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -15,16 +16,28 @@ bool ActorValues::operator!=(const ActorValues& acRhs) const noexcept
 
 void ActorValues::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    Serialization::WriteVarInt(aWriter, ActorValuesList.size());
+    // The reader clamps both counts to kMaxActorValueCount, so writing more entries
+    // than that would desynchronise the stream.
+    const auto count = std::min<size_t>(ActorValuesList.size(), kMaxActorValueCount);
+    Serialization::WriteVarInt(aWriter, count);
+    size_t written = 0;
     for (auto& value : ActorValuesList)
     {
+        if (written++ >= count)
+            break;
+
         Serialization::WriteVarInt(aWriter, value.first);
         Serialization::WriteFloat(aWriter, value.second);
     }
 
-    Serialization::WriteVarInt(aWriter, ActorMaxValuesList.size());
+    const auto maxCount = std::min<size_t>(ActorMaxValuesList.size(), kMaxActorValueCount);
+    Serialization::WriteVarInt(aWriter, maxCount);
+    written = 0;
     for (auto& value : ActorMaxValuesList)
     {
+        if (written++ >= maxCount)
+            break;
+
         Serialization::WriteVarInt(aWriter, value.first);
         Serialization::WriteFloat(aWriter, value.second);
     }
@@ -32,18 +45,24 @@ void ActorValues::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexce
 
 void ActorValues::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    auto count = Serialization::ReadVarInt(aReader);
-    for (int i = 0; i < count; i++)
+    // A message does not necessarily land in a fresh object, so drop whatever the
+    // previous parse left behind: insert() keeps stale keys around otherwise.
+    ActorValuesList.clear();
+    ActorMaxValuesList.clear();
+
+    // Never trust the wire length: a peer can claim far more entries than it sent.
+    const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActorValueCount);
+    for (uint64_t i = 0; i < count; i++)
     {
-        auto key = Serialization::ReadVarInt(aReader);
+        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
         auto value = Serialization::ReadFloat(aReader);
         ActorValuesList.insert({key, value});
     }
 
-    auto maxCount = Serialization::ReadVarInt(aReader);
-    for (int i = 0; i < maxCount; i++)
+    const auto maxCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActorValueCount);
+    for (uint64_t i = 0; i < maxCount; i++)
     {
-        auto key = Serialization::ReadVarInt(aReader);
+        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
         auto value = Serialization::ReadFloat(aReader);
         ActorMaxValuesList.insert({key, value});
     }

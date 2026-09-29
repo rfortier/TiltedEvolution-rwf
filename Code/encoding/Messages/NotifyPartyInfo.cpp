@@ -1,15 +1,23 @@
 #include <Messages/NotifyPartyInfo.h>
 #include <TiltedCore/Serialization.hpp>
+#include <algorithm>
+
+// The count field is 8 bits wide, so a longer list could not be received anyway:
+// clamp it, or the reader consumes only the low 8 bits worth of entries and then
+// misparses the rest of the packet.
+static constexpr size_t kMaxPlayerCount = 0xFF;
 
 void NotifyPartyInfo::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteBool(aWriter, IsLeader);
     Serialization::WriteVarInt(aWriter, LeaderPlayerId);
-    aWriter.WriteBits(PlayerIds.size() & 0xFF, 8);
 
-    for (auto player : PlayerIds)
+    const auto count = std::min<size_t>(PlayerIds.size(), kMaxPlayerCount);
+    aWriter.WriteBits(count, 8);
+
+    for (size_t i = 0; i < count; ++i)
     {
-        Serialization::WriteVarInt(aWriter, player);
+        Serialization::WriteVarInt(aWriter, PlayerIds[i]);
     }
 }
 

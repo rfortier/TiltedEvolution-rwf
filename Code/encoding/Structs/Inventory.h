@@ -77,6 +77,13 @@ struct Inventory
     void Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept;
     void Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept;
 
+    // Both counts travel as VarInts, so a peer can claim any 64 bit value. A player
+    // inventory stays well below this, and an item carries at most a handful of
+    // enchantment effects. Clamp instead of allocating whatever the packet claims:
+    // Deserialize runs inside noexcept frames, so throwing is not an option either.
+    static constexpr uint32_t kMaxEntryCount = 0x1000;
+    static constexpr uint64_t kMaxEffectCount = 0x40;
+
     std::optional<Entry> GetEntryById(GameId& aItemId) const noexcept;
     int32_t GetEntryCountById(GameId& aItemId) const noexcept;
 

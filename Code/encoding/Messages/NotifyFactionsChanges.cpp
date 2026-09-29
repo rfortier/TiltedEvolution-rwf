@@ -1,17 +1,20 @@
 #include <Messages/NotifyFactionsChanges.h>
 #include <TiltedCore/Serialization.hpp>
-#include <cassert>
+#include <algorithm>
 
 static const uint64_t kMaxChangeCount = 0x400;
 
 void NotifyFactionsChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    assert(Changes.size() < 0x400);
+    const auto count = std::min<size_t>(Changes.size(), kMaxChangeCount);
+    Serialization::WriteVarInt(aWriter, count);
 
-    Serialization::WriteVarInt(aWriter, Changes.size());
-
+    size_t written = 0;
     for (auto& change : Changes)
     {
+        if (written++ >= count)
+            break;
+
         Serialization::WriteVarInt(aWriter, change.first);
         change.second.Serialize(aWriter);
     }

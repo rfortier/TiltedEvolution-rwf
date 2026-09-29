@@ -1,6 +1,12 @@
 #include <Structs/ActionReplayChain.h>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
+
+// The count field is 8 bits wide, so a longer chain could not be received anyway:
+// clamp it, or the reader consumes only the low 8 bits worth of entries and then
+// misparses the rest of the packet.
+static constexpr size_t kMaxActionCount = 0xFF;
 
 bool ActionReplayChain::operator==(const ActionReplayChain& acRhs) const noexcept
 {
@@ -15,8 +21,11 @@ bool ActionReplayChain::operator!=(const ActionReplayChain& acRhs) const noexcep
 void ActionReplayChain::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteBool(aWriter, ResetAnimationGraph);
-    aWriter.WriteBits(Actions.size() & 0xFF, 8);
-    for (size_t i = 0; i < Actions.size(); ++i)
+
+    const auto count = std::min<size_t>(Actions.size(), kMaxActionCount);
+    aWriter.WriteBits(count, 8);
+
+    for (size_t i = 0; i < count; ++i)
     {
         Actions[i].GenerateDifferential(ActionEvent{}, aWriter);
     }
