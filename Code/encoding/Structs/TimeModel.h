@@ -15,6 +15,16 @@ struct TimeModel
     uint32_t Month = 1;
     uint32_t Day = 1;
 
+    // The engine keeps the month and the day zero based and the hour inside a single day,
+    // and the server refuses a time scale above this when one is set by hand. Clamp to them
+    // instead of throwing: Deserialize is called from noexcept frames, and every one of these
+    // values ends up as a loop bound or as the operand of a float to integer cast.
+    static constexpr float kMaxTimeScale = 1000.f;
+    static constexpr float kMaxTime = 24.f;
+    static constexpr uint32_t kMaxDay = 31u;
+    static constexpr uint32_t kMaxMonth = 11u;
+    static constexpr uint32_t kMaxYear = 999u;
+
     void Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept;
     void Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept;
 

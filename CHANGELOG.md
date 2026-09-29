@@ -965,6 +965,91 @@ namespace {
 `python Code/plugins/tools/plugin_snapshot.py verify` → `SNAPSHOT OK`;
 `python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:任意客户端一个畸形认证包即可让服务端空转数十亿次,并顺手改写全服日历
+
+**现象**:专用服务器上,一个客户端只要在认证包里把日历字段写成
+`Month = 0xFFFFFFFF`,服务端在**接受他进服的那一瞬间**就会卡在
+`GetTimeInDays()` 的月份循环里空转约 42.9 亿次;写成
+`Day = 0xFFFFFFFF` 则会卡在 `Update()` 的进位 `while` 里约 1.4 亿次。
+两种都会让整个 tick 线程停住,所有玩家一起掉线。
+
+**根因**:这五个字段是从线上原样读进来的,读侧一个范围校验都没有。
+
+```cpp
+// Code/encoding/Structs/TimeModel.cpp(修复前)
+Day = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+Month = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+Year = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+```
+
+`& 0xFFFFFFFF` 对 `uint32_t` 是恒等操作,等于什么都没做。而 `Month` 直接
+成了 `Code/common/DateTime.cpp:38-46` 的循环上界:
+
+```cpp
+// Code/common/DateTime.cpp
+float DateTime::GetTimeInDays() const noexcept
+{
+    float totalDays = static_cast<float>(m_timeModel.Year) * 365.f;
+    for (uint32_t i = 0u; i < m_timeModel.Month; i++)
+        totalDays += GetNumberOfDaysByMonthIndex(i);
+    ...
+}
+```
+
+`Day` 则成了 `DateTime::Update` 里 `while (m_timeModel.Day > GetNumberOfDaysByMonthIndex(m_timeModel.Month))`
+的减法次数。同一族的还有 `Time` 与 `TimeScale`:两者都没有 NaN/Inf 检查,
+却被 `m_timeModel.Day += static_cast<uint32_t>(m_timeModel.Time / 24.f);` 拿去
+做「浮点转无符号整数」——NaN 与负值在这里都是未定义行为。
+
+**可达性**:认证包在认证**之前**就被解析(`Code/server/GameServer.cpp:572 OnConsume`
+→ `:592 factory.Extract(reader)`),`BindMessageHandlers` 里那道「拿不到 player 就踢」
+的判空(`:262`)被 `AuthenticationRequest` 的专属分支(`:281-286`)绕开了。
+服务端没设密码时(`:33-34` 默认空串、`:183 m_isPasswordProtected`),
+`:905` 的 `"" == ""` 判定为真,所以任何一个 `Version` 对得上、
+服务端没满、SKSE/MO2 标志合格的客户端都能走到 `:1053` 的
+`PlayerJoinEvent(pPlayer, ..., acRequest->PlayerTime)`。
+
+**顺带的数据污染**:`Code/server/Services/CalendarService.cpp:40` 拿客户端数据
+算 `playerHasFurthestTime`,一旦为真就把客户端的 `Day/Month/Year` **无条件**
+抄进服务端的 `m_dateTime`(`:50-52`),再广播给所有人(`:54-58`)⇒ 一个客户端
+可以单方面改写全服日历。夹住范围同时也把这条路上的越界值挡掉了。
+
+**修法**:按 `Code/encoding/Structs/Factions.h:18-20` 的既有做法,
+在结构体上声明边界、在读侧夹住,而不是抛异常 —— `Deserialize` 处在 `noexcept` 链上:
+
+```cpp
+// Code/encoding/Structs/TimeModel.h(修复后)
+static constexpr float kMaxTimeScale = 1000.f;
+static constexpr float kMaxTime = 24.f;
+static constexpr uint32_t kMaxDay = 31u;
+static constexpr uint32_t kMaxMonth = 11u;
+static constexpr uint32_t kMaxYear = 999u;
+```
+
+边界取自服务端**自己**已有的判断:`CalendarService::SetTimeScale` 的
+`aScale <= 1000.f`、`SetDate` 的 `aMonth < 12` 与 `aYear <= 999`、
+`std::fmod(Time, 24.f)`。非有限值一律归零,因为 NaN/Inf 夹不进任何区间:
+
+```cpp
+// Code/encoding/Structs/TimeModel.cpp(修复后)
+float ClampFloat(float aValue, float aMax) noexcept
+{
+    if (!std::isfinite(aValue))
+        return 0.f;
+
+    return std::min(std::max(0.f, aValue), aMax);
+}
+```
+
+`Serialize` 未改:夹在**读**侧,所以客户端发出去的是原值,而
+`ServerTimeSettings` 的广播在两端也各过一次 `Deserialize`,同样被夹住。
+
+**验证**:`Code/tests/encoding.cpp:549 TEST_CASE("TimeModel wire bounds", "[encoding.time_model]")`
+用 `Serialization::WriteFloat/WriteVarInt` 手工造畸形包,覆盖 NaN、`1.0e30f`、
+三个 `0xFFFFFFFF` 与三个负值,并回环一次正常值;
+CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求
+`All tests passed`。`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

@@ -6736,3 +6736,197 @@ python Tools\Scripts\check_docs.py
 > 入口有没有自己的条件**:当 `else` 分支假设了比 `if` 更强的前提时,它必须把这个前提**写出来**。
 > 另一条:同一个仓库里往往已经有做对的同构写法(`PapyrusScenes.h` 的 `GetActor`、
 > `PapyrusThread.h` 的范围校验),**「别处怎么写的」比「这里看起来会不会空」可靠得多**。
+
+## 58. 2026-09-29 场次:线上读到的日历字段直接当了循环上界 —— 判据是「这个值接下来会被谁拿去数数」
+
+> **锚点**:本节修复落在 `Code/encoding/Structs/TimeModel.h`、`Code/encoding/Structs/TimeModel.cpp`
+> 与 `Code/tests/encoding.cpp`。同一个字段还被 `Code/server/Services/CalendarService.cpp` 用作
+> 「谁的时间最靠前」的比较基准并**无条件**写回服务端日历,所以这里同时是**崩溃面**与**失步面**。
+
+### 58.1 缺陷:五个字段从线上原样读入,读侧一个范围校验都没有
+
+**现象**:专用服务器上,一个客户端在认证包里把日历字段写成 `Month = 0xFFFFFFFF`,服务端在
+**接受他进服的那一瞬间**就会卡在 `GetTimeInDays()` 的月份循环里空转约 **42.9 亿次**;写成
+`Day = 0xFFFFFFFF` 则卡在 `Update()` 的进位 `while` 里约 **1.4 亿次**。两者都让整个 tick
+线程停住,所有玩家一起掉线。
+
+**根因**(修复前):
+
+```cpp
+// Code/encoding/Structs/TimeModel.cpp(修复前,:17-21)
+TimeScale = Serialization::ReadFloat(aReader);
+Time = Serialization::ReadFloat(aReader);
+Day = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+Month = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+Year = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+```
+
+`& 0xFFFFFFFF` 对 `uint32_t` 是**恒等操作**,这五行等于什么都没做。而 `Month` 直接成了
+循环上界:
+
+```cpp
+// Code/common/DateTime.cpp:38-46
+float DateTime::GetTimeInDays() const noexcept
+{
+    float totalDays = static_cast<float>(m_timeModel.Year) * 365.f;
+    for (uint32_t i = 0u; i < m_timeModel.Month; i++)
+        totalDays += GetNumberOfDaysByMonthIndex(i);
+
+    totalDays += m_timeModel.Day;
+    totalDays += (m_timeModel.Time / 24.f);
+    return totalDays;
+}
+```
+
+`Day` 则是 `Update()` 里 `while (m_timeModel.Day > GetNumberOfDaysByMonthIndex(m_timeModel.Month))`
+的减法次数 —— 每轮只减 31,所以要跑 `Day / 31` 次。同一族还有 `Time` 与 `TimeScale`:两者
+都没有 NaN/Inf 检查,却被下面这两行拿去做「浮点转无符号整数」:
+
+```cpp
+// Code/common/DateTime.cpp:20-21
+m_timeModel.Day += static_cast<uint32_t>(m_timeModel.Time / 24.f);
+m_timeModel.Time = std::fmod(m_timeModel.Time, 24.f);
+```
+
+NaN 与负值在这里都是**未定义行为**(`static_cast<uint32_t>(NaN)`),不是「夹成 0」——MSVC
+在 `/O2` 下可以把它折叠成任意值,而 `Day` 的初值是客户端给的。
+
+### 58.2 可达性:解析发生在认证之前,而认证包绕开了那道判空
+
+认证包在认证**之前**就被解析:`Code/server/GameServer.cpp:572 OnConsume` → `:592
+factory.Extract(reader)`。`BindMessageHandlers` 里那道「拿不到 player 行就踢人」的判空
+(`:262`)被 `AuthenticationRequest` 的专属分支(`:281-286`,`HandleAuthenticationRequest`
+直连)绕开了。
+
+服务端没设密码时(`:33-34` 两个 `Console::StringSetting` 默认空串,`:183
+m_isPasswordProtected = strcmp(sPassword.value(), "") != 0`),`:905` 的
+`acRequest->Token == sPassword.value()` 就是 `"" == ""`,判定为真。于是任何一个 `Version`
+对得上(`Code/client/main.cpp:88-90` 只认 `1.5.`/`1.6.`/`1.7.` 前缀)、服务端没满、
+SKSE/MO2 标志合格的客户端都能走到 `:1053` 的
+`PlayerJoinEvent(pPlayer, acRequest->WorldSpaceId, acRequest->CellId, acRequest->PlayerTime)`。
+
+**判据**:这里不是「认证之后才可信」的普通字段。判据是**「这个值接下来会被谁拿去数数」** ——
+`Month` 会被 `for` 数、`Day` 会被 `while` 数、`Time`/`TimeScale` 会被转成整数再数,
+那么它在**进循环之前**就必须已经被夹住,而不是指望调用方去夹。同族的 `Factions.cpp` 已经
+按这个判据修过一轮(`std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount)`),
+`TimeModel` 是同一族里漏掉的那个。
+
+### 58.3 顺带的数据污染:一个客户端可以改写全服日历
+
+`Code/server/Services/CalendarService.cpp:36-64 OnPlayerJoin` 拿客户端数据算
+`playerHasFurthestTime`,一旦为真就把客户端的 `Day/Month/Year` **无条件**抄进服务端的
+`m_dateTime`:
+
+```cpp
+// Code/server/Services/CalendarService.cpp:40-52
+bool playerHasFurthestTime = acEvent.PlayerTime.GetTimeInDays() > m_dateTime.GetTimeInDays();
+...
+m_dateTime.m_timeModel.Day = acEvent.PlayerTime.m_timeModel.Day;
+m_dateTime.m_timeModel.Month = acEvent.PlayerTime.m_timeModel.Month;
+m_dateTime.m_timeModel.Year = acEvent.PlayerTime.m_timeModel.Year;
+```
+
+紧接着 `:54-58` 把服务端的 `m_dateTime` 抄进 `timeMsg.timeModel` 并
+`:60-63 GameServer::Get()->SendToPlayers(timeMsg)` 广播给**所有人**。所以这条路径既是崩溃面
+也是失步面:夹住范围同时也把这条路上的越界值挡掉了。
+
+### 58.4 修法:边界声明在结构体上,夹在**读**侧
+
+按 `Code/encoding/Structs/Factions.h:18-20` 的既有做法 —— 常量挂结构体、注释写清「为什么是夹
+不是抛」:
+
+```cpp
+// Code/encoding/Structs/TimeModel.h(修复后)
+// The engine keeps the month and the day zero based and the hour inside a single day,
+// and the server refuses a time scale above this when one is set by hand. Clamp to them
+// instead of throwing: Deserialize is called from noexcept frames, and every one of these
+// values ends up as a loop bound or as the operand of a float to integer cast.
+static constexpr float kMaxTimeScale = 1000.f;
+static constexpr float kMaxTime = 24.f;
+static constexpr uint32_t kMaxDay = 31u;
+static constexpr uint32_t kMaxMonth = 11u;
+static constexpr uint32_t kMaxYear = 999u;
+```
+
+**边界不是新发明的,全部取自服务端自己已有的判断**:`CalendarService::SetTimeScale` 的
+`aScale >= 0.f && aScale <= 1000.f`(`:135-152`)、`SetDate` 的 `aMonth >= 0 && aMonth < 12`
+与 `aYear >= 0 && aYear <= 999`(`:85-100`)、`std::fmod(Time, 24.f)`(`DateTime.cpp:21`)。
+这是「同一个仓库里已经有做对的写法」这条判据的又一次应用 —— 服务端**手工**设置时间时早就
+在用这些边界,只有**线上**那条路没用。
+
+`Code/encoding/Structs/TimeModel.cpp` 里新增该目录**首个匿名命名空间**(`Code/encoding/**`
+此前一个都没有),两个 helper 都标 `noexcept`:
+
+```cpp
+// Code/encoding/Structs/TimeModel.cpp(修复后)
+namespace
+{
+// A value that is not a finite number cannot be clamped into a range, and both a NaN and an
+// infinity would poison every arithmetic operation the caller performs on it afterwards.
+float ClampFloat(float aValue, float aMax) noexcept
+{
+    if (!std::isfinite(aValue))
+        return 0.f;
+
+    return std::min(std::max(0.f, aValue), aMax);
+}
+
+uint32_t ClampUint(uint32_t aValue, uint32_t aMax) noexcept
+{
+    return std::min(aValue, aMax);
+}
+}
+```
+
+`Deserialize` 末尾追加:
+
+```cpp
+TimeScale = ClampFloat(TimeScale, kMaxTimeScale);
+Time = ClampFloat(Time, kMaxTime);
+Day = ClampUint(Day, kMaxDay);
+Month = ClampUint(Month, kMaxMonth);
+Year = ClampUint(Year, kMaxYear);
+```
+
+**两处刻意的取舍**:
+
+- **`std::min`/`std::max` 而不是 `std::clamp`**。全仓 `std::clamp` **零命中**
+  (`git grep -n 'std::clamp' Code` 只剩 `Code/client/Games/Skyrim/RTTI.cpp:5258`/`:5260`
+  两条 RTTI **符号名**里的 `Clamp`),而 `std::min`/`std::max` 有现成先例
+  (`Code/encoding/Structs/Mods.cpp:21`、`Code/encoding/Structs/Factions.cpp:44`)。
+  跟着仓内既有写法走,而不是引入新惯用法。
+- **`Serialize` 一个字都没改**。夹在**读**侧:客户端发出去的是它自己的原值,而
+  `ServerTimeSettings` 的广播在两端也各过一次 `Deserialize`,所以服务端→客户端这条方向
+  同样被夹住。改写侧反而会让服务端把它自己的越界值原样转发。
+
+### 58.5 复核命令(照抄)
+
+```powershell
+git grep -n 'ReadVarInt(aReader)' -- Code/encoding/Structs/TimeModel.cpp
+git grep -n 'kMaxTimeScale\|kMaxTime\|kMaxDay\|kMaxMonth\|kMaxYear' -- Code
+git grep -n 'std::clamp' -- Code
+git grep -n 'std::isfinite' -- Code/encoding
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:修复前 `TimeModel.cpp` 是 3 处 `ReadVarInt(aReader) & 0xFFFFFFFF`;
+`std::clamp` 全仓 0 处(仅 RTTI 符号名);`Code/encoding` 里 `std::isfinite` 只有本处新增的
+1 处;夹紧常量在 `Code/encoding/Structs/TimeModel.h` 声明、`TimeModel.cpp` 使用、测试
+`Code/tests/encoding.cpp` 引用;`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+**验证**:`Code/tests/encoding.cpp:549 TEST_CASE("TimeModel wire bounds", "[encoding.time_model]")`
+用 `Serialization::WriteFloat/WriteVarInt` 手工造畸形包,三段:
+NaN + `1.0e30f` + 三个 `0xFFFFFFFF` → `0.f` / `kMaxTime` / `kMaxDay` / `kMaxMonth` / `kMaxYear`;
+`-20.f` / `-1.f` / 三个 `0` → `0.f` / `0.f`;以及 `20.f` / `12.f` / `4` / `7` / `201` 走
+`Serialize`→`Deserialize` 回环相等。CI 的 `.github/workflows/windows.yml:594-638` 会跑
+`TPTests.exe` 并要求输出含 `All tests passed`。
+
+> **教训**:「从线里读出来的数」要问的第二个问题是**「它接下来会被谁拿去数数」** ——
+> 第一个问题是「它是不是越界」,而这类缺陷恰恰是**没越界也可能致命**(`Month = 0xFFFFFFFF`
+> 本身只是个数字,致命的是它当了 `for` 的上界)。所以判据不是「这个字段合法范围是多少」,
+> 而是**「它下游有没有循环、下标、或浮点转整数」**:有,就必须在**读的那一刻**夹住,而不是
+> 指望每个调用方各夹一次 —— 这个仓库里 `GetTimeInDays` 只有一个调用方,但那个调用方在
+> `OnPlayerJoin` 的**第一行**,而且它前面还站着 `playerHasFurthestTime` 这个看起来无害的比较。
+> 另一条:`& 0xFFFFFFFF` 这类「看起来在做校验」的掩码比没有更危险 —— 它让代码**读起来**像
+> 已经处理过了,而它在 `uint32_t` 上是恒等操作。写的时候要问一句「这个掩码在**这个类型**上
+> 到底做了什么」。

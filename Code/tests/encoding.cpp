@@ -3,6 +3,7 @@
 #include <TiltedCore/Buffer.hpp>
 #include <TiltedCore/Serialization.hpp>
 
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -16,6 +17,7 @@
 
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
+#include <Structs/TimeModel.h>
 #include <Structs/Vector2_NetQuantize.h>
 
 #include <TiltedCore/Math.hpp>
@@ -542,4 +544,63 @@ TEST_CASE("StringCache cursor", "[encoding.string_cache_cursor]")
     REQUIRE(startId == cEntryCount);
 
     cache.Clear();
+}
+
+TEST_CASE("TimeModel wire bounds", "[encoding.time_model]")
+{
+    // Every one of these fields arrives straight off the wire, and the server uses the month as
+    // a loop bound and the day as a subtraction count while the time and the time scale are
+    // added to a running clock and then cast down to an integer. A packet that carries a value
+    // outside the range the engine can represent must not leave the reader in one piece.
+    Buffer buff(1000);
+    Buffer::Writer writer(&buff);
+    Serialization::WriteFloat(writer, std::numeric_limits<float>::quiet_NaN());
+    Serialization::WriteFloat(writer, 1.0e30f);
+    Serialization::WriteVarInt(writer, 0xFFFFFFFFull);
+    Serialization::WriteVarInt(writer, 0xFFFFFFFFull);
+    Serialization::WriteVarInt(writer, 0xFFFFFFFFull);
+
+    TimeModel model{};
+    Buffer::Reader reader(&buff);
+    model.Deserialize(reader);
+
+    REQUIRE(model.TimeScale == 0.f);
+    REQUIRE(model.Time == TimeModel::kMaxTime);
+    REQUIRE(model.Day == TimeModel::kMaxDay);
+    REQUIRE(model.Month == TimeModel::kMaxMonth);
+    REQUIRE(model.Year == TimeModel::kMaxYear);
+
+    // A negative clock is just as out of range as an enormous one, and it would walk the day
+    // counter backwards.
+    Buffer negative(1000);
+    Buffer::Writer negativeWriter(&negative);
+    Serialization::WriteFloat(negativeWriter, -20.f);
+    Serialization::WriteFloat(negativeWriter, -1.f);
+    Serialization::WriteVarInt(negativeWriter, 0);
+    Serialization::WriteVarInt(negativeWriter, 0);
+    Serialization::WriteVarInt(negativeWriter, 0);
+
+    TimeModel clamped{};
+    Buffer::Reader negativeReader(&negative);
+    clamped.Deserialize(negativeReader);
+
+    REQUIRE(clamped.TimeScale == 0.f);
+    REQUIRE(clamped.Time == 0.f);
+
+    // A well formed model still round trips unchanged.
+    Buffer roundTrip(1000);
+    Buffer::Writer roundTripWriter(&roundTrip);
+    TimeModel sent{};
+    sent.TimeScale = 20.f;
+    sent.Time = 12.f;
+    sent.Day = 4;
+    sent.Month = 7;
+    sent.Year = 201;
+    sent.Serialize(roundTripWriter);
+
+    TimeModel received{};
+    Buffer::Reader roundTripReader(&roundTrip);
+    received.Deserialize(roundTripReader);
+
+    REQUIRE(sent == received);
 }
