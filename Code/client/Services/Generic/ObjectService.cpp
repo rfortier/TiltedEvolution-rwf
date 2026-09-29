@@ -124,7 +124,14 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
         return;
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    TESObjectCELL* pCell = pPlayer->parentCell;
+    if (!pPlayer)
+        return;
+
+    // The player is between cells during a load, so the effective cell can be
+    // empty here and the cell id below would be built from a null cell.
+    TESObjectCELL* pCell = pPlayer->GetParentCellEx();
+    if (!pCell)
+        return;
 
     // Player homes should not be synced, so that chest contents,
     // which are often used as storage, are never accidentally wiped.

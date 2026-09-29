@@ -191,7 +191,9 @@ void DebugService::DisplayLocalComponent(LocalComponent& aLocalComponent, const 
     if (ImGui::Button("Teleport to me"))
     {
         auto* pPlayer = PlayerCharacter::Get();
-        m_world.GetRunner().Trigger(MoveActorEvent(acFormId, pPlayer->parentCell->formID, pPlayer->position));
+        const auto* pCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
+        if (pCell)
+            m_world.GetRunner().Trigger(MoveActorEvent(acFormId, pCell->formID, pPlayer->position));
     }
 
     auto& action = aLocalComponent.CurrentAction;

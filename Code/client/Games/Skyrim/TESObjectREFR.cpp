@@ -385,6 +385,11 @@ void TESObjectREFR::Enable() const noexcept
 // Skyrim: MoveTo() can fail, causing the object to be deleted
 void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept
 {
+    // The cell is read through below, and GetParentCellEx() is allowed to come
+    // back empty while the game is between cells.
+    if (!apCell)
+        return;
+
     ScopedReferencesOverride recursionGuard;
 
     TP_THIS_FUNCTION(TInternalMoveTo, bool, const TESObjectREFR, uint32_t*&, TESObjectCELL*, TESWorldSpace*, const NiPoint3&, const NiPoint3&);

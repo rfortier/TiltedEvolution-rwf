@@ -125,7 +125,9 @@ void DebugService::DrawQuestDebugView()
                         if (ImGui::Button("Teleport to me"))
                         {
                             auto* pPlayer = PlayerCharacter::Get();
-                            m_world.GetRunner().Trigger(MoveActorEvent(pActor->formID, pPlayer->parentCell->formID, pPlayer->position));
+                            const auto* pCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
+                            if (pCell)
+                                m_world.GetRunner().Trigger(MoveActorEvent(pActor->formID, pCell->formID, pPlayer->position));
                         }
                         ImGui::PopID();
                     }

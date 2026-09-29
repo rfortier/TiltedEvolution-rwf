@@ -304,7 +304,10 @@ void TransportService::OnConnected()
     if (pPlayer->GetWorldSpace())
         modSystem.GetServerModId(pPlayer->GetWorldSpace()->formID, request.WorldSpaceId);
 
-    modSystem.GetServerModId(pPlayer->parentCell->formID, request.CellId);
+    // The player is between cells during a load, so the effective cell can be
+    // empty here; an unset cell id only costs the first cell change message.
+    if (const auto* pParentCell = pPlayer->GetParentCellEx())
+        modSystem.GetServerModId(pParentCell->formID, request.CellId);
 
     request.Level = pPlayer->GetLevel();
 

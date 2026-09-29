@@ -599,7 +599,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
-    pActor->MoveTo(PlayerCharacter::Get()->parentCell, acMessage.Position);
+    pActor->MoveTo(PlayerCharacter::Get()->GetParentCellEx(), acMessage.Position);
     pActor->SetActorValues(acMessage.InitialActorValues);
 
     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
@@ -1356,9 +1356,12 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
         return;
     }
 
-    if (!m_world.GetModSystem().GetServerModId(pActor->parentCell->formID, message.CellId))
+    const auto* pParentCell = pActor->GetParentCellEx();
+    const uint32_t cParentCellFormId = pParentCell ? pParentCell->formID : 0;
+
+    if (!m_world.GetModSystem().GetServerModId(cParentCellFormId, message.CellId))
     {
-        spdlog::error("Server cell id not found for cell id {:X}", pActor->parentCell->formID);
+        spdlog::error("Server cell id not found for cell id {:X}", cParentCellFormId);
         return;
     }
 
@@ -1624,7 +1627,7 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
     pActor->GetExtension()->SetRemote(true);
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
-    pActor->MoveTo(PlayerCharacter::Get()->parentCell, pInterpolationComponent->Position);
+    pActor->MoveTo(PlayerCharacter::Get()->GetParentCellEx(), pInterpolationComponent->Position);
     pActor->SetActorValues(acMessage.InitialActorValues);
 
     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
@@ -2113,7 +2116,7 @@ void CharacterService::RunSpawnUpdates() const noexcept
                     remoteComponent.CachedRefId = pActor->formID;
                 }
 
-                pActor->MoveTo(PlayerCharacter::Get()->parentCell, interpolationComponent.Position);
+                pActor->MoveTo(PlayerCharacter::Get()->GetParentCellEx(), interpolationComponent.Position);
             }
         }
     }

@@ -4862,3 +4862,196 @@ python Tools\Scripts\check_docs.py
 > 而且是**第一个**被分配出去的实体 —— 哨兵与合法值撞在一起,缺陷就变成了「偶尔
 > 销毁别人的角色」,离缺陷点很远,查起来极难。
 > 判据可以简化成一句话:**`optional` 拍平的地方,就是信息丢失的地方。**
+
+## 47. 2026-09-29 场次:游戏读盘时解引用空 cell —— 判据是「`GetParentCellEx()` 允许返回空」
+
+> **锚点**:本节的修复落在 `Code/client/Games/Skyrim/TESObjectREFR.cpp`(`MoveTo`),以及四处直接写 `parentCell->` 的调用点。
+
+### 47.1 缺陷:cell 在 load 中为空,而 `MoveTo` 把它读穿
+
+```cpp
+// Code/client/Games/Skyrim/TESObjectREFR.cpp(修复前)
+// Skyrim: MoveTo() can fail, causing the object to be deleted
+void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept
+{
+    ScopedReferencesOverride recursionGuard;
+    ...
+    TiltedPhoques::ThisCall(s_internalMoveTo, this, GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    //                                                              ^^^^^^^^^^^^^^^^^^ 无判空
+}
+```
+
+`apCell->worldspace` 是这个函数的第 4 个实参,**没有判空** —— 传进来的 cell 为空就是空指针解引用。
+
+这个函数有 9 个调用点,其中三处传的正是 `PlayerCharacter::Get()->parentCell`:
+
+| 调用点 | 传的 cell | 判定 |
+| --- | --- | --- |
+| `Code/client/Services/Generic/CharacterService.cpp:602`(`OnCharacterSpawn`) | `PlayerCharacter::Get()->parentCell` | ❌ |
+| `Code/client/Services/Generic/CharacterService.cpp:1627`(`CreateCharacterForEntity`) | `PlayerCharacter::Get()->parentCell` | ❌ |
+| `Code/client/Services/Generic/CharacterService.cpp:2116`(`RunSpawnUpdates`) | `PlayerCharacter::Get()->parentCell` | ❌ |
+| `Code/client/Services/Generic/CharacterService.cpp:1291` | 取 cell 后**判空**才调 | ✅ |
+| `Code/client/Services/Generic/CommandService.cpp:77` | 取 cell 后**判空**才调 | ✅ |
+| `Code/client/Services/Generic/OverlayService.cpp:539` | 取 cell 后**判空**才调 | ✅ |
+| `Code/client/Games/Skyrim/PlayerCharacter.cpp:129` | 取 cell 后**判空**才调 | ✅ |
+
+**为什么 cell 会是空的**:玩家对象在整段 load 里都存活,它的 cell 却在换。
+`PlayerCharacter::Get()` 返回非空 **不蕴含** `parentCell` 非空。
+
+同一族还有四处**直接**写 `parentCell->formID`:
+
+| 位置 | 场景 | 写法 |
+| --- | --- | --- |
+| `Code/client/Services/Generic/TransportService.cpp:307` | `OnConnected`(玩家点「连接」) | `pPlayer->parentCell->formID` |
+| `Code/client/Services/Generic/ObjectService.cpp:127` | `OnCellChange` | `pPlayer->parentCell->formID` |
+| `Code/client/Services/Generic/CharacterService.cpp:1359-1363` | `RequestServerAssignment` | 同一表达式解引用**两次** |
+| `Code/client/Services/Debug/Views/EntitiesView.cpp:191` / `QuestDebugView.cpp:125` | 「Teleport to me」按钮 | `pPlayer->parentCell->formID` |
+
+**可达性(诚实口径)**:`OnConnected` 由玩家手点连接触发,`parentCell` 为空只在
+load / 换 cell 的窗口内出现 —— 要崩需要握手恰好在这个窗口里完成,不是必然复现。
+但 `MoveTo` 那一处**与可达性无关**:`GetParentCellEx()` 的契约就允许返回空,
+`Code/client/Games/Skyrim/PlayerCharacter.cpp:117` 自己就按可空处理(`if (!pCell) { SetNoBleedoutRecovery(true); return pos; }`)。
+
+### 47.2 判据:仓库自己的注释与法条
+
+`Code/client/Games/Skyrim/TESObjectREFR.h:160-162` 的注释就写着:
+
+```cpp
+// The actual parent cell is the field below at offset 0x60; use GetParentCellEx() when the
+// effective cell is needed.
+```
+
+而 `GetParentCellEx()`(`Code/client/Games/Skyrim/TESObjectREFR.cpp:500-503`)是:
+
+```cpp
+TESObjectCELL* TESObjectREFR::GetParentCellEx() const noexcept
+{
+    return parentCell ? parentCell : GetSaveParentCell();
+}
+```
+
+**回退的 `GetSaveParentCell()` 本身可以返回空** —— 所以 `GetParentCellEx()` 不是「安全取值」,
+它是「**取到最有效的那个,可能仍是空**」。
+
+| 位置 | 写法 | 判定 |
+| --- | --- | --- |
+| `Code/client/Services/Generic/CharacterService.cpp:1285-1291` | 取 cell → 判空 → 打日志 `return` | ✅ |
+| `Code/client/Services/Generic/CommandService.cpp:58-77` | 取 cell → 判空 → 提示 `return` | ✅ |
+| `Code/client/Services/Generic/OverlayService.cpp:520-539` | 取 cell → 判空 → 提示 `return` | ✅ |
+| `Code/client/Services/Generic/CharacterService.cpp:1739` | `if (!pCell || !pCell->IsAttached())` | ✅ |
+| `Code/client/Systems/AnimationSystem.cpp:118` | `if (const auto pCell = pActor->parentCell)` | ✅ |
+| `Code/client/Games/Skyrim/TESObjectREFR.cpp:385-395` | `apCell->worldspace`,无判空 | ❌ **本次缺陷** |
+| `TransportService` / `ObjectService` / `CharacterService:1359` | `parentCell->formID`,无判空 | ❌ 同族 |
+
+`docs/PITFALLS.md` 的 §22(`:1559-1591`)已经写过这条法条:
+
+> `PlayerCharacter::Get() != nullptr` **不蕴含** `GetParentCellEx() != nullptr`。
+> 玩家对象在 load 全程存活,它的 cell 却在换 —— 所有 `Get()->GetX()->` 的写法都要按「load 中」来审。
+
+两条**可机械执行**的判据:
+
+1. **`parentCell->` 直接解引用 = 缺陷** —— 取 cell 必须走 `GetParentCellEx()`,且结果判空;
+2. **「取一次、判一次」** —— 同一个表达式里出现两次 `parentCell->formID`
+   (`CharacterService.cpp:1359-1363` 的 `GetServerModId(..., ...->formID)` 与错误日志各一次)
+   说明取 cell 的动作没有落在一个局部量上,判空就无处可放。
+
+### 47.3 修法:一处单点守卫 + 四处改走 `GetParentCellEx()`
+
+```cpp
+// Code/client/Games/Skyrim/TESObjectREFR.cpp(修复后)
+void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept
+{
+    // The cell is read through below, and GetParentCellEx() is allowed to come
+    // back empty while the game is between cells.
+    if (!apCell)
+        return;
+
+    ScopedReferencesOverride recursionGuard;
+    ...
+}
+```
+
+修 `MoveTo` 一处,九个调用点全部受益 —— 这是**单点缺陷、多点共享**时最省的修法。
+
+`Code/client/Services/Generic/TransportService.cpp:307-310`:
+
+```cpp
+    // The player is between cells during a load, so the effective cell can be
+    // empty here; an unset cell id only costs the first cell change message.
+    if (const auto* pParentCell = pPlayer->GetParentCellEx())
+        modSystem.GetServerModId(pParentCell->formID, request.CellId);
+```
+
+`Code/client/Services/Generic/CharacterService.cpp:1359`:
+
+```cpp
+    const auto* pParentCell = pActor->GetParentCellEx();
+    const uint32_t cParentCellFormId = pParentCell ? pParentCell->formID : 0;
+
+    if (!m_world.GetModSystem().GetServerModId(cParentCellFormId, message.CellId))
+    {
+        spdlog::error("Server cell id not found for cell id {:X}", cParentCellFormId);
+        return;
+    }
+```
+
+`Code/client/Services/Generic/ObjectService.cpp:126`:
+
+```cpp
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
+    // The player is between cells during a load, so the effective cell can be
+    // empty here and the cell id below would be built from a null cell.
+    TESObjectCELL* pCell = pPlayer->GetParentCellEx();
+    if (!pCell)
+        return;
+```
+
+三个 `MoveTo` 调用点把 `PlayerCharacter::Get()->parentCell` 换成
+`PlayerCharacter::Get()->GetParentCellEx()` —— 非空时两者**完全等价**,为空时由上面的守卫兜住。
+
+两个调试视图用 `if (pCell)` 而不是提前 `return`:
+
+```cpp
+        auto* pPlayer = PlayerCharacter::Get();
+        const auto* pCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
+        if (pCell)
+            m_world.GetRunner().Trigger(MoveActorEvent(acFormId, pCell->formID, pPlayer->position));
+```
+
+**为什么不能写成 `if (!pCell) return;`**:这两个函数是 ImGui 的绘制函数,提前 `return`
+会把**当前帧剩下的界面元素整段跳过** —— 修空指针不能顺手把界面拆掉。
+
+**修崩溃,不改行为**:`parentCell` 非空时 `GetParentCellEx()` 就是 `parentCell` 本身,
+正常路径一个字节都没变;为空时原本是崩溃。
+
+### 47.4 复核命令(照抄)
+
+```powershell
+# 1. parentCell 直接解引用:剩下的应当全部已有守卫
+Get-ChildItem -Path Code\client -Recurse -Include *.cpp,*.h |
+  Select-String -Pattern 'parentCell->|parentCell\.'
+
+# 2. MoveTo 的守卫仍在
+Get-ChildItem -Path Code\client -Recurse -Include *.cpp,*.h |
+  Select-String -Pattern 'void TESObjectREFR::MoveTo' -Context 0,6
+
+# 3. 改动面与文档门禁
+git diff --stat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`parentCell->` 剩余 11 处**全部已有守卫**(`Projectile.cpp:84`、`TESObjectREFR.cpp:338/340/346/347`、
+`FormDebugView.cpp:42/48`、`PlayerDebugView.cpp:67`、`CharacterService.cpp:1360`、`DiscoveryService.cpp:154`、
+`TransportService.cpp:310`);`git diff --stat -- Code` = `6 files changed, 31 insertions(+), 9 deletions(-)`;
+`python Tools\Scripts\check_docs.py` → `DOC CHECK OK` / `10 changelog version(s)`。
+
+> **教训**:引擎的字段**允许为空**这件事,只有两处会告诉你 —— 头文件里那句
+> 「use `GetParentCellEx()` when the effective cell is needed」,以及**回退函数自己可以返回空**。
+> 「非空的对象」与「它里面的字段非空」是两件事:`PlayerCharacter::Get() != nullptr`
+> 不蕴含 `GetParentCellEx() != nullptr`,而后者又不蕴含 `GetSaveParentCell() != nullptr`。
+> 判据可以简化成一句话:**取 cell 的地方必须判空,而判空必须落在一个局部量上** ——
+> 表达式里写两次 `->formID`,判空就无处可放。
+
