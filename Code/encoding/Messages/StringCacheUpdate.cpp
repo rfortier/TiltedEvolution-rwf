@@ -1,15 +1,13 @@
 #include <Messages/StringCacheUpdate.h>
 #include <algorithm>
 
-// The count field is 16 bits wide, so a longer list could not be received anyway:
-// clamp it, or the reader consumes only the low 16 bits worth of entries and then
-// misparses the rest of the packet.
-static constexpr size_t kMaxValueCount = 0xFFFF;
-
 void StringCacheUpdate::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteVarInt(aWriter, StartId);
 
+    // The count field is 16 bits wide, so a longer list could not be received anyway:
+    // clamp it, or the reader consumes only the low 16 bits worth of entries and then
+    // misparses the rest of the packet.
     const auto count = std::min<size_t>(Values.size(), kMaxValueCount);
     Serialization::WriteVarInt(aWriter, count);
 
@@ -21,7 +19,7 @@ void StringCacheUpdate::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) con
 
 void StringCacheUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    StartId = Serialization::ReadVarInt(aReader) & 0xFFFF;
+    StartId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
     const auto count = Serialization::ReadVarInt(aReader) & 0xFFFF;
     Values.resize(count);

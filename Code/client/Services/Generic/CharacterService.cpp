@@ -730,7 +730,7 @@ void CharacterService::OnFactionsChanges(const NotifyFactionsChanges& acEvent) c
 
             auto* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
             if (!pActor)
-                return;
+                continue;
 
             auto& cacheComponent = view.get<CacheComponent>(*itor);
             cacheComponent.FactionsContent = factions;

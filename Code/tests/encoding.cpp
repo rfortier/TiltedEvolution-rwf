@@ -4,6 +4,7 @@
 #include <TiltedCore/Serialization.hpp>
 
 #include <optional>
+#include <string>
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
@@ -491,4 +492,54 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
 
         REQUIRE(update == recvUpdate);
     }
+
+    SECTION("A start id past the old 16-bit field")
+    {
+        StringCacheUpdate update;
+        update.StartId = 0x12345;
+        update.Values.push_back("Hello");
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        update.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+
+        uint64_t trash;
+        reader.ReadBits(trash, 8); // pop opcode
+
+        StringCacheUpdate recvUpdate;
+        recvUpdate.DeserializeRaw(reader);
+
+        REQUIRE(update == recvUpdate);
+    }
+}
+
+TEST_CASE("StringCache cursor", "[encoding.string_cache_cursor]")
+{
+    auto& cache = StringCache::Get();
+    cache.Clear();
+
+    // More entries than one message can carry: the count is read back masked to
+    // 16 bits, so the sender has to slice and stop its cursor exactly there.
+    constexpr uint32_t cEntryCount = StringCacheUpdate::kMaxValueCount + 17;
+
+    for (uint32_t i = 0; i < cEntryCount; ++i)
+        TP_UNUSED(cache.Add("entry" + std::to_string(i)))
+
+    uint32_t startId = 0;
+    const auto first = cache.Serialize(startId);
+
+    REQUIRE(first.StartId == 0);
+    REQUIRE(first.Values.size() == StringCacheUpdate::kMaxValueCount);
+    REQUIRE(startId == StringCacheUpdate::kMaxValueCount);
+
+    // The rest goes out on the next call instead of being skipped.
+    const auto second = cache.Serialize(startId);
+
+    REQUIRE(second.StartId == StringCacheUpdate::kMaxValueCount);
+    REQUIRE(second.Values.size() == 17);
+    REQUIRE(startId == cEntryCount);
+
+    cache.Clear();
 }

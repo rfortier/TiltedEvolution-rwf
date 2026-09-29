@@ -5242,4 +5242,182 @@ python Tools\Scripts\check_docs.py
 > 判空就已经无处可放了。另外,修这种缺陷时**不要改变函数原本的返回值语义** ——
 > `return aDamage` 与 `return aDamage * 1.0f` 看起来一样,后者却是在偷偷改行为。
 
+## 49. 2026-09-29 场次:字符串缓存超过 65535 条后,新玩家永久收不全 —— 判据是「游标只能推进真正写出去的那几条」
+
+> **锚点**:本节的修复落在 `Code/encoding/StringCache.cpp` 与 `Code/encoding/Messages/StringCacheUpdate.h`。
+
+### 49.1 缺陷:写出去的条数被 16 位截断,游标却推到了缓存末尾
+
+字符串缓存是**增量同步**的,每个玩家在服务端记一个「我已经收到第几条」的游标
+(`Player::GetStringCacheId()`,发完由 `StringCacheService::HandleUpdate` 写回):
+
+```cpp
+// Code/server/Services/StringCacheService.cpp:30-37
+    for (const auto pPlayer : m_world.GetPlayerManager())
+    {
+        auto startId = pPlayer->GetStringCacheId();
+        auto update = stringCache.Serialize(startId);
+        pPlayer->SetStringCacheId(startId);   // ← 游标由 Serialize 就地推进
+
+        pPlayer->Send(update);
+    }
+```
+
+而 `Serialize` 原本这样推进游标:
+
+```cpp
+// Code/encoding/StringCache.cpp(修复前)
+StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
+{
+    StringCacheUpdate update;
+    update.StartId = aStartId;
+
+    if (aStartId < m_idToString.size())
+    {
+        auto itor = std::begin(m_idToString);
+        std::advance(itor, aStartId);
+
+        update.Values.insert(std::begin(update.Values), itor, std::end(m_idToString));
+
+        aStartId = m_idToString.size();   // ← 无条件推到末尾
+    }
+
+    return update;
+}
+```
+
+一个 `StringCacheUpdate` 能带多少条,由**线上计数的位宽**决定 ——
+写侧是 VarInt,读侧却是 16 位:
+
+```cpp
+// Code/encoding/Messages/StringCacheUpdate.cpp
+    StartId = Serialization::ReadVarInt(aReader) & 0xFFFF;
+    const auto count = Serialization::ReadVarInt(aReader) & 0xFFFF;   // ← 最多 65535 条
+    Values.resize(count);
+```
+
+于是**第 65536 条之后的内容写不出去,游标却已经推到了末尾**。接收侧只收到前 65535 条,
+本地缓存长度停在 65535;下一次增量同步时服务端按已经推到末尾的游标认为「这个人收全了」,
+**一条都不再发** ⇒ 两边 id 永久错位,而且**不会自愈**,只有重启服务器才会好一阵子。
+
+### 49.2 判据:写出去几条,游标就只能推进几条
+
+| 位置 | 写法 | 判定 |
+| --- | --- | --- |
+| `Code/encoding/StringCache.cpp:59`(修复前) | `aStartId = m_idToString.size();` 而只写出去 16 位能装下的部分 | ❌ 本次缺陷 |
+| `Code/encoding/StringCache.cpp:74-76`(接收侧) | `assert(aMessage.StartId == m_idToString.size());` —— 断言本身就要求**连续性** | 这就是判据 |
+| `Code/encoding/Structs/Mods.cpp:24`(v1.1.9 已修) | 写侧 `for (size_t i = 0; i < modCount; ++i)` | ✅ 同一条规则的写侧版本 |
+
+**可机械执行的判据**:凡是「按游标/偏移切片发送」的地方,
+**推进量必须等于写出去的条数** ——
+写成 `cursor = container.size();` 的那一刻,就已经把「截断」悄悄变成了「永久丢失」。
+仓库的接收侧 `assert` 正是这条不变量的断言:`StartId` 必须**恰好等于**本地缓存长度,
+一旦发送侧跳过一段,这个断言在 debug 构建下立刻炸,release 下则表现为静默错位。
+
+### 49.3 修法:切一片出去,游标只推进这一片
+
+```cpp
+// Code/encoding/StringCache.cpp(修复后)
+    if (aStartId < m_idToString.size())
+    {
+        // One message carries at most kMaxValueCount entries, and the receiver
+        // asserts that the ids are contiguous. Send a slice and advance the cursor
+        // by exactly what was written, so the rest goes out on the next call
+        // instead of being skipped and leaving the two caches out of step.
+        const auto count = std::min<size_t>(m_idToString.size() - aStartId, StringCacheUpdate::kMaxValueCount);
+
+        auto itor = std::begin(m_idToString);
+        std::advance(itor, aStartId);
+
+        auto end = itor;
+        std::advance(end, count);
+
+        update.Values.insert(std::begin(update.Values), itor, end);
+
+        aStartId += static_cast<uint32_t>(count);
+    }
+```
+
+上界常量放在消息头里,因为它**本来就是线上计数的位宽**,不是随手取的数:
+
+```cpp
+// Code/encoding/Messages/StringCacheUpdate.h
+    // The count is written as a VarInt but read back masked to 16 bits, so this is
+    // the most entries one message can carry. The producer has to stop here too.
+    static constexpr size_t kMaxValueCount = 0xFFFF;
+```
+
+**修截断,不改行为**:游标没走到末尾时,下一次增量同步照旧把剩下的发出去 ——
+接收侧收到的内容与修复前完全一致,只是**分成了多条消息**。
+
+### 49.4 同源的第二层截断:游标字段本身只有 16 位
+
+只修「切片」是不够的 —— 修完游标,下一层截断立刻露出来,而这一层更安静:
+
+```cpp
+// Code/encoding/StringCache.cpp:50-51
+    StringCacheUpdate update;
+    update.StartId = aStartId;        // aStartId 是 uint32_t
+
+// Code/encoding/Messages/StringCacheUpdate.h(修复前)
+    uint16_t StartId{0};             // ← 字段只有 16 位
+```
+
+游标是 `uint32_t`(函数签名 `StringCache::Serialize(uint32_t& aStartId)`,
+服务端游标存在 `Player::m_stringCacheId` 也是 `uint32_t`),字段却是 `uint16_t`,
+所以 `update.StartId = aStartId;` 是一次**隐式窄化**。缓存一旦超过 65535 条:
+
+| 层 | 修复前 | 后果 |
+| --- | --- | --- |
+| 切片(§49.1) | 写出去的条数被 16 位计数截断,游标却推到末尾 | 后加入的玩家**永久**收不全 |
+| 字段宽度(本节) | `StartId` 被 16 位截断,接收侧判据永不成立 | debug 构建每条都炸,release 构建 id **静默错位** |
+
+接收侧那条断言 `Code/encoding/StringCache.cpp:78 assert(aMessage.StartId == m_idToString.size());`
+正是**同时**检验这两层的判据:它要求「发来的起点 == 我现在的长度」,
+游标跳过头(§49.1)或起点被截断(本节)都会让它失败。
+
+```cpp
+// Code/encoding/Messages/StringCacheUpdate.h(修复后)
+    uint32_t StartId{0};
+
+// Code/encoding/Messages/StringCacheUpdate.cpp(修复后)
+    StartId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+```
+
+**向后兼容**:`StartId` 走的是 VarInt,对小于 65536 的值**编码字节完全相同**,
+所以放宽字段宽度**不改线上格式**;新旧版本混连时,老版本发来的起点语义不变。
+另外 `StartId` 的消费者全仓只有 `StringCache` 自己(`Player::GetStringCacheId`/`SetStringCacheId`、
+`StringCacheService::HandleUpdate`、`GameServer.cpp:1017-1022` 的首次全量推送),
+**没有任何第三方依赖 16 位宽度**。
+
+### 49.5 复核命令(照抄)
+
+```powershell
+# 1. 不该再有「无条件推到末尾」的游标推进
+Select-String -Path Code\encoding\StringCache.cpp -Pattern 'aStartId = '
+
+# 2. 上界常量与读侧掩码应当一致
+Select-String -Path Code\encoding\Messages\StringCacheUpdate.* -Pattern 'kMaxValueCount|0xFFFF'
+
+# 3. 游标字段不能比游标窄
+Select-String -Path Code\encoding\Messages\StringCacheUpdate.h -Pattern 'StartId'
+Select-String -Path Code\encoding\Messages\StringCacheUpdate.cpp -Pattern 'StartId'
+
+# 4. 改动面与文档门禁
+git diff --stat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`aStartId = m_idToString.size();` **零命中**,只剩
+`aStartId += static_cast<uint32_t>(count);`;`StringCacheUpdate.h` 里是 `uint32_t StartId{0};`
+(不再是 `uint16_t`),`StringCacheUpdate.cpp` 里是 `& 0xFFFFFFFF`;
+`python Tools/Scripts/check_docs.py` → `DOC CHECK OK` / `10 changelog version(s)`。
+
+> **教训**:计数写在线上有多少位,**发送侧就必须按多少位切** ——
+> 这一族在 v1.1.9 已经修过「写侧循环写全量」和「读侧不设上界」两副面孔,
+> 这次是第三副:**游标**。前两副是「这一包解析错」,第三副更隐蔽 ——
+> 包本身完全合法,错的是**下一次**该发什么,而且错得不会自愈。
+> 判据只有一条:凡是靠游标/偏移做增量发送的地方,推进量必须等于写出去的条数;
+> 写成 `cursor = container.size();` 就等于把「这一包截断」升级成「这段数据永久丢失」。
+
 

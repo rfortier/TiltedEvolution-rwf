@@ -921,6 +921,8 @@ void CharacterService::ProcessFactionsChanges() const noexcept
         if (!characterComponent.IsDirtyFactions())
             continue;
 
+        bool queued = false;
+
         for (auto pPlayer : m_world.GetPlayerManager())
         {
             if (pPlayer == ownerComponent.GetOwner())
@@ -933,9 +935,14 @@ void CharacterService::ProcessFactionsChanges() const noexcept
             auto& change = message.Changes[World::ToInteger(entity)];
 
             change = characterComponent.FactionsContent;
+            queued = true;
         }
 
-        characterComponent.SetDirtyFactions(false);
+        // Only clear the flag once the change actually went out. An actor that nobody
+        // is near right now stays dirty, so the next player to come into range still
+        // gets it instead of keeping whatever factions it spawned with.
+        if (queued)
+            characterComponent.SetDirtyFactions(false);
     }
 
     for (auto [pPlayer, message] : messages)

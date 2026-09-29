@@ -1,4 +1,5 @@
 #include <StringCache.h>
+#include <algorithm>
 #include <iostream>
 
 bool StringCache::Contains(const TiltedPhoques::String& acValue) const noexcept
@@ -51,12 +52,21 @@ StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
 
     if (aStartId < m_idToString.size())
     {
+        // One message carries at most kMaxValueCount entries, and the receiver
+        // asserts that the ids are contiguous. Send a slice and advance the cursor
+        // by exactly what was written, so the rest goes out on the next call
+        // instead of being skipped and leaving the two caches out of step.
+        const auto count = std::min<size_t>(m_idToString.size() - aStartId, StringCacheUpdate::kMaxValueCount);
+
         auto itor = std::begin(m_idToString);
         std::advance(itor, aStartId);
 
-        update.Values.insert(std::begin(update.Values), itor, std::end(m_idToString));
+        auto end = itor;
+        std::advance(end, count);
 
-        aStartId = m_idToString.size();
+        update.Values.insert(std::begin(update.Values), itor, end);
+
+        aStartId += static_cast<uint32_t>(count);
     }
 
     return update;

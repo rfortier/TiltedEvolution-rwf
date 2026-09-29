@@ -316,6 +316,79 @@ PlayerCharacter* PlayerCharacter::Get() noexcept
 → **零命中**(修前 18 处);`git diff --stat -- Code` = `9 files changed, 98 insertions(+), 34 deletions(-)`;
 `python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:字符串缓存超过 65535 条时,后加入的玩家会永久卡在「收到一半的缓存」
+
+**现象**:服务器开得久了(或装了大量会往字符串缓存里塞名字的 mod),新加入的玩家
+**部分文字显示不出来** —— 字幕、对话、动画事件名是空的,而老玩家一切正常。重连没用,
+换一台机器也没用;只有服务器重启才会好一阵子。
+
+**根因**:字符串缓存是**增量同步**的,每个玩家记一个「我已经收到第几条」的游标
+(`Player::GetStringCacheId()`)。发送侧按游标把剩下的条目切成一条消息发出去。
+一个 `StringCacheUpdate` 消息的计数是 **16 位**(`Code/encoding/Messages/StringCacheUpdate.cpp:26`
+读回来是 `& 0xFFFF`),所以**一条消息最多带 65535 条**。而发送侧原本是:
+
+```cpp
+// Code/encoding/StringCache.cpp(修复前)
+    update.Values.insert(std::begin(update.Values), itor, std::end(m_idToString));
+
+    aStartId = m_idToString.size();   // ← 不管写出去几条,游标都推到末尾
+```
+
+写出去的条目被 16 位计数截断,而**游标仍然推到了缓存末尾**。接收侧只收到前 65535 条,
+它的本地缓存长度就停在那里;下一次增量同步时,服务端按**已经推到末尾的游标**认为
+「这个人已经收全了」,于是**一条都不再发** —— 两边的 id 从此永久错位,而且**再也不会自愈**。
+
+**判据**:仓库自己早就写下了「计数写在线上、写几条就只循环几条」这条规则
+(v1.1.9 前面几节刚统一过一整族),`StringCacheUpdate.cpp` 的 16 位掩码正是这个家族
+的另一副面孔 —— **只是这次错的是「游标」而不是「循环」**:写出去的条数与游标推进的
+条数必须相等,否则接收侧永远追不上。
+
+**修复**:发送侧按 16 位上界切一片出去,并且**只把游标推进真正写出去的那几条**;
+剩下的留给下一次增量同步。接收侧的 `assert(aMessage.StartId == m_idToString.size())`
+也因此重新成立。
+
+```cpp
+// Code/encoding/StringCache.cpp(修复后)
+        const auto count = std::min<size_t>(m_idToString.size() - aStartId, StringCacheUpdate::kMaxValueCount);
+
+        auto itor = std::begin(m_idToString);
+        std::advance(itor, aStartId);
+
+        auto end = itor;
+        std::advance(end, count);
+
+        update.Values.insert(std::begin(update.Values), itor, end);
+
+        aStartId += static_cast<uint32_t>(count);
+```
+
+上界常量 `StringCacheUpdate::kMaxValueCount = 0xFFFF` 放在消息头里
+(`Code/encoding/Messages/StringCacheUpdate.h`),因为**它本来就是线上计数的位宽**,
+不是随手取的数。
+
+**同一处还有第二层截断,修完游标才会露出来**:`StringCacheUpdate::StartId` 字段本身声明成
+`uint16_t`,而游标是 `uint32_t`(`StringCache::Serialize(uint32_t& aStartId)`)——
+`update.StartId = aStartId;` 是一次**隐式窄化**。缓存超过 65535 条之后,发出去的 `StartId`
+已经不是真实游标了,接收侧那条连续性判据**永远不可能成立**:debug 构建下每收一条就炸,
+release 构建下断言被编译掉,表现为 id 静默错位。只修游标不修字段,等于把「永久卡住」
+换成「每一条都错位」。现把字段放宽成 `uint32_t`,读侧掩码同步改成 `& 0xFFFFFFFF`:
+
+```cpp
+// Code/encoding/Messages/StringCacheUpdate.h
+-    uint16_t StartId{0};
++    uint32_t StartId{0};
+
+// Code/encoding/Messages/StringCacheUpdate.cpp
+-    StartId = Serialization::ReadVarInt(aReader) & 0xFFFF;
++    StartId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+```
+
+VarInt 对小于 65536 的值**编码字节完全相同**,所以线上格式向后兼容:新旧版本混连时,
+老版本发来的 `StartId` 语义不变。
+
+**验证**:`Code/encoding/StringCache.cpp` 里不再有 `aStartId = m_idToString.size();`
+这种「无条件推到末尾」的写法;`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器
