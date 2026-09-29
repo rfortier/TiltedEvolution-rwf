@@ -610,6 +610,44 @@ factions it spawned with."),只有动作队列这一处还停在旧写法。
 且两条早退都先 `DecRef`;`Code/server/Services/CharacterService.cpp` 里 `Actions.clear()` 只出现在
 `if (actionsQueued)` 块内、`kMaxPendingActionEvents` 在越界时生效;`python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:OStim 的远程 addon 缓存从不清理,读档后会把上一个存档的状态套到同 id 的角色上
+
+**现象**:读档(或开新档)之后进 OStim 场景时,**远程**角色的 OCum 覆盖贴图与 OStim 物体状态
+会短暂按**上一个存档**的样子渲染 —— 不是不同步,是本地缓存里还留着旧存档的条目。
+
+**根因**:`plugins/OStimTogether/src/AddonBridge.cpp` 的两个缓存 `_remoteOverlays` / `_remoteObjects`
+以 `RE::FormID` 为一级键,而 FormID 在新存档里会被**重新分配**。这两个容器全仓只有写入
+(`:531`、`:617`)与读取(`:686-691`),**没有任何 `erase`/`clear` 路径**。
+
+**判据在同一个文件外**:`plugins/OStimTogether/src/main.cpp:212-223` 的
+`case SKSE::MessagingInterface::kPreLoadGame:` 逐条清理了 9 个单例
+(`EquipmentLock::ClearAllOStimTargets()`、`ClearManual()`、`DefaultOutfitGuard::RestoreAll()`、
+`CoopSessionManager::Reset()`、`OStimBridge::ResetRemoteState()`、`FreeScenePhaseSync::Reset()`、
+`ParticipantAlignmentSync::Reset()`、`FreeSceneSelfOriginLock::Reset()`、`OCumStateSync::Reset()`、
+`PPAIntegration::Reset()`),**唯独 AddonBridge 缺席**。同构先例:`OStimBridge::ResetRemoteState()`
+(`:1623-1649`)一次清掉 15 个成员 map,`MorphSyncService::Reset()` 同样清三个 map。
+
+**修法**:给 `AddonBridge` 补一个 `ClearRemoteState()`(持 `_stateMutex` 清两个 map),
+并挂到 `kPreLoadGame` 那一串清理里:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp
+void AddonBridge::ClearRemoteState()
+{
+    std::scoped_lock lock(_stateMutex);
+    _remoteOverlays.clear();
+    _remoteObjects.clear();
+}
+```
+
+**交付方式**:该修复落在**本项目不拥有、也无法推送**的子模块里,所以按既有做法做成
+`Code/plugins/patches/OStimTogether/0003-clear-the-remote-addon-cache-on-load.patch`,
+由 `plugin_patches.py apply` 在配置与构建前打到子模块工作树上 —— CI 的
+`git submodule update --init --force --recursive --depth=1` 会丢弃任何只存在于工作树的改动。
+
+**验证**:`python Code/plugins/tools/plugin_patches.py verify` → `PATCH VERIFY OK`(9 个补丁全部
+能打到各自的 pin 上);`check` → `PATCH CHECK OK`;`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

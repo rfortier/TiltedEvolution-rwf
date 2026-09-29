@@ -1,0 +1,46 @@
+diff --git a/src/AddonBridge.cpp b/src/AddonBridge.cpp
+index f950ac2..3b9b9fd 100644
+--- a/src/AddonBridge.cpp
++++ b/src/AddonBridge.cpp
+@@ -636,6 +636,13 @@ namespace OStimTogether
+         }
+     }
+ 
++    void AddonBridge::ClearRemoteState()
++    {
++        std::scoped_lock lock(_stateMutex);
++        _remoteOverlays.clear();
++        _remoteObjects.clear();
++    }
++
+     void AddonBridge::ScheduleRemoteStateReapply(
+         RE::Actor* actor,
+         std::string_view reason)
+diff --git a/src/AddonBridge.h b/src/AddonBridge.h
+index b062689..451ac02 100644
+--- a/src/AddonBridge.h
++++ b/src/AddonBridge.h
+@@ -26,6 +26,11 @@ namespace OStimTogether
+             RE::Actor* actor,
+             std::string_view reason);
+ 
++        // Drops every cached remote addon state. The cache is keyed by FormID
++        // and a new game hands those ids out again, so state captured for one
++        // save would otherwise be replayed onto whoever now carries that id.
++        void ClearRemoteState();
++
+     private:
+         AddonBridge() = default;
+ 
+diff --git a/src/main.cpp b/src/main.cpp
+index 5634786..1878092 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -220,6 +220,7 @@ namespace
+             OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Reset();
+             OStimTogether::OCumStateSync::GetSingleton().Reset();
+             OStimTogether::PPAIntegration::GetSingleton().Reset();
++            OStimTogether::AddonBridge::GetSingleton().ClearRemoteState();
+             break;
+ 
+         case SKSE::MessagingInterface::kPostLoadGame:

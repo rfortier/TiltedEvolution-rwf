@@ -5856,5 +5856,123 @@ python Tools\Scripts\check_docs.py
 > 还有一条容易漏的细节:这种早退如果发生在 `IncRef()` 之后,就必须先 `DecRef()` 再 return,
 > 否则引用计数会一帧一帧地涨。
 
+## 53. 2026-09-29 场次:插件的缓存跨存档活着 —— 判据是「同一串清理里唯独它缺席」
 
+> **锚点**:本节的修复落在 `plugins/OStimTogether/src/AddonBridge.h`、`AddonBridge.cpp`、
+`main.cpp`,交付形式是 `Code/plugins/patches/OStimTogether/0003-clear-the-remote-addon-cache-on-load.patch`。
+
+### 53.1 缺陷:两个以 FormID 为键的缓存全仓没有清理路径
+
+`AddonBridge` 缓存**远程**玩家同步过来的 addon 状态,一级键是 `RE::FormID`:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.h
+std::unordered_map<RE::FormID, std::unordered_map<std::string, CachedOverlayState>> _remoteOverlays;
+std::unordered_map<RE::FormID, std::unordered_map<std::string, CachedObjectState>> _remoteObjects;
+```
+
+写入两处、读取两处,**没有任何 `erase`/`clear`**:
+
+| 位置 | 作用 |
+| --- | --- |
+| `AddonBridge.cpp:531` | `auto& cached = _remoteOverlays[actor->GetFormID()][cacheKey];` |
+| `AddonBridge.cpp:617` | `_remoteObjects[actor->GetFormID()][key] = CachedObjectState{...};` |
+| `AddonBridge.cpp:686-687` | `if (const auto it = _remoteOverlays.find(actorFormID); it != _remoteOverlays.end())` |
+| `AddonBridge.cpp:690-691` | `if (const auto it = _remoteObjects.find(actorFormID); it != _remoteObjects.end())` |
+
+`grep _remoteOverlays|_remoteObjects|ClearRemoteState|ResetRemoteState` 全仓的命中就只有上面
+这 6 处 + 头文件 2 处声明 —— **没有第 7 处**。
+
+FormID 在**新存档里会被重新分配**,所以旧存档留下的条目会在读档后命中的是**另一个**角色:
+远程角色的 OCum 覆盖贴图与 OStim 物体状态会短暂按上一个存档的样子渲染。
+
+### 53.2 判据:同一个进程里,同一串清理里唯独它缺席
+
+`plugins/OStimTogether/src/main.cpp:212-223` 的 `case SKSE::MessagingInterface::kPreLoadGame:`
+逐条清理了 **9 个**单例:
+
+```cpp
+OStimTogether::EquipmentLock::GetSingleton().ClearAllOStimTargets();
+OStimTogether::EquipmentLock::GetSingleton().ClearManual();
+OStimTogether::DefaultOutfitGuard::GetSingleton().RestoreAll();
+OStimTogether::CoopSessionManager::GetSingleton().Reset();
+OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
+OStimTogether::FreeScenePhaseSync::GetSingleton().Reset();
+OStimTogether::ParticipantAlignmentSync::GetSingleton().Reset();
+OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Reset();
+OStimTogether::OCumStateSync::GetSingleton().Reset();
+OStimTogether::PPAIntegration::GetSingleton().Reset();
+```
+
+**唯独 AddonBridge 缺席** —— 而它正是这一层里**唯一**缓存跨玩家状态的那个。
+同构先例不止一处:`OStimBridge::ResetRemoteState()`(`OStimBridge.cpp:1623-1649`)一次清掉
+15 个成员 map(`_remoteMirrorThreads`/`_remoteToLocal`/`_localToRemote`/`_localAlignmentMasks`/
+`_localSelfIndices`/`_sceneCenters`/`_authoritativeActorPoses`/`_pendingWallStarts`/
+`_strProxyPoseGuardAfter`/`_lastSTRProxyPoseGuardLog`/`_pendingInitialAnimationReplay`/
+`_lastAnimationRefresh`/`_lastDirectEventLog`/`_wallRootProbeUntil`/`_lastWallRootProbeLog`/
+`_lastForcedEvents`),`MorphSyncService::Reset()`(`MorphSyncService.cpp:229-247`)同样清三个 map。
+
+**判据是「同一串清理里唯独它缺席」**:一个缓存没有清理路径,单看它自己是看不出来的 ——
+只有把它放回「同族都在哪里被清」的清单里,缺席才显形。
+
+### 53.3 修法:补一个 ClearRemoteState,并挂进同一串清理
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.h
+// Drops every cached remote addon state. The cache is keyed by FormID
+// and a new game hands those ids out again, so state captured for one
+// save would otherwise be replayed onto whoever now carries that id.
+void ClearRemoteState();
+
+// plugins/OStimTogether/src/AddonBridge.cpp
+void AddonBridge::ClearRemoteState()
+{
+    std::scoped_lock lock(_stateMutex);
+    _remoteOverlays.clear();
+    _remoteObjects.clear();
+}
+
+// plugins/OStimTogether/src/main.cpp(kPreLoadGame 分支末尾)
+OStimTogether::AddonBridge::GetSingleton().ClearRemoteState();
+```
+
+**为什么持锁**:两个 map 会被 `ScheduleRemoteStateReapply` 在游戏线程上读(`AddonBridge.cpp:675-687`
+把两个 map 拷成局部副本),而 `ClearRemoteState` 在 SKSE 消息回调里调用 —— 不持锁就是数据竞争。
+`std::scoped_lock` 与文件里其它锁点写法一致。
+
+**为什么不是 `Reset()`**:这个类的公开面只有 `Register`/`ProcessEvent`/`HandleRemotePacket`/
+`ScheduleRemoteStateReapply`,缓存之外没有别的状态要复位,所以只清缓存、名字也照实叫。
+
+### 53.4 交付:补丁而不是子模块提交
+
+`plugins/OStimTogether` 是**本项目不拥有、也无法推送**的子模块,而 CI 跑的是
+`git submodule update --init --force --recursive --depth=1` —— **工作树里对子模块的任何改动都会
+被丢弃**。所以修复必须做成 `Code/plugins/patches/OStimTogether/0003-clear-the-remote-addon-cache-on-load.patch`
+(本仓库内容,随仓库评审/版本化/打包),由 `plugin_patches.py apply` 在配置与构建前打到子模块工作树上。
+
+补丁正文就是 `git -C plugins/OStimTogether diff -- <那三个文件>` 的原样输出
+(标准 `diff --git` / `--- a/` / `+++ b/` / `@@` 段),新增行里带解释性注释。
+
+### 53.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+Select-String -Path plugins\OStimTogether\src\AddonBridge.cpp -Pattern 'ClearRemoteState|_remoteOverlays\.clear|_remoteObjects\.clear'
+Select-String -Path plugins\OStimTogether\src\main.cpp -Pattern 'ClearRemoteState'
+Select-String -Path Code\plugins\patches\OStimTogether\*.patch -Pattern 'ClearRemoteState'
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`plugin_patches.py verify` → `PATCH VERIFY OK` / `9 patch(es) apply to their pinned commits`;
+`check` → `PATCH CHECK OK`;`AddonBridge.cpp:639-644` 是 `ClearRemoteState()`(锁内两次 `clear()`)、
+`:531`/`:617`/`:686-691` 四个读写点未变;`main.cpp:223` 是新增的 `ClearRemoteState()` 调用;
+`Code/plugins/patches/OStimTogether/0003-clear-the-remote-addon-cache-on-load.patch` 覆盖三个文件;
+`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+> **教训**:一个**缓存**的缺陷不在它的读写逻辑里,而在「**谁负责清它**」这个没人写下来的约定里 ——
+> 键是 FormID、EntityId、ConnectionID 这类**会被重新分配**的 id 时,缓存的生命周期就**必须**短于
+> 一次读档;判据不是去看这个类,而是去列「同族在什么地方被清」,看谁不在名单上。
+> 还有一条流程上的:子模块里的修复**只存在于工作树就等于不存在**,CI 的
+> `submodule update --force` 会把它抹掉;要么做成补丁进本仓库,要么它永远进不了发行包。
 
