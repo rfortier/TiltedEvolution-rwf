@@ -17,7 +17,14 @@ void LoadSettingsFromCommand(ConsoleRegistry& aReg, int argc, char** argv)
     for (auto i = 1; i < argc; ++i)
     {
         std::string value = argv[i];
-        value = value.substr(value.find_first_not_of('-'));
+        // substr(npos) throws, and an argument made of nothing but dashes (or an empty one)
+        // leaves find_first_not_of at npos. Nothing above this call catches, so the whole
+        // argument is skipped instead of taking the server down over it.
+        const auto cFirstFlagChar = value.find_first_not_of('-');
+        if (cFirstFlagChar == std::string::npos)
+            continue;
+
+        value = value.substr(cFirstFlagChar);
         const auto cSplitLoc = value.find_first_of('=');
         if (cSplitLoc != std::string::npos)
         {
@@ -40,12 +47,16 @@ void LoadSettingsFromCommand(ConsoleRegistry& aReg, int argc, char** argv)
             {
             // With scalar types we don't expect the size to change...
             // However, they should all call StoreValue in the future.
+            // ConvertStringValue rather than the std::sto* family: those throw on a value they
+            // cannot parse, and this runs from the runner constructor where nothing catches, so a
+            // typo in an argument would take the server down before it ever listens. The "set"
+            // console command already writes these same fields this way.
             case SettingBase::Type::kBoolean: setting->data.as_boolean = args[pName] == "TRUE" || args[pName] == "true"; break;
-            case SettingBase::Type::kInt: setting->data.as_int32 = std::stol(args[pName]); break;
-            case SettingBase::Type::kUInt: setting->data.as_uint32 = std::stoul(args[pName]); break;
-            case SettingBase::Type::kInt64: setting->data.as_int64 = std::stoll(args[pName]); break;
-            case SettingBase::Type::kUInt64: setting->data.as_uint64 = std::stoull(args[pName]); break;
-            case SettingBase::Type::kFloat: setting->data.as_float = std::stof(args[pName]); break;
+            case SettingBase::Type::kInt: setting->data.as_int32 = ConvertStringValue(args[pName].c_str(), setting->data.as_int32); break;
+            case SettingBase::Type::kUInt: setting->data.as_uint32 = ConvertStringValue(args[pName].c_str(), setting->data.as_uint32); break;
+            case SettingBase::Type::kInt64: setting->data.as_int64 = ConvertStringValue(args[pName].c_str(), setting->data.as_int64); break;
+            case SettingBase::Type::kUInt64: setting->data.as_uint64 = ConvertStringValue(args[pName].c_str(), setting->data.as_uint64); break;
+            case SettingBase::Type::kFloat: setting->data.as_float = ConvertStringValue(args[pName].c_str(), setting->data.as_float); break;
             // Strings however are a special case, as it has its own allocator.
             case SettingBase::Type::kString:
             {

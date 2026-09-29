@@ -728,6 +728,76 @@ m_knockdownStart = false;
 `Code/client/Services/Generic/PlayerService.cpp:300` 是 `if (pPlayer)` 守卫;
 `python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:专用服务器一个手滑的命令行参数就能让它连端口都没监听就退出
+
+**现象**:给专用服务器带上 `--uPort=abc`(或任何写错的数值参数),进程**在打印任何一行日志之前就退出**,
+不监听端口、不写崩溃转储;把参数去掉一切正常。
+
+**根因**:启动期设置解析有**两处**会抛异常,而整条路径上没有一处 `catch`:
+
+```cpp
+// Code/components/console/CommandSettingsProvider.cpp(修复前)
+std::string value = argv[i];
+value = value.substr(value.find_first_not_of('-'));   // 空串或全由 '-' 组成时 find_first_not_of 返回 npos
+...
+case SettingBase::Type::kInt: setting->data.as_int32 = std::stol(args[pName]); break;
+case SettingBase::Type::kUInt: setting->data.as_uint32 = std::stoul(args[pName]); break;
+case SettingBase::Type::kInt64: setting->data.as_int64 = std::stoll(args[pName]); break;
+case SettingBase::Type::kUInt64: setting->data.as_uint64 = std::stoull(args[pName]); break;
+case SettingBase::Type::kFloat: setting->data.as_float = std::stof(args[pName]); break;
+```
+
+`std::string::substr(npos)` 抛 `std::out_of_range`;`std::sto*` 对解析不了的输入抛
+`std::invalid_argument`(`abc`、空串)或 `std::out_of_range`(超出该类型范围)。
+
+**判据 1 —— 这条路径上没有第二个机会**:调用链是
+`Code/server_runner/main.cpp:233` → `DediRunner::DediRunner`(`Code/server_runner/DediRunner.cpp:34`,
+`CreateGameServer` 的回调)→ `CreateGameServer`(`Code/server/main.cpp:100 aCallback();`)
+→ `DediRunner::LoadSettings`(`:53 LoadSettingsFromCommand`)。异常要逃出的是 **`main()` 的调用栈**,
+而 `grep "catch" Code` 全仓只有 **8 处**,没有一处在这条链上(`Code/server_runner/**` 与
+`Code/server/main.cpp` 各 0 处)。这不是「异常会被上层处理」,是「异常直接结束进程」。
+
+**判据 2 —— 写同样这五个字段的另外两条路径早就不抛**:`set` 控制台命令
+(`Code/components/console/ConsoleRegistry.cpp:141-145`)用的是
+`pSetting->data.as_int32 = ConvertStringValue(value.c_str(), pSetting->data.as_int32);`;
+`.ini` 载入(`Code/components/console/IniSettingsProvider.cpp:122-126`)五个数值类型全走
+`GetIniValue` → `ConvertStringValue<TVal>(szValue, a_nDefault)`。
+`Code/components/console/ConsoleUtils.h:20-26` 的注释原文就是 "on error, you get the default"。
+⇒ 三条路径里,**只有命令行这一条会抛**,而它也是唯一一条**出错就没有第二次机会**的
+(另外两条出错只是该值保持默认,服务器照常起来)。
+
+**修法**:跳过没有非横线字符的参数,五个数值改走 `ConvertStringValue`。
+
+```cpp
+// Code/components/console/CommandSettingsProvider.cpp(修复后,:20-27)
+// substr(npos) throws, and an argument made of nothing but dashes (or an empty one)
+// leaves find_first_not_of at npos. Nothing above this call catches, so the whole
+// argument is skipped instead of taking the server down over it.
+const auto cFirstFlagChar = value.find_first_not_of('-');
+if (cFirstFlagChar == std::string::npos)
+    continue;
+
+value = value.substr(cFirstFlagChar);
+```
+
+```cpp
+// Code/components/console/CommandSettingsProvider.cpp(修复后,:55-59)
+case SettingBase::Type::kInt: setting->data.as_int32 = ConvertStringValue(args[pName].c_str(), setting->data.as_int32); break;
+case SettingBase::Type::kUInt: setting->data.as_uint32 = ConvertStringValue(args[pName].c_str(), setting->data.as_uint32); break;
+case SettingBase::Type::kInt64: setting->data.as_int64 = ConvertStringValue(args[pName].c_str(), setting->data.as_int64); break;
+case SettingBase::Type::kUInt64: setting->data.as_uint64 = ConvertStringValue(args[pName].c_str(), setting->data.as_uint64); break;
+case SettingBase::Type::kFloat: setting->data.as_float = ConvertStringValue(args[pName].c_str(), setting->data.as_float); break;
+```
+
+**为什么不加 `try`/`catch`**:`CODE_GUIDELINES.md:47` 明文 "Don't use exceptions, don't use STL code
+that can throw, use the nothrow version if available or the unsafe version.";而且这里要的语义是
+「这个参数不认识,就跳过它」,不是「这个参数不认识,就整体失败」—— 一条写错的参数不该让同一行里
+`--uMaxPlayerCount=32` 这种**正确的参数**也一起失效。`ConvertStringValue` 失败时保留
+`setting->data` 里的原值(即该设置项的默认值),与 `.ini` 载入、`set` 命令的行为完全一致。
+
+**验证**:`Select-String -Path Code\components\console\CommandSettingsProvider.cpp -Pattern 'std::sto'`
+→ **0 命中**;`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

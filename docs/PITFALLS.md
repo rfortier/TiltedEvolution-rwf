@@ -6129,3 +6129,124 @@ python Tools\Scripts\check_docs.py
 > 另外一条:这类「为修 A 而覆盖掉刚才的判空」的代码(54.1 的 `pActor = PlayerCharacter::Get();`)
 > 是**判空保证的局部作废** —— 改动一个已经判过空的变量时,应当问「我这一步是否把它的保证丢了」。
 
+
+## 55. 2026-09-29 场次:启动期的解析错误没有第二个机会 —— 一个参数打错,服务器在监听之前就死了
+
+> **锚点**:本节的修复落在 `Code/components/console/CommandSettingsProvider.cpp`。
+
+### 55.1 缺陷:命令行设置解析会抛,而整条启动路径上没有人接
+
+**现象**:给专用服务器带上 `--uPort=abc`(或任何写错的数值参数),进程在打印任何一行日志之前就退出,
+不监听端口、不写崩溃转储;把参数去掉一切正常。
+
+`Code/components/console/CommandSettingsProvider.cpp`(修复前)有两个抛点。第一个在解析循环里:
+
+```cpp
+for (auto i = 1; i < argc; ++i)
+{
+    std::string value = argv[i];
+    value = value.substr(value.find_first_not_of('-'));
+    ...
+}
+```
+
+第二个在写入设置项的 switch 里:
+
+```cpp
+case SettingBase::Type::kBoolean: setting->data.as_boolean = args[pName] == "TRUE" || args[pName] == "true"; break;
+case SettingBase::Type::kInt: setting->data.as_int32 = std::stol(args[pName]); break;
+case SettingBase::Type::kUInt: setting->data.as_uint32 = std::stoul(args[pName]); break;
+case SettingBase::Type::kInt64: setting->data.as_int64 = std::stoll(args[pName]); break;
+case SettingBase::Type::kUInt64: setting->data.as_uint64 = std::stoull(args[pName]); break;
+case SettingBase::Type::kFloat: setting->data.as_float = std::stof(args[pName]); break;
+```
+
+- `std::string::substr(npos)` 抛 `std::out_of_range`:参数是空串、或**全由 `-` 组成**时
+  `find_first_not_of('-')` 返回 `npos`。
+- `std::stol` / `std::stoul` / `std::stoll` / `std::stoull` / `std::stof` 对解析不了的输入抛
+  `std::invalid_argument`(`abc`、空串)或 `std::out_of_range`(超出该类型能表示的范围)。
+
+### 55.2 判据:这条路径上没有第二个机会,而另外两条同字段的路径早就不抛
+
+调用链:`Code/server_runner/main.cpp:233 std::make_unique<DediRunner>(argc, argv)`
+→ `Code/server_runner/DediRunner.cpp:34 CreateGameServer(m_console, [this, argc, argv]() { LoadSettings(argc, argv); })`
+→ `Code/server/main.cpp:100 aCallback();`
+→ `Code/server_runner/DediRunner.cpp:53 LoadSettingsFromCommand(m_console, argc, argv);`。
+
+**判据 A —— 全仓 `catch` 只有 8 处,这条链上 0 处**:`grep "catch" Code` 的 8 处分别是
+`Code/immersive_launcher/stubs/DllBlocklist.cpp:174`、`Code/server/Services/ScriptService.cpp:121`、
+`Code/server/Services/ScriptService.cpp:213`、`Code/client/CrashHandler.cpp:503`、
+`Code/client/Games/Skyrim/CellRespawnOverrides.cpp:101` 等,`Code/server_runner/**` 与
+`Code/server/main.cpp` **各 0 处**。异常要逃出的是 `main()` 的调用栈。
+
+**判据 B —— 写同样五个字段的另外两条路径都用不抛的解析器**:
+
+| 路径 | 解析器 | 解析失败的行为 |
+| --- | --- | --- |
+| `set` 控制台命令 `Code/components/console/ConsoleRegistry.cpp:141-145` | `ConvertStringValue(value.c_str(), pSetting->data.as_int32)` | 保持原值 |
+| `.ini` 载入 `Code/components/console/IniSettingsProvider.cpp:122-126` | `GetIniValue` → `ConvertStringValue<TVal>(szValue, a_nDefault)` | 保持原值 |
+| 命令行载入 `Code/components/console/CommandSettingsProvider.cpp`(修复前) | `std::stol` / `std::stoul` / `std::stoll` / `std::stoull` / `std::stof` | **抛,进程结束** |
+
+`Code/components/console/ConsoleUtils.h:20-26` 的注释原文是 "on error, you get the default"。
+
+**判据 C —— 只有这一条没有第二次机会**:`.ini` 出错只是某个值保持默认,服务器照常起来;`set`
+出错同理,用户看得见报错再改一次。命令行是**唯一**一条「参数写错 = 服务器起不来」的路径,
+而它恰好用了会抛的那族解析器。
+
+**可触发面**:全仓 `Console::Setting` 共 22 处,全部在 `Code/server/**` 与
+`Code/server_runner/DediRunner.cpp:20`。用户能从命令行写到的数值项有
+`GameServer:uPort`(`Code/server/GameServer.cpp:28`)、`GameServer:uMaxPlayerCount`(`:29`)、
+`Gameplay:uDifficulty`(`:39`)、`GameServer:uQuestHistoryExpiration`
+(`Code/server/Services/QuestService.cpp:17`)、`Gameplay:fGoldLossFactor`
+(`Code/server/Services/PlayerService.cpp:24`)。
+
+### 55.3 修法:跳过没有非横线字符的参数,数值改走同族的 ConvertStringValue
+
+```cpp
+// Code/components/console/CommandSettingsProvider.cpp(修复后,:20-27)
+// substr(npos) throws, and an argument made of nothing but dashes (or an empty one)
+// leaves find_first_not_of at npos. Nothing above this call catches, so the whole
+// argument is skipped instead of taking the server down over it.
+const auto cFirstFlagChar = value.find_first_not_of('-');
+if (cFirstFlagChar == std::string::npos)
+    continue;
+
+value = value.substr(cFirstFlagChar);
+```
+
+```cpp
+// Code/components/console/CommandSettingsProvider.cpp(修复后,:50-59)
+// ConvertStringValue rather than the std::sto* family: those throw on a value they
+// cannot parse, and this runs from the runner constructor where nothing catches, so a
+// typo in an argument would take the server down before it ever listens. The "set"
+// console command already writes these same fields this way.
+case SettingBase::Type::kBoolean: setting->data.as_boolean = args[pName] == "TRUE" || args[pName] == "true"; break;
+case SettingBase::Type::kInt: setting->data.as_int32 = ConvertStringValue(args[pName].c_str(), setting->data.as_int32); break;
+case SettingBase::Type::kUInt: setting->data.as_uint32 = ConvertStringValue(args[pName].c_str(), setting->data.as_uint32); break;
+case SettingBase::Type::kInt64: setting->data.as_int64 = ConvertStringValue(args[pName].c_str(), setting->data.as_int64); break;
+case SettingBase::Type::kUInt64: setting->data.as_uint64 = ConvertStringValue(args[pName].c_str(), setting->data.as_uint64); break;
+case SettingBase::Type::kFloat: setting->data.as_float = ConvertStringValue(args[pName].c_str(), setting->data.as_float); break;
+```
+
+**为什么不是 `try`/`catch`**:`CODE_GUIDELINES.md:47` 明文 "Don't use exceptions, don't use STL code
+that can throw, use the nothrow version if available or the unsafe version.";而且这里要的语义是
+「这个参数不认识,就跳过它」,不是「这个参数不认识,就整体失败」—— 一条写错的参数不该让同一行里
+`--uMaxPlayerCount=32` 这种**正确的参数**也一起失效。`ConvertStringValue` 失败时保留
+`setting->data` 里的原值(该设置项的默认值),与 `.ini` 载入、`set` 命令的行为完全一致。
+
+### 55.4 复核命令(照抄)
+
+```powershell
+Select-String -Path Code\components\console\CommandSettingsProvider.cpp -Pattern 'std::sto'
+Select-String -Path Code\components\console\CommandSettingsProvider.cpp -Pattern 'find_first_not_of|ConvertStringValue'
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`std::sto` → **0 命中**;`find_first_not_of` 命中修复点一处、`ConvertStringValue` 命中
+五个数值 case 加注释;`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+> **教训**:启动期的错误**没有第二次机会** —— 同一个解析器放在运行期,写错只是「这次没生效」,
+> 放在启动期就是「服务没起来」,而两者在代码里长得**一模一样**(同一批字段、同一个 switch)。
+> 所以「这个解析器会不会抛」不是一个孤立的问题,要先问「它跑在哪条路径上、那条路径上有没有人接」。
+> 另一条:一个仓库里对**同一批字段**存在两种解析器时,要问「为什么这里不用那个不抛的」——
+> 这里答案是「没人写过」,而不是「这里需要抛」。
