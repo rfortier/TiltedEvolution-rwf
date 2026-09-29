@@ -916,9 +916,11 @@ void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSet
     // It is still recommended that the quest leader loots all quest items.
     if (arEntry.IsQuestItem && arEntry.Count > 0 && !aIsSettingInventory)
     {
+        // The player is null on the main menu and while a save is loading, and
+        // this path is reached from the inventory messages.
         PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
-        if (!pPlayer->IsItemInInventory(objectId))
+        if (pPlayer && !pPlayer->IsItemInInventory(objectId))
         {
             Actor* pActor = Cast<Actor>(this);
             if (pActor && pActor->GetExtension()->IsRemotePlayer())

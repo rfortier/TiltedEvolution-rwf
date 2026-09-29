@@ -216,6 +216,106 @@ return parentCell ? parentCell : GetSaveParentCell();
 剩余 11 处**全部已有守卫**;`git diff --stat -- Code` = `6 files changed, 31 insertions(+), 9 deletions(-)`;
 `python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:主菜单与读盘期间解引用「还没有玩家」 —— 一整个 `PlayerCharacter::Get()` 允许返回空的家族
+
+**现象**:游戏刚启动停在主菜单,或者正在读一个存档,此时点「连接」;又或者只是等一个
+断线包、一条经验同步包、一次传送响应到达 —— 客户端进程直接终止。
+
+**根因**:`PlayerCharacter::Get()` 在读盘与主菜单期间返回空,而 18 处调用点直接写
+`PlayerCharacter::Get()->...`。判据不是本次新立的,是仓库自己早就写在两处的:
+
+```cpp
+// Code/client/Services/Generic/OverlayService.cpp:143-149
+    // Its per-frame caller passes PlayerCharacter::Get(), which is null while a
+    // save is loading and on the main menu. The two other callers look the actor
+    // up from the world and already know it is there.
+    if (!apActor)
+        return 0.f;
+```
+
+```cpp
+// Code/client/Services/Generic/PlayerService.cpp:215-220
+    // Runs every frame from OnUpdate, including while a save is loading and on
+    // the main menu, where there is no player yet. This file already checks the
+    // same pointer on another path; these two did not.
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+```
+
+`Code/client/Games/Skyrim/PlayerCharacter.cpp:44-49` 的实现同样说明它可空:
+
+```cpp
+PlayerCharacter* PlayerCharacter::Get() noexcept
+{
+    POINTER_SKYRIMSE(PlayerCharacter*, s_character, 401069);
+    return *s_character.Get();
+}
+```
+
+| 位置 | 写法 | 判空 |
+| --- | --- | --- |
+| `OverlayService.cpp:615` | `CalculateHealthPercentage(PlayerCharacter::Get())` | ✅(函数内判) |
+| `PlayerService.cpp:218` | `PlayerCharacter* pPlayer = PlayerCharacter::Get(); if (!pPlayer) return;` | ✅ |
+| `PlayerService.cpp:309`/`:326`/`:359` | `if (auto* pPlayer = PlayerCharacter::Get())` | ✅ |
+| `PlayerService.cpp:86` | `PlayerCharacter::Get()->SetDifficulty(m_previousDifficulty);` | 否(本次缺陷) |
+| `CharacterService.cpp:602` | `pActor->MoveTo(PlayerCharacter::Get()->GetParentCellEx(), ...);` | 否(本次缺陷) |
+| `TransportService.cpp:275` | `PlayerCharacter* pPlayer = PlayerCharacter::Get();` 后 `:280` 就解引用 | 否(本次缺陷) |
+| `Forms.cpp:55` | `Cast<TESNPC>(PlayerCharacter::Get()->baseForm)` | 否(本次缺陷) |
+| `References.cpp:60` | `s_getDifficultyMultiplier(PlayerCharacter::Get()->difficulty, ...)` | 否(本次缺陷) |
+| `TESObjectREFR.cpp:919` | `PlayerCharacter* pPlayer = PlayerCharacter::Get();` 后 `pPlayer->IsItemInInventory(...)` | 否(本次缺陷) |
+
+**可机械执行的判据**:`PlayerCharacter::Get()->` 出现一次,就是一处缺陷 ——
+表达式里根本没有放判空的位置。判空必须落在一个局部量上,写成
+`if (PlayerCharacter* pPlayer = PlayerCharacter::Get())`。
+
+**修复**:9 个文件、18 处,一律「取一次到局部量 + 判空」,不改调用顺序、不改原有语义:
+
+```cpp
+// Code/client/Games/References.cpp
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+
+    bool isPlayer = apHittee == pPlayer;
+
+    // The player is null on the main menu and while a save is loading, where no
+    // damage is real; the read below would fault on it.
+    if (!pPlayer)
+        return aDamage;
+
+    float multiplier = s_getDifficultyMultiplier(pPlayer->difficulty, ActorValueInfo::kHealth, isPlayer);
+```
+
+```cpp
+// Code/client/Services/Generic/TransportService.cpp(OnConnected)
+    // The player is null on the main menu and while a save is loading, where the
+    // handshake can still complete; everything below degrades to a default.
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    ...
+    auto* pNpc = pPlayer ? Cast<TESNPC>(pPlayer->baseForm) : nullptr;
+    ...
+    if (pPlayer)
+    {
+        if (const auto* pWorldSpace = pPlayer->GetWorldSpace())
+            modSystem.GetServerModId(pWorldSpace->formID, request.WorldSpaceId);
+        if (const auto* pParentCell = pPlayer->GetParentCellEx())
+            modSystem.GetServerModId(pParentCell->formID, request.CellId);
+        request.Level = pPlayer->GetLevel();
+    }
+```
+
+其余七处同构:`Forms.cpp`(`TESNPC::Initialize` 的六个默认值改到 `if (pPlayerBaseForm)` 内)、
+`TESObjectREFR.cpp`(`pPlayer && !pPlayer->IsItemInInventory(...)`)、
+`PlayerService.cpp`(五处)、`CharacterService.cpp`(八处)、`MapService.cpp`(两处)、
+`CommandService.cpp`/`OverlayService.cpp`(传送各一处)。
+
+**修崩溃,不改行为**:指针非空时走的还是原来那条路;为空时原本是崩溃。传送的两处
+仍然先取 cell 并保留原来的失败提示(`"Teleporting to player failed."`),只是不再对着
+空玩家解引用。
+
+**验证**:`Get-ChildItem -Path Code\client -Recurse -Include *.cpp,*.h | Select-String 'PlayerCharacter::Get\(\)->'`
+→ **零命中**(修前 18 处);`git diff --stat -- Code` = `9 files changed, 98 insertions(+), 34 deletions(-)`;
+`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

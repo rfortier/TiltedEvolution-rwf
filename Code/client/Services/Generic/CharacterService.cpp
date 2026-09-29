@@ -599,7 +599,12 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
-    pActor->MoveTo(PlayerCharacter::Get()->GetParentCellEx(), acMessage.Position);
+
+    // The player is null on the main menu and while a save is loading, where a
+    // spawn request can already arrive; the cell is only the anchor for MoveTo.
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pActor->MoveTo(pPlayer->GetParentCellEx(), acMessage.Position);
+
     pActor->SetActorValues(acMessage.InitialActorValues);
 
     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
@@ -618,7 +623,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     if (acMessage.IsPlayerSummon)
     {
         // Prevents remote summons agroing other players.
-        pActor->SetCommandingActor(PlayerCharacter::Get()->GetHandle());
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+            pActor->SetCommandingActor(pPlayer->GetHandle());
     }
 
     // Static references arrive with their own locally rolled leveled pick; conform to the owner's.
@@ -1088,6 +1094,8 @@ void CharacterService::OnAddExperienceEvent(const AddExperienceEvent& acEvent) n
 void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMessage) noexcept
 {
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
 
     if (PlayerCharacter::LastUsedCombatSkill == -1)
         return;
@@ -1396,7 +1404,13 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
     {
         auto& entries = message.FaceTints.Entries;
 
-        const auto& tints = PlayerCharacter::Get()->GetTints();
+        // The player is null on the main menu and while a save is loading, where
+        // this assignment is skipped instead of faulting.
+        const PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        if (!pPlayer)
+            return;
+
+        const auto& tints = pPlayer->GetTints();
 
         entries.resize(tints.length);
 
@@ -1416,7 +1430,13 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
         auto& questLog = message.QuestContent.Entries;
         auto& modSystem = m_world.GetModSystem();
 
-        for (const auto& objective : PlayerCharacter::Get()->objectives)
+        // The player is null on the main menu and while a save is loading, where
+        // there is no quest log to send either.
+        const PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        if (!pPlayer)
+            return;
+
+        for (const auto& objective : pPlayer->objectives)
         {
             auto* pQuest = objective.instance->quest;
             if (!pQuest)
@@ -1627,7 +1647,8 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
     pActor->GetExtension()->SetRemote(true);
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
-    pActor->MoveTo(PlayerCharacter::Get()->GetParentCellEx(), pInterpolationComponent->Position);
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pActor->MoveTo(pPlayer->GetParentCellEx(), pInterpolationComponent->Position);
     pActor->SetActorValues(acMessage.InitialActorValues);
 
     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
@@ -2083,7 +2104,10 @@ void CharacterService::RunSpawnUpdates() const noexcept
         auto& remoteComponent = m_world.get<RemoteComponent>(entity);
         auto& interpolationComponent = m_world.get<InterpolationComponent>(entity);
 
-        if (const auto pWorldSpace = PlayerCharacter::Get()->GetWorldSpace())
+        // The player is null on the main menu and while a save is loading, where
+        // this per-frame pass has nothing to compare against.
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        if (const auto pWorldSpace = pPlayer ? pPlayer->GetWorldSpace() : nullptr)
         {
             float characterX = interpolationComponent.Position.x;
             float characterY = interpolationComponent.Position.y;
@@ -2116,7 +2140,8 @@ void CharacterService::RunSpawnUpdates() const noexcept
                     remoteComponent.CachedRefId = pActor->formID;
                 }
 
-                pActor->MoveTo(PlayerCharacter::Get()->GetParentCellEx(), interpolationComponent.Position);
+                if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+                    pActor->MoveTo(pPlayer->GetParentCellEx(), interpolationComponent.Position);
             }
         }
     }

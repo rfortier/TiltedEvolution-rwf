@@ -55,9 +55,16 @@ float CalculateRealDamage(Actor* apHittee, float aDamage, bool aKillMove) noexce
     using TGetDifficultyMultiplier = float(int32_t, int32_t, bool);
     POINTER_SKYRIMSE(TGetDifficultyMultiplier, s_getDifficultyMultiplier, 26503);
 
-    bool isPlayer = apHittee == PlayerCharacter::Get();
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
-    float multiplier = s_getDifficultyMultiplier(PlayerCharacter::Get()->difficulty, ActorValueInfo::kHealth, isPlayer);
+    bool isPlayer = apHittee == pPlayer;
+
+    // The player is null on the main menu and while a save is loading, where no
+    // damage is real; the read below would fault on it.
+    if (!pPlayer)
+        return aDamage;
+
+    float multiplier = s_getDifficultyMultiplier(pPlayer->difficulty, ActorValueInfo::kHealth, isPlayer);
 
     float realDamage = aDamage;
 

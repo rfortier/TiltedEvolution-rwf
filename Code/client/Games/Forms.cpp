@@ -52,15 +52,21 @@ void TESNPC::Deserialize(const String& acBuffer, uint32_t aChangeFlags) noexcept
 
 void TESNPC::Initialize() noexcept
 {
-    auto pPlayerBaseForm = Cast<TESNPC>(PlayerCharacter::Get()->baseForm);
+    // The player is null on the main menu and while a save is loading, and its
+    // base form is what the defaults below are copied from.
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    auto pPlayerBaseForm = pPlayer ? Cast<TESNPC>(pPlayer->baseForm) : nullptr;
 
     // These values are all defaulted, if the other actor did not modify them they won't be loaded, therefore we need to force them before load
-    attackDataForm.attackDataMap = pPlayerBaseForm->attackDataForm.attackDataMap;
-    npcClass = pPlayerBaseForm->npcClass;
-    combatStyle = pPlayerBaseForm->combatStyle;
-    raceForm.race = pPlayerBaseForm->raceForm.race;
-    defaultOutfit = pPlayerBaseForm->defaultOutfit;
-    sleepOutfit = pPlayerBaseForm->sleepOutfit;
+    if (pPlayerBaseForm)
+    {
+        attackDataForm.attackDataMap = pPlayerBaseForm->attackDataForm.attackDataMap;
+        npcClass = pPlayerBaseForm->npcClass;
+        combatStyle = pPlayerBaseForm->combatStyle;
+        raceForm.race = pPlayerBaseForm->raceForm.race;
+        defaultOutfit = pPlayerBaseForm->defaultOutfit;
+        sleepOutfit = pPlayerBaseForm->sleepOutfit;
+    }
     spellList.Initialize();
     // End defaults
 

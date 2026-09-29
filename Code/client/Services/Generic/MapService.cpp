@@ -58,11 +58,13 @@ void MapService::OnNotifySetWaypoint(const NotifySetWaypoint& acMessage) noexcep
     const uint32_t cWorldSpaceID = modSystem.GetGameId(acMessage.WorldSpaceFormID);
     TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(cWorldSpaceID));
 
-    PlayerCharacter::Get()->SetWaypoint(&pos, pWorldSpace);
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetWaypoint(&pos, pWorldSpace);
 }
 
 void MapService::OnNotifyRemoveWaypoint(const NotifyRemoveWaypoint& acMessage) noexcept
 {
-    PlayerCharacter::Get()->RemoveWaypoint();
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->RemoveWaypoint();
 }
 

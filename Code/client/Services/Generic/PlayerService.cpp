@@ -83,7 +83,11 @@ void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
-    PlayerCharacter::Get()->SetDifficulty(m_previousDifficulty);
+    // The player is null on the main menu and while a save is loading, where a
+    // disconnect is still possible.
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetDifficulty(m_previousDifficulty);
+
     m_serverDifficulty = m_previousDifficulty = 6;
 
     ToggleDeathSystem(false);
@@ -102,7 +106,10 @@ void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) noexcept
 {
     m_previousDifficulty = *Settings::GetDifficulty();
-    PlayerCharacter::Get()->SetDifficulty(acSettings.Difficulty);
+
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetDifficulty(acSettings.Difficulty);
+
     m_serverDifficulty = acSettings.Difficulty;
 
     if (!acSettings.GreetingsEnabled)
@@ -116,7 +123,8 @@ void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) n
 
 void PlayerService::OnNotifyPlayerRespawn(const NotifyPlayerRespawn& acMessage) const noexcept
 {
-    PlayerCharacter::Get()->PayGold(acMessage.GoldLost);
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->PayGold(acMessage.GoldLost);
 
     std::string message = fmt::format("You died and lost {} gold.", acMessage.GoldLost);
     Utils::ShowHudMessage(String(message));
@@ -179,8 +187,12 @@ void PlayerService::OnPlayerLevelEvent(const PlayerLevelEvent& acEvent) const no
     if (!m_transport.IsConnected())
         return;
 
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
     PlayerLevelRequest request{};
-    request.NewLevel = PlayerCharacter::Get()->GetLevel();
+    request.NewLevel = pPlayer->GetLevel();
 
     m_transport.Send(request);
 }
@@ -373,5 +385,7 @@ void PlayerService::ToggleDeathSystem(bool aSet) noexcept
 {
     m_isDeathSystemEnabled = aSet;
 
-    PlayerCharacter::Get()->SetPlayerRespawnMode(aSet);
+    // Reachable from a disconnect, which can happen on the main menu.
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetPlayerRespawnMode(aSet);
 }

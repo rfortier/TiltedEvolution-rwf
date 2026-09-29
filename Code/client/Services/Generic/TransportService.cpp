@@ -272,12 +272,15 @@ void TransportService::OnConnected()
     request.Token = m_serverPassword;
     m_serverPassword = "";
 
+    // The player is null on the main menu and while a save is loading, where the
+    // handshake can still complete; everything below degrades to a default.
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
     // null if discord is not active
     // TODO: think about user opt out
     request.DiscordId = m_world.ctx().at<DiscordService>().GetUser().id;
-    auto* pNpc = Cast<TESNPC>(pPlayer->baseForm);
+
+    auto* pNpc = pPlayer ? Cast<TESNPC>(pPlayer->baseForm) : nullptr;
     if (pNpc)
     {
         request.Username = pNpc->fullName.value.AsAscii();
@@ -301,15 +304,18 @@ void TransportService::OnConnected()
     }
 
     auto& modSystem = m_world.GetModSystem();
-    if (pPlayer->GetWorldSpace())
-        modSystem.GetServerModId(pPlayer->GetWorldSpace()->formID, request.WorldSpaceId);
+    if (pPlayer)
+    {
+        if (const auto* pWorldSpace = pPlayer->GetWorldSpace())
+            modSystem.GetServerModId(pWorldSpace->formID, request.WorldSpaceId);
 
-    // The player is between cells during a load, so the effective cell can be
-    // empty here; an unset cell id only costs the first cell change message.
-    if (const auto* pParentCell = pPlayer->GetParentCellEx())
-        modSystem.GetServerModId(pParentCell->formID, request.CellId);
+        // The player is between cells during a load, so the effective cell can be
+        // empty here; an unset cell id only costs the first cell change message.
+        if (const auto* pParentCell = pPlayer->GetParentCellEx())
+            modSystem.GetServerModId(pParentCell->formID, request.CellId);
 
-    request.Level = pPlayer->GetLevel();
+        request.Level = pPlayer->GetLevel();
+    }
 
     auto* pGameTime = TimeData::Get();
     request.PlayerTime.TimeScale = pGameTime->TimeScale->f;

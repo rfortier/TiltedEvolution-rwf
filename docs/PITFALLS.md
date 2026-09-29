@@ -5055,3 +5055,191 @@ python Tools\Scripts\check_docs.py
 > 判据可以简化成一句话:**取 cell 的地方必须判空,而判空必须落在一个局部量上** ——
 > 表达式里写两次 `->formID`,判空就无处可放。
 
+## 48. 2026-09-29 场次:主菜单与读盘期间解引用「还没有玩家」 —— 判据是「`PlayerCharacter::Get()` 允许返回空」
+
+> **锚点**:本节的修复落在 `Code/client/Games/`(`Forms.cpp`、`References.cpp`、`Skyrim/TESObjectREFR.cpp`)与 `Code/client/Services/Generic/`(`CharacterService.cpp`、`PlayerService.cpp`、`TransportService.cpp`、`MapService.cpp`、`CommandService.cpp`、`OverlayService.cpp`),共 9 个文件 18 处。
+
+### 48.1 缺陷:18 处 `PlayerCharacter::Get()->`
+
+```cpp
+// Code/client/Games/Skyrim/PlayerCharacter.cpp:44-49
+PlayerCharacter* PlayerCharacter::Get() noexcept
+{
+    POINTER_SKYRIMSE(PlayerCharacter*, s_character, 401069);
+    return *s_character.Get();
+}
+```
+
+它**可以返回空** —— 主菜单上、读盘期间都没有玩家。而下面这些写法把判空的位置挤没了:
+
+```cpp
+// Code/client/Services/Generic/PlayerService.cpp(修复前)
+void PlayerService::OnDisconnected(const DisconnectedEvent&) noexcept
+{
+    PlayerCharacter::Get()->SetDifficulty(m_previousDifficulty);
+    ...
+}
+
+// Code/client/Games/Forms.cpp:53-68(修复前)
+void TESNPC::Initialize() noexcept
+{
+    auto pPlayerBaseForm = Cast<TESNPC>(PlayerCharacter::Get()->baseForm);
+
+    attackDataForm.attackDataMap = pPlayerBaseForm->attackDataForm.attackDataMap;
+    npcClass = pPlayerBaseForm->npcClass;
+    ...
+}
+
+// Code/client/Games/References.cpp:60(修复前)
+float multiplier = s_getDifficultyMultiplier(PlayerCharacter::Get()->difficulty, ActorValueInfo::kHealth, isPlayer);
+
+// Code/client/Games/Skyrim/TESObjectREFR.cpp:919-926(修复前)
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+
+    if (!pPlayer->IsItemInInventory(objectId))
+```
+
+| 位置 | 触发方式 | 说明 |
+| --- | --- | --- |
+| `TransportService.cpp:275`(`OnConnected`) | 玩家在主菜单/读盘时点「连接」 | 握手可以在没有玩家时完成,`:280` 立刻解引用 |
+| `PlayerService.cpp:86`(`OnDisconnected`) | 主菜单上掉线 | 断线包不要求玩家存在 |
+| `PlayerService.cpp:376`(`ToggleDeathSystem`) | 由 `:89` 的断线路径调用 | 同上 |
+| `CharacterService.cpp:2086`/`:2119`(`RunSpawnUpdates`) | 每帧 | 读盘期间仍在跑 |
+| `CharacterService.cpp:602`/`:621`/`:1630` | 收到 `CharacterSpawnRequest` | 玩家为 null 时照样会到 |
+| `Forms.cpp:55`(`TESNPC::Initialize`) | `CharacterService.cpp:541`/`:1608` 建 NPC | 没有玩家就没有「玩家基础形态」可抄 |
+| `References.cpp:60`(`CalculateRealDamage`) | 任何一次伤害计算 | 伤害钩子不检查玩家 |
+| `TESObjectREFR.cpp:919`(`AddOrRemoveItem`) | `InventoryService.cpp:213`/`:223`(默认 `aIsSettingInventory=false`) | 任务物品分支 |
+
+### 48.2 判据:仓库自己早就在两处写下了这句话
+
+```cpp
+// Code/client/Services/Generic/OverlayService.cpp:143-149
+    // Its per-frame caller passes PlayerCharacter::Get(), which is null while a
+    // save is loading and on the main menu. The two other callers look the actor
+    // up from the world and already know it is there.
+    if (!apActor)
+        return 0.f;
+```
+
+```cpp
+// Code/client/Services/Generic/PlayerService.cpp:215-220
+    // Runs every frame from OnUpdate, including while a save is loading and on
+    // the main menu, where there is no player yet. This file already checks the
+    // same pointer on another path; these two did not.
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+```
+
+| 位置 | 写法 | 判空 |
+| --- | --- | --- |
+| `OverlayService.cpp:615` | `CalculateHealthPercentage(PlayerCharacter::Get())` | ✅(函数内判) |
+| `PlayerService.cpp:218` | `PlayerCharacter* pPlayer = PlayerCharacter::Get(); if (!pPlayer) return;` | ✅ |
+| `PlayerService.cpp:309`/`:326`/`:359` | `if (auto* pPlayer = PlayerCharacter::Get())` | ✅ |
+| `OverlayService.cpp:210`(`Render`) | `bool inGame = pPlayer && pPlayer->GetNiNode();` | ✅ |
+| `PlayerService.cpp:86` | `PlayerCharacter::Get()->SetDifficulty(...);` | 否(本次缺陷) |
+| `CharacterService.cpp:602` | `pActor->MoveTo(PlayerCharacter::Get()->GetParentCellEx(), ...);` | 否(本次缺陷) |
+| `TransportService.cpp:275` | 取到局部量后 `:280` 就解引用 | 否(本次缺陷) |
+| `Forms.cpp:55` | `Cast<TESNPC>(PlayerCharacter::Get()->baseForm)` | 否(本次缺陷) |
+| `References.cpp:60` | `s_getDifficultyMultiplier(PlayerCharacter::Get()->difficulty, ...)` | 否(本次缺陷) |
+| `TESObjectREFR.cpp:919` | `if (!pPlayer->IsItemInInventory(objectId))` | 否(本次缺陷) |
+
+**可机械执行的判据**:`PlayerCharacter::Get()->` 出现一次就是一处缺陷 ——
+表达式里根本没有放判空的位置。判空必须落在一个局部量上,写成
+`if (PlayerCharacter* pPlayer = PlayerCharacter::Get())`。
+
+### 48.3 修法:取一次到局部量,判空
+
+```cpp
+// Code/client/Games/References.cpp
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+
+    bool isPlayer = apHittee == pPlayer;
+
+    // The player is null on the main menu and while a save is loading, where no
+    // damage is real; the read below would fault on it.
+    if (!pPlayer)
+        return aDamage;
+
+    float multiplier = s_getDifficultyMultiplier(pPlayer->difficulty, ActorValueInfo::kHealth, isPlayer);
+```
+
+```cpp
+// Code/client/Services/Generic/TransportService.cpp(OnConnected)
+    // The player is null on the main menu and while a save is loading, where the
+    // handshake can still complete; everything below degrades to a default.
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+
+    request.DiscordId = m_world.ctx().at<DiscordService>().GetUser().id;
+
+    auto* pNpc = pPlayer ? Cast<TESNPC>(pPlayer->baseForm) : nullptr;
+    if (pNpc)
+        request.Username = pNpc->fullName.value.AsAscii();
+    else
+        request.Username = "Some dragon boi";
+    ...
+    if (pPlayer)
+    {
+        if (const auto* pWorldSpace = pPlayer->GetWorldSpace())
+            modSystem.GetServerModId(pWorldSpace->formID, request.WorldSpaceId);
+
+        if (const auto* pParentCell = pPlayer->GetParentCellEx())
+            modSystem.GetServerModId(pParentCell->formID, request.CellId);
+
+        request.Level = pPlayer->GetLevel();
+    }
+```
+
+```cpp
+// Code/client/Games/Forms.cpp(TESNPC::Initialize)
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    auto pPlayerBaseForm = pPlayer ? Cast<TESNPC>(pPlayer->baseForm) : nullptr;
+
+    if (pPlayerBaseForm)
+    {
+        attackDataForm.attackDataMap = pPlayerBaseForm->attackDataForm.attackDataMap;
+        npcClass = pPlayerBaseForm->npcClass;
+        ...
+    }
+    spellList.Initialize();
+```
+
+其余六处同构:`TESObjectREFR.cpp` 用 `if (pPlayer && !pPlayer->IsItemInInventory(objectId))`;
+`PlayerService.cpp` 五处用 `if (PlayerCharacter* pPlayer = PlayerCharacter::Get())`;
+`CharacterService.cpp` 八处(其中 `RequestServerAssignment` 用 `const PlayerCharacter*`,因为
+`GetTints()` 是 const 成员);`MapService.cpp` 两处、`CommandService.cpp`/`OverlayService.cpp` 各一处。
+
+**为什么返回 `aDamage` 而不是乘 1.0**:原行为就是「拿不到难度倍率时伤害不放大」,
+返回 `aDamage` 与之一致;乘 1.0 会引入一个原本不存在的语义。
+
+**修崩溃,不改行为**:指针非空时走的还是原来那条路;为空时原本是崩溃。传送的两处
+仍保留原来的失败提示(`"Teleporting to player failed."`)。
+
+### 48.4 复核命令(照抄)
+
+```powershell
+# 1. PlayerCharacter::Get()-> 应当零命中
+Get-ChildItem -Path Code\client -Recurse -Include *.cpp,*.h |
+  Select-String -Pattern 'PlayerCharacter::Get\(\)->'
+
+# 2. 全部取用点(人工核对每一处都有局部量判空)
+Get-ChildItem -Path Code\client -Recurse -Include *.cpp,*.h |
+  Select-String -Pattern 'PlayerCharacter::Get\(\)'
+
+# 3. 改动面与文档门禁
+git diff --stat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`PlayerCharacter::Get()->` **零命中**(修前 18 处);
+`git diff --stat -- Code` = `9 files changed, 98 insertions(+), 34 deletions(-)`;
+`python Tools/Scripts/check_docs.py` → `DOC CHECK OK` / `10 changelog version(s)`。
+
+> **教训**:引擎的「全局单例」在这套代码里**没有一个能当非空用** ——
+> `PlayerCharacter::Get()` 在读盘与主菜单为空,`GetParentCellEx()` 在换 cell 的窗口里为空,
+> 两者都不是异常状态,而是**每局游戏都会经过的正常状态**。
+> 判空的位置只有一个:把它取到局部量,然后判它;写成 `X::Get()->field` 的那一刻,
+> 判空就已经无处可放了。另外,修这种缺陷时**不要改变函数原本的返回值语义** ——
+> `return aDamage` 与 `return aDamage * 1.0f` 看起来一样,后者却是在偷偷改行为。
+
+

@@ -536,7 +536,8 @@ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
         }
     }
 
-    PlayerCharacter::Get()->MoveTo(pCell, acMessage.Position);
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->MoveTo(pCell, acMessage.Position);
 }
 
 void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept

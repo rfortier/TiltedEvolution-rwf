@@ -74,5 +74,6 @@ void CommandService::OnTeleportCommandResponse(const TeleportCommandResponse& ac
         }
     }
 
-    PlayerCharacter::Get()->MoveTo(pCell, acMessage.Position);
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->MoveTo(pCell, acMessage.Position);
 }
