@@ -430,7 +430,14 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
     // This hack is here because slow time seems to be twice as slow when cast by an npc
     if (pEffect->IsSlowEffect())
     {
-        acMessage.CasterId && (pCaster = PlayerCharacter::Get());
+        // The player is null on the main menu and while a save is loading, where there is nothing to redirect the
+        // cast to. The caster resolved and checked above is kept instead of being overwritten with a null.
+        if (acMessage.CasterId)
+        {
+            if (auto* pPlayer = PlayerCharacter::Get())
+                pCaster = pPlayer;
+        }
+
         spdlog::debug(
             __FUNCTION__ ": hacking IsSlowEffect() targetId {:X}, casterId {:X}, magnitude {}, IsDualCasting {}", acMessage.TargetId, acMessage.CasterId, acMessage.Magnitude,
             acMessage.IsDualCasting);
@@ -453,7 +460,12 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
 
     // This hack is here because slow time seems to be twice as slow when cast by an npc
     if (pEffect->IsSlowEffect())
-        pActor = PlayerCharacter::Get();
+    {
+        // The player is null on the main menu and while a save is loading, where the effect stays on the target
+        // resolved above rather than being moved onto a player that is not there.
+        if (auto* pPlayer = PlayerCharacter::Get())
+            pActor = pPlayer;
+    }
 
     pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
     spdlog::debug("Applied remote magic effect");

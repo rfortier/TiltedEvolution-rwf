@@ -5976,3 +5976,156 @@ python Tools\Scripts\check_docs.py
 > 还有一条流程上的:子模块里的修复**只存在于工作树就等于不存在**,CI 的
 > `submodule update --force` 会把它抹掉;要么做成补丁进本仓库,要么它永远进不了发行包。
 
+## 54. 2026-09-29 场次:判据的**形状**决定了清扫的边界 —— 「同一表达式内解引用」漏掉「先取值、后解引用」
+
+> **锚点**:本节的修复落在 `Code/client/Services/Generic/MagicService.cpp`、
+> `Code/client/Services/Generic/PlayerService.cpp`。
+
+### 54.1 缺陷:慢速法术的 hack 把「已经判过空的目标」换成玩家,玩家不在时就是空
+
+`MagicService::OnNotifyAddTarget`(`Code/client/Services/Generic/MagicService.cpp`)在解析阶段
+每一步都判了空 —— 法术 `:392`、效果 `:406`、目标 `:413`、施法者 `:421-428` ——
+然后慢速法术的 hack 把目标**整个换掉**:
+
+```cpp
+// Code/client/Services/Generic/MagicService.cpp(修复前,:454-458)
+    // This hack is here because slow time seems to be twice as slow when cast by an npc
+    if (pEffect->IsSlowEffect())
+        pActor = PlayerCharacter::Get();
+
+    pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
+```
+
+`:413-419` 刚刚为 `pActor` 判过空并且为空时**入队重试**,`:456` 一行就把这个保证作废。
+同一段代码里还有第二处:`:433 acMessage.CasterId && (pCaster = PlayerCharacter::Get());`,
+它把 `pCaster` 写成空,而这个值经 `:440 data.pCaster = pCaster;` 一路交给引擎
+(`MagicTarget::AddTarget` → `RealAddTarget`,见 `Code/client/Games/Skyrim/Magic/MagicTarget.cpp:45-58`)。
+
+**可达性**:`PlayerCharacter::Get()` 是 `POINTER_SKYRIMSE(PlayerCharacter*, s_character, 401069)`
+(`Code/client/Games/Skyrim/PlayerCharacter.cpp:46`),主菜单与读档期间为空;而这条路径**不需要玩家存在**
+就能走到 —— `OnNotifyAddTarget` 由收包触发(`m_notifyAddTargetConnection`,`MagicService.cpp:45`),
+而且 `ApplyQueuedEffects`(`:531-640`)每帧(`:55`)会把队列里没送出去的旧事件**重放**,
+那时玩家可能已经不在。`IsSlowEffect()` 只看效果的 archetype
+(`Code/client/Games/Skyrim/Magic/EffectItem.cpp:16-19`:`eArchetype == kSlowTime`)⇒ 任何远程
+Slow Time 系法术都能走到。
+
+### 54.2 缺陷:倒地补偿在 1.5 秒之后才用那个玩家指针
+
+```cpp
+// Code/client/Services/Generic/PlayerService.cpp(修复前,:293-300)
+    if (m_knockdownStart && cNow >= m_knockdownDeadline)
+    {
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
+
+        PlayerCharacter::SetGodMode(true);
+        m_godmodeStart = true;
+
+        pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+```
+
+`m_knockdownStart` 是 `:278-279`(在 `RunRespawnUpdates` 里,该函数 `:230-232` **已经**判过空)
+设下的,而这一支要等 `m_knockdownDeadline`(1.5 秒)**之后**才执行 —— 这 1.5 秒里玩家可能已经回主菜单
+或去读档。窗口比 54.1 窄,但同一条路径:取值时还在、解引用时不在。
+
+### 54.3 判据:上一轮清扫的验收条件是一条**形状**判据
+
+上一个空指针提交(`75ceca79 fix: stop dereferencing a player that does not exist yet`)的验收条件原文是:
+
+```
+Verified - 'PlayerCharacter::Get()->' across Code/client: no matches, was 18.
+```
+
+那是一条**形状**判据:只覆盖「在同一个表达式里就解引用」。本轮把同一个问题重问成
+「**取值之后**才解引用的站点」:
+
+```powershell
+Select-String -Path Code\**\*.cpp -Pattern '= PlayerCharacter::Get\(\);'
+```
+
+`Code/**/*.cpp` 命中 **31 处** —— 全部在上一轮的判据之外。逐个读完的结果:大部分是安全的
+(布尔短路 `pPlayer && pPlayer->GetNiNode()`、`if (!pPlayer) return;`、`pPlayer ? ... : nullptr`、
+唯一调用点已判空的 `DiscoveryService::VisitExteriorCell`、只在调试菜单里手动触发的 `Code/client/Debug/**`、
+以及 `QuestService.cpp:57` 那种**在 `/* */` 注释块里**的死代码),但 `MagicService.cpp:433/456` 与
+`PlayerService.cpp:295` 是真的漏网 —— 它们是「取值 → 用别的分支 → 再解引用」,取值与解引用之间隔了
+几十行,不在「同一表达式」这个形状里。
+
+**教训的形状**:一次清扫的**判据**就是它的边界。判据写成语法形状(`X()->`),清扫就只覆盖那个形状;
+要覆盖语义(「这个指针可能为空,而它在被解引用之前有没有被检查过」),判据必须写成
+「取值点 + 使用点」而不是单个表达式。
+
+### 54.4 修法:拿到非空才覆盖,原值保留
+
+三处都改成守卫式,并且**不引入新的早退**:
+
+```cpp
+// Code/client/Services/Generic/MagicService.cpp(修复后,:433-439)
+        // The player is null on the main menu and while a save is loading, where there is nothing to redirect the
+        // cast to. The caster resolved and checked above is kept instead of being overwritten with a null.
+        if (acMessage.CasterId)
+        {
+            if (auto* pPlayer = PlayerCharacter::Get())
+                pCaster = pPlayer;
+        }
+```
+
+```cpp
+// Code/client/Services/Generic/MagicService.cpp(修复后,:461-468)
+    // This hack is here because slow time seems to be twice as slow when cast by an npc
+    if (pEffect->IsSlowEffect())
+    {
+        // The player is null on the main menu and while a save is loading, where the effect stays on the target
+        // resolved above rather than being moved onto a player that is not there.
+        if (auto* pPlayer = PlayerCharacter::Get())
+            pActor = pPlayer;
+    }
+```
+
+```cpp
+// Code/client/Services/Generic/PlayerService.cpp(修复后,:295-313)
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
+
+        // The player is null on the main menu and while a save is loading. This branch runs a second and a half
+        // after the knockdown was recorded, so the save can have been left in the meantime. The pending ragdoll is
+        // dropped rather than applied to a player that is not there; the invulnerability window below is unaffected.
+        if (pPlayer)
+        {
+            PlayerCharacter::SetGodMode(true);
+            m_godmodeStart = true;
+
+            pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+
+            FadeOutGame(false, true, 0.5f, true, 2.f);
+
+            m_godmodeDeadline = std::chrono::steady_clock::now() + 10s;
+        }
+
+        m_knockdownStart = false;
+```
+
+**为什么不早退**:慢速法术那两个 hack 只是「把效果挪到玩家身上」,玩家不在时**留在已经解析并判过空的
+目标身上**就是正确的降级 —— 丢掉整条远程法术反而是新的行为改变(还会让 `:458` 的
+`AddTarget` 整个不执行,同一条包里的其它效果也一起丢)。`PlayerService` 那处的
+`m_knockdownStart = false;` 特意留在 `if` 之外,是为了让「玩家不在」的这一次也把倒地状态收尾,
+不至于每帧重试同一个分支。
+
+### 54.5 复核命令(照抄)
+
+```powershell
+Select-String -Path Code\client\Services\Generic\MagicService.cpp -Pattern 'PlayerCharacter::Get'
+Select-String -Path Code\client\Services\Generic\PlayerService.cpp -Pattern 'PlayerCharacter::Get'
+Select-String -Path Code\**\*.cpp -Pattern 'PlayerCharacter::Get\(\)->'
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`MagicService.cpp:437` 与 `:466` 都是 `if (auto* pPlayer = PlayerCharacter::Get())` 守卫、
+`:470` 的 `pActor->magicTarget.AddTarget(...)` 之前 `pActor` 仍由 `:413-419` 判空;
+`PlayerService.cpp:300` 是 `if (pPlayer)` 守卫、`:312 m_knockdownStart = false;` 在守卫之外;
+`PlayerCharacter::Get()->` 仍为 **0 命中**;`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+> **教训**:一次清扫的**验收条件**就是这次清扫的**边界**,而它往往是一句语法形状
+> (`X()->` / `if (!p)` / `: ` 后面直接跟解引用)。形状判据会**漏掉跨语句的同类缺陷** ——
+> 取值与解引用被中间几十行分开时,它看不见。所以下一轮要把判据从形状升级为语义:
+> 先列出**全部取值点**(`= X::Get();`),再逐个回答「到下一次解引用之间,有没有一条路径让它是空」。
+> 另外一条:这类「为修 A 而覆盖掉刚才的判空」的代码(54.1 的 `pActor = PlayerCharacter::Get();`)
+> 是**判空保证的局部作废** —— 改动一个已经判过空的变量时,应当问「我这一步是否把它的保证丢了」。
+

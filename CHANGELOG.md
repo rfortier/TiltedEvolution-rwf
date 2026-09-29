@@ -648,6 +648,86 @@ void AddonBridge::ClearRemoteState()
 **验证**:`python Code/plugins/tools/plugin_patches.py verify` → `PATCH VERIFY OK`(9 个补丁全部
 能打到各自的 pin 上);`check` → `PATCH CHECK OK`;`python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:上一轮空指针清扫的判据漏掉了「先取值、后解引用」这一整种形状
+
+**现象**:在主菜单、或正在读档时,客户端收到一条远程**慢速法术**(Slow Time 系)的
+`NotifyAddTarget`,进程可能直接崩;另一处是玩家死后回到主菜单/读档,1.5 秒后那次「补倒地」
+会解引用一个已经不存在的玩家。
+
+**根因**:两处都是**先把 `PlayerCharacter::Get()` 存进局部变量,之后才解引用**,
+而它主菜单与读档期间为空:
+
+```cpp
+// Code/client/Services/Generic/MagicService.cpp(修前)
+if (pEffect->IsSlowEffect())
+    pActor = PlayerCharacter::Get();          // :456 覆盖掉上面刚判过空的 pActor
+
+pActor->magicTarget.AddTarget(data, ...);     // :458 直接解引用
+```
+
+同一个函数 `:433` 的 `acMessage.CasterId && (pCaster = PlayerCharacter::Get());` 还会把
+`pCaster` 写成空,而这个值经 `:440 data.pCaster = pCaster;` 交给引擎
+(`MagicTarget::AddTarget` → `RealAddTarget`)。`PlayerService.cpp` 那处同理:
+
+```cpp
+// Code/client/Services/Generic/PlayerService.cpp(修前)
+PlayerCharacter* pPlayer = PlayerCharacter::Get();          // :295
+PlayerCharacter::SetGodMode(true);
+m_godmodeStart = true;
+pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);   // :300
+```
+
+**判据**:`PlayerCharacter::Get()` 是 `POINTER_SKYRIMSE(PlayerCharacter*, s_character, 401069)`,
+主菜单与读档期间为空;而两条路径**都不需要玩家存在就能走到** —— `OnNotifyAddTarget` 由收包触发
+(`m_notifyAddTargetConnection`),`RunPostDeathUpdates` 每帧从 `OnUpdate` 调用,而
+`m_knockdownStart` 是**1.5 秒前**记下的,这段时间里存档可能已经被离开。
+
+**为什么上一轮没发现**:上一次清扫的验收条件是
+「`PlayerCharacter::Get()->` across Code/client: no matches, was 18」—— 那是一条**形状**判据
+(在同一个表达式里解引用)。本轮把同一个问题重问成「**取值**之后才解引用的站点」,
+`grep '= PlayerCharacter::Get();'` 在 `Code/**/*.cpp` 有 **31 处**,全在这条判据之外。
+
+**修法**:两处都改成「拿到非空才覆盖」,原值保留:
+
+```cpp
+if (acMessage.CasterId)
+{
+    if (auto* pPlayer = PlayerCharacter::Get())
+        pCaster = pPlayer;
+}
+```
+
+```cpp
+if (pEffect->IsSlowEffect())
+{
+    if (auto* pPlayer = PlayerCharacter::Get())
+        pActor = pPlayer;
+}
+```
+
+```cpp
+PlayerCharacter* pPlayer = PlayerCharacter::Get();
+if (pPlayer)
+{
+    PlayerCharacter::SetGodMode(true);
+    m_godmodeStart = true;
+    pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+    FadeOutGame(false, true, 0.5f, true, 2.f);
+    m_godmodeDeadline = std::chrono::steady_clock::now() + 10s;
+}
+m_knockdownStart = false;
+```
+
+**为什么不直接 `return`**:慢速法术那个 hack 只是「把效果挪到玩家身上」,玩家不在时留在已经解析
+并判过空的目标身上即可,没必要丢掉整条远程法术;`m_knockdownStart = false;` 特意留在 `if` 之外,
+是为了让「玩家不在」的这一次也能把倒地状态收尾,不至于每帧重试。
+
+**验证**:`grep 'PlayerCharacter::Get()->' Code` 仍为 0 命中;`Code/client/Services/Generic/MagicService.cpp`
+`:437`/`:466` 两处都是 `if (auto* pPlayer = PlayerCharacter::Get())` 守卫、`:470` 的
+`pActor->magicTarget.AddTarget(...)` 之前 `pActor` 已被 `:413-419` 判过空;
+`Code/client/Services/Generic/PlayerService.cpp:300` 是 `if (pPlayer)` 守卫;
+`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

@@ -294,14 +294,21 @@ void PlayerService::RunPostDeathUpdates() noexcept
     {
         PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
-        PlayerCharacter::SetGodMode(true);
-        m_godmodeStart = true;
+        // The player is null on the main menu and while a save is loading. This branch runs a second and a half
+        // after the knockdown was recorded, so the save can have been left in the meantime. The pending ragdoll is
+        // dropped rather than applied to a player that is not there; the invulnerability window below is unaffected.
+        if (pPlayer)
+        {
+            PlayerCharacter::SetGodMode(true);
+            m_godmodeStart = true;
 
-        pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+            pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
 
-        FadeOutGame(false, true, 0.5f, true, 2.f);
+            FadeOutGame(false, true, 0.5f, true, 2.f);
 
-        m_godmodeDeadline = std::chrono::steady_clock::now() + 10s;
+            m_godmodeDeadline = std::chrono::steady_clock::now() + 10s;
+        }
+
         m_knockdownStart = false;
     }
 
