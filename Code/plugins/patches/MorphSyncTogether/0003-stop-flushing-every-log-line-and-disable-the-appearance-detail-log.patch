@@ -1,0 +1,76 @@
+diff --git a/README.md b/README.md
+index b42e8d6..d02af45 100644
+--- a/README.md
++++ b/README.md
+@@ -155,6 +155,12 @@ MST MORPH APPLY ... verified=1
+ MST MORPH APPLY SKIP ... reason=already-authoritative
+ ```
+ 
++`MST APPEARANCE DETAIL` is off by default. The probe emits one line per node,
++tint and overlay, up to 45 of them for a single appearance change, so set
++`Verbose=1` under `[AppearanceProbe]` in
++`Data/SKSE/Plugins/MorphSyncTogether.ini` only while diagnosing a value that
++refuses to sync.
++
+ ## Build
+ 
+ Run:
+diff --git a/package/Data/SKSE/Plugins/MorphSyncTogether.ini b/package/Data/SKSE/Plugins/MorphSyncTogether.ini
+index 9ea8059..0b95811 100644
+--- a/package/Data/SKSE/Plugins/MorphSyncTogether.ini
++++ b/package/Data/SKSE/Plugins/MorphSyncTogether.ini
+@@ -29,7 +29,10 @@ Enabled=1
+ [AppearanceProbe]
+ Enabled=1
+ IntervalMs=1000
+-Verbose=1
++; 1 lists every probed node, tint and overlay on each appearance change. It is
++; off by default: one probe emits up to 45 lines, and each of them used to be
++; written to disk on the game thread for data nobody reads.
++Verbose=0
+ 
+ [AppearancePreserve]
+ Enabled=1
+diff --git a/src/AppearanceProbe.h b/src/AppearanceProbe.h
+index aabf06b..99d9684 100644
+--- a/src/AppearanceProbe.h
++++ b/src/AppearanceProbe.h
+@@ -161,7 +161,7 @@ namespace MorphSyncTogether
+         SKEE::IOverrideInterface* _override{ nullptr };
+ 
+         bool _enabled{ true };
+-        bool _verbose{ true };
++        bool _verbose{ false };
+         bool _preserveRemote{ true };
+         std::uint32_t _intervalMs{ 1000 };
+         std::uint32_t _recoveryAttempts{ 3 };
+diff --git a/src/Config.h b/src/Config.h
+index 882ff3c..a94f483 100644
+--- a/src/Config.h
++++ b/src/Config.h
+@@ -36,7 +36,7 @@ namespace MorphSyncTogether
+         // registration plus cached FaceGen render materials.
+         bool appearanceProbeEnabled{ true };
+         std::uint32_t appearanceProbeIntervalMs{ 1000 };
+-        bool appearanceProbeVerbose{ true };
++        bool appearanceProbeVerbose{ false };
+ 
+         // Preserve the last healthy visual state of a remote STR proxy.
+         // This is local-only: no OStim event/API dependency is required.
+diff --git a/src/main.cpp b/src/main.cpp
+index ebe354e..488e720 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -19,7 +19,11 @@ namespace
+         auto log = std::make_shared<spdlog::logger>("MorphSyncTogether", std::move(sink));
+         spdlog::set_default_logger(std::move(log));
+         spdlog::set_level(spdlog::level::trace);
+-        spdlog::flush_on(spdlog::level::trace);
++        // flush_on(trace) pushed every line to disk before the game thread could
++        // continue, and a single appearance probe emits up to 45 of them in one
++        // tick. Warnings stay immediate; the info stream is flushed once a second.
++        spdlog::flush_every(std::chrono::seconds(1));
++        spdlog::flush_on(spdlog::level::warn);
+     }
+ 
+     void OnSKSEMessage(SKSE::MessagingInterface::Message* message)

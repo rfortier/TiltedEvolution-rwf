@@ -8159,3 +8159,163 @@ python Tools/Scripts/check_docs.py
 > 第三条:**同一个问题在本仓已经有过判例,就不要重新发明配置。** `Code/client/TiltedOnlineApp.cpp:75-80`
 > 已经把「每秒 flush + warn 立即落盘」和它的理由写在注释里了;插件只要照抄这个策略,
 > 连注释要说什么都是现成的。
+
+## 68. 2026-10-03 场次:同一个插件把「每条日志都刷盘」和「每次变化都列全部明细」一起开着 —— 判据是「这条日志描述的是状态变化,还是状态快照」
+
+> **锚点**:本节的修复落在 `plugins/MorphSyncTogether`(`src/main.cpp`、`src/AppearanceProbe.h`、
+> `src/Config.h`、`package/Data/SKSE/Plugins/MorphSyncTogether.ini`、`README.md`),交付形式是
+> `Code/plugins/patches/MorphSyncTogether/0003-stop-flushing-every-log-line-and-disable-the-appearance-detail-log.patch`
+> —— 该插件是子模块,CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改动,只有补丁能落地。
+
+### 68.1 缺陷:一条 info 在默认配置下同步刷盘,而它一次采样最多打 45 条
+
+`MorphSyncTogether` 的日志初始化与 §67 的 `AnimSyncTogether` 逐字同构:`src/main.cpp:21` 是
+`spdlog::set_level(spdlog::level::trace);`,`src/main.cpp:22` 是 `spdlog::flush_on(spdlog::level::trace);`。
+`flush_on(N)` 的参数是**刷盘起点**而不是日志等级,trace 又是最低等级 ⇒ **每条日志都同步落盘**。
+本机 10 分钟会话的实测日志(路径见 68.5)把频率钉死了:
+
+| 位置 | 10 分钟行数 | 触发时机 |
+| --- | --- | --- |
+| `plugins/MorphSyncTogether/src/AppearanceProbe.cpp:814` | 1433(76.9%) | 每次外观采样,每个 detail 一行 |
+| `plugins/MorphSyncTogether/src/UdpTransport.cpp:195` | 187(10.0%) | 每次 STRPM 发送失败 |
+| `plugins/MorphSyncTogether/src/MorphSyncService.cpp:469` | 94(5.0%) | 每次 morph 快照广播 |
+| `plugins/MorphSyncTogether/src/TngSync.cpp:177` | 93(5.0%) | 每次 TNG 尺寸广播 |
+| `plugins/MorphSyncTogether/src/AppearanceProbe.cpp:794` | 36(1.9%) | 每次外观哈希变化 |
+
+同一份日志里 **零条 trace、零条 debug**:1864 行 = `info` 1675 + `warning` 187 + `error` 2,
+而两条 error 都是启动期一次性的接口版本告警。所以 `flush_on(trace)` 与 `flush_on(info)` 在这台机器上
+效果**完全相同** —— 586 秒里 1864 次同步刷盘,其中 1433 次来自同一条日志。
+
+那 1433 行不是「一秒一条」,而是「一次采样一簇」:
+
+```cpp
+// plugins/MorphSyncTogether/src/AppearanceProbe.cpp:812-819(循环本身未改动,变的是它的闸门默认值)
+if (_verbose) {
+    for (const auto& detail : data.details) {
+        SKSE::log::info(
+            "MST APPEARANCE DETAIL scope={} label=\"{}\" actor={:08X} {}",
+            scope,
+            label,
+            actor->GetFormID(),
+            detail);
+    }
+}
+```
+
+### 68.2 判据:紧挨着它的那条 CHANGE 已经把同一份状态总结成一行了
+
+同一个函数在 DETAIL 之前 18 行已经打过一次 `MST APPEARANCE CHANGE`(`src/AppearanceProbe.cpp:771-787`,
+一行 14 个字段:哈希、tint、overlay、各类节点计数、`details=` 的**个数**),它只在 `changed` 时触发。
+DETAIL 则在**每一次**采样时把 `details` 里每个元素单独打一行 —— 同一份状态被描述了两遍,
+一遍是总结,一遍是逐元素展开。
+
+实测的展开规模:
+
+| 量 | 值 |
+| --- | --- |
+| `MST APPEARANCE DETAIL` 行数 / `MST APPEARANCE CHANGE` 行数 | 1433 / 36 |
+| `scope=` 的 distinct 值 | 1(全是 `LOCAL`) |
+| `actor=` 的 distinct 值 | 1(全是 `00000014`,即本地玩家) |
+| distinct payload / 总行数 | 131 / 1433 |
+| 探测次数 / 每次 detail 数 | 58 次,min 1 / avg 24.71 / max 45 |
+
+也就是说这条日志**从来没有描述过第二个作用域或第二个角色**,而且每次探测都在重复上几次已经说过的内容。
+判据因此不是「日志太多」,而是:**一条日志描述的是状态快照而不是状态变化,它就不该待在默认等级上。**
+真正的状态变化由 CHANGE 那一行负责,而它一共只有 36 行。
+
+这个闸门的三处默认值原本全是开的 —— 这是「出厂即开启」而不是「用户打开的」:
+
+```cpp
+// plugins/MorphSyncTogether/src/AppearanceProbe.h:164(修复前)
+bool _verbose{ true };
+```
+
+```ini
+; plugins/MorphSyncTogether/package/Data/SKSE/Plugins/MorphSyncTogether.ini:32(修复前)
+Verbose=1
+```
+
+第三处是 `src/Config.h:39 bool appearanceProbeVerbose{ true };`。三处必须同改:ini 的值经
+`src/Config.cpp:126 cfg.appearanceProbeVerbose = ReadBool(L"AppearanceProbe", L"Verbose", cfg.appearanceProbeVerbose);`
+覆盖成员默认值,只改头文件等于没改。`Verbose` 与 `MST APPEARANCE DETAIL` 在插件的 README、fomod、
+`build-vortex.ps1` 与父仓任何 check 脚本里都是 **0 命中**,所以改默认值不需要同步任何文档或打包清单。
+
+### 68.3 可达性:它在游戏主线程上,而一次 tick 最多打 45 条
+
+`MorphSyncService::SyncLoop` 按 `_config.syncIntervalMs`(默认 1000 ms)切成 100 ms 片轮询,每轮调
+`QueueTick()`,后者用 `SKSE::GetTaskInterface()->AddTask(...)` 把 `TickOnGameThread()` 投到**游戏主线程**;
+`TickOnGameThread()` 的第一件事之一就是 `src/MorphSyncService.cpp:290`
+`AppearanceProbe::GetSingleton().ProbeLocalPlayer(player);`。所以那次「一次 45 行」的循环,
+连同它的 45 次 `basic_file_sink_mt` 阻塞刷盘,全部发生在主线程的一个 tick 里。
+
+同一节的另外两条也在这条链上:`src/MorphSyncService.cpp:469` 与 `src/TngSync.cpp:177` 的 `Send`/日志
+都在 `TickOnGameThread` 内;`src/UdpTransport.cpp:195` 的 warn 由它们同步触发。实测那 187 条 warn 全是
+`result=not-connected`(未连接时每次发送失败都打一条),跨 128 个不同的秒。
+
+这命中用户四项硬要求里的第四条(**不得让加载、过场动画、与 NPC/场景交互变慢**):
+一秒最多 50 行、单次 tick 最多 45 行,每行都抢锁进内核。本仓主程序对同一件事早有结论
+—— `Code/client/TiltedOnlineApp.cpp:75-80`:
+
+```cpp
+// Code/client/TiltedOnlineApp.cpp:75-80
+spdlog::flush_every(std::chrono::seconds(1));
+// A crash inside a hook loses everything logged in the last second, which
+// is exactly the second worth reading. Warnings and worse go to disk
+// immediately; the info stream stays buffered so per-frame logging does
+// not turn into per-frame file I/O.
+logger->flush_on(spdlog::level::warn);
+```
+
+### 68.4 修法:照抄主程序的 flush 策略,并把「逐明细」闸门的默认值翻过来
+
+`src/main.cpp` 只改 `flush_on` 那一行 —— `set_level(trace)` **保留不动**,因为 Morph 的全部 3 个
+`SKSE::log::trace` 站点都落在「已经决定不发」的分支上(`MST MORPH APPLY SKIP` / `MST TNG APPLY SKIP` /
+`MST STRPM RX`),把等级抬到 info 是行为变化,而这次的缺陷是 flush 策略:
+
+```cpp
+// plugins/MorphSyncTogether/src/main.cpp:22-26(修复后)
+// flush_on(trace) pushed every line to disk before the game thread could
+// continue, and a single appearance probe emits up to 45 of them in one
+// tick. Warnings stay immediate; the info stream is flushed once a second.
+spdlog::flush_every(std::chrono::seconds(1));
+spdlog::flush_on(spdlog::level::warn);
+```
+
+`_verbose` 的默认值在三处一起翻成 false:`src/AppearanceProbe.h:164`、`src/Config.h:39`、
+`package/Data/SKSE/Plugins/MorphSyncTogether.ini`(`Verbose=0`,并在上方三行注释里写明「一次探测最多 45 行、
+每行都曾在游戏线程上落盘」)。想排查时把它设回 1 即可,行文形状与原来完全一样。
+`README.md` 的 `## Expected log` 节末尾补一段说明这一点。
+
+### 68.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+git -C plugins/MorphSyncTogether grep -n "flush_on\|flush_every\|set_level"
+git -C plugins/MorphSyncTogether grep -n "_verbose{ \|appearanceProbeVerbose{ \|Verbose="
+git -C plugins/MorphSyncTogether diff --stat
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`PATCH VERIFY OK` / `13 patch(es) apply to their pinned commits`;`PATCH CHECK OK`;
+`flush_every`/`flush_on(warn)` 命中 `src/main.cpp:25`/`:26` 且 `flush_on(spdlog::level::trace)` 已无命中;
+`_verbose{ false }` / `appearanceProbeVerbose{ false }` / `Verbose=0` 三处一致;
+`git diff --stat` = 9 files changed, 79 insertions(+), 10 deletions(-)(其中本节只占 5 个文件,
+其余 4 个是既有的 0001/0002);`check_docs.py` → `DOC CHECK OK`。
+
+**验证**:该补丁已应用到 `plugins/MorphSyncTogether` 工作树,`plugin_patches.py` 的 `is_applied`
+(`git apply --check --reverse`)与 `cmd_verify` 的 `git apply --check --cached` 两条路径都通过 ——
+后者是对**索引**(= pin 的内容)校验,所以「已经应用」不能掩盖补丁与 pin 脱节。
+实测证据来自本机 `Documents/My Games/Skyrim Special Edition/SKSE/MorphSyncTogether.log`:
+586 秒 1864 行(info 1675 / warning 187 / error 2)、零条 trace 与 debug、
+`AppearanceProbe.cpp:814` 1433 行、`scope=` 与 `actor=` 各只有一个值、distinct payload 131/1433、
+58 次探测里单次最多 45 行、最忙的一秒 50 行。
+
+> **教训**:第一条:**同一个插件可以同时犯 §67 的两个变体,而它们是两个独立开关。**
+> `flush_on` 决定「打出来之后要不要立刻进内核」,日志的**闸门默认值**决定「打不打」;
+> 只看 logger 初始化会漏掉后者,只看日志内容会漏掉前者。
+> 第二条:**一条日志描述的是「变化」还是「快照」,决定了它该不该默认打开。**
+> 同一次状态变化,CHANGE 那行是 36 条、DETAIL 那些行是 1433 条,信息量却更少 ——
+> 判据是「把这条日志按 distinct payload 分组数一遍,如果绝大多数行在重复上几次的内容,它就不是事件日志」。
+> 第三条:**默认值写在几个地方,就要改几个地方。** `_verbose` 的默认值同时存在于成员初始化、
+> `Config` 结构体和随包发布的 ini 里,而 ini 覆盖前两者 —— 只改头文件,出厂行为一点都不会变。

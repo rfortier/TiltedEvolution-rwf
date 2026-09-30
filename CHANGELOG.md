@@ -1583,6 +1583,51 @@ SKSE::log::info("AnimInput actor=00000014 localPlayer=true event='{}' result={} 
 → `PATCH VERIFY OK` / `12 patch(es) apply to their pinned commits`;同目录下 `check` → `PATCH CHECK OK`。
 `git -C plugins/AnimSyncTogether grep -n "flush_on\|flush_every\|set_level"` 命中 `src/main.cpp:28`/`:32`/`:33`,
 `flush_on(spdlog::level::trace)` 已无命中。`python Tools/Scripts/check_docs.py` 全绿。
+### 修复:一个插件的最高频日志在默认配置下同步刷盘,而它一次采样最多打 45 条
+**现象**:`MorphSyncTogether` 在 10 分钟的会话里写了 **1864 行日志(348 KB)**,其中 1433 行(76.9%)来自
+`src/AppearanceProbe.cpp:814`、187 行(10.0%)来自 `src/UdpTransport.cpp:195`、94 行来自
+`src/MorphSyncService.cpp:469`、93 行来自 `src/TngSync.cpp:177`;这些行**每一条都要同步刷盘**。
+**根因**(修复前):
+```cpp
+// plugins/MorphSyncTogether/src/main.cpp:21-22(修复前)
+spdlog::set_level(spdlog::level::trace);
+spdlog::flush_on(spdlog::level::trace);   // trace 是最低等级 ⇒ 每条消息都立刻落盘
+```
+`flush_on(N)` 的参数是**刷盘起点**而不是日志等级,所以 `flush_on(trace)` 等于 `flush_on(info)` 等于
+「每条都刷」:同一份日志里零条 trace、零条 debug,1864 行 = `info` 1675 + `warning` 187 + `error` 2,
+也就是 586 秒里 1864 次阻塞刷盘。那 1433 行更不是「一秒一条」,而是「一次采样一簇」——
+`_verbose` 闸门的三处默认值全是开的,而一次探测的明细行数实测 min 1 / avg 24.71 / **max 45**:
+```cpp
+// plugins/MorphSyncTogether/src/AppearanceProbe.cpp:812-819(闸门默认值改了,循环本身没动)
+if (_verbose) {
+    for (const auto& detail : data.details) {
+        SKSE::log::info("MST APPEARANCE DETAIL scope={} label=\"{}\" actor={:08X} {}", scope, label, actor->GetFormID(), detail);
+    }
+}
+```
+同一函数在它之前 18 行已经打过一条 `MST APPEARANCE CHANGE`(`src/AppearanceProbe.cpp:771-787`,
+一行 14 个字段,含 `details=` 的**个数**),只在哈希变化时触发,实测 36 行。也就是说同一份状态被
+描述了两遍:一遍是总结,一遍是逐元素展开,而后者 1433 行里 `scope=` 与 `actor=` 各只有一个取值
+(全是 `LOCAL` / `00000014`)、distinct payload 只有 131 个。
+**可达性**:`MorphSyncService::SyncLoop` 按 `SyncIntervalMs`(默认 1000 ms)切片轮询,每轮经 `QueueTick()`
+把 `TickOnGameThread()` 投到**游戏主线程**,而它第一件事之一就是
+`src/MorphSyncService.cpp:290 AppearanceProbe::GetSingleton().ProbeLocalPlayer(player);`。
+所以那次「一次 45 行」的循环连同 45 次 `basic_file_sink_mt` 阻塞刷盘全在主线程的一个 tick 里;
+同一 tick 内的两条广播日志与那 187 条 `result=not-connected` 的 warn 也各自同步落盘。
+这直接落在用户要求的「不得让加载、过场动画、与 NPC/场景交互变慢」上。本仓主程序早已对同一件事定过调
+(`Code/client/TiltedOnlineApp.cpp:75-80`:`flush_every(1s)` + `flush_on(warn)`,注释写明「per-frame logging
+不得变成 per-frame file I/O」),插件走的却是相反配置。
+**修法**:`src/main.cpp:22` 的 `flush_on(spdlog::level::trace)` 改为主程序同款策略
+(`spdlog::flush_every(std::chrono::seconds(1))` + `flush_on(spdlog::level::warn)`),info 行最多晚一秒落盘、
+warn 及以上仍立刻落盘;`set_level(trace)` **保留不动**(该插件全部 3 个 trace 站点都在「已经决定不发」的
+分支上,抬等级是行为变化)。`_verbose` 的三处默认值一起翻成 false —— `src/AppearanceProbe.h:164`、
+`src/Config.h:39`、`package/Data/SKSE/Plugins/MorphSyncTogether.ini` 的 `Verbose=0`(ini 覆盖前两者,
+必须同改),并在 `README.md` 的 `## Expected log` 节说明排查时把它设回 1。
+**验证**:交付形式是 `Code/plugins/patches/MorphSyncTogether/0003-stop-flushing-every-log-line-and-disable-the-appearance-detail-log.patch`
+(该插件是子模块,CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改动)。`python Code\plugins\tools\plugin_patches.py verify`
+→ `PATCH VERIFY OK` / `13 patch(es) apply to their pinned commits`;同目录下 `check` → `PATCH CHECK OK`。
+`git -C plugins/MorphSyncTogether grep -n "flush_on\|flush_every\|set_level"` 命中 `src/main.cpp:25`/`:26`,
+`flush_on(spdlog::level::trace)` 已无命中。`python Tools/Scripts/check_docs.py` 全绿。
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器
