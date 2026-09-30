@@ -1,0 +1,76 @@
+diff --git a/README.md b/README.md
+index 2633533..d190616 100644
+--- a/README.md
++++ b/README.md
+@@ -148,7 +148,11 @@ AnimTxInput event='...'
+ AnimRxInput ... event='...' replay=true result=true
+ ```
+ 
+-Helmet Toggle diagnostics remain available:
++`AnimInput` is a `debug` level marker: it fires once per animation graph input, which
++is too often to leave on. Raise the level in `src/main.cpp` if you need it for a
++single repro. `AnimEvent`, one line per graph event, is `debug` for the same reason.
++
++Helmet Toggle diagnostics still print at the default level:
+ 
+ ```text
+ GPMAStateTx ...
+diff --git a/src/AnimationInputProbe.cpp b/src/AnimationInputProbe.cpp
+index caefd5d..b77d172 100644
+--- a/src/AnimationInputProbe.cpp
++++ b/src/AnimationInputProbe.cpp
+@@ -73,7 +73,9 @@ namespace AnimSyncTogether
+ 
+         const auto result = originalPlayerNotify_(holder, eventName);
+ 
+-        SKSE::log::info(
++        // One line per local graph input: useful for a single repro, too frequent to
++        // leave on. debug keeps it one level away.
++        SKSE::log::debug(
+             "AnimInput actor=00000014 localPlayer=true event='{}' result={} tracked={}",
+             name,
+             result,
+diff --git a/src/AnimationProbe.cpp b/src/AnimationProbe.cpp
+index 471f86b..07fa399 100644
+--- a/src/AnimationProbe.cpp
++++ b/src/AnimationProbe.cpp
+@@ -225,7 +225,9 @@ namespace AnimSyncTogether
+         const std::string_view tag = event->tag.c_str();
+         const std::string_view payload = event->payload.c_str();
+ 
+-        SKSE::log::info(
++        // Fires for every animation graph event on every attached actor, so this is
++        // the highest frequency line in the plugin. Keep it one level away.
++        SKSE::log::debug(
+             "AnimEvent actor={:08X} base={:08X} name='{}' localPlayer={} remoteConnection={} tag='{}' payload='{}'",
+             formID,
+             base ? base->GetFormID() : 0,
+diff --git a/src/main.cpp b/src/main.cpp
+index 4c496f9..75976d7 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -7,6 +7,9 @@
+ #include "AnimSyncTogether/Version.h"
+ 
+ #include <spdlog/sinks/basic_file_sink.h>
++#include <spdlog/spdlog.h>
++
++#include <chrono>
+ 
+ namespace logger = SKSE::log;
+ 
+@@ -22,8 +25,12 @@ namespace
+         *path /= "AnimSyncTogether.log";
+         auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
+         auto log = std::make_shared<spdlog::logger>("global log", std::move(sink));
+-        log->set_level(spdlog::level::trace);
+-        log->flush_on(spdlog::level::trace);
++        log->set_level(spdlog::level::info);
++        // Trace level plus flush_on(trace) pushed every line to disk before the game
++        // thread could continue, and two of those lines fired on every animation graph
++        // event. Warnings stay immediate; the info stream is flushed once a second.
++        spdlog::flush_every(std::chrono::seconds(1));
++        log->flush_on(spdlog::level::warn);
+         spdlog::set_default_logger(std::move(log));
+     }
+ 

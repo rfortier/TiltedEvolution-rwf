@@ -8033,3 +8033,129 @@ python Tools/Scripts/check_docs.py
 > 第三条:**日志里打错了变量,等于把唯一的线索也删了。** `default:` 分支打印了两次 `notify.Status`
 > (未初始化值),一次都没打印 `message.Status`(真正未知的那个)。当一条日志本身就在说「我看到了未知的东西」,
 > 它打印的必须是**那个未知的东西**,而不是从它派生出来的、可能已经被覆盖的副本。
+
+## 67. 2026-10-02 场次:两个插件的最高频日志点都开着同步刷盘 —— 判据是「这条日志一秒能打多少次,而它每次都落盘吗」
+
+> **锚点**:本节的修复落在 `plugins/AnimSyncTogether`(`src/main.cpp`、`src/AnimationInputProbe.cpp`、
+> `src/AnimationProbe.cpp`、`README.md`),交付形式是 `Code/plugins/patches/AnimSyncTogether/0001-...patch`
+> —— 该插件是子模块,CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改动,只有补丁能落地。
+
+### 67.1 缺陷:每一条 info 都同步刷盘,而两条最热的日志就在这个等级上
+
+`AnimSyncTogether` 的日志初始化是 `set_level(trace)` + `flush_on(trace)`。`flush_on(N)` 的语义是
+「等级 ≥ N 的每条消息立刻刷盘」,而 trace 是最低等级 ⇒ **每一条日志都同步落盘**,与等级设置无关。
+
+本机 10 分钟会话的实测日志(路径见 67.5)把频率钉死了:
+
+| 位置 | 10 分钟行数 | 触发时机 |
+| --- | --- | --- |
+| `plugins/AnimSyncTogether/src/AnimationInputProbe.cpp:76` | 39834(92.1%) | 每一次本地动画图输入 |
+| `plugins/AnimSyncTogether/src/AnimationProbe.cpp:228` | 3407(7.9%) | 每一个动画图事件 |
+
+同一份日志里 **零条 trace**:43271 行全部是 `[info]`。所以 `flush_on(trace)` 与 `flush_on(info)`
+在这台机器上的效果**完全相同** —— 43271 次同步刷盘 / 600 秒 ≈ **72 次每秒**,最忙的一秒(23:55:48)
+是 290 行。这两条日志都是 `SKSE::log::info`,而且是**无条件**的:
+
+```cpp
+// plugins/AnimSyncTogether/src/AnimationInputProbe.cpp:76-80(修复前)
+SKSE::log::info(
+    "AnimInput actor=00000014 localPlayer=true event='{}' result={} tracked={}",
+    name,
+    result,
+    tracked);
+```
+
+```cpp
+// plugins/AnimSyncTogether/src/AnimationProbe.cpp:228(修复前)
+SKSE::log::info(
+    "AnimEvent actor={:08X} base={:08X} name='{}' localPlayer={} remoteConnection={} tag='{}' payload='{}'",
+    formID, base ? base->GetFormID() : 0, actor->GetName(), isLocalPlayer, connectionID.value_or(0), tag, payload);
+```
+
+### 67.2 判据:`tracked` 这个字段本来就写着「这条线该不该留」
+
+同一份日志里 `AnimInput` 的 `tracked=` **39834 行全是 `false`**,`result=` 只有 529 行是 `true`。
+也就是说这条被无条件打印的行,**从来没有一次**描述过一个被同步的事件:真正要同步的事件走的是
+`AnimationInputProbe.cpp:85 if (result && tracked)` 之后那条 `AnimTxInput` 路径,而那条路径有它自己的日志。
+同理 `AnimEvent` 的 3407 行里 `localPlayer=` 全是 `true`、`remoteConnection=` 全是 `0`,
+它描述的是**本机玩家**的图事件,不是任何一个远端代理。
+
+判据因此不是「日志太多」,而是:**一条日志的每一个字段都在说「这次不用管」,它却按 info 打印并同步刷盘。**
+把这两条降到 `debug` 之后,默认等级下它们不再产生任何 I/O,而排查时把等级调回 `debug`/trace 仍能拿到同样形状的行。
+
+### 67.3 可达性:它落在渲染/输入主线程上,每个动画图输入一次
+
+`AnimationInputProbe` 装的是 `RE::VTABLE_PlayerCharacter[3]` 的 vfunc(`src/AnimationInputProbe.cpp:27`
+`playerGraphVTable.write_vfunc(0x1, PlayerNotifyAnimationGraph)`),`AnimationProbe` 装的是动画图事件 sink。
+两者都在**本地玩家的动画图输入/事件路径上同步执行**,也就是每次移动、攻击、受击、换装备。
+`basic_file_sink_mt` 的刷盘是阻塞写 + 加锁;它每次都要抢一个 mutex 再进内核。
+
+这正好命中用户四项硬要求里的第四条(**不得让加载、过场动画、与 NPC/场景交互变慢**):
+一秒钟 72 次同步刷盘、峰值一秒 290 次,全部发生在主线程的动画路径上。
+本仓主程序对同一件事早有结论 —— `Code/client/TiltedOnlineApp.cpp:75-80`:
+
+```cpp
+// Code/client/TiltedOnlineApp.cpp:75-80
+spdlog::flush_every(std::chrono::seconds(1));
+// A crash inside a hook loses everything logged in the last second, which
+// is exactly the second worth reading. Warnings and worse go to disk
+// immediately; the info stream stays buffered so per-frame logging does
+// not turn into per-frame file I/O.
+logger->flush_on(spdlog::level::warn);
+```
+
+插件走的是**完全相反**的配置,而它比主程序更贴近每帧路径。
+
+### 67.4 修法:改成主程序同款的 flush 策略,并把两条每事件日志降一级
+
+`src/main.cpp` 三行改动(与 `Code/client/TiltedOnlineApp.cpp:75-80` 同一策略):
+
+```cpp
+// plugins/AnimSyncTogether/src/main.cpp:28-33(修复后)
+log->set_level(spdlog::level::info);
+// Trace level plus flush_on(trace) pushed every line to disk before the game
+// thread could continue, and two of those lines fired on every animation graph
+// event. Warnings stay immediate; the info stream is flushed once a second.
+spdlog::flush_every(std::chrono::seconds(1));
+log->flush_on(spdlog::level::warn);
+```
+
+`set_level(info)` 与 `flush_on(warn)` 一起意味着:`info` 行先进内存缓冲、最多晚一秒落盘;
+`warn`/`err`/`critical` 仍然立刻落盘(所以崩溃时最后那一秒的告警不会丢)。
+`AnimationInputProbe.cpp:76` 与 `AnimationProbe.cpp:228` 由 `SKSE::log::info` 改为 `SKSE::log::debug`,
+并在各自上方留一行说明为什么它不该在默认等级上。
+
+`README.md` 的 `## Logging` 节列了这些标记名,所以同一批改掉文案:`AnimInput`/`AnimEvent` 标注为
+`debug` 级,并说明 Helmet Toggle 的那几条诊断(`GPMAStateTx`/`GPMAStateApply`/`GPMAStateReset`/`GPMAStateAutoReset`/
+`GPMAHelmetMarkerCleanup`/`ClipSelection`)仍按默认等级打印 —— 它们本来就是低频的。
+
+### 67.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+git -C plugins/AnimSyncTogether grep -n "flush_on\|flush_every\|set_level"
+git -C plugins/AnimSyncTogether diff --stat
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`PATCH VERIFY OK` / `12 patch(es) apply to their pinned commits`;`PATCH CHECK OK`;
+`set_level`/`flush_every`/`flush_on` 命中 `src/main.cpp:28`/`:32`/`:33` 三行(且 `flush_on(trace)` 已无命中);
+`git diff --stat` = 4 files changed, 20 insertions(+), 5 deletions(-);`check_docs.py` → `DOC CHECK OK`。
+
+**验证**:该补丁已应用到 `plugins/AnimSyncTogether` 工作树,`plugin_patches.py` 的 `is_applied`
+(`git apply --check --reverse`)与 `cmd_verify` 的 `git apply --check --cached` 两条路径都通过 ——
+后者是对**索引**(= pin 的内容)校验,所以「已经应用」不能掩盖补丁与 pin 脱节。
+实测证据来自本机 `Documents/My Games/Skyrim Special Edition/SKSE/AnimSyncTogether.log`:
+10 分钟 43271 行、其中 `AnimationInputProbe.cpp:76` 39834 行、`AnimationProbe.cpp:228` 3407 行、
+`tracked=` 全为 `false`、`localPlayer=` 全为 `true`、`remoteConnection=` 全为 `0`、零条 trace。
+
+> **教训**:第一条:**`flush_on` 的参数是「刷盘起点」,不是「日志等级」。** `set_level(trace)` + `flush_on(trace)`
+> 读起来像「只刷 trace」,实际是「每条都刷」。要看一条日志的真实成本,必须把两个设置**分开**读:
+> 等级决定打不打,flush_on 决定打出来之后要不要立刻进内核。
+> 第二条:**一条日志的字段表就是它的频率说明书。** `tracked=false` 占 100%、`remoteConnection=0` 占 100%,
+> 说明这条线在正常游戏里**一次都没有描述过它要描述的对象**;这种行不该待在默认等级上。
+> 判断「该不该降级」不需要猜频率,把日志按字段值分组数一遍就有答案。
+> 第三条:**同一个问题在本仓已经有过判例,就不要重新发明配置。** `Code/client/TiltedOnlineApp.cpp:75-80`
+> 已经把「每秒 flush + warn 立即落盘」和它的理由写在注释里了;插件只要照抄这个策略,
+> 连注释要说什么都是现成的。

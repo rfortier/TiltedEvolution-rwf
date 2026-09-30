@@ -1550,6 +1550,39 @@ default:
 (`patches: 0 applied, 11 already present`)。三个文件的 `{`/`}` 平衡都是 0
 (`CoopSessionManager.cpp` 1274 行 323/323、`CoopSessionManager.h` 231 行 37/37、
 `AddActorConsentGate.cpp` 200 行 42/42)。`python Tools/Scripts/check_docs.py` 全绿。
+### 修复:插件的最高频日志点开着同步刷盘,而它就在主线程的动画路径上
+**现象**:`AnimSyncTogether` 在 10 分钟的会话里写了 **43271 行日志(7.3 MB)**,其中 39834 行(92.1%)来自
+`src/AnimationInputProbe.cpp:76`,3407 行(7.9%)来自 `src/AnimationProbe.cpp:228`;最忙的一秒写了 290 行。
+这两条都是 `SKSE::log::info`,无条件触发,而且**每一条都要同步刷盘**。
+**根因**(修复前):
+```cpp
+// plugins/AnimSyncTogether/src/main.cpp:25-26(修复前)
+log->set_level(spdlog::level::trace);
+log->flush_on(spdlog::level::trace);   // trace 是最低等级 ⇒ 每条消息都立刻落盘
+```
+`flush_on(N)` 的参数是**刷盘起点**而不是日志等级,所以 `flush_on(trace)` 等于 `flush_on(info)` 等于
+「每条都刷」:同一份日志里零条 trace,43271 行全是 `[info]`,也就是 600 秒里 43271 次阻塞刷盘(约 72 次/秒)。
+```cpp
+// plugins/AnimSyncTogether/src/AnimationInputProbe.cpp:76-80(修复前)
+SKSE::log::info("AnimInput actor=00000014 localPlayer=true event='{}' result={} tracked={}", name, result, tracked);
+```
+**可达性**:两条日志分别挂在本地玩家的动画图输入 vfunc(`RE::VTABLE_PlayerCharacter[3]`,
+`src/AnimationInputProbe.cpp:27` 的 `write_vfunc(0x1, PlayerNotifyAnimationGraph)`)和动画图事件 sink 上,
+都在**主线程**同步执行,触发点是每次移动、攻击、受击、换装备。`basic_file_sink_mt` 每次刷盘都要抢锁并进内核,
+直接落在用户要求的「不得让加载、过场动画、与 NPC/场景交互变慢」上。本仓主程序早已对同一件事定过调
+(`Code/client/TiltedOnlineApp.cpp:75-80`:`flush_every(1s)` + `flush_on(warn)`,注释写明「per-frame logging
+不得变成 per-frame file I/O」),插件走的却是相反配置。两条日志的内容本身也不值得留在默认等级:
+`tracked=` 的 39834 行**全部是 `false`**,`localPlayer=` 的 3407 行**全部是 `true`**、`remoteConnection=` 全为 `0`
+—— 它们从未描述过一个真正被同步的事件。
+**修法**:`src/main.cpp:28-33` 改成主程序同款策略(`set_level(info)` + `spdlog::flush_every(std::chrono::seconds(1))`
++ `flush_on(spdlog::level::warn)`),info 行最多晚一秒落盘、warn 及以上仍立刻落盘;`AnimationInputProbe.cpp:76`
+与 `AnimationProbe.cpp:228` 降为 `SKSE::log::debug`;同步改 `README.md` 的 `## Logging` 节,把 `AnimInput`/`AnimEvent`
+标为 debug 并说明 Helmet Toggle 那几条低频诊断仍在默认等级。
+**验证**:交付形式是 `Code/plugins/patches/AnimSyncTogether/0001-stop-flushing-every-log-line-and-demote-the-two-per-event-markers.patch`
+(该插件是子模块,CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改动)。`python Code\plugins\tools\plugin_patches.py verify`
+→ `PATCH VERIFY OK` / `12 patch(es) apply to their pinned commits`;同目录下 `check` → `PATCH CHECK OK`。
+`git -C plugins/AnimSyncTogether grep -n "flush_on\|flush_every\|set_level"` 命中 `src/main.cpp:28`/`:32`/`:33`,
+`flush_on(spdlog::level::trace)` 已无命中。`python Tools/Scripts/check_docs.py` 全绿。
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器
