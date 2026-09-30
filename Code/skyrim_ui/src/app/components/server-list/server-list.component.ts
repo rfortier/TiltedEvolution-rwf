@@ -185,9 +185,13 @@ export class ServerListComponent {
       map(version => version.split('-')[0]),
     );
 
-    // load favorite servers
-    const favoriteServerList = JSON.parse(
-      this.storeService.get('favoriteServerList', '[]'),
+    // load favorite servers. The stored list outlives the build that wrote
+    // it, so it is parsed through the store service: a value that no longer
+    // parses would otherwise throw out of the constructor and the whole
+    // server list panel would never render.
+    const favoriteServerList = this.storeService.getJsonArray<Server>(
+      'favoriteServerList',
+      [],
     );
     const favoriteServers: Record<string, Server> = {};
     for (const favoriteServer of favoriteServerList) {

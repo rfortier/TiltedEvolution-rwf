@@ -17,6 +17,12 @@ import { StoreService } from '../../services/store.service';
 import { UiRepository } from '../../store/ui.repository';
 import { DestroyService } from '../../services/destroy.service';
 
+interface SavedServer {
+  ip: string;
+  port: number;
+  password: string;
+}
+
 @Component({
   selector: 'app-connect-password',
   templateUrl: './connect-password.component.html',
@@ -140,11 +146,16 @@ export class ConnectPasswordComponent implements AfterViewInit {
     this.uiRepository.openView(View.SERVER_LIST);
   }
 
+  // The stored list is read through the store service so that a value that
+  // no longer parses -- an interrupted write, or an entry left by an older
+  // build -- starts an empty list instead of throwing out of the component
+  // constructor. Reading the password happens while the panel is opening.
   private getStoredPasswordForAddress(ip: string, port: number): string {
-    let savedServerList = JSON.parse(
-      this.storeService.get('savedServerList', '[]'),
+    const savedServerList = this.storeService.getJsonArray<SavedServer>(
+      'savedServerList',
+      [],
     );
-    let savedServer = savedServerList.find(
+    const savedServer = savedServerList.find(
       saved => saved.ip === ip && saved.port === port,
     );
 
@@ -156,10 +167,11 @@ export class ConnectPasswordComponent implements AfterViewInit {
     port: number,
     password: string,
   ): void {
-    let savedServerList = JSON.parse(
-      this.storeService.get('savedServerList', '[]'),
+    const savedServerList = this.storeService.getJsonArray<SavedServer>(
+      'savedServerList',
+      [],
     );
-    let savedServer = savedServerList.find(
+    const savedServer = savedServerList.find(
       saved => saved.ip === ip && saved.port === port,
     );
 

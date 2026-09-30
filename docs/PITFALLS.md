@@ -7509,3 +7509,95 @@ CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求 `A
 > 而这条路径恰好是每个聊天包都走的。第三条:替换一段有边角的逻辑(正则的 `[^>]+`、
 > `\s+(?=<)` 的空白吞噬)时,先把它变成可穷举的形式对拍,再动实现 —— 55998 个字符串的
 > 穷举比对比任何一段「看起来一样」的代码评审都便宜。
+## 63. 2026-09-29 场次:UI 在构造函数里解析一个寿命比自己长的值 —— 判据是「解析失败之后,还有没有界面」
+
+> **锚点**:`Code/skyrim_ui/src/app/components/connect-password/connect-password.component.ts:142`、
+> `Code/skyrim_ui/src/app/components/server-list/server-list.component.ts:189` 两处裸 `JSON.parse`,
+> 修复落在新增的 `Code/skyrim_ui/src/app/services/store.service.ts:34-48 getJsonArray<T>()`。
+> 这是**可用性面**:崩溃是「游戏没了」,而这里是「面板没了,而且只有玩家自己知道」。
+
+### 63.1 缺陷:解析发生在构造期,抛出等于不渲染
+
+**现象**:连服务器密码面板与服务器列表面板整块空白 —— 列表不渲染、收藏不显示,控制台
+里是一条 `Unexpected token` / `Unexpected non-whitespace character after JSON`,而**清掉
+localStorage 就恢复正常**。两个面板读的是不同的键,却会一起坏,因为它们踩的是同一个形状。
+
+**根因**(修复前):
+```ts
+// Code/skyrim_ui/src/app/components/connect-password/connect-password.component.ts:142(修复前)
+let savedServerList = JSON.parse(
+  this.storeService.get('savedServerList', '[]'),
+);
+
+// Code/skyrim_ui/src/app/components/server-list/server-list.component.ts:189(修复前)
+const favoriteServerList = JSON.parse(
+  this.storeService.get('favoriteServerList', '[]'),
+);
+```
+`localStorage` 的寿命比写它的那个构建长,而这两个键是**追加式**写的(`savedServerList`
+在每次连接成功时被重写)。所以「两个数组被拼在一起」或者「写到一半被中断」都会留下一个
+**仍然存在、但已经不是合法 JSON** 的值。关键是它抛在**组件构造期**:构造函数没有完成,
+Angular 就不会有这个组件,面板不是显示空列表,是根本不渲染。
+
+### 63.2 判据:解析失败之后,还有没有界面
+
+同一个 `JSON.parse` 放在不同位置,后果完全不同。放在一个事件处理器里,抛出只是那一次操作
+失败;放在构造函数里,抛出是**整个组件不存在**。所以审查持久化读取时该问的不是「这个值
+会不会坏」——它一定会坏——而是**「解析失败之后还剩什么」**。
+
+这条判据也解释了为什么修复不是就地包一层 `try/catch`:两处解析的意图完全相同(「这个键
+要么是一个数组,要么当它不存在」),写进 `StoreService` 才只有一处需要维护,下一个读数组
+的人也不必再想一遍。`Array.isArray(parsed)` 是同一个判据的另一半 —— 能解析成对象、字符串
+或数字的值同样会让 `.find` / `for...of` 出问题,「是合法 JSON」不等于「是我们要的形状」。
+
+### 63.3 可达性
+
+两个键都由 `store.service.ts` 的 `set` 写入,读取点只有这两个组件:
+`connect-password.component.ts:149`(取密码)与 `:170`(存密码)、
+`server-list.component.ts:192`(载入收藏)。触发条件不需要玩家做任何异常操作 —— 换一个构建,
+或者在写入过程中关掉游戏就够。
+
+### 63.4 修法:把「读一个数组」变成一个具名操作
+
+`store.service.ts:34-48` 新增
+`public getJsonArray<T>(key: string, valueIfNull: T[]): T[]`:先 `this.get(key, null)` 判
+`null`,再 `try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? (parsed as T[]) : valueIfNull; } catch { return valueIfNull; }`。
+两个组件改为调用它;`SavedServer` 接口就近声明在 `connect-password.component.ts:20-24`,
+收藏列表复用已有的 `Code/skyrim_ui/src/app/models/server.ts` 的 `Server`。
+
+### 63.5 复核命令(照抄)
+
+```powershell
+# 1. 全仓还剩几处 JSON.parse(应为 2,且都在 try/catch 内)
+git grep -n 'JSON.parse' -- Code
+
+# 2. 两个组件里已经不再有裸 JSON.parse
+git grep -n 'JSON.parse' -- Code/skyrim_ui/src/app/components; Write-Host "exit=$LASTEXITCODE"
+
+# 3. getJsonArray 的调用点
+git grep -n 'getJsonArray' -- Code/skyrim_ui
+
+# 4. README 版本行仍然以 ' |' 结尾且是 CRLF
+node -e "const fs=require('fs');for(const [f,n] of [['README.md',110],['README_EN.md',104]]){const l=fs.readFileSync(f,'utf8').split('\n')[n-1];console.log(f,l.length,JSON.stringify(l.slice(-3)))}"
+
+# 5. 文档门禁
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`git grep -n 'JSON.parse' -- Code` 只剩 `client.service.ts:579`(已在
+`try { … } catch { error = { error: 'no_reason' }; }` 内,`:577-584`)与
+`store.service.ts:42`(新增的 `getJsonArray` 内);两个组件的裸解析各减少 2 处与 1 处;
+`git grep -n 'JSON.parse' -- Code/skyrim_ui/src/app/components` 退出码 1(0 命中)。
+
+**验证**:`getJsonArray<SavedServer>('savedServerList', [])`、
+`getJsonArray<SavedServer>(…)`、`getJsonArray<Server>('favoriteServerList', [])` 三处调用点;
+`Server` 来自 `Code/skyrim_ui/src/app/models/server.ts`,字段含 `ip`/`port`/`isFavorite`,
+与收藏列表的用法一致。`python Tools/Scripts/check_docs.py` 全绿。
+
+> **教训**:第一条:持久化读取的审查对象不是「这个值会不会坏」(它一定会坏),而是
+> **「解析失败之后还剩什么」** —— 同一行 `JSON.parse` 在事件处理器里只是那次操作失败,
+> 在构造函数里是整个组件不存在。第二条:`localStorage` 是**跨构建**的,写它的代码可能
+> 已经不在了,所以「我们自己写的值一定合法」从来不是理由,尤其是追加式写入的键。
+> 第三条:当两处代码问的是同一个问题(「这个键要么是数组,要么不存在」),把它变成一个
+> 具名操作放进服务里 —— 就地包 `try/catch` 会让第三个人再想一遍,而他想的那一遍未必
+> 会记得 `Array.isArray`。

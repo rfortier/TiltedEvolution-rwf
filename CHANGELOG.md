@@ -1366,6 +1366,50 @@ void sendPlayerMessage(const ChatMessageType acType, const String acContent, Pla
 `git grep -n "regex" -- Code/server` 现在 0 命中。
 `python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:两个面板在构造函数里 `JSON.parse` 一个可能不是 JSON 的 localStorage 值
+
+**现象**:连服务器密码面板与服务器列表面板偶尔整块空白 —— 列表不渲染、收藏不显示,
+控制台里是一条 `Unexpected token` / `Unexpected non-whitespace character after JSON`,
+而且**清掉 localStorage 就恢复正常**。因为读的是同一个键,两个面板会一起坏。
+
+**根因**(修复前):
+```ts
+// Code/skyrim_ui/src/app/components/connect-password/connect-password.component.ts:142(修复前)
+let savedServerList = JSON.parse(
+  this.storeService.get('savedServerList', '[]'),
+);
+
+// Code/skyrim_ui/src/app/components/server-list/server-list.component.ts:189(修复前)
+const favoriteServerList = JSON.parse(
+  this.storeService.get('favoriteServerList', '[]'),
+);
+```
+`localStorage` 的寿命比写它的那个构建长。`savedServerList` 与 `favoriteServerList` 是
+**追加式**写进去的(`savedServerList` 在每次连接成功时被重写),所以「两个数组被拼在
+一起」或者「写到一半被中断」都会留下一个仍然存在、但已经不是合法 JSON 的值。
+而这两处解析发生在**组件构造期**:`JSON.parse` 抛出后构造函数没有完成,面板不是显示
+空列表,而是根本不渲染。
+
+**可达性**:两个键都由 `Code/skyrim_ui/src/app/services/store.service.ts` 的 `set` 写入,
+读取点只有这两个组件(`connect-password.component.ts:149`/`:170`、
+`server-list.component.ts:192`)。触发条件不需要用户做任何异常操作:换一个构建、
+或在写入过程中关掉游戏就够。
+
+**修法**:`store.service.ts:34-48` 新增
+`public getJsonArray<T>(key: string, valueIfNull: T[]): T[]` —— 读出来先判 `null`,再
+`try { JSON.parse } catch { return valueIfNull; }`,并且用 `Array.isArray(parsed)` 拒绝
+「能解析但不是数组」的值(对象、字符串、数字同样会让 `.find`/`for...of` 出问题)。
+两个组件改为调用它,`SavedServer` 接口就近声明在 `connect-password.component.ts:20-24`。
+**为什么不就地包一层 `try/catch`**:两处解析的意图完全相同(「这个键要么是一个数组,
+要么当它不存在」),把它写进 `StoreService` 才只有一处需要维护;而且下一个读数组的人
+不必再想一遍这件事。
+
+**验证**:两处调用点已改为 `getJsonArray<SavedServer>('savedServerList', [])` 与
+`getJsonArray<Server>('favoriteServerList', [])`(`Server` 来自
+`Code/skyrim_ui/src/app/models/server.ts`);`git grep -n "JSON.parse"` 现在只剩
+`client.service.ts:579` 与 `store.service.ts:42` 两处,且都在 `try/catch` 内。
+`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器
