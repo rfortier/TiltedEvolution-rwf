@@ -628,6 +628,9 @@ TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")
     Serialization::WriteFloat(writer, std::numeric_limits<float>::quiet_NaN());
 
     RequestHealthChangeBroadcast nan{};
+    // Seeded with a finite sentinel: the clamp would happily keep it, so the read itself
+    // is the only thing that can turn this into the zero the assertion expects.
+    nan.DeltaHealth = 1.f;
     Buffer::Reader reader(&buff);
     nan.DeserializeRaw(reader);
 
@@ -640,6 +643,7 @@ TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")
     Serialization::WriteFloat(hugeWriter, -1.0e30f);
 
     RequestHealthChangeBroadcast clamped{};
+    clamped.DeltaHealth = 1.f;
     Buffer::Reader hugeReader(&huge);
     clamped.DeserializeRaw(hugeReader);
 
@@ -652,6 +656,7 @@ TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")
     Serialization::WriteFloat(notifyWriter, 1.0e30f);
 
     NotifyHealthChangeBroadcast notification{};
+    notification.DeltaHealth = 1.f;
     Buffer::Reader notifyReader(&notify);
     notification.DeserializeRaw(notifyReader);
 
@@ -666,6 +671,7 @@ TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")
     sent.Serialize(roundTripWriter);
 
     RequestHealthChangeBroadcast received{};
+    received.DeltaHealth = 1.f;
     Buffer::Reader roundTripReader(&roundTrip);
     uint64_t trash;
     roundTripReader.ReadBits(trash, 8); // pop opcode

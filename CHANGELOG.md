@@ -1583,6 +1583,46 @@ SKSE::log::info("AnimInput actor=00000014 localPlayer=true event='{}' result={} 
 → `PATCH VERIFY OK` / `12 patch(es) apply to their pinned commits`;同目录下 `check` → `PATCH CHECK OK`。
 `git -C plugins/AnimSyncTogether grep -n "flush_on\|flush_every\|set_level"` 命中 `src/main.cpp:28`/`:32`/`:33`,
 `flush_on(spdlog::level::trace)` 已无命中。`python Tools/Scripts/check_docs.py` 全绿。
+### 修复:血量广播的读取被钳制块挤掉了,于是这个包一直在送未初始化的血量增量
+**现象**:一个 `RequestHealthChangeBroadcast` / `NotifyHealthChangeBroadcast` 到达时,包里 `DeltaHealth`
+的那四个字节**从不被消费**;紧接着的 `if (!std::isfinite(DeltaHealth))` 检查的是**未初始化的成员** ——
+这两个结构体的 `float DeltaHealth;` 没有默认成员初始化器(`RequestHealthChangeBroadcast.h:25`、
+`NotifyHealthChangeBroadcast.h:25`),基类 `ClientMessage`/`ServerMessage` 只初始化 `m_opcode`,而工厂是
+`TiltedPhoques::MakeUnique<T>()` + `DeserializeRaw`。
+**根因**(修复前):
+```cpp
+// Code/encoding/Messages/RequestHealthChangeBroadcast.cpp:11-24(修复前)
+Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+
+// Never trust the wire: a NaN or an infinity would follow this value into every
+// arithmetic operation the receiver performs on it.
+if (!std::isfinite(DeltaHealth))
+    DeltaHealth = 0.f;
+else
+    DeltaHealth = std::min(std::max(DeltaHealth, -kMaxHealthDelta), kMaxHealthDelta);
+```
+写侧一直是 `Serialization::WriteFloat(aWriter, DeltaHealth);`(`:8`),而 `git grep -n ReadFloat` 在这两个
+文件上**零命中**:读取那一行是在加入钳制的那次提交里被替换掉的,钳制因此作用于一个与线上无关的值。
+**为什么测试没拦住**:`Code/tests/encoding.cpp:620 TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")`
+只断言钳制的结果(`NaN → 0`、`-1e30 → -kMaxHealthDelta`、`1e30 → kMaxHealthDelta`)。钳制对一个恰好为 0 的
+未初始化内存是恒等,所以那三条断言在缺陷上照样通过;`windows.yml:618` 的门禁只检查退出码与 `All tests passed`,
+也区分不出「读进来了」和「碰巧是对的」。
+**可达性**:服务端 `Code/server/Services/ActorValueService.cpp:77-100 OnHealthChangeBroadcast` 把这个值原样
+写进 `ActorValuesList[24]` 并放进转发包;客户端 `Code/client/Services/Generic/ActorValueService.cpp:286-312`
+把它加进目标血量,结果不再为正时对非玩家 actor 调 `pActor->Kill()`。发送侧
+`Code/client/Services/Generic/ActorValueService.cpp:189-202` 一直在送真实的伤害/治疗(小伤害攒进
+`m_smallHealthChanges`、`RunSmallHealthUpdates` 每 250 ms 批量发),所以这条路径在联机里是热的。
+**修法**:两个文件的 `DeserializeRaw` 各补回一行 `DeltaHealth = Serialization::ReadFloat(aReader);`
+(`Code/encoding/Messages/RequestHealthChangeBroadcast.cpp:16`、`Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp:16`),
+位置在 `Id` 之后、钳制之前 —— 钳制逻辑与既有断言都不用改。
+用例同时给四个接收对象先写一个**有限哨兵**(`nan.DeltaHealth = 1.f;`、`clamped.DeltaHealth = 1.f;`、
+`notification.DeltaHealth = 1.f;`、`received.DeltaHealth = 1.f;`):钳制对 1.f 是恒等,于是断言成立的**唯一**
+原因就是那一行读取存在 —— 删掉它,`REQUIRE(nan.DeltaHealth == 0.f)` 立刻变成 `1.f == 0.f`。
+**验证**:`git grep -n ReadFloat Code/encoding/Messages/RequestHealthChangeBroadcast.cpp Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp`
+现在各命中 `:16`;`git grep -c "Seeded with a finite sentinel" Code/tests/encoding.cpp` 为 4。
+另外对 `Code/encoding/Messages/**` 与 `Code/encoding/Structs/**` 的全部 `.cpp` 做了「写侧标识符 − 读侧标识符」
+差集扫描,过滤掉临时变量赋值(`uint64_t tmp; aReader.ReadBits(tmp, N); Field = tmp & MASK;`)造成的误报后,
+**只剩这两个文件**;反向(读了但从不写)为 0 命中。`python Tools/Scripts/check_docs.py` 全绿。
 ### 修复:一个插件的最高频日志在默认配置下同步刷盘,而它一次采样最多打 45 条
 **现象**:`MorphSyncTogether` 在 10 分钟的会话里写了 **1864 行日志(348 KB)**,其中 1433 行(76.9%)来自
 `src/AppearanceProbe.cpp:814`、187 行(10.0%)来自 `src/UdpTransport.cpp:195`、94 行来自

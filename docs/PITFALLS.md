@@ -8319,3 +8319,149 @@ python Tools/Scripts/check_docs.py
 > 判据是「把这条日志按 distinct payload 分组数一遍,如果绝大多数行在重复上几次的内容,它就不是事件日志」。
 > 第三条:**默认值写在几个地方,就要改几个地方。** `_verbose` 的默认值同时存在于成员初始化、
 > `Config` 结构体和随包发布的 ini 里,而 ini 覆盖前两者 —— 只改头文件,出厂行为一点都不会变。
+
+## 69. 2026-10-01 场次:血量广播的两端都只留下了钳制、没留下读取 —— 判据是「断言能不能区分『读进来了』和『碰巧等于』」
+
+> **锚点**:本节的修复落在 `Code/encoding/Messages/RequestHealthChangeBroadcast.cpp`、
+> `Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp` 与 `Code/tests/encoding.cpp`,交付形式是仓库内的直接提交
+> (不是插件补丁 —— 这两个文件属于主仓,CI 直接编译)。
+
+### 69.1 缺陷:钳制块是在替换读取那一行时写进去的,于是钳制作用于一个未初始化的成员
+
+| 位置 | 作用 |
+| --- | --- |
+| `Code/encoding/Messages/RequestHealthChangeBroadcast.cpp:12`(修复前) | 读完 `Id` 直接进钳制,`DeltaHealth` 的 4 个字节从不被消费 |
+| `Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp:12`(修复前) | 服务端 → 客户端方向同构 |
+| `Code/encoding/Messages/RequestHealthChangeBroadcast.h:25` | `float DeltaHealth;` 没有默认成员初始化器 |
+| `Code/server/Services/ActorValueService.cpp:90` / `:95` | 把这个值写进 `ActorValuesList[24]`,再原样放进转发包 |
+| `Code/client/Services/Generic/ActorValueService.cpp:295-305` | 加进目标血量,结果不再为正时对非玩家 actor 调 `pActor->Kill()` |
+
+两个文件在修复前的形状完全一样(只差基类与 opcode):
+
+```cpp
+// Code/encoding/Messages/RequestHealthChangeBroadcast.cpp:11-24(修复前)
+void RequestHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
+{
+    ClientMessage::DeserializeRaw(aReader);
+
+    Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+
+    // Never trust the wire: a NaN or an infinity would follow this value into every
+    // arithmetic operation the receiver performs on it.
+    if (!std::isfinite(DeltaHealth))
+        DeltaHealth = 0.f;
+    else
+        DeltaHealth = std::min(std::max(DeltaHealth, -kMaxHealthDelta), kMaxHealthDelta);
+}
+```
+
+写侧一直是 `Serialization::WriteFloat(aWriter, DeltaHealth);`(`:8`),而
+`git grep -n ReadFloat` 在这两个文件上**零命中** —— 也就是说读取语句不是被改坏,而是**在加入钳制的
+那次提交里被整行替换掉了**。于是这条链上出现了三个各自独立的后果:
+
+1. 线上那 4 个字节从不被消费(对该消息来说后面没有字段,所以不会连带错位);
+2. `if (!std::isfinite(DeltaHealth))` 检查的是**未初始化的成员**;
+3. 这个不确定值随后被当成真实血量增量用掉。
+
+成员为什么真的是未初始化的:`RequestHealthChangeBroadcast.h:24-25` 是 `uint32_t Id;` 与
+`float DeltaHealth;`(**两者都没有 `{}` 初始化器**),构造器是
+`RequestHealthChangeBroadcast() : ClientMessage(Opcode) {}`,`Message.h:9-31` 的基类只保存 opcode,
+工厂则是 `ClientMessageFactory.cpp:17-22` 的 `MakeUnique<T>()` + `DeserializeRaw(aReader)`。
+⇒ 这不是「读到了 0」,是「读都没读」。
+
+### 69.2 判据:断言只检查钳制的结果,而钳制对未初始化内存是恒等
+
+`Code/tests/encoding.cpp:620` 的 `TEST_CASE("Health change broadcast wire bounds", "[encoding.health_change]")`
+**是这个缺陷的同一次提交里新增的**,它当时断言三件事:
+
+| 输入 | 断言 |
+| --- | --- |
+| `quiet_NaN()` | `REQUIRE(nan.DeltaHealth == 0.f)` |
+| `-1.0e30f` | `REQUIRE(clamped.DeltaHealth == -RequestHealthChangeBroadcast::kMaxHealthDelta)` |
+| `1.0e30f` | `REQUIRE(notification.DeltaHealth == NotifyHealthChangeBroadcast::kMaxHealthDelta)` |
+
+三条断言全部只依赖**钳制**。当接收对象刚被构造出来时,它的 `DeltaHealth` 恰好是 0 的话:
+`!std::isfinite(0.f)` 为假、`std::min(std::max(0.f, -1e5f), 1e5f)` 也是 0 —— 但 `0.f` 与 `1.0e30f`
+这两个输入走的是钳制的**另两条分支**,它们同样不看线上读到的东西。换句话说:**这三条断言在
+「读取完全缺失」和「读取正常」两种实现上都会通过**,只要那块内存不是 NaN 或越界值。
+
+这就是判据的落点:**一条针对「读进来的值被怎么处理」的断言,必须能让「根本没读」失败。**
+做法是在调用 `DeserializeRaw` 之前给接收对象写一个**有限的、钳制分支的恒等值**:
+
+```cpp
+// Code/tests/encoding.cpp:630-638(修复后)
+RequestHealthChangeBroadcast nan{};
+// Seeded with a finite sentinel: the clamp would happily keep it, so the read itself
+// is the only thing that can turn this into the zero the assertion expects.
+nan.DeltaHealth = 1.f;
+Buffer::Reader reader(&buff);
+nan.DeserializeRaw(reader);
+
+REQUIRE(nan.Id == 42);
+REQUIRE(nan.DeltaHealth == 0.f);
+```
+
+`1.f` 满足 `std::isfinite`、也落在 `±kMaxHealthDelta` 之内,所以钳制对它是**恒等**。于是断言成立的
+唯一原因只剩读取那一行:把它删掉,`REQUIRE(nan.DeltaHealth == 0.f)` 立刻变成 `1.f == 0.f`。
+四个接收对象(`nan`、`clamped`、`notification`、`received`)都按同一写法加了哨兵。
+
+### 69.3 可达性:发送侧一直在送真实伤害,所以它表现为「血量乱跳/秒杀」而不是「永远 0」
+
+发送侧是热的:`Code/client/Services/Generic/ActorValueService.cpp:189-202` 里,`|delta| < 1.0f` 的伤害
+攒进 `m_smallHealthChanges`(`:189`),其余立刻发 `RequestHealthChangeBroadcast`(`:198-202`);
+`RunSmallHealthUpdates`(`:207-233`)每 250 ms 把攒下的批量发出去并清表。
+服务端 `Code/server/Services/ActorValueService.cpp:77-100 OnHealthChangeBroadcast` 把它写进
+`actorValuesComponent.CurrentActorValues.ActorValuesList[24]`(`:90`)并转发(`:95`);
+客户端 `Code/client/Services/Generic/ActorValueService.cpp:286-312` 读回来,结果 `<= 0.f` 且目标不是玩家时
+`pActor->Kill()`。⇒ 未初始化的增量直接决定「范围内的非玩家 actor 死不死」。
+
+另外这条路径是全仓唯一**没有 ownership 检查**的 actor value handler:`:31`/`:58`/`:110` 三处都有
+`IsCurrentOwner`。这不改变本节的性质(值本身就该有界),但它解释了为什么这个值一旦不对,影响面是
+「任何在范围内的 actor」。
+
+### 69.4 修法:补回读取那一行,并让用例无法在缺失读取时通过
+
+`DeserializeRaw` 只加一行,位置在 `Id` 之后、钳制之前 —— 钳制逻辑与既有断言都不用动:
+
+```cpp
+// Code/encoding/Messages/RequestHealthChangeBroadcast.cpp:15-17(修复后)
+Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+DeltaHealth = Serialization::ReadFloat(aReader);
+
+// Never trust the wire: a NaN or an infinity would follow this value into every
+```
+
+`NotifyHealthChangeBroadcast.cpp:16` 逐字相同。用例侧只加哨兵赋值与两行注释,断言一个字没改。
+
+顺带做了一次机械普查,确认这一族已经封闭:对 `Code/encoding/Messages/**` 与 `Code/encoding/Structs/**`
+的全部 `.cpp` 提取 `SerializeRaw` 的标识符集合与 `Deserialize*` 的标识符集合做差集。原始差集 44 个文件命中,
+但绝大多数是读侧用临时变量赋值造成的误报(形如
+`uint64_t tmp; aReader.ReadBits(tmp, N); Field = tmp & MASK;`,脚本看不到 `tmp` → `Field` 那一步),
+按头文件里真实声明的成员名过滤后只剩 17 个成员级候选,逐一读源码后**只有这两个文件是真缺陷**;
+反向差集(读了但从不写)在同样范围上是 **0 命中**。
+
+### 69.5 复核命令(照抄)
+
+```powershell
+git grep -n "ReadFloat" Code/encoding/Messages/RequestHealthChangeBroadcast.cpp Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp
+git grep -n "ReadFloat" Code/encoding/Messages/ | Measure-Object -Line
+git grep -c "Seeded with a finite sentinel" Code/tests/encoding.cpp
+git diff --stat
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:两个文件各命中 `:16`;`Code/tests/encoding.cpp` 的哨兵注释为 4 处;
+`check_docs.py` → `DOC CHECK OK`。C++ 测试由 CI 执行(`windows.yml:585-638` 的
+`Run the encoding tests` 要求退出码 0 **且**输出里含 `All tests passed`)。
+
+**验证**:`5660971b` 的 diff 证明读取那一行是在加入钳制时被替换掉的(不是后来改坏的);
+`git merge-base --is-ancestor cd0d90dd 5660971b` 与 `fb4ff630` 的先后关系说明测试门禁**早于**该缺陷存在,
+所以这次的假绿不是门禁没跑,而是断言与实现同时只覆盖了钳制的一半。
+
+> **教训**:第一条:**「加一层校验」和「删一行读取」在 diff 里只差一行,而它们在语义上差的是整个包。**
+> 改写一个读取点时,替换的是**赋值**那一句,不是**读取**那一句 —— 把 `ReadFloat` 写进钳制块里当参数,
+> 而不是把钳制块套在 `ReadFloat` 外面,就会得到这个形状。
+> 第二条:**断言必须能失败。** 只断言「输出被夹到边界内」的用例,对「输入根本没读」也是绿的;
+> 给接收对象写一个落在钳制恒等区间的有限哨兵,才能把「读进来了」变成断言成立的唯一解释。
+> 第三条:**`noexcept` 链上的不确定值不是「小问题」,它是把控制权交给了内存布局。**
+> 这个值一路走到 `ForceActorValue` 与 `pActor->Kill()`,中间没有任何一处能发现它是垃圾。

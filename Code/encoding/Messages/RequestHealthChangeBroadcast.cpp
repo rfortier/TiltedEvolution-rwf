@@ -13,6 +13,7 @@ void RequestHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader&
     ClientMessage::DeserializeRaw(aReader);
 
     Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    DeltaHealth = Serialization::ReadFloat(aReader);
 
     // Never trust the wire: a NaN or an infinity would follow this value into every
     // arithmetic operation the receiver performs on it.
