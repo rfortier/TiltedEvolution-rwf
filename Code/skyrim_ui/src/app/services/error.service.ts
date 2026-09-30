@@ -63,7 +63,13 @@ export class ErrorService {
       switch (error.error) {
         case 'mods_mismatch':
           let mods = '';
-          const install = error.data.mods
+          // The payload is parsed from text the server wrote, and a server this
+          // build does not know -- or one that is not this server at all -- can
+          // answer with the code and no list behind it. Reading .mods off that
+          // threw out of setError, which the caller does not await, so the panel
+          // never opened at all.
+          const mismatched: any[] = Array.isArray(error.data?.mods) ? error.data.mods : [];
+          const install = mismatched
             .filter(mod => mod[1] === '0')
             .map(mod => mod[0]);
           if (install.length > 0) {
@@ -75,7 +81,7 @@ export class ErrorService {
               ),
             );
           }
-          const remove = error.data.mods
+          const remove = mismatched
             .filter(mod => mod[1] !== '0')
             .map(mod => mod[0]);
           if (remove.length > 0) {
@@ -90,7 +96,7 @@ export class ErrorService {
           data = { mods };
           break;
         case 'client_mods_disallowed':
-          data = { mods: error.data.mods.join(', ') };
+          data = { mods: Array.isArray(error.data?.mods) ? error.data.mods.join(', ') : '' };
           break;
       }
       message = await firstValueFrom(

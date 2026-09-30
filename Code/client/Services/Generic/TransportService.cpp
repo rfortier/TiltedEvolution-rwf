@@ -20,6 +20,7 @@
 #include <Messages/AuthenticationRequest.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Messages/NotifySettingsChange.h>
+#include <JsonEscape.h>
 #include <Packet.hpp>
 
 #include <ScriptExtender.h>
@@ -671,9 +672,14 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
     switch (acMessage.Type)
     {
     case AR::kWrongVersion:
+        // Both versions end up in the UI's error panel and the expected one is
+        // text this side did not write, so neither is spliced in unescaped.
         ErrorInfo += "\"error\": \"wrong_version\", \"data\": {";
-        ErrorInfo += fmt::format("\"expectedVersion\": \"{}\", \"version\": \"{}\"", acMessage.Version, BUILD_COMMIT);
-        ErrorInfo += "}";
+        ErrorInfo += "\"expectedVersion\": \"";
+        ErrorInfo += JsonEscape::Escape(acMessage.Version);
+        ErrorInfo += "\", \"version\": \"";
+        ErrorInfo += JsonEscape::Escape(BUILD_COMMIT);
+        ErrorInfo += "\"}";
         break;
     case AR::kModsMismatch:
     {
@@ -683,7 +689,11 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
         {
             if (!first)
                 ErrorInfo += ",";
-            ErrorInfo += fmt::format("[\"{}\",\"{}\"]", m.Filename.c_str(), m.Id);
+            ErrorInfo += "[\"";
+            ErrorInfo += JsonEscape::Escape(m.Filename);
+            ErrorInfo += "\",\"";
+            ErrorInfo += fmt::format("{}", m.Id);
+            ErrorInfo += "\"]";
             first = false;
         }
         ErrorInfo += "]}";
@@ -691,13 +701,22 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
     }
     case AR::kClientModsDisallowed:
     {
+        // The array names the extensions the server actually objected to. It used
+        // to name MO2 unconditionally, so a player who was only running SKSE was
+        // told to remove a mod manager that was not installed.
         ErrorInfo += "\"error\": \"client_mods_disallowed\", \"data\": { \"mods\": [";
+        bool first = true;
         if (acMessage.SKSEActive)
+        {
             ErrorInfo += "\"SKSE\"";
+            first = false;
+        }
         if (acMessage.MO2Active)
-            if (acMessage.SKSEActive)
+        {
+            if (!first)
                 ErrorInfo += ",";
-        ErrorInfo += "\"MO2\"";
+            ErrorInfo += "\"MO2\"";
+        }
         ErrorInfo += "]}";
         break;
     }

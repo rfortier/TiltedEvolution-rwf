@@ -12,6 +12,7 @@
 
 #include "StringCache.h"
 #include "ChatSanitize.h"
+#include "JsonEscape.h"
 #include "WireLimits.h"
 #include "Messages/StringCacheUpdate.h"
 
@@ -877,4 +878,56 @@ TEST_CASE("Chat sanitize", "[encoding.chat_sanitize]")
     // own text cannot produce a different line than one which does not.
     const String cOnce = cStripped("<b>hello</b> <i>there</i>");
     REQUIRE(ChatSanitize::StripHtmlTags(cOnce) == cOnce);
+}
+
+TEST_CASE("JSON escaping of the authentication error payload", "[encoding.json_escape]")
+{
+    // The client builds the authentication failure payload by hand and the overlay parses
+    // it with JSON.parse, so everything that goes between the quotes has to be escaped. A
+    // quote or a newline in the version string the server sent used to end the string
+    // early, which cost the player the reason and left only "no reason" behind.
+    REQUIRE(JsonEscape::Escape("") == "");
+    REQUIRE(JsonEscape::Escape("plain text") == "plain text");
+
+    // The two characters RFC 8259 requires escaping, and the five short forms.
+    REQUIRE(JsonEscape::Escape("say \"hi\"") == "say \\\"hi\\\"");
+    REQUIRE(JsonEscape::Escape("C:\\Games\\Skyrim") == "C:\\\\Games\\\\Skyrim");
+    REQUIRE(JsonEscape::Escape("\b\f\n\r\t") == "\\b\\f\\n\\r\\t");
+
+    // The remaining control characters have no short form and travel as \u00xx.
+    REQUIRE(JsonEscape::Escape("\x01\x1f") == "\\u0001\\u001f");
+
+    // Bytes at or above 0x20 are left alone: the payload is UTF-8 text and rewriting it
+    // would change what the panel shows.
+    REQUIRE(JsonEscape::Escape("\x7f\xc3\xa9") == "\x7f\xc3\xa9");
+
+    // A version string that tries to close the document early stays inside its string.
+    const String cHostile = "1.6.640\", \"data\": {\"injected\": true}";
+    REQUIRE(JsonEscape::Escape(cHostile) == "1.6.640\\\", \\\"data\\\": {\\\"injected\\\": true}");
+
+    // Whatever the field held, the result cannot end the string early: every quote in it
+    // is preceded by an odd number of backslashes and no raw control character survives.
+    String cEveryByte;
+    for (int i = 0; i < 256; ++i)
+        cEveryByte += static_cast<char>(i);
+
+    const String cEveryByteEscaped = JsonEscape::Escape(cEveryByte);
+    int backslashes = 0;
+    for (size_t index = 0; index < cEveryByteEscaped.size(); ++index)
+    {
+        const char cCharacter = cEveryByteEscaped[index];
+
+        if (cCharacter == '\\')
+        {
+            ++backslashes;
+            continue;
+        }
+
+        if (cCharacter == '"')
+            REQUIRE(backslashes % 2 == 1);
+        else
+            REQUIRE(static_cast<unsigned char>(cCharacter) >= 0x20);
+
+        backslashes = 0;
+    }
 }

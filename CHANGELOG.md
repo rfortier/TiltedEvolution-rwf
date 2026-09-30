@@ -1410,6 +1410,47 @@ const favoriteServerList = JSON.parse(
 `client.service.ts:579` 与 `store.service.ts:42` 两处,且都在 `try/catch` 内。
 `python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:认证失败的 JSON 载荷是手拼的,服务端给的一个引号就让整条错误原因消失
+
+**现象**:认证被拒时玩家看到的不是原因,而是「服务器没有理由地拒绝了连接」。服务器其实**把原因送过来了**
+(`wrong_version` / `mods_mismatch` / `client_mods_disallowed` / `wrong_password` / `server_full`),
+它写在 `ConnectionErrorEvent::ErrorDetail` 里,由 `OverlayService::OnConnectionError` 交给 CEF,
+UI 用 `JSON.parse` 读出来。这条载荷是**手工拼接**的字符串:值直接写在引号之间,一个 `"` 就提前结束字符串,
+整个文档从此不再是 JSON,`client.service.ts` 只能回落到 `no_reason`。
+
+**根因**(修复前):
+```cpp
+// Code/client/Services/Generic/TransportService.cpp:675(修复前)
+ErrorInfo += fmt::format("\"expectedVersion\": \"{}\", \"version\": \"{}\"", acMessage.Version, BUILD_COMMIT);
+
+// Code/client/Services/Generic/TransportService.cpp:686(修复前)
+ErrorInfo += fmt::format("[\"{}\",\"{}\"]", m.Filename.c_str(), m.Id);
+```
+`acMessage.Version` 是**服务端**的版本字符串,`m.Filename` 是**服务端**回传的 mod 文件名 ——
+两个都是本侧无法控制的文本,而且都是刚过线的东西。同一段还有第二处:
+`case AR::kClientModsDisallowed:` 里 `if (acMessage.MO2Active)` 只包住了逗号那一行,
+`ErrorInfo += "\"MO2\"";` 在 `if` 之外,**无条件**执行。于是只装了 SKSE 的玩家被告知
+「请移除 MO2」—— 一个他根本没装的 mod 管理器。服务端早就把两个真实 flag 回传了
+(`Code/server/GameServer.cpp:896-897 serverResponse.SKSEActive = acRequest->SKSEActive;` /
+`serverResponse.MO2Active = acRequest->MO2Active;`),拼数组时用的却是错的。
+
+**可达性**:这条路径不需要玩家做任何异常操作,也不需要恶意客户端 —— 服务端与客户端的版本号
+本来就不同(`BUILD_COMMIT` 取自 `Code/common/BuildInfo.h.in:4`),而版本不一致正是 `wrong_version`
+这条分支存在的理由;mod 文件名由对端在 `AuthenticationRequest` 里上报,允许包含文件系统允许的任何字符。
+**两端都在本地不可控**:`acMessage.Version` 已被 `Code/encoding/Messages/AuthenticationResponse.cpp:19`
+夹到 64 字节,`m.Filename` 已被 `Code/encoding/Structs/Mods.cpp:46` 夹到 260 字节 —— 长度夹住了,
+但**内容**没有。
+
+**修法**:新建 `Code/encoding/JsonEscape.h`(`Escape(const TiltedPhoques::String&)`,按 RFC 8259 section 7
+转义引号、反斜杠与全部 < 0x20 的字节,其余原样保留),`TransportService.cpp` 的三处拼接改走它。
+**为什么是转义而不是拒包**:这些字符串已经过了 `WireLimits::Clamp` 的长度上限,文件名允许包含文件系统
+允许的任何字符,而一个需要转义的名字仍然是**必须展示给玩家**的名字 —— 为它丢掉整个包,会把
+「显示得不对」升级成「掉线」。
+
+**验证**:`Code/tests/encoding.cpp:882 TEST_CASE("JSON escaping of the authentication error payload", "[encoding.json_escape]")`
+覆盖转义表(空串 / 普通文本 / `"` / `\\` / `\b\f\n\r\t` / 其余控制字符走 `\u00xx` / 非 ASCII 原样)、
+一个试图提前闭合文档的版本字符串,以及**全部 256 个字节**逐个过一遍:结果里每个 `"` 前面必须有奇数个反斜杠,
+且不能残留任何 < 0x20 的字节。`python Tools/Scripts/check_docs.py` 全绿。
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

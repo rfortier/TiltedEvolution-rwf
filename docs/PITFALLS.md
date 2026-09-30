@@ -7601,3 +7601,108 @@ python Tools/Scripts/check_docs.py
 > 第三条:当两处代码问的是同一个问题(「这个键要么是数组,要么不存在」),把它变成一个
 > 具名操作放进服务里 —— 就地包 `try/catch` 会让第三个人再想一遍,而他想的那一遍未必
 > 会记得 `Array.isArray`。
+## 64. 2026-09-29 场次:原因送到了,但载荷不是 JSON —— 判据是「这个值是谁写的」
+
+> **锚点**:`Code/client/Services/Generic/TransportService.cpp:675` 与 `:686` 两处手拼 JSON,
+> 修复落在新增的 `Code/encoding/JsonEscape.h`,同族第二处是同一函数 `:692-703` 的
+> `case AR::kClientModsDisallowed:`。这是**可诊断性面**:连接没成功是次要的,玩家拿不到理由才是主要的。
+
+### 64.1 缺陷:值直接写在引号之间,而值是对端写的
+
+**现象**:认证被拒时玩家看到的是「服务器没有理由地拒绝了连接」。服务器**把原因送过来了**
+(`wrong_version` / `mods_mismatch` / `client_mods_disallowed` / `wrong_password` / `server_full`),
+它写在 `ConnectionErrorEvent::ErrorDetail` 里,经 `OverlayService::OnConnectionError` 交给 CEF,
+UI 用 `JSON.parse` 读出来。载荷本身是**手工拼接**的字符串。
+
+**根因**(修复前):
+```cpp
+// Code/client/Services/Generic/TransportService.cpp:675(修复前)
+ErrorInfo += fmt::format("\"expectedVersion\": \"{}\", \"version\": \"{}\"", acMessage.Version, BUILD_COMMIT);
+
+// Code/client/Services/Generic/TransportService.cpp:686(修复前)
+ErrorInfo += fmt::format("[\"{}\",\"{}\"]", m.Filename.c_str(), m.Id);
+```
+`acMessage.Version` 是**服务端**的版本字符串,`m.Filename` 是**服务端回传的** mod 文件名。
+两者都刚过线、都由对端决定,却被原样放进引号之间 —— 一个 `"` 就提前结束字符串,整个文档不再是 JSON,
+`client.service.ts:579` 的 `JSON.parse` 抛进 catch,只剩 `error = { error: 'no_reason' };`。
+
+同一段里还有第二处,形状完全不同:`case AR::kClientModsDisallowed:` 里
+```cpp
+// Code/client/Services/Generic/TransportService.cpp:697-700(修复前)
+if (acMessage.MO2Active)
+    if (acMessage.SKSEActive)
+        ErrorInfo += ",";
+ErrorInfo += "\"MO2\"";
+```
+外层 `if` 只包住了**逗号那一行**,数组元素 `"MO2"` 在它之外**无条件**执行。
+于是只装了 SKSE 的玩家被告知「请移除 MO2」—— 一个他根本没装的 mod 管理器。
+服务端早就把两个真实 flag 回传了(`Code/server/GameServer.cpp:896-897`),拼数组时用的却是错的。
+
+### 64.2 判据:这个值是谁写的
+
+审查拼接式载荷时该问的不是「这个值会不会包含引号」,而是**「这个值是谁写的」**。
+同一个 `fmt::format` 模板里,`BUILD_COMMIT` 是本侧编译期常量(不可能含引号),
+`acMessage.Version` 与 `m.Filename` 是对端写的(可以含任何东西)—— 决定要不要转义的不是字段名,
+是**写入者**。这条判据把「三十个字段」压缩成一次分类,而分类结果不需要逐字段判断。
+
+长度上限与内容转义是两个正交的问题,这里正好各占一半:`AuthenticationResponse.cpp:19` 已经
+把 `Version` 夹到 64 字节、`Mods.cpp:46` 已经把 `Filename` 夹到 260 字节 —— **长度夹住了,内容没有**。
+把「已经过了 `WireLimits::Clamp`」当成「已经安全」是这次漏掉它的原因。
+
+### 64.3 可达性
+
+不需要玩家做任何异常操作,也不需要恶意客户端。`BUILD_COMMIT` 取自
+`Code/common/BuildInfo.h.in:4`,服务端与客户端的构建号本来就不同 —— 而版本不一致**正是**
+`wrong_version` 这条分支存在的理由,所以走到那三行拼接是这条分支的**正常路径**。
+mod 文件名由对端在 `AuthenticationRequest` 里上报,允许包含文件系统允许的任何字符。
+
+### 64.4 修法:转义而不是拒包
+
+新增 `Code/encoding/JsonEscape.h`:`Escape(const TiltedPhoques::String&)` 按 RFC 8259 section 7
+转义引号、反斜杠与全部 < 0x20 的字节,其余原样保留。`TransportService.cpp` 的三处拼接改走它,
+`kClientModsDisallowed` 分支改成 `first` 标志驱动的数组(与同函数 `kModsMismatch` 分支的写法一致)。
+
+**为什么是转义而不是拒包**:这些字符串已经过了长度上限,文件名允许包含文件系统允许的任何字符,
+而一个需要转义的名字仍然是**必须展示给玩家**的名字 —— 为它丢掉整个包,会把「显示得不对」
+升级成「掉线」。这与 `WireLimits.h` 里「夹取而不是丢包」是同一条理由。
+
+放在 `Code/encoding` 而不是 `TransportService.cpp` 旁边,是因为那是测试目标链接的静态库
+(`Code/tests/xmake.lua` 只 `add_deps("SkyrimEncoding")`),而 `Code/encoding/xmake.lua` 的
+`add_headerfiles("**.h")` 会自动收进新头文件。
+
+### 64.5 复核命令(照抄)
+
+```powershell
+# 1. 全仓还剩几处手拼 JSON 的认证错误载荷(应为 0)
+git grep -n 'expectedVersion' -- Code/client
+
+# 2. 三处拼接都走 JsonEscape(应为 3)
+git grep -c 'JsonEscape::Escape' -- Code/client/Services/Generic/TransportService.cpp
+
+# 3. kClientModsDisallowed 分支里 MO2 现在受 if 约束
+git grep -n -A2 'if (acMessage.MO2Active)' -- Code/client/Services/Generic/TransportService.cpp
+
+# 4. JsonEscape.h 仍是 CRLF 且无 BOM
+node -e "const b=require('fs').readFileSync('Code/encoding/JsonEscape.h');console.log(b.length,'bom',b[0]===0xEF,(b.toString('utf8').match(/\r\n/g)||[]).length)"
+
+# 5. 文档门禁
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`git grep -n 'expectedVersion' -- Code/client` 只剩 `TransportService.cpp` 里那一行
+(`ErrorInfo += "\"expectedVersion\": \"";`,字符串本身,不再有 `fmt::format`);
+`JsonEscape::Escape` 在该文件命中 3 处;`if (acMessage.MO2Active)` 之后两行是 `{` 与
+`if (!first) ErrorInfo += ",";`;`JsonEscape.h` 2738 字节、无 BOM、77 个 CRLF。
+
+**验证**:`Code/tests/encoding.cpp:882 TEST_CASE("JSON escaping of the authentication error payload", "[encoding.json_escape]")`
+覆盖转义表(空串 / 普通文本 / `"` / `\\` / `\b\f\n\r\t` / 其余控制字符走 `\u00xx` / 非 ASCII 原样)、
+一个试图提前闭合文档的版本字符串(`1.6.640", "data": {"injected": true}`),以及**全部 256 个字节**
+逐个过一遍:结果里每个 `"` 前面必须有奇数个反斜杠,且不能残留任何 < 0x20 的字节。
+`python Tools/Scripts/check_docs.py` 全绿。
+
+> **教训**:第一条:审查拼接式载荷时,决定要不要转义的**不是字段名,是写入者** ——
+> 「本侧编译期常量」与「对端刚过线的东西」在同一个 `fmt::format` 模板里长得一模一样。
+> 第二条:**长度上限不是内容安全**。这一轮之前刚刚给 26 个线上字符串加了 `WireLimits::Clamp`,
+> 而它约束的是「值有多长」,不是「值里有什么」;把前者当成后者,会让一个已经修过一遍的地方
+> 看起来像是已经审过了。第三条:同一个 `switch` 里两个分支写同一种数组,一个用 `first` 标志、
+> 一个用「判断逗号」——**同文件同函数的两种写法不一致就是判据**,因为其中一个必然写错了。
