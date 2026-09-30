@@ -1451,6 +1451,56 @@ ErrorInfo += fmt::format("[\"{}\",\"{}\"]", m.Filename.c_str(), m.Id);
 覆盖转义表(空串 / 普通文本 / `"` / `\\` / `\b\f\n\r\t` / 其余控制字符走 `\u00xx` / 非 ASCII 原样)、
 一个试图提前闭合文档的版本字符串,以及**全部 256 个字节**逐个过一遍:结果里每个 `"` 前面必须有奇数个反斜杠,
 且不能残留任何 < 0x20 的字节。`python Tools/Scripts/check_docs.py` 全绿。
+### 修复:插件的会话表只增不减,而它正好压在每次按键的路径上
+
+**现象**:OStim Together 的联机场景开得越多,「场景开始键」越钝 —— 同一次按键要做两遍
+`_ownerSessions` 全表遍历;并且每个「加演员」菜单、每个直连会话、每次预检捕获都会往表里
+加一条,而整张表只在读档时清空一次。
+
+**根因**(修复前):
+```cpp
+// plugins/OStimTogether/src/CoopSessionManager.cpp(修复前)
+// 三处写入,零处删除
+:311        _ownerSessions[sessionID] = std::move(session);   // 直连会话
+:423        _ownerSessions[sessionID] = std::move(session);   // 预检捕获
+// plugins/OStimTogether/src/AddActorConsentGate.cpp:80
+            _ownerSessions[gateID] = std::move(gate);          // 加演员闸门
+
+// 唯一的清空点,只在读档时跑一次
+// plugins/OStimTogether/src/main.cpp:216(kPreLoadGame)
+            OStimTogether::CoopSessionManager::GetSingleton().Reset();
+```
+失败路径只翻标志位、不删条目:`CoopSessionManager.cpp:707`(`CancelOwnerSession`)、
+`:679`(`StartApprovedOwnerSession` 启动失败)、`AddActorConsentGate.cpp:151`/`:181`
+(`PollAddActorConsent` 的两条终态分支)。而
+`plugins/OStimTogether/compat/OStimUIConsent/Data/Scripts/Source/OSKSE.psc:87-108` 会一直
+`PollAddActorConsent` 到它返回非 0 —— 也就是说**每打开一次加演员菜单就必然命中一条终态
+分支**,每条都留下一份永不回收的状态。
+
+**可达性**:两次全表遍历都在按键路径上 —— `plugins/OStimTogether/src/Input.cpp:163` 先调
+`CleanupCompletedDirectSessions()`(函数体整个内联在 `CoopSessionManager.h:41-57`),`:165`
+再调 `TryGateDirectSceneStart()`,后者在 `CoopSessionManager.cpp:249` 调
+`HasPendingDirectIntent()`(`std::any_of` 扫同一张表)。按键路径本来就是每个按键都要过的,
+而表长只增不减。
+
+**修法**:把「标 `canceled`」换成「真删」,并让清理循环接受所有已结束的会话 ——
+`CleanupCompletedDirectSessions` 改为迭代器循环,条件从
+`session.directStartIntent && !active && !canceled && activeThreadID >= 0` 放宽为
+`!active && !restarting && !canceled && activeThreadID >= 0`(原来只有直连会话会被收,
+预检捕获的那条永远留着),命中即 `_activeOwnerByThread.erase(...)` +
+`_ownerSessions.erase(it)`;`CancelOwnerSession` 在锁内先取 `snapshot`、再写
+`snapshot.canceled = true`、然后 `_ownerSessions.erase(it)`(所有调用方与所有路由查询对
+「找不到」与「已取消」的处理完全一致,所以留着一个 `canceled` 条目只是把它多留一整个存档);
+`StartApprovedOwnerSession` 的启动失败分支同样改删;`PollAddActorConsent` 的三条终态分支
+各 `_ownerSessions.erase(gateIt)`。另外 `RouteOwnerPayload` 在「线程映射还在、会话已经不在
+了」时从 `return false` 改为 `return pending`:线程确实是本侧捕获过的,它的原始流量必须继续
+被吞掉,不能因为条目被删就转发给所有 peer。
+
+**验证**:`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` /
+`11 patch(es) apply to their pinned commits`;`check` → `PATCH CHECK OK`;`apply` 幂等
+(`patches: 0 applied, 11 already present`)。三个文件的 `{`/`}` 平衡都是 0
+(`CoopSessionManager.cpp` 1274 行 323/323、`CoopSessionManager.h` 231 行 37/37、
+`AddActorConsentGate.cpp` 200 行 42/42)。`python Tools/Scripts/check_docs.py` 全绿。
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

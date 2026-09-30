@@ -7706,3 +7706,188 @@ python Tools/Scripts/check_docs.py
 > 而它约束的是「值有多长」,不是「值里有什么」;把前者当成后者,会让一个已经修过一遍的地方
 > 看起来像是已经审过了。第三条:同一个 `switch` 里两个分支写同一种数组,一个用 `first` 标志、
 > 一个用「判断逗号」——**同文件同函数的两种写法不一致就是判据**,因为其中一个必然写错了。
+## 65. 2026-09-29 场次:插件的会话表只增不减,而它压在每次按键的路径上 —— 判据是「清理循环的筛子比终态集合窄」
+
+> **锚点**:本节的修复落在 `plugins/OStimTogether/src/CoopSessionManager.h`、`CoopSessionManager.cpp`、
+`AddActorConsentGate.cpp`,交付形式是 `Code/plugins/patches/OStimTogether/0004-drop-finished-owner-sessions.patch`。
+
+### 65.1 缺陷:三条写入路径、零条删除路径,唯一的清空点在读档
+
+`CoopSessionManager::_ownerSessions` 是一个 `unordered_map<uint64_t, OwnerSession>`,键是自增的
+会话号。全仓写入只有三处:
+
+| 位置 | 作用 |
+| --- | --- |
+| `CoopSessionManager.cpp:311` | 直连会话(`BeginDirectStartIntent`,按住场景开始键 + 准星对着远程代理) |
+| `CoopSessionManager.cpp:423` | 预检捕获(`BeginOwnerPreflight`,紧接着 `:424 _pendingOwnerByThread[preflightThreadID] = sessionID;`) |
+| `AddActorConsentGate.cpp:80` | 加演员闸门(`BeginAddActorConsent`,`_ownerSessions[gateID] = std::move(gate);`) |
+
+而删除只有一处,在 `Reset()`(`CoopSessionManager.cpp:193-205`)里:
+
+```cpp
+// plugins/OStimTogether/src/CoopSessionManager.cpp:196
+_ownerSessions.clear();
+```
+
+`Reset()` 的唯一调用者是 `plugins/OStimTogether/src/main.cpp:216`(`SKSE::MessagingInterface::kPreLoadGame`),
+也就是说**整张表一个存档只清一次**。失败与结束路径全都不删,只翻标志位:
+`CancelOwnerSession`(`CoopSessionManager.cpp:707`)、`StartApprovedOwnerSession` 的启动失败分支
+(`:679`)、`PollAddActorConsent` 的两条终态分支(`AddActorConsentGate.cpp:151`/`:181`)。
+
+触发频率不是「偶发」:`plugins/OStimTogether/compat/OStimUIConsent/Data/Scripts/Source/OSKSE.psc:87-108`
+的轮询器 `While GateState == 0 / Utility.Wait(0.10) / GateState = OStimTogetherNative.PollAddActorConsent(GateID)`
+会一直轮询到返回非 0 —— 也就是说**每打开一次加演员菜单就必然命中一条终态分支**,每条都留下一份
+永不回收的状态。
+
+### 65.2 判据:清理循环的筛子比「终态集合」窄
+
+这张表**有**清理循环,所以「没有清理」这个判据是看不见它的。清理循环在头文件里、且整个函数体内联:
+
+```cpp
+// plugins/OStimTogether/src/CoopSessionManager.h:41-57(修复前)
+void CleanupCompletedDirectSessions()
+{
+    std::scoped_lock lock(_mutex);
+    for (auto& [sessionID, session] : _ownerSessions) {
+        if (session.directStartIntent &&
+            !session.active &&
+            !session.canceled &&
+            session.activeThreadID >= 0) {
+            session.canceled = true;
+            _activeOwnerByThread.erase(session.activeThreadID);
+        }
+    }
+}
+```
+
+筛子里的 `session.directStartIntent` 把它限制成「只收直连会话」—— 但三条写入路径里有两条
+(`:423` 的预检捕获、`AddActorConsentGate.cpp:80` 的闸门)**永远不满足这个条件**。于是这个循环
+在运行,表还是在长。**判据不是「有没有清理」,而是「清理的条件是否覆盖了所有能到达终态的条目」**:
+把写入点列成一张表,再拿清理循环的条件逐个去套,套不进去的那些就是泄漏 —— 这比读清理循环本身
+有用得多。
+
+第二层是**它长在哪条路径上**。这个清理循环的调用点在按键回调里:
+
+```cpp
+// plugins/OStimTogether/src/Input.cpp:162-169
+auto& coop = CoopSessionManager::GetSingleton();
+coop.CleanupCompletedDirectSessions();
+
+if (coop.TryGateDirectSceneStart(key)) {
+```
+
+而 `TryGateDirectSceneStart` 在 `CoopSessionManager.cpp:249` 又调了一次同表的全表遍历
+`HasPendingDirectIntent()`(`:222-234`,`std::any_of` 扫同一个 map)。**一次按键、两遍全表扫描,**
+而表长只增不减 —— 于是「内存慢慢涨」同时是「按键越来越钝」,后者才是玩家能感觉到的那个。
+
+### 65.3 修法:终态分支真删,清理循环放宽到「所有已结束的会话」
+
+```cpp
+// plugins/OStimTogether/src/CoopSessionManager.h:46-64(修复后)
+void CleanupCompletedDirectSessions()
+{
+    std::scoped_lock lock(_mutex);
+    for (auto it = _ownerSessions.begin(); it != _ownerSessions.end();)
+    {
+        auto& session = it->second;
+        if (!session.active && !session.restarting && !session.canceled &&
+            session.activeThreadID >= 0)
+        {
+            _activeOwnerByThread.erase(session.activeThreadID);
+            SKSE::log::trace("OSTNET COOP SESSION CLOSED session={} thread={}",
+                it->first,
+                session.activeThreadID);
+            it = _ownerSessions.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+```
+
+条件从 `directStartIntent && !active && !canceled && activeThreadID >= 0` 放宽为
+`!active && !restarting && !canceled && activeThreadID >= 0`(新增 `!restarting` 挡住「正在重启、
+马上要复用」的会话),命中即 `_activeOwnerByThread.erase(...)` + `_ownerSessions.erase(it)`。
+`CancelOwnerSession` 在锁内改成先取快照、再在快照上写 `canceled`、然后删表:
+
+```cpp
+// plugins/OStimTogether/src/CoopSessionManager.cpp:706-716(修复后)
+const auto it = _ownerSessions.find(sessionID);
+if (it == _ownerSessions.end())
+{
+    return;
+}
+snapshot = it->second;
+snapshot.canceled = true;
+// Dropped, not flagged. Every caller and every routing lookup
+// treats a session it cannot find exactly as it treats a canceled
+// one, so keeping the entry only kept it alive for the rest of the
+// save - and the table is scanned on the scene-start key.
+_ownerSessions.erase(it);
+```
+
+**为什么删掉是安全的**:所有调用方与所有路由查询(`RouteOwnerPayload`、`HandleControlRequest`、
+`HandleThreadStart`)对「`find` 不到」与「`canceled == true`」的处理完全一致 —— 两者都走早退。
+`_approvedReplayArmed` 不需要手动重置:`HandleThreadStart` 在 `find` 未命中时会走
+`CoopSessionManager.cpp:1106 _approvedReplayArmed.reset();` 自愈(旧代码同样不重置)。
+
+`AddActorConsentGate.cpp` 的三条终态分支各加一行 `_ownerSessions.erase(gateIt);`(`:152` 父会话
+已失效、`:174` 已折进父会话、`:194` 拒绝)。`gateIt` 是 `const auto` 迭代器,
+`erase(const_iterator)` 合法,且三处之后该分支都不再使用 `gate`。
+
+**一处必须跟着改的语义**:`RouteOwnerPayload` 原来依赖「表里还留着一个 `canceled` 条目」来抑制
+已结束线程的原始流量 —— 条目一删,`find` 就会失败,而失败分支是 `return false`,那会让
+`InterceptOutgoing`(`:808-816`,只对 `START|`/`NODE|`/`SPEED|`/`STOP|` 四个前缀转发)回落到
+`STRPMTransport::SendRaw` 的**全员广播**。所以该分支改成:
+
+```cpp
+// plugins/OStimTogether/src/CoopSessionManager.cpp:782-789
+// The mapping can outlive the session: a scene that never
+// started drops its entry, and a finished one is dropped on
+// the scene-start key. This thread was still one we captured,
+// so its raw traffic has to stay suppressed instead of being
+// relayed to every peer the way an unknown thread's is.
+return pending;
+```
+
+**这条才是这次改动里最容易踩的一脚**:把「标记」换成「删除」时,凡是**读过那个标记**的地方都
+要从「读标记」改成「读不到就按标记为真的语义走」,否则一次清理会变成一次数据面回归。
+
+### 65.4 交付:补丁而不是子模块提交
+
+`plugins/OStimTogether` 是**本项目不拥有、也无法推送**的子模块,而 CI 跑的是
+`git submodule update --init --force --recursive --depth=1` —— **工作树里对子模块的任何改动都会
+被丢弃**。所以修复必须做成 `Code/plugins/patches/OStimTogether/0004-drop-finished-owner-sessions.patch`
+(本仓库内容,随仓库评审/版本化/打包),由 `plugin_patches.py apply` 在配置与构建前打到子模块工作树上。
+
+补丁正文就是 `git -C plugins/OStimTogether diff -- <那三个文件>` 的原样输出
+(`7` 个 hunk / `3` 个文件 / `44` 增 `14` 删),新增行里带解释性注释。
+
+### 65.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+Select-String -Path plugins\OStimTogether\src\CoopSessionManager.h -Pattern '_ownerSessions.erase|CleanupCompletedDirectSessions'
+Select-String -Path plugins\OStimTogether\src\CoopSessionManager.cpp -Pattern '_ownerSessions.erase|return pending;'
+Select-String -Path plugins\OStimTogether\src\AddActorConsentGate.cpp -Pattern '_ownerSessions.erase'
+Select-String -Path Code\plugins\patches\OStimTogether\0004-drop-finished-owner-sessions.patch -Pattern '^\+.*_ownerSessions.erase'
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`plugin_patches.py verify` → `PATCH VERIFY OK` / `11 patch(es) apply to their pinned commits`;
+`check` → `PATCH CHECK OK`;`apply` 幂等(`patches: 0 applied, 11 already present`)。
+`CoopSessionManager.h:46-64` 是新的迭代器版清理循环(`:60 it = _ownerSessions.erase(it);`),
+`CoopSessionManager.cpp:682`/`:716` 是两处真删,`AddActorConsentGate.cpp:152`/`:174`/`:194` 是闸门的三处真删,
+`CoopSessionManager.cpp:789` 是 `return pending;`。三个文件大括号平衡都是 0
+(`CoopSessionManager.cpp` 1274 行 323/323、`CoopSessionManager.h` 231 行 37/37、
+`AddActorConsentGate.cpp` 200 行 42/42)。`python Tools/Scripts/check_docs.py` → `DOC CHECK OK`。
+
+> **教训**:第一条:一个容器**有**清理循环,不等于它有清理 —— 判据是「把写入点列成表,拿清理条件
+> 逐个去套」,套不进去的就是泄漏。只读清理循环本身,永远看不出它的筛子比终态集合窄。
+> 第二条:**「标脏」和「删除」不是同一件事**。只要还有一个读者在读那个标记,删除就会改变行为 ——
+> 换掉标记之前,先把所有读者列出来,看「读不到」是否等价于「读到脏」。这次 `RouteOwnerPayload`
+> 就是那个不等价的地方,而它一次按键都不在附近,只在数据面上。
+> 第三条:增长的表如果**长在热路径上**,它的代价不是内存,是每次输入的延迟;判据是「谁在按键
+> 回调里遍历它」。同一次按键遍历同一张表两遍(`Input.cpp:163` + `CoopSessionManager.cpp:249`),
+> 两遍都该被合并或换掉。

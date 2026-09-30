@@ -1,0 +1,130 @@
+diff --git a/src/AddActorConsentGate.cpp b/src/AddActorConsentGate.cpp
+index 7c5bd7a..4dede32 100644
+--- a/src/AddActorConsentGate.cpp
++++ b/src/AddActorConsentGate.cpp
+@@ -149,6 +149,7 @@ namespace OStimTogether
+             if (parent) {
+                 const auto ownerIt = _ownerSessions.find(*parent);
+                 if (ownerIt == _ownerSessions.end() || ownerIt->second.canceled) {
++                    _ownerSessions.erase(gateIt);
+                     return -1;
+                 }
+ 
+@@ -164,6 +165,13 @@ namespace OStimTogether
+                     id,
+                     *parent,
+                     ownerIt->second.participants.size());
++
++                // The gate has been folded into the session it belongs to,
++                // and nothing reads this entry again - but Papyrus polls
++                // PollAddActorConsent until it answers, so a gate that is
++                // never dropped leaves one map entry behind per add-actor
++                // menu the player opens.
++                _ownerSessions.erase(gateIt);
+             } else {
+                 gate.canceled = false;
+                 gate.restarting = true;
+@@ -183,6 +191,7 @@ namespace OStimTogether
+             SKSE::log::info(
+                 "OSTNET ADD-ACTOR GATE DECLINE gate={} action=reopen-add-actor",
+                 id);
++            _ownerSessions.erase(gateIt);
+             return -1;
+         }
+ 
+diff --git a/src/CoopSessionManager.cpp b/src/CoopSessionManager.cpp
+index 9c9eae8..0f8022c 100644
+--- a/src/CoopSessionManager.cpp
++++ b/src/CoopSessionManager.cpp
+@@ -674,9 +674,12 @@ namespace OStimTogether
+             if (_approvedReplayArmed && *_approvedReplayArmed == sessionID) {
+                 _approvedReplayArmed.reset();
+             }
+-            auto it = _ownerSessions.find(sessionID);
++            const auto it = _ownerSessions.find(sessionID);
+             if (it != _ownerSessions.end()) {
+-                it->second.canceled = true;
++                // The scene never started, so nothing routes through this
++                // session again and no later pass will pick it up: the cleanup
++                // loop only takes sessions whose thread has already stopped.
++                _ownerSessions.erase(it);
+             }
+         }
+     }
+@@ -704,8 +707,13 @@ namespace OStimTogether
+             if (it == _ownerSessions.end()) {
+                 return;
+             }
+-            it->second.canceled = true;
+             snapshot = it->second;
++            snapshot.canceled = true;
++            // Dropped, not flagged. Every caller and every routing lookup
++            // treats a session it cannot find exactly as it treats a canceled
++            // one, so keeping the entry only kept it alive for the rest of the
++            // save - and the table is scanned on the scene-start key.
++            _ownerSessions.erase(it);
+ 
+             if (snapshot.preflightThreadID >= 0) {
+                 const auto pendingIt =
+@@ -773,7 +781,12 @@ namespace OStimTogether
+             }
+             const auto sessionIt = _ownerSessions.find(sessionID);
+             if (sessionIt == _ownerSessions.end()) {
+-                return false;
++                // The mapping can outlive the session: a scene that never
++                // started drops its entry, and a finished one is dropped on
++                // the scene-start key. This thread was still one we captured,
++                // so its raw traffic has to stay suppressed instead of being
++                // relayed to every peer the way an unknown thread's is.
++                return pending;
+             }
+             snapshot = sessionIt->second;
+ 
+diff --git a/src/CoopSessionManager.h b/src/CoopSessionManager.h
+index 785e5cb..21b15a8 100644
+--- a/src/CoopSessionManager.h
++++ b/src/CoopSessionManager.h
+@@ -34,25 +34,33 @@ namespace OStimTogether
+         // -1 = declined/timed out/canceled.
+         std::int32_t PollAddActorConsent(std::int32_t gateID);
+ 
+-        // A completed direct-start session keeps its historical thread ID for
+-        // diagnostics/routing cleanup. Mark it closed before evaluating a new
+-        // scene-start input so it cannot be mistaken for a still-pending
+-        // consent request after the accepted scene has ended.
++        // Drops every session that has already run its course. A session whose
++        // thread has stopped cannot be resumed - the routing maps were erased
++        // when the thread stopped - and a completed direct-start session has
++        // to stop answering HasPendingDirectIntent before the next scene-start
++        // input is evaluated, or that input is consumed as a repeat of its own
++        // consent request. Dropping the entry does both, and it is also what
++        // keeps the table from growing by one entry per scene for the lifetime
++        // of a save: this loop runs on the scene-start key, so a table that
++        // only ever grows is a scan that only ever grows.
+         void CleanupCompletedDirectSessions()
+         {
+             std::scoped_lock lock(_mutex);
+-            for (auto& [sessionID, session] : _ownerSessions) {
+-                if (session.directStartIntent &&
+-                    !session.active &&
++            for (auto it = _ownerSessions.begin(); it != _ownerSessions.end();) {
++                auto& session = it->second;
++                if (!session.active &&
++                    !session.restarting &&
+                     !session.canceled &&
+                     session.activeThreadID >= 0) {
+-                    session.canceled = true;
+                     _activeOwnerByThread.erase(session.activeThreadID);
+                     SKSE::log::trace(
+-                        "OSTNET COOP DIRECT SESSION CLOSED session={} thread={}",
+-                        sessionID,
++                        "OSTNET COOP SESSION CLOSED session={} thread={}",
++                        it->first,
+                         session.activeThreadID);
++                    it = _ownerSessions.erase(it);
++                    continue;
+                 }
++                ++it;
+             }
+         }
+ 
