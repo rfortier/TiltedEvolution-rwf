@@ -1,4 +1,5 @@
 #include <Messages/AuthenticationResponse.h>
+#include <WireLimits.h>
 
 void AuthenticationResponse::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -17,6 +18,7 @@ void AuthenticationResponse::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRead
     SKSEActive = Serialization::ReadBool(aReader);
     MO2Active = Serialization::ReadBool(aReader);
     Version = Serialization::ReadString(aReader);
+    WireLimits::Clamp(Version, WireLimits::kMaxVersionBytes);
     UserMods.Deserialize(aReader);
     Settings.Deserialize(aReader);
     PlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;

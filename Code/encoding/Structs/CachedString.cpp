@@ -1,4 +1,5 @@
 #include <Structs/CachedString.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 #include "StringCache.h"
 
@@ -46,7 +47,10 @@ void CachedString::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     }
     else
     {
-        *this = Serialization::ReadString(aReader);
+        auto value = Serialization::ReadString(aReader);
+        WireLimits::Clamp(value, WireLimits::kMaxCachedStringBytes);
+
+        *this = value;
 
         StringCache::Get().AddWanted(*this);
     }

@@ -1,4 +1,5 @@
 #include <Messages/RequestRespawn.h>
+#include <WireLimits.h>
 
 void RequestRespawn::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -13,5 +14,6 @@ void RequestRespawn::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noex
 
     ActorId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     AppearanceBuffer = Serialization::ReadString(aReader);
+    WireLimits::Clamp(AppearanceBuffer, WireLimits::kMaxAppearanceBytes);
     ChangeFlags = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 }

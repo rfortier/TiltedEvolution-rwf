@@ -1,4 +1,5 @@
 #include <Messages/NotifyPlayerDialogue.h>
+#include <WireLimits.h>
 
 void NotifyPlayerDialogue::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -11,5 +12,7 @@ void NotifyPlayerDialogue::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader
     ServerMessage::DeserializeRaw(aReader);
 
     Name = Serialization::ReadString(aReader);
+    WireLimits::Clamp(Name, WireLimits::kMaxDisplayNameBytes);
     Text = Serialization::ReadString(aReader);
+    WireLimits::Clamp(Text, WireLimits::kMaxDialogueTextBytes);
 }

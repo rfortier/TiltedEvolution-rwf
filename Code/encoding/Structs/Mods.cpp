@@ -1,4 +1,5 @@
 #include <Structs/Mods.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 #include <algorithm>
 
@@ -42,5 +43,6 @@ void Mods::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
         ModList[i].Id = data & 0xFFFF;
         ModList[i].IsLite = Serialization::ReadBool(aReader);
         ModList[i].Filename = Serialization::ReadString(aReader);
+        WireLimits::Clamp(ModList[i].Filename, WireLimits::kMaxFileNameBytes);
     }
 }

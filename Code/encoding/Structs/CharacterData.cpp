@@ -1,4 +1,5 @@
 #include <Structs/CharacterData.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 
 using TiltedPhoques::Serialization;
@@ -37,6 +38,7 @@ void CharacterData::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     ChangeFlags = dest & 0xFFFFFFFF;
 
     AppearanceBuffer = Serialization::ReadString(aReader);
+    WireLimits::Clamp(AppearanceBuffer, WireLimits::kMaxAppearanceBytes);
     InventoryContent = {};
     InventoryContent.Deserialize(aReader);
 

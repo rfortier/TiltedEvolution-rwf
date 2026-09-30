@@ -1,4 +1,5 @@
 #include <Messages/NotifyPlayerList.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 #include <algorithm>
 
@@ -32,6 +33,9 @@ void NotifyPlayerList::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) no
     for (auto i = 0u; i < count; ++i)
     {
         uint32_t id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-        Players[id] = Serialization::ReadString(aReader);
+        auto username = Serialization::ReadString(aReader);
+        WireLimits::Clamp(username, WireLimits::kMaxDisplayNameBytes);
+
+        Players[id] = username;
     }
 }

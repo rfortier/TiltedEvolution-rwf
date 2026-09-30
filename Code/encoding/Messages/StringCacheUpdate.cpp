@@ -1,4 +1,5 @@
 #include <Messages/StringCacheUpdate.h>
+#include <WireLimits.h>
 #include <algorithm>
 
 void StringCacheUpdate::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
@@ -27,6 +28,7 @@ void StringCacheUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) n
     for (auto i = 0ull; i < count; ++i)
     {
         auto value = Serialization::ReadString(aReader);
+        WireLimits::Clamp(value, WireLimits::kMaxCachedStringBytes);
 
         Values[i] = std::move(value);
     }

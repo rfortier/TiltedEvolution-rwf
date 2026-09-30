@@ -1,4 +1,5 @@
 #include <Messages/NotifyPlayerLeft.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 
 void NotifyPlayerLeft::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
@@ -13,4 +14,5 @@ void NotifyPlayerLeft::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) no
 
     PlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     Username = Serialization::ReadString(aReader);
+    WireLimits::Clamp(Username, WireLimits::kMaxDisplayNameBytes);
 }

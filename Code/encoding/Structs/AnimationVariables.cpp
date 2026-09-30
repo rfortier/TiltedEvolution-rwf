@@ -1,4 +1,5 @@
 #include <Structs/AnimationVariables.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 #include <algorithm>
 #include <iostream>
@@ -130,7 +131,11 @@ void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader) noexc
         Floats.assign(floatsSize, 0.f);
     
     TiltedPhoques::Vector<bool> changedVector(booleansSize + integersSize + floatsSize);
+
     auto chars = TiltedPhoques::Serialization::ReadString(aReader);
+    // VectorBool_to_String writes exactly this many bytes for a vector of this size, so a
+    // peer that filled the same table cannot have produced a longer string.
+    WireLimits::Clamp(chars, static_cast<uint32_t>((changedVector.size() + 7) >> 3));
     String_to_VectorBool(chars, changedVector);
 
     Booleans.assign(changedVector.begin(), changedVector.begin() + booleansSize);

@@ -1,4 +1,5 @@
 #include <Messages/TeleportCommandRequest.h>
+#include <WireLimits.h>
 
 void TeleportCommandRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -10,4 +11,5 @@ void TeleportCommandRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRead
     ClientMessage::DeserializeRaw(aReader);
 
     TargetPlayer = Serialization::ReadString(aReader);
+    WireLimits::Clamp(TargetPlayer, WireLimits::kMaxDisplayNameBytes);
 }

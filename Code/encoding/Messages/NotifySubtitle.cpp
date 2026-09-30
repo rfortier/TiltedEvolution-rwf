@@ -1,4 +1,5 @@
 #include <Messages/NotifySubtitle.h>
+#include <WireLimits.h>
 
 void NotifySubtitle::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -13,5 +14,6 @@ void NotifySubtitle::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noex
 
     ServerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     Text = Serialization::ReadString(aReader);
+    WireLimits::Clamp(Text, WireLimits::kMaxDialogueTextBytes);
     TopicFormId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 }

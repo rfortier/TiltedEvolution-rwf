@@ -1,4 +1,5 @@
 #include <Messages/NotifyChatMessageBroadcast.h>
+#include <WireLimits.h>
 
 void NotifyChatMessageBroadcast::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -13,5 +14,7 @@ void NotifyChatMessageBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader& a
 
     MessageType = static_cast<ChatMessageType>(Serialization::ReadVarInt(aReader));
     PlayerName = Serialization::ReadString(aReader);
+    WireLimits::Clamp(PlayerName, WireLimits::kMaxDisplayNameBytes);
     ChatMessage = Serialization::ReadString(aReader);
+    WireLimits::Clamp(ChatMessage, WireLimits::kMaxChatMessageBytes);
 }

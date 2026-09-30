@@ -7365,3 +7365,147 @@ python Tools/Scripts/check_docs.py
 > 又把 `#if (!IS_MASTER)` 的代码整段剥掉,所以「release 里它还在不在」要按**展开结果**判,不能按
 > 名字判。第三条:把日志改成分支时,顺带问一句「这个分支是继续更糟还是停止更糟」——
 > `Projectile.cpp` 的答案是「事件照发、数值退回初值」,而不是「整条路 `return`」。
+## 62. 2026-09-29 场次:线上字符串的长度由发送方决定 —— 判据是「这个值读完会被谁用掉」
+
+> **锚点**:`Code/encoding` 里 30 处 `Serialization::ReadString` 中未被夹取的 26 处,以及
+> `Code/server/Services/OverlayService.cpp:34` 与 `Code/server/Scripting/GameServer_Bindings.cpp:20`/`:29`
+> 三个 `std::regex` 构造点。新增 `Code/encoding/WireLimits.h` 与 `Code/encoding/ChatSanitize.h`。
+> 这一节同时是**内存面**(长度由对端决定)与**可用性面**(`noexcept` 里构造可抛类型)。
+
+### 62.1 缺陷:字符串的「长度」字段没有上界,而它的下游有
+
+**现象**:线上的字符串编码是「长度 + 这么多字节」,长度是发送方写什么就是什么。接收方
+读完才知道有这么大一块,而且不知道整包到底多大。于是 `Username`、`ChatMessage`、`Text`、
+`SoundFilename`、`AppearanceBuffer`、`ModList[i].Filename` 以及缓存字符串的长度全部由对端
+决定,而它们还会继续往下走:进 CEF 渲染、进 `TESNPC::Deserialize`、进
+`SubtitleManager::ShowSubtitle`、进服务端整个会话都持有的 per-player map。
+
+**根因**(修复前):30 处 `ReadString` 里只有 4 处带夹取,全部集中在插件消息通道
+(`NotifyPluginMessaging.cpp:24`/`:30`、`PluginMessagingRequest.cpp:29`/`:31`),其余 26 处是裸读:
+
+```cpp
+// Code/encoding/Messages/AuthenticationRequest.cpp:28(修复前)
+Username = Serialization::ReadString(aReader);
+
+// Code/encoding/Messages/NotifyChatMessageBroadcast.cpp:15-16(修复前)
+PlayerName = Serialization::ReadString(aReader);
+ChatMessage = Serialization::ReadString(aReader);
+
+// Code/encoding/Structs/Mods.cpp:32-46(修复前)
+const size_t modCount = data & 0xFFFF;
+ModList.resize(modCount);
+for (size_t i = 0; i < modCount; ++i)
+{
+    aReader.ReadBits(data, 16);
+    ModList[i].Id = data & 0xFFFF;
+    ModList[i].IsLite = Serialization::ReadBool(aReader);
+    ModList[i].Filename = Serialization::ReadString(aReader);
+}
+```
+
+最后一段是同一节里最贵的组合:**条目数**是 16 位(`65535`),而**每个条目里的字符串**没有
+上界,所以一次 `Mods::Deserialize` 就能产出 65535 个任意长的文件名,而 `Mods` 是
+`AuthenticationRequest` 的一个字段。
+
+### 62.2 判据:「这个值读完会被谁用掉」
+
+审查线上字段时,唯一有用的问题不是「它夹过没有」,而是**「它读完会被谁用掉」**。同一个
+结构里两个字段的答案可以完全不同:`Mods` 的 `modCount` 被拿去当循环上界(所以它是「条目数」
+问题),`Filename` 被拿去当文件名并驻留(所以它是「长度」问题)。`& 0xFFFF` 看起来像校验,
+实际只是把 64 位裁成 16 位 —— 它规定了**能有多少个**,没有规定**每个多大**。
+
+下游的性质决定上限该取多大,这也是本节里 `kMaxAppearanceBytes` 不是拍出来的原因:
+`Code/client/Games/Forms.cpp:20-36` 的 `TESNPC::Serialize` 写进一个 `char buffer[1 << 15]`
+的栈缓冲,所以合法发送方**根本产不出**更长的东西,`1 << 15` 是这条线上真实存在的上界。
+
+### 62.3 缺陷:`noexcept` 函数里构造可抛的 STL 类型
+
+**现象**:服务端剥聊天文本里的 HTML 标签用的是
+`std::regex escapeHtml{"<[^>]+>\\s+(?=<)|<[^>]+>"}` 加 `std::regex_replace`。构造点在
+`Code/server/Services/OverlayService.cpp:29-37` 的 `sendPlayerMessage` 里 —— 那个函数是
+`noexcept` 的,而且它每个聊天包都要重编译一次正则,位置就在把消息转发给所有人的路上。
+
+**根因**(修复前):
+```cpp
+// Code/server/Services/OverlayService.cpp:29-37(修复前)
+void sendPlayerMessage(const ChatMessageType acType, const String acContent, Player* aSendingPlayer) noexcept
+{
+    NotifyChatMessageBroadcast notifyMessage{};
+
+    std::regex escapeHtml{"<[^>]+>\\s+(?=<)|<[^>]+>"};
+    notifyMessage.MessageType = acType;
+    notifyMessage.PlayerName = std::regex_replace(aSendingPlayer->GetUsername(), escapeHtml, "");
+    notifyMessage.ChatMessage = std::regex_replace(acContent, escapeHtml, "");
+```
+`CODE_GUIDELINES.md:47` 要求「Don't use exceptions, don't use STL code that can throw」,而
+`std::regex` 的构造与 `std::regex_replace` 都要分配。在 `noexcept` 的函数里分配失败不是
+「这条聊天丢了」,是 `std::terminate` —— 一条聊天消息换来整个进程结束。
+
+### 62.4 修法:夹取而不是丢包,并把边界写进注释
+
+新增 `Code/encoding/WireLimits.h`:每个字段的上限是具名常量,配合
+`inline void Clamp(TiltedPhoques::String& aValue, const uint32_t aMaxBytes) noexcept`;
+22 个文件在读完之后调用它。上限取的是**宽松到没有任何合法发送方会碰到**的值:
+`kMaxDisplayNameBytes = 64`(与 `NotifyPluginMessaging` 已用的值一致)、
+`kMaxChatMessageBytes = 512`、`kMaxDialogueTextBytes = 1024`、`kMaxSoundPathBytes = 260`、
+`kMaxFileNameBytes = 260`、`kMaxVersionBytes` / `kMaxTokenBytes = 64`、
+`kMaxAppearanceBytes = 1 << 15`、`kMaxCachedStringBytes = 512`。
+
+**为什么夹取而不是丢包**:为一个字段丢掉整包,会把「显示得不对」升级成「掉线」,而
+`String::resize` 向下不会抛。同理,`ChatSanitize::StripHtmlTags` 保持原正则的**每一条语义**
+(包括 `"<>"` 与未闭合 `<` 都算文本这种边角),因为改行为比改实现危险得多。
+
+**修法的边界也要写下来**:夹取发生在字符串读完之后,它约束的是「值怎么用」,不是 reader
+内部的瞬时分配 —— 真正的整包上限只能加在接收入口(`GameServer::OnConsume` /
+`Client::OnConsume`),只有它们知道包的真实大小。这句话写在 `Code/encoding/WireLimits.h`
+的头注释里,免得下一个人以为这条线上已经没有任何无界分配了。
+
+新代码放 `Code/encoding` 而不是放在两个服务端调用者旁边,是因为 `Code/tests/xmake.lua`
+只 `add_deps("SkyrimEncoding")` —— 那是测试目标唯一能看到的库。
+
+### 62.5 复核命令(照抄)
+
+```powershell
+# 1. 全部 ReadString 站点与紧跟其后的那一行
+node -e "const fs=require('fs');const walk=d=>fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(d+'/'+e.name):(e.name.endsWith('.cpp')?[d+'/'+e.name]:[]));for(const f of walk('Code/encoding')){const L=fs.readFileSync(f,'utf8').split(/\r?\n/);L.forEach((t,i)=>{if(t.includes('ReadString('))console.log(f+':'+(i+1)+' | '+t.trim()+' >> '+((L[i+1]||'').trim()))})}"
+
+# 2. 未夹取的站点数(应为 0)
+node -e "const fs=require('fs');const walk=d=>fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(d+'/'+e.name):(e.name.endsWith('.cpp')?[d+'/'+e.name]:[]));let bad=0;for(const f of walk('Code/encoding')){const L=fs.readFileSync(f,'utf8').split(/\r?\n/);L.forEach((t,i)=>{if(t.includes('ReadString(')&&!((L[i+1]||'').includes('WireLimits::Clamp')||t.includes('WireLimits::Clamp')||t.includes('ReadString(aReader);')===false)){if(!(L[i+1]||'').includes('WireLimits::Clamp')){bad++;console.log('UNCLAMPED '+f+':'+(i+1)+' '+t.trim())}}})}console.log('unclamped='+bad)"
+
+# 3. 服务端不再有 std::regex
+git grep -n 'regex' -- Code/server
+
+# 4. 两个新头文件存在且是 CRLF
+node -e "const fs=require('fs');for(const f of ['Code/encoding/WireLimits.h','Code/encoding/ChatSanitize.h']){const s=fs.readFileSync(f,'utf8');console.log(f,s.length,'cr='+(s.match(/\r/g)||[]).length)}"
+
+# 5. 大括号平衡(两个新头 + 三个改动文件都应为 0)
+node -e "const fs=require('fs');for(const f of ['Code/encoding/WireLimits.h','Code/encoding/ChatSanitize.h','Code/server/Services/OverlayService.cpp','Code/server/Scripting/GameServer_Bindings.cpp','Code/tests/encoding.cpp']){const s=fs.readFileSync(f,'utf8');console.log(f,(s.match(/\{/g)||[]).length-(s.match(/\}/g)||[]).length)}"
+
+# 6. 文档门禁
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`Code/encoding` 里 30 处 `ReadString` 全部有夹取或本身就是已夹取的插件通道;
+`git grep -n 'regex' -- Code/server` 由 7 命中(3 个构造点 + 3 个 `#include <regex>` + 1 条文档注释)
+降到 **0**;`Code/server/Services/OverlayService.cpp` 122 → 119 行,
+`Code/server/Scripting/GameServer_Bindings.cpp` 46 → 44 行;
+`Code/tests/encoding.cpp` 756 → 881 行,11 个 `TEST_CASE`、87 条 `REQUIRE` 全部以 `;` 结尾,
+大括号平衡 0。
+
+**验证**:`ChatSanitize::StripHtmlTags` 与旧正则做了穷举对拍 —— 把它逐字移植成 JS,字母表
+`['<','>','a',' ','\t','\n']`,穷举长度 0–6 的**全部 55998 个字符串**外加 17 个手写探针,
+**0 处不一致**(`"<b>hello</b>"→"hello"`、`"<b> <i>x</i>"→"x"`、`"<b> keep <i>x</i>"→" keep x"`、
+`"a <> b"→"a <> b"`、`"<>"→"<>"`、`"x <b> y"→"x  y"`、`"<b> "→" "`);这 11 例连同幂等性一起
+写进 `Code/tests/encoding.cpp:850 TEST_CASE("Chat sanitize", "[encoding.chat_sanitize]")`。
+`WireLimits::Clamp` 的四段行为(短串不动、恰好等于上限不动、超长被截、正常包往返不变)
+写进 `Code/tests/encoding.cpp:761 TEST_CASE("Wire string limits", "[encoding.wire_limits]")`。
+CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求 `All tests passed`。
+`python Tools/Scripts/check_docs.py` 全绿。
+
+> **教训**:第一条:读线上字段时问「这个值读完会被谁用掉」,不要问「它夹过没有」——
+> `& 0xFFFF` 规定了能有多少个条目,完全没有规定每个条目多大,同一个结构里这两个问题
+> 的答案可以相反。第二条:`noexcept` 是一条承诺,不是装饰 —— 在 `noexcept` 函数里构造
+> `std::regex`/`std::string`/任何会分配的类型,等于把「丢一条消息」写成「整个进程结束」,
+> 而这条路径恰好是每个聊天包都走的。第三条:替换一段有边角的逻辑(正则的 `[^>]+`、
+> `\s+(?=<)` 的空白吞噬)时,先把它变成可穷举的形式对拍,再动实现 —— 55998 个字符串的
+> 穷举比对比任何一段「看起来一样」的代码评审都便宜。

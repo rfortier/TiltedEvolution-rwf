@@ -1,4 +1,5 @@
 #include <Messages/SendChatMessageRequest.h>
+#include <WireLimits.h>
 
 void SendChatMessageRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -12,4 +13,5 @@ void SendChatMessageRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRead
 
     MessageType = static_cast<ChatMessageType>(Serialization::ReadVarInt(aReader));
     ChatMessage = Serialization::ReadString(aReader);
+    WireLimits::Clamp(ChatMessage, WireLimits::kMaxChatMessageBytes);
 }

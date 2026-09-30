@@ -1263,6 +1263,109 @@ debug is broken, can only use releasedbg`。所以 `TP_ASSERT(pProjectile, ...)`
 `TESObjectREFR.cpp:536`/`:571`,以及 `:521`/`:629` 的注释与其后的 `:528 if (pEnchantment)` /
 `:634 if (pEnchantment)`)。`python Tools/Scripts/check_docs.py` 全绿。
 
+### 修复:线上字符串完全没有长度上限 —— 一个字段就能让接收方分配任意大的内存
+
+**现象**:线上的字符串是「长度 + 这么多字节」,长度由发送方随便写,接收方读完也不知道整包
+到底多大。于是 `Username`、`ChatMessage`、`Text`、`SoundFilename`、`AppearanceBuffer`、
+`ModList[i].Filename`、缓存字符串的长度全部由对端决定,而这些值还会继续往下走:进 CEF 渲染、
+进 `TESNPC::Deserialize`、进 `SubtitleManager::ShowSubtitle`、进服务端整个会话都持有的
+per-player map。`Code/encoding` 里 30 处 `Serialization::ReadString` 只有 4 处带上限
+(全部是 `NotifyPluginMessaging` / `PluginMessagingRequest` 的插件消息通道)。
+
+**根因**(修复前):
+```cpp
+// Code/encoding/Messages/AuthenticationRequest.cpp:28(修复前)
+Username = Serialization::ReadString(aReader);
+
+// Code/encoding/Messages/NotifyChatMessageBroadcast.cpp:15-16(修复前)
+PlayerName = Serialization::ReadString(aReader);
+ChatMessage = Serialization::ReadString(aReader);
+
+// Code/encoding/Structs/Mods.cpp:32-46(修复前)
+const size_t modCount = data & 0xFFFF;
+ModList.resize(modCount);
+for (size_t i = 0; i < modCount; ++i)
+{
+    aReader.ReadBits(data, 16);
+    ModList[i].Id = data & 0xFFFF;
+    ModList[i].IsLite = Serialization::ReadBool(aReader);
+    ModList[i].Filename = Serialization::ReadString(aReader);
+}
+```
+一次 `Mods::Deserialize` 就能产出 65535 个任意长的文件名。
+
+**可达性**:这些全是普通客户端消息。`AuthenticationRequest` 本身**不需要先过任何门**——
+它就是那道门,而 `Username` 读进来的那一刻玩家对象还没被创建;`SendChatMessageRequest` /
+`PlayerDialogueRequest` / `SubtitleRequest` 只要连上就能发;`Mods` 随 `AuthenticationRequest`
+一起过线。客户端侧同样没有上限:用户名取自游戏内 NPC 的全名
+(`Code/client/Services/Generic/TransportService.cpp:290` 的 `request.Username = pNpc->fullName.value.AsAscii();`),
+聊天内容直接来自 UI 输入框,而输入框**没有 `maxlength`**。
+
+**修法**:新建 `Code/encoding/WireLimits.h`,把每个字段的上限写成具名常量,并提供
+`inline void Clamp(TiltedPhoques::String& aValue, const uint32_t aMaxBytes) noexcept`;
+22 个文件在读完字符串之后调用它。上限取的是**宽松到没有任何合法发送方会碰到**的值
+(`kMaxDisplayNameBytes = 64`、`kMaxChatMessageBytes = 512`、`kMaxDialogueTextBytes = 1024`、
+`kMaxSoundPathBytes = 260`、`kMaxFileNameBytes = 260`、`kMaxVersionBytes` / `kMaxTokenBytes = 64`、
+`kMaxAppearanceBytes = 1 << 15`、`kMaxCachedStringBytes = 512`)。
+`kMaxAppearanceBytes` 不是拍出来的:`Code/client/Games/Forms.cpp:20-36` 的 `TESNPC::Serialize`
+写进一个 `char buffer[1 << 15]` 的栈缓冲,本来就产不出更长的东西。
+
+**为什么夹取而不是丢包**:为一个字段丢掉整包,会把「显示得不对」升级成「掉线」,而
+`String::resize` 向下不会抛。这也决定了这个修法的**边界**:夹取发生在字符串读完之后,它约束的是
+「值怎么用」,不是 reader 内部的瞬时分配 —— 真正的整包上限只能加在接收入口
+(`GameServer::OnConsume` / `Client::OnConsume`),只有它们知道包的真实大小。这条边界写在
+`Code/encoding/WireLimits.h` 的头注释里。
+
+**验证**:`Code/tests/encoding.cpp:761 TEST_CASE("Wire string limits", "[encoding.wire_limits]")`
+覆盖四段:`Clamp` 的单元行为(短串不动、恰好等于上限不动、超长被截);`AuthenticationRequest`
+的 `Username` 超长时读回恰好 `kMaxDisplayNameBytes`;`SendChatMessageRequest` 的 `ChatMessage`
+超长时被截而 `MessageType` 保持;`NotifyChatMessageBroadcast` 的 `PlayerName` 与 `ChatMessage`
+各自被截。另有一段正常长度的往返 `REQUIRE(sentRound == receivedRound)`,证明夹取没有改动合法包。
+CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求 `All tests passed`。
+`python Tools/Scripts/check_docs.py` 全绿。
+
+### 修复:服务端在 `noexcept` 的聊天转发里每包重编译一次 `std::regex`
+
+**现象**:`OverlayService::sendPlayerMessage` 和两条脚本绑定各自构造一个
+`std::regex escapeHtml{"<[^>]+>\\s+(?=<)|<[^>]+>"}` 来剥掉聊天文本里的 HTML 标签。
+构造发生在 `noexcept` 的函数里,而且每个聊天包、每次脚本调用都要重编译一次 —— 位置就在
+把消息转发给所有人的那条路上。
+
+**根因**(修复前):
+```cpp
+// Code/server/Services/OverlayService.cpp:29-37(修复前)
+void sendPlayerMessage(const ChatMessageType acType, const String acContent, Player* aSendingPlayer) noexcept
+{
+    NotifyChatMessageBroadcast notifyMessage{};
+
+    std::regex escapeHtml{"<[^>]+>\\s+(?=<)|<[^>]+>"};
+    notifyMessage.MessageType = acType;
+    notifyMessage.PlayerName = std::regex_replace(aSendingPlayer->GetUsername(), escapeHtml, "");
+    notifyMessage.ChatMessage = std::regex_replace(acContent, escapeHtml, "");
+```
+`CODE_GUIDELINES.md:47` 写的是「Don't use exceptions, don't use STL code that can throw」,而
+`std::regex` 正是一个会抛的 STL 类型:`std::regex` 的构造与 `std::regex_replace` 都要分配,
+在 `noexcept` 的函数里分配失败就是 `std::terminate` —— 一条聊天消息换来整个进程结束。
+同样的构造还出现在 `Code/server/Scripting/GameServer_Bindings.cpp:20` 与 `:29`。
+
+**可达性**:`Code/server/Services/OverlayService.cpp:80`(`HandleChatMessage` 的末尾)与 `:85`
+(`OnPlayerDialogue`)都直接调 `sendPlayerMessage`,两个都是**任何已连接玩家能发的包**;
+两条脚本绑定则是服务器自己的 Lua 脚本调用。全仓 `std::regex` 的构造点只有这 3 处。
+
+**修法**:新建 `Code/encoding/ChatSanitize.h`,`StripHtmlTags` 单遍扫描,语义与原正则逐字对齐
+(`[^>]+` 要求括号间至少一个字符,所以 `"<>"` 与未闭合的 `<` 都算文本;`<[^>]+>\s+(?=<)` 这一支
+会连标签之间的空白一起吃掉)。`\s` 的集合按 ECMAScript 默认文法写死,不走 locale 相关的
+`std::isspace`。它放在 `Code/encoding` 而不是两个服务端调用者旁边,是因为那是测试目标链接的
+静态库:`Code/tests/xmake.lua` 只 `add_deps("SkyrimEncoding")`。
+
+**验证**:把 `StripHtmlTags` 逐字移植成 JS,与原正则对拍;字母表 `['<','>','a',' ','\t','\n']`,穷举
+长度 0–6 的**全部 55998 个字符串**外加 17 个手写探针 ⇒ **0 处不一致**
+(`"<b>hello</b>"→"hello"`、`"<b> <i>x</i>"→"x"`、`"<b> keep <i>x</i>"→" keep x"`、
+`"a <> b"→"a <> b"`、`"<>"→"<>"`、`"x <b> y"→"x  y"`、`"<b> "→" "` 等全部逐字相同)。
+这 11 例连同幂等性一起写进 `Code/tests/encoding.cpp:850 TEST_CASE("Chat sanitize", "[encoding.chat_sanitize]")`。
+`git grep -n "regex" -- Code/server` 现在 0 命中。
+`python Tools/Scripts/check_docs.py` 全绿。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

@@ -1,4 +1,5 @@
 #include <Messages/NotifyDialogue.h>
+#include <WireLimits.h>
 
 void NotifyDialogue::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -12,4 +13,5 @@ void NotifyDialogue::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noex
 
     ServerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     SoundFilename = Serialization::ReadString(aReader);
+    WireLimits::Clamp(SoundFilename, WireLimits::kMaxSoundPathBytes);
 }

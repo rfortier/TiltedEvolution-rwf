@@ -3,6 +3,7 @@
 #include <Services/OverlayService.h>
 
 #include <ChatMessageTypes.h>
+#include <ChatSanitize.h>
 
 #include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/SendChatMessageRequest.h>
@@ -14,8 +15,6 @@
 #include <Messages/NotifyPlayerHealthUpdate.h>
 
 #include "Game/Player.h"
-
-#include <regex>
 
 
 OverlayService::OverlayService(World& aWorld, entt::dispatcher& aDispatcher)
@@ -31,10 +30,9 @@ void sendPlayerMessage(const ChatMessageType acType, const String acContent, Pla
 {
     NotifyChatMessageBroadcast notifyMessage{};
 
-    std::regex escapeHtml{"<[^>]+>\\s+(?=<)|<[^>]+>"};
     notifyMessage.MessageType = acType;
-    notifyMessage.PlayerName = std::regex_replace(aSendingPlayer->GetUsername(), escapeHtml, "");
-    notifyMessage.ChatMessage = std::regex_replace(acContent, escapeHtml, "");
+    notifyMessage.PlayerName = ChatSanitize::StripHtmlTags(aSendingPlayer->GetUsername());
+    notifyMessage.ChatMessage = ChatSanitize::StripHtmlTags(acContent);
 
     auto character = aSendingPlayer->GetCharacter();
 

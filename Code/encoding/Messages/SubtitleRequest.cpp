@@ -1,4 +1,5 @@
 #include <Messages/SubtitleRequest.h>
+#include <WireLimits.h>
 
 void SubtitleRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -13,5 +14,6 @@ void SubtitleRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noe
 
     ServerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     Text = Serialization::ReadString(aReader);
+    WireLimits::Clamp(Text, WireLimits::kMaxDialogueTextBytes);
     TopicFormId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 }

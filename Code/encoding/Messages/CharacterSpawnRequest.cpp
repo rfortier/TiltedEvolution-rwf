@@ -1,4 +1,5 @@
 #include <Messages/CharacterSpawnRequest.h>
+#include <WireLimits.h>
 
 void CharacterSpawnRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -40,6 +41,7 @@ void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
     ChangeFlags = dest & 0xFFFFFFFF;
 
     AppearanceBuffer = Serialization::ReadString(aReader);
+    WireLimits::Clamp(AppearanceBuffer, WireLimits::kMaxAppearanceBytes);
     InventoryContent = {};
     InventoryContent.Deserialize(aReader);
 

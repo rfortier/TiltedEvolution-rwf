@@ -1,4 +1,5 @@
 #include <Messages/AssignCharacterRequest.h>
+#include <WireLimits.h>
 
 void AssignCharacterRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -39,6 +40,7 @@ void AssignCharacterRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRead
     ChangeFlags = dest & 0xFFFFFFFF;
 
     AppearanceBuffer = Serialization::ReadString(aReader);
+    WireLimits::Clamp(AppearanceBuffer, WireLimits::kMaxAppearanceBytes);
 
     FactionsContent = {};
     FactionsContent.Deserialize(aReader);

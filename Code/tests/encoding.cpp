@@ -11,15 +11,19 @@
 #include <glm/vec3.hpp>
 
 #include "StringCache.h"
+#include "ChatSanitize.h"
+#include "WireLimits.h"
 #include "Messages/StringCacheUpdate.h"
 
 #include <catch2/catch.hpp>
 
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/NotifyActorValueChanges.h>
+#include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/NotifyHealthChangeBroadcast.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
+#include <Messages/SendChatMessageRequest.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Structs/ActorValues.h>
 #include <Structs/TimeModel.h>
@@ -752,4 +756,125 @@ TEST_CASE("Actor value wire bounds", "[encoding.actor_values]")
     received.DeserializeRaw(roundTripReader);
 
     REQUIRE(sent == received);
+}
+
+TEST_CASE("Wire string limits", "[encoding.wire_limits]")
+{
+    // Every string on the wire is a length followed by that many bytes, and the receiver
+    // cannot know how large the packet really was, so the peer decides how much memory the
+    // other side commits before anything can look at the contents. The clamp happens after
+    // the read because the reader itself belongs to TiltedCore.
+    const String shortName("Some dragon boi");
+    String clamped = shortName;
+    WireLimits::Clamp(clamped, WireLimits::kMaxDisplayNameBytes);
+    REQUIRE(clamped == shortName);
+
+    const String exactName(WireLimits::kMaxDisplayNameBytes, 'a');
+    clamped = exactName;
+    WireLimits::Clamp(clamped, WireLimits::kMaxDisplayNameBytes);
+    REQUIRE(clamped == exactName);
+
+    const String oversizedName(WireLimits::kMaxDisplayNameBytes + 100, 'b');
+    clamped = oversizedName;
+    WireLimits::Clamp(clamped, WireLimits::kMaxDisplayNameBytes);
+    REQUIRE(clamped.size() == WireLimits::kMaxDisplayNameBytes);
+    REQUIRE(clamped == String(WireLimits::kMaxDisplayNameBytes, 'b'));
+
+    // The name in the authentication request is held by the server for as long as the
+    // player stays connected and is handed out again in the player list.
+    Buffer authBuff(1 << 16);
+    Buffer::Writer authWriter(&authBuff);
+    AuthenticationRequest sentAuth{};
+    sentAuth.Username = oversizedName;
+    sentAuth.Serialize(authWriter);
+
+    AuthenticationRequest receivedAuth{};
+    Buffer::Reader authReader(&authBuff);
+    uint64_t trash;
+    authReader.ReadBits(trash, 8); // pop opcode
+    receivedAuth.DeserializeRaw(authReader);
+
+    REQUIRE(receivedAuth.Username.size() == WireLimits::kMaxDisplayNameBytes);
+
+    // A chat line is relayed to every other player and from there into the CEF overlay of
+    // each of them, and the input box on the client side has no maxlength at all.
+    Buffer chatBuff(1 << 16);
+    Buffer::Writer chatWriter(&chatBuff);
+    SendChatMessageRequest sentChat{};
+    sentChat.MessageType = kLocalChat;
+    sentChat.ChatMessage = String(WireLimits::kMaxChatMessageBytes + 4096, 'c');
+    sentChat.Serialize(chatWriter);
+
+    SendChatMessageRequest receivedChat{};
+    Buffer::Reader chatReader(&chatBuff);
+    chatReader.ReadBits(trash, 8); // pop opcode
+    receivedChat.DeserializeRaw(chatReader);
+
+    REQUIRE(receivedChat.ChatMessage.size() == WireLimits::kMaxChatMessageBytes);
+    REQUIRE(receivedChat.MessageType == kLocalChat);
+
+    // The broadcast direction is clamped on the client, which is the side that hands the
+    // text to the overlay and to the dialogue subtitles.
+    Buffer notifyBuff(1 << 16);
+    Buffer::Writer notifyWriter(&notifyBuff);
+    NotifyChatMessageBroadcast sentNotify{};
+    sentNotify.MessageType = kGlobalChat;
+    sentNotify.PlayerName = oversizedName;
+    sentNotify.ChatMessage = String(WireLimits::kMaxChatMessageBytes + 8, 'd');
+    sentNotify.Serialize(notifyWriter);
+
+    NotifyChatMessageBroadcast receivedNotify{};
+    Buffer::Reader notifyReader(&notifyBuff);
+    notifyReader.ReadBits(trash, 8); // pop opcode
+    receivedNotify.DeserializeRaw(notifyReader);
+
+    REQUIRE(receivedNotify.PlayerName.size() == WireLimits::kMaxDisplayNameBytes);
+    REQUIRE(receivedNotify.ChatMessage.size() == WireLimits::kMaxChatMessageBytes);
+
+    // A plausible line still round trips unchanged.
+    Buffer roundTrip(1 << 16);
+    Buffer::Writer roundTripWriter(&roundTrip);
+    SendChatMessageRequest sentRound{};
+    sentRound.MessageType = kPartyChat;
+    sentRound.ChatMessage = "hello there";
+    sentRound.Serialize(roundTripWriter);
+
+    SendChatMessageRequest receivedRound{};
+    Buffer::Reader roundTripReader(&roundTrip);
+    roundTripReader.ReadBits(trash, 8); // pop opcode
+    receivedRound.DeserializeRaw(roundTripReader);
+
+    REQUIRE(sentRound == receivedRound);
+}
+
+TEST_CASE("Chat sanitize", "[encoding.chat_sanitize]")
+{
+    // The server strips tag runs out of chat text before relaying it. These are the cases
+    // which std::regex_replace handled with "<[^>]+>\s+(?=<)|<[^>]+>", kept as a table so
+    // a change to the scan has to be deliberate.
+    const auto cStripped = [](const char* acInput) { return ChatSanitize::StripHtmlTags(String(acInput)); };
+    const auto cKept = [](const char* acInput) { return String(acInput); };
+
+    REQUIRE(cStripped("plain text") == cKept("plain text"));
+    REQUIRE(cStripped("<b>hello</b>") == cKept("hello"));
+    REQUIRE(cStripped("<script>alert(1)</script>") == cKept("alert(1)"));
+    REQUIRE(cStripped("< >") == cKept(""));
+
+    // "[^>]+" needs at least one character between the brackets, so an empty pair is text
+    // and so is a '<' which never closes.
+    REQUIRE(cStripped("<>") == cKept("<>"));
+    REQUIRE(cStripped("a <> b") == cKept("a <> b"));
+    REQUIRE(cStripped("unterminated <b") == cKept("unterminated <b"));
+    REQUIRE(cStripped("a<b") == cKept("a<b"));
+
+    // The "<[^>]+>\s+(?=<)" alternative also eats the whitespace between two tags, and
+    // when that whitespace is not followed by a tag only the tag itself goes away.
+    REQUIRE(cStripped("<b> <i>x</i>") == cKept("x"));
+    REQUIRE(cStripped("<b> keep <i>x</i>") == cKept(" keep x"));
+    REQUIRE(cStripped("x <b> y") == cKept("x  y"));
+
+    // Stripping an already stripped line changes nothing, so a client which sanitizes its
+    // own text cannot produce a different line than one which does not.
+    const String cOnce = cStripped("<b>hello</b> <i>there</i>");
+    REQUIRE(ChatSanitize::StripHtmlTags(cOnce) == cOnce);
 }

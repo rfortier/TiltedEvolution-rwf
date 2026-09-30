@@ -1,0 +1,63 @@
+#pragma once
+
+#include <TiltedCore/Stl.hpp>
+
+#include <cstdint>
+
+// Upper bounds for every string that arrives over the wire.
+//
+// A string on the wire is a length followed by that many bytes, and the length is
+// whatever the sender wrote. Nothing downstream knows how large the packet really was,
+// so a peer that announces a megabyte long name makes the receiver allocate it, and the
+// string then keeps travelling: into the UI through CEF, into the engine through
+// TESNPC::Deserialize and SubtitleManager::ShowSubtitle, and into the per-player maps the
+// server holds for the whole session.
+//
+// These are not the sizes the game produces. They are generous bounds that no legitimate
+// sender reaches, so clamping costs nothing and removes the unbounded allocation. The
+// read is clamped rather than rejected on purpose: discarding the whole packet over one
+// bad field turns a cosmetic problem into a disconnect.
+//
+// Note the limit of the fix: the clamp runs after the string has been read, so it bounds
+// what the value is used for, not the transient allocation inside the reader. Bounding
+// the packet itself is a separate change, and the only place for it is the receive entry
+// point (GameServer::OnConsume and Client::OnConsume), which see the packet size.
+namespace WireLimits
+{
+
+// A player name. Matches the limit NotifyPluginMessaging already carried.
+inline constexpr uint32_t kMaxDisplayNameBytes = 64;
+
+// One chat line. The chat input has no maxlength attribute, so this is the only cap.
+inline constexpr uint32_t kMaxChatMessageBytes = 512;
+
+// A dialogue line or a subtitle. Subtitles wrap over several lines in the UI.
+inline constexpr uint32_t kMaxDialogueTextBytes = 1024;
+
+// A sound file path that ends up in Actor::SpeakSound.
+inline constexpr uint32_t kMaxSoundPathBytes = 260;
+
+// A plugin or mod file name.
+inline constexpr uint32_t kMaxFileNameBytes = 260;
+
+// The build commit and the server password carried by the handshake.
+inline constexpr uint32_t kMaxVersionBytes = 64;
+inline constexpr uint32_t kMaxTokenBytes = 64;
+
+// The form serialisation a character carries. TESNPC::Serialize writes into a stack
+// buffer of 1 << 15 bytes, so nothing longer can be produced in the first place.
+inline constexpr uint32_t kMaxAppearanceBytes = 1 << 15;
+
+// A string cached for later reference by id. These are editor ids and file names.
+inline constexpr uint32_t kMaxCachedStringBytes = 512;
+
+// Clamps a string that has just been read. Resizing down cannot throw, and every field
+// this is used on is display text, a file name or an opaque buffer whose consumer
+// already tolerates a short value.
+inline void Clamp(TiltedPhoques::String& aValue, const uint32_t aMaxBytes) noexcept
+{
+    if (aValue.size() > aMaxBytes)
+        aValue.resize(aMaxBytes);
+}
+
+} // namespace WireLimits
