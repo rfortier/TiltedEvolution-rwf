@@ -19,7 +19,7 @@ void Mods::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     // The count travels in 13 bits, so the entries that follow must be clamped the same
     // way, otherwise the reader and the writer disagree about the stream layout.
-    const uint16_t modCount = std::min(ModList.size(), size_t(4096)) & 0xFFFF;
+    const uint16_t modCount = std::min<uint64_t>(ModList.size(), kMaxModCount) & 0xFFFF;
     aWriter.WriteBits(modCount, 13);
 
     for (size_t i = 0; i < modCount; ++i)
@@ -35,7 +35,9 @@ void Mods::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     uint64_t data = 0;
     aReader.ReadBits(data, 13);
 
-    const size_t modCount = data & 0xFFFF;
+    // The count is 13 bits wide, so a peer can name more entries than the writer ever
+    // sends. Clamp to the same bound, or the resize below follows the wire.
+    const size_t modCount = std::min<uint64_t>(data & 0xFFFF, kMaxModCount);
     ModList.resize(modCount);
     for (size_t i = 0; i < modCount; ++i)
     {

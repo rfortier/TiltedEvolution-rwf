@@ -22,11 +22,13 @@
 #include <Messages/NotifyActorValueChanges.h>
 #include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/NotifyHealthChangeBroadcast.h>
+#include <Messages/NotifySubtitle.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
 #include <Messages/SendChatMessageRequest.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Structs/ActorValues.h>
+#include <Structs/Mods.h>
 #include <Structs/TimeModel.h>
 #include <Structs/Vector2_NetQuantize.h>
 
@@ -930,4 +932,90 @@ TEST_CASE("JSON escaping of the authentication error payload", "[encoding.json_e
 
         backslashes = 0;
     }
+}
+
+TEST_CASE("Mods count is bounded by the writer bound", "[encoding.mods_count]")
+{
+    // The count travels in 13 bits, so the wire can name 8191 entries while the writer
+    // never sends more than kMaxModCount. The read side used to resize to whatever the
+    // count said, so one hand built packet could ask for the larger number.
+    REQUIRE(Mods::kMaxModCount == 4096ull);
+
+    Mods sendMods;
+    for (size_t index = 0; index < Mods::kMaxModCount + 7; ++index)
+        sendMods.ModList.push_back({"mod.esp", static_cast<uint16_t>(index)});
+
+    Buffer buff(1 << 17);
+    Buffer::Writer writer(&buff);
+    sendMods.Serialize(writer);
+
+    Mods recvMods;
+    Buffer::Reader reader(&buff);
+    recvMods.Deserialize(reader);
+
+    REQUIRE(recvMods.ModList.size() == Mods::kMaxModCount);
+    REQUIRE(recvMods.ModList.front().Filename == "mod.esp");
+
+    // A peer that writes a count past the bound is clamped to it. The entries below are
+    // exactly the ones the writer would have sent for that count, so the clamped reader
+    // consumes the stream and stops.
+    Buffer hostile(1 << 17);
+    Buffer::Writer hostileWriter(&hostile);
+    hostileWriter.WriteBits(0x1FFFu, 13);
+    for (size_t index = 0; index < Mods::kMaxModCount; ++index)
+    {
+        hostileWriter.WriteBits(static_cast<uint16_t>(index), 16);
+        Serialization::WriteBool(hostileWriter, false);
+        Serialization::WriteString(hostileWriter, String("mod.esp"));
+    }
+
+    Mods hostileRecv;
+    Buffer::Reader hostileReader(&hostile);
+    hostileRecv.Deserialize(hostileReader);
+
+    REQUIRE(hostileRecv.ModList.size() == Mods::kMaxModCount);
+    REQUIRE(hostileRecv.ModList.back().Id == static_cast<uint16_t>(Mods::kMaxModCount - 1));
+}
+
+TEST_CASE("Subtitle topic travels in both directions", "[encoding.subtitle]")
+{
+    // The topic id is the only field which tells the receiving client which TESTopicInfo
+    // to hand the engine, so it has to survive both halves of the wire.
+    const uint32_t cTopicFormId = 0x1DEAD;
+
+    SubtitleRequest request;
+    request.ServerId = 7;
+    request.Text = "hello there";
+    request.TopicFormId = cTopicFormId;
+
+    Buffer buff(1000);
+    Buffer::Writer writer(&buff);
+    request.Serialize(writer);
+
+    uint64_t opcode = 0;
+    Buffer::Reader reader(&buff);
+    reader.ReadBits(opcode, 8);
+
+    SubtitleRequest recvRequest;
+    recvRequest.DeserializeRaw(reader);
+    REQUIRE(recvRequest == request);
+    REQUIRE(recvRequest.TopicFormId == cTopicFormId);
+
+    NotifySubtitle notify;
+    notify.ServerId = 7;
+    notify.Text = "hello there";
+    notify.TopicFormId = cTopicFormId;
+
+    Buffer buff2(1000);
+    Buffer::Writer writer2(&buff2);
+    notify.Serialize(writer2);
+
+    uint64_t opcode2 = 0;
+    Buffer::Reader reader2(&buff2);
+    reader2.ReadBits(opcode2, 8);
+
+    NotifySubtitle recvNotify;
+    recvNotify.DeserializeRaw(reader2);
+    REQUIRE(recvNotify == notify);
+    REQUIRE(recvNotify.TopicFormId == cTopicFormId);
 }

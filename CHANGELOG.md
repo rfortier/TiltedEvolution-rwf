@@ -1451,6 +1451,55 @@ ErrorInfo += fmt::format("[\"{}\",\"{}\"]", m.Filename.c_str(), m.Id);
 覆盖转义表(空串 / 普通文本 / `"` / `\\` / `\b\f\n\r\t` / 其余控制字符走 `\u00xx` / 非 ASCII 原样)、
 一个试图提前闭合文档的版本字符串,以及**全部 256 个字节**逐个过一遍:结果里每个 `"` 前面必须有奇数个反斜杠,
 且不能残留任何 < 0x20 的字节。`python Tools/Scripts/check_docs.py` 全绿。
+### 修复:三种「对端说了算」的读取各自越过了自己的边界
+
+**现象**:三处独立缺陷,共同点都是**读侧按对端给的数走,而写侧早就知道真正的上界**:
+
+1. 一个手搓的认证包把 mod 计数写成 13 位能表达的最大值 `8191`,服务器/客户端就会为 8191 个
+   `Mods::Entry`(每项含一个最长 260 字节的文件名)分配内存,然后在包已耗尽的情况下继续读。
+2. 队伍里某个玩家说的台词(字幕)到了对端**只剩文本,丢了话题**:客户端把 `TopicFormId` 发出去,
+   服务器转发的 `NotifySubtitle` 里这一项恒为 0。
+3. 一个 `Status` 不在枚举内的 `RequestQuestUpdate`(线上是裸的 8 位字段,没有范围校验)会让服务器
+   把一个**未初始化的 `notify.Status`** 读进日志、再原样转发给全队。
+
+**根因**(修复前):
+
+```cpp
+// Code/encoding/Structs/Mods.cpp:38-39(修复前)
+const size_t modCount = data & 0xFFFF;
+ModList.resize(modCount);   // 13 位读允许 8191,而写侧 :22 封顶 4096
+
+// Code/server/Services/CharacterService.cpp:577-579(修复前)
+NotifySubtitle notify{};
+notify.ServerId = message.ServerId;
+notify.Text = message.Text;      // TopicFormId 从未被写,线上恒为 0
+
+// Code/server/Services/QuestService.cpp:109-113(修复前)
+default:
+    spdlog::error("... unknown quest status {} ...", __FUNCTION__, notify.Status, ...);
+    break;   // 不 return;notify.Status 在这条路径上从未被赋值
+```
+
+第三条之所以是不确定值而不是 0:`NotifyQuestUpdate` 有**用户提供的**默认构造函数
+(`NotifyQuestUpdate() : ServerMessage(Opcode) {}`),按 C++ 的规则它不算聚合,`NotifyQuestUpdate notify{}`
+**不会零初始化** `Stage`/`Status`/`ClientQuestType` 这三个没有默认成员初始化器的字段。
+
+**可达性**:第一条在认证包解析路径上,即**未认证连接可达**(`GameServer::OnConsume` 先解析后认证);
+第二条是每个玩家说台词时的正常路径,只是信息被丢掉,不崩;第三条需要一个伪造包 —— 客户端自己的
+三个发送点只会写 0..3(其中 `Code/client/Services/Generic/QuestService.cpp:188` 写的是布尔值,
+只能得到 0 或 1),所以它只对「对端不守规矩」成立,但那正是这条链要防的。
+
+**修法**:`Mods` 新增 `static constexpr uint64_t kMaxModCount = 4096`(`Code/encoding/Structs/Mods.h`,
+放在成员之后,与 `Factions.h`/`ActorValues.h` 同一风格),写侧改用它,读侧 `std::min<uint64_t>(data & 0xFFFF, kMaxModCount)`
+—— 两边同宽,读者与写者对流的解释重新一致;`OnSubtitleRequest` 补上 `notify.TopicFormId = message.TopicFormId;`;
+`QuestService` 的 `default:` 改为打印**请求里的** `message.Status` 并 `return`,不再把无法映射的状态转发出去。
+另外把客户端 `OnQuestUpdate` 的 `default:` 里那句永远不可达的 `spdlog::error`(它在 `break;` 之后)提到 `break;` 之前,
+未知状态现在会真的留下一条日志。
+
+**验证**:`Code/tests/encoding.cpp:937 TEST_CASE("Mods count is bounded by the writer bound", "[encoding.mods_count]")`
+(4096+7 条 mod 往返后只剩 4096 条;手工写入计数 8191 的包被夹到 4096 且末尾条目的 id 正确)与
+`Code/tests/encoding.cpp:980 TEST_CASE("Subtitle topic travels in both directions", "[encoding.subtitle]")`
+(两端各自的 `TopicFormId` 往返后保持)。`python Tools/Scripts/check_docs.py` 全绿。
 ### 修复:插件的会话表只增不减,而它正好压在每次按键的路径上
 
 **现象**:OStim Together 的联机场景开得越多,「场景开始键」越钝 —— 同一次按键要做两遍

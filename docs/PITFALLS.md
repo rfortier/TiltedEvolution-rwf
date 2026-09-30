@@ -7891,3 +7891,145 @@ python Tools\Scripts\check_docs.py
 > 第三条:增长的表如果**长在热路径上**,它的代价不是内存,是每次输入的延迟;判据是「谁在按键
 > 回调里遍历它」。同一次按键遍历同一张表两遍(`Input.cpp:163` + `CoopSessionManager.cpp:249`),
 > 两遍都该被合并或换掉。
+
+## 66. 2026-10-01 场次:三处「读侧越过写侧已知上界」的读取 —— 判据是「这个数在写侧有上界吗,读侧用的是同一个吗」
+
+> **锚点**:本节的修复落在 `Code/encoding/Structs/Mods.h`/`Mods.cpp`、`Code/server/Services/CharacterService.cpp`、
+> `Code/server/Services/QuestService.cpp`、`Code/client/Services/Generic/QuestService.cpp`,交付形式是普通提交
+> (与测试 `Code/tests/encoding.cpp` 同批)。
+
+### 66.1 缺陷:三处「对端说了算」的读取各自越过了自己的边界
+
+三处缺陷彼此独立,共同点是**读侧按对端给的数走,而写侧早就知道真正的上界**。
+
+| 位置 | 缺陷 |
+| --- | --- |
+| `Code/encoding/Structs/Mods.cpp:38-39` | 13 位计数允许 8191,写侧封顶 4096,读侧照数 `resize` |
+| `Code/server/Services/CharacterService.cpp:577-579` | 转发字幕时漏抄 `TopicFormId`,对端收到的话题恒为 0 |
+| `Code/server/Services/QuestService.cpp:109-113` | 未知 `Status` 走 `default:` 不 `return`,把未初始化的 `notify.Status` 转发给全队 |
+
+前两处的根因是**同一条流上的两个宽度不一致**:
+
+```cpp
+// Code/encoding/Structs/Mods.cpp:38-39(修复前)
+const size_t modCount = data & 0xFFFF;
+ModList.resize(modCount);   // 13 位读允许 8191,而写侧 :22 封顶 4096
+```
+
+```cpp
+// Code/server/Services/CharacterService.cpp:577-579(修复前)
+NotifySubtitle notify{};
+notify.ServerId = message.ServerId;
+notify.Text = message.Text;      // TopicFormId 从未被写,线上恒为 0
+```
+
+第三处不是「值错了」而是「值根本没被写」:
+
+```cpp
+// Code/server/Services/QuestService.cpp:109-113(修复前)
+default:
+    spdlog::error("{}: unknown quest status {} quest: {:X}, stage: {}, status {}, by {} {:X}",
+                  __FUNCTION__, notify.Status, message.Id.LogFormat(), notify.Stage, notify.Status, ...);
+    break;   // 不 return;notify.Status 在这条路径上从未被赋值
+```
+
+注意这条日志自己就说明了问题:它打印的是 `notify.Status` 两次,而**请求里的 `message.Status` 一次都没打印**。
+日志想报「未知状态」,却把那个未知状态丢掉了,只留下一个未初始化的副本。
+
+### 66.2 判据:写侧有上界,读侧必须用同一个上界;写侧有字段,读侧必须逐个抄
+
+**判据一(宽度对称)**:凡是从线上读出一个计数、再拿它驱动 `resize`/`reserve`/循环的,先去找**写侧**
+写这个计数的那一行 —— 如果写侧有 `std::min(..., kMax)` 或硬编码封顶,而读侧没有,那么两者对同一条流
+的解释必然不同:写侧永远发不出超过 `kMax` 的条目,读侧却会为一个更大的数分配内存,并在包已耗尽后继续读。
+本仓的标准写法是**两侧共用同一个常量**:
+
+```cpp
+// Code/encoding/Structs/Factions.cpp:39-42(范式)
+// Never trust the wire length, and never throw: this runs inside a noexcept frame.
+const auto npcCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
+NpcFactions.resize(npcCount);
+```
+
+**判据二(字段对称)**:服务器 handler 里构造的转发消息,凡是与请求**同名**的字段,要么显式抄,
+要么在注释里写明为什么不抄。判据不是「读了代码觉得没问题」,而是**把请求类型与通知类型的字段列出来逐个对**——
+这次就是靠这个对出来的:三处 handler 里只有一处漏抄。
+
+**判据三(`default:` 分支的出口)**:`switch` 的 `default:` 里只要有一条语句会**继续往下走**(不 `return`),
+就必须确认「这条路径上后面要用的每个字段都已被赋值」。本仓的消息类型几乎都有**用户提供的**默认构造函数
+(`X() : ServerMessage(Opcode) {}`),按 C++ 的规则它们**不是聚合**,`X x{};` **不会零初始化**成员:
+
+```cpp
+// Code/encoding/Messages/NotifyQuestUpdate.h:10-13
+NotifyQuestUpdate() : ServerMessage(Opcode) {}
+// :28-32
+GameId Id; uint32_t SceneMaster{0}; uint16_t Stage; uint8_t Status; uint8_t ClientQuestType;
+```
+
+只有 `SceneMaster` 有默认成员初始化器,`Stage`/`Status`/`ClientQuestType` 没有,而 `Status` 只在
+四个已知分支里被赋值。⇒ 未知 `Status` 这条路径上,`notify.Status` 是**不确定值**,不是 0。
+对照 `Code/encoding/Structs/GameId.h:7 GameId() = default;` —— 首次声明即 defaulted,**不是**用户提供,
+所以 `GameId x{};` 仍然零初始化。两者的区别只在「那个 `{}` 是谁写的」。
+
+### 66.3 可达性
+
+第一条在**认证包解析路径**上,即未认证连接可达:`Code/server/GameServer.cpp:572-602 OnConsume` 是
+先 `factory.Extract(reader)` 解析、再按 opcode 分派到 handler,认证发生在 `HandleAuthenticationRequest` 里,
+而 `Mods::Deserialize` 在 `AuthenticationRequest::DeserializeRaw` 里(`AuthenticationRequest.cpp:30`)。
+一个 8191 的计数会让服务器或客户端为 8191 个 `Mods::Entry`(每项含一个最长 260 字节的 `String`)分配内存。
+
+第二条是**每个玩家说台词时的正常路径**,不崩,只是信息被丢掉:客户端 `CharacterService.cpp:1219` 把
+`acEvent.TopicFormID` 写进请求,服务器转发时丢掉,客户端 `CharacterService.cpp:1233` 拿 `acMessage.TopicFormId`
+去 `TESForm::GetById`,于是永远拿到 0 对应的表单(或空)。
+
+第三条需要一个**伪造包**:客户端自己的三个发送点只会写 0..3(其中 `Code/client/Services/Generic/QuestService.cpp:188`
+写的是 `stageId == RequestQuestUpdate::StageUpdateForced`,是布尔值,只能得到 0 或 1),而
+`RequestQuestUpdate::DeserializeRaw` 对 8 位的 `Status` 没有范围校验 ⇒ 任意 8 位值都能到 `default:`。
+
+### 66.4 修法
+
+`Mods` 新增与写侧同源的常量(位置与 `Factions.h`/`ActorValues.h` 一致,放在成员之后):
+
+```cpp
+// Code/encoding/Structs/Mods.h:33-35
+static constexpr uint64_t kMaxModCount = 4096;
+```
+
+两侧都改用它:`Mods.cpp:22` 的写侧 `std::min<uint64_t>(ModList.size(), kMaxModCount)`,
+`Mods.cpp:40` 的读侧 `std::min<uint64_t>(data & 0xFFFF, kMaxModCount)`。
+`CharacterService.cpp:580` 补一行 `notify.TopicFormId = message.TopicFormId;`。
+`QuestService.cpp:109-117` 的 `default:` 改为打印**请求里的** `message.Status`/`message.Stage` 并 `return`。
+顺带把客户端 `QuestService.cpp:332-338` 的 `default:` 里那句写在 `break;` 之后的 `spdlog::error` 提到 `break;` 之前
+(它原先永远不可达,未知状态在客户端不留任何日志)。
+
+### 66.5 复核命令(照抄)
+
+```powershell
+git grep -n "kMaxModCount" -- Code/encoding
+git grep -n "TopicFormId" -- Code/server/Services/CharacterService.cpp Code/encoding/Messages/NotifySubtitle.h
+git grep -n "unknown quest status" -- Code/server/Services/QuestService.cpp
+git grep -n "unknown remote status" -- Code/client/Services/Generic/QuestService.cpp
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`kMaxModCount` 命中三处(`Mods.cpp:22`、`Mods.cpp:40`、`Mods.h:35`,写读两侧同一个常量);
+`TopicFormId` 在服务器侧命中 `Code/server/Services/CharacterService.cpp:580:    notify.TopicFormId = message.TopicFormId;`;
+`unknown quest status` 在 `QuestService.cpp:114` 单行命中且已改用 `message.Status`/`message.Stage`;
+`unknown remote status` 在 `Code/client/Services/Generic/QuestService.cpp:334` 单行命中(现在可达);
+`check_docs.py` → `DOC CHECK OK`。
+
+**验证**:`Code/tests/encoding.cpp:937 TEST_CASE("Mods count is bounded by the writer bound", "[encoding.mods_count]")`
+断言 `Mods::kMaxModCount == 4096ull`、4096+7 条 mod 往返后只剩 4096 条、以及**手工写入计数 8191 的包**
+被夹到 4096 且最后一条 entry 的 id 正确;`Code/tests/encoding.cpp:980 TEST_CASE("Subtitle topic travels in both directions", "[encoding.subtitle]")`
+让 `SubtitleRequest` 与 `NotifySubtitle` 各走一次 `Serialize` → 弹 8 位 opcode → `DeserializeRaw`,
+断言 `TopicFormId` 往返保持。
+
+> **教训**:第一条:**「这个字段有默认值」和「这个字段被赋过值」是两回事,而它们看起来一模一样。**
+> `uint32_t SceneMaster{0};` 与 `uint16_t Stage;` 在同一个结构体里相邻两行,前者是「一定安全」,
+> 后者是「构造点没写就是不确定值」—— 唯一的区分办法是把**构造点的赋值清单**与**字段清单**对一遍,
+> 而不是读构造点觉得「该写的都写了」。
+> 第二条:**宽度不一致的读法,在正常流量下永远不报错。** 写侧封顶 4096、读侧允许 8191,
+> 只要对端守规矩,两边都好好的 —— 它只在「对端不守规矩」时暴露,而那正是这条链要防的。
+> 所以判据不能是「跑起来没问题」,必须是「把写侧那一行的上界找出来,看读侧是不是同一个」。
+> 第三条:**日志里打错了变量,等于把唯一的线索也删了。** `default:` 分支打印了两次 `notify.Status`
+> (未初始化值),一次都没打印 `message.Status`(真正未知的那个)。当一条日志本身就在说「我看到了未知的东西」,
+> 它打印的必须是**那个未知的东西**,而不是从它派生出来的、可能已经被覆盖的副本。

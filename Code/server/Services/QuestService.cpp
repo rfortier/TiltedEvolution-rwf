@@ -107,10 +107,13 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         break;
 
     default:
+        // notify.Status is not assigned on this path, and this class has a user provided
+        // constructor, so the member is indeterminate here. Log the request field and stop:
+        // forwarding a status the receiving side cannot map is worse than dropping it.
         spdlog::error(
-            "{}: unknown quest status {} quest: {:X}, stage: {}, status {}, by {} {:X}", __FUNCTION__, notify.Status, message.Id.LogFormat(), notify.Stage, notify.Status,
-            playerTypeString, pPlayer->GetId());
-        break;
+            "{}: unknown quest status {} quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__, message.Status, message.Id.LogFormat(), message.Stage, playerTypeString,
+            pPlayer->GetId());
+        return;
     }
 
     // All side effects have been generated. Now just logging and a forwarding decision left.

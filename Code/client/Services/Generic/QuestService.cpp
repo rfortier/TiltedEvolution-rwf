@@ -330,12 +330,12 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
         break;
 
     default:
-        break;
         spdlog::error(
             __FUNCTION__ ": unknown remote status {} {} formId: {:X}, questStage: {}, "
                          "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
             aUpdate.Status, miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
             pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+        break;
     }
 
     if (!wasUpdated)
