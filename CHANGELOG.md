@@ -1202,7 +1202,66 @@ Values.insert({key, value});
 消费了自己的字节;另有一段回环一次正常的两键集合。
 CI 的 `.github/workflows/windows.yml:594-638` 会跑 `TPTests.exe` 并要求
 `All tests passed`。`python Tools/Scripts/check_docs.py` 全绿。
-`All tests passed`。`python Tools/Scripts/check_docs.py` 全绿。
+
+### 修复:四处的「判空」其实是日志,宏从不中止 —— release 里它们就是空指针解引用
+
+**现象**:客户端有三条路径在引擎可能给出空指针的地方继续解引用:抛射物发射后取回
+`Projectile*`(`Code/client/Games/Skyrim/Projectiles/Projectile.cpp`)、从附魔额外数据读
+`EnchantmentItem*` 及其 `EffectItem` 的 `pEffectSetting`(`Code/client/Games/Skyrim/TESObjectREFR.cpp`
+的 `GetItemFromExtraData`)、把附魔写回额外数据列表(`GetExtraDataFromItem` 的 `SetEnchantmentData`)。
+四处都写了 `TP_ASSERT`,看上去像判过了。
+
+**根因**(修复前):
+```cpp
+// Code/client/Utils.h:11-15
+#define TP_ASSERT(Expr, Msg, ...)                                    \
+    if (!(Expr))                                                     \
+    {                                                                \
+        Utils::Assert(#Expr, fmt::format(Msg, __VA_ARGS__).c_str()); \
+    }
+
+// Code/client/Utils.h:28-34
+static void Assert(const char* apExpression, const char* apMessage)
+{
+    spdlog::critical("Assertion failed ({}): {}", apExpression, apMessage);
+    if (IsDebuggerPresent())
+        __debugbreak();
+}
+```
+`TP_ASSERT` 既不 `abort` 也不返回失败,它只写一行日志;`__debugbreak()` 也只在挂了调试器时
+执行 —— 文件上方作者自己写着 `// TODO: should this be debug only? I removed the check since
+debug is broken, can only use releasedbg`。所以 `TP_ASSERT(pProjectile, ...)` 之后的
+`pProjectile->fPower` 没有任何保护。
+
+**可达性**:四条指针来源都允许为空 —— `Code/client/Games/Skyrim/Projectiles/Projectile.cpp:99`
+的 `ThisCall(RealLaunch, ...)` 把结果写进出参;`Code/client/Games/Skyrim/TESObjectREFR.cpp:126-140`
+的 `TESObjectREFR::GetByHandle` 显式允许 `pResult` 保持 `nullptr`;`Code/client/Games/Skyrim/RTTI.h:17-27`
+的 `Cast<>` 在 RTTI 未映射的旧版游戏上**恒**返回 `nullptr`(注释逐字:
+`// guard against unmapped rtti ids (legacy game versions): the game's dynamic cast dereferences`);
+`Code/client/Games/Skyrim/Forms/EnchantmentItem.cpp:39` 的 `EnchantmentItem* pItem = nullptr;` 在创建被
+引擎拒绝时原样返回。附魔那两条路径**线上可达**:`Inventory::Entry.ExtraEnchantId` 随
+`NotifyInventoryChanges` / `NotifyObjectInventoryChanges` 过线(`Code/encoding/Structs/Inventory.cpp:64`),
+`GetExtraDataFromItem` 里 `arEntry.ExtraEnchantId.ModId == 0xFFFFFFFF` 走 `EnchantmentItem::Create`,
+否则走 `Cast<EnchantmentItem>(TESForm::GetById(...))` —— 两条分支都能给出空指针,随后直接进引擎的
+`Code/client/Games/Skyrim/ExtraData/ExtraDataList.cpp:130-135 SetEnchantmentData`。
+
+**修法**:把三处「日志」换成真分支。`Projectile.cpp` 在拿到空的 `result` 时 `return nullptr`;
+拿到空的 `pProjectile` 时保留事件本身、只让 `Event.Power` 留在 `arData.fPower` 的初值上 ——
+**少发一个抛射物比漏发一个更糟**,所以 `World::Get().GetRunner().Trigger(Event)` 没有被跳过。
+`GetItemFromExtraData` 把 `pEnchantment` 的整段(`GetServerModId`、`formID & 0xFF000000`、
+`listOfEffects` 遍历)移进 `if (pEnchantment)`,并把 `if (!pEffectItem) continue;` 收紧成
+`if (!pEffectItem || !pEffectItem->pEffectSetting) continue;`(`pEffectSetting` 在
+`EnchantmentItem::Create` 里同样只被日志、不被跳过);`GetExtraDataFromItem` 把
+`SetEnchantmentData` 包进 `if (pEnchantment)`。`arEntry.ExtraEnchantCharge` /
+`ExtraEnchantRemoveUnequip` 仍在 `if` 之外赋值 —— 它们来自 `pExtraEnchantment` 本身,
+与 `pEnchantment` 是否为空无关。
+
+**验证**:这四处是引擎指针判空,`Code/tests` 只覆盖 `Code/encoding`,且 `Projectile::Launch` /
+`GetItemFromExtraData` / `GetExtraDataFromItem` 都依赖引擎与 `World::Get()`,
+**没有可写的单元测试** —— 以静态复核为准:重扫 `Code/client` 全部 9 个 `TP_ASSERT` 站点,
+每一个后面现在都紧跟真 `if`(`Projectile.cpp:20`/`:30`/`:106`/`:116`、
+`TESObjectREFR.cpp:536`/`:571`,以及 `:521`/`:629` 的注释与其后的 `:528 if (pEnchantment)` /
+`:634 if (pEnchantment)`)。`python Tools/Scripts/check_docs.py` 全绿。
 
 ## v1.1.8(2026-09-28)
 

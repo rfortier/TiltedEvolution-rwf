@@ -520,29 +520,41 @@ void TESObjectREFR::GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataLis
     {
         TP_ASSERT(pExtraEnchantment->pEnchantment, "Null enchantment in ExtraEnchantment");
 
-        modSystem.GetServerModId(pExtraEnchantment->pEnchantment->formID, arEntry.ExtraEnchantId);
+        // TP_ASSERT only logs unless a debugger is attached, so it never was the guard
+        // this block needed. The pointer comes from engine extra data, and the effect
+        // setting of an effect item is no more guaranteed than the effect item itself.
+        EnchantmentItem* pEnchantment = pExtraEnchantment->pEnchantment;
 
-        if (pExtraEnchantment->pEnchantment->formID & 0xFF000000)
+        if (pEnchantment)
         {
-            for (EffectItem* pEffectItem : pExtraEnchantment->pEnchantment->listOfEffects)
+            modSystem.GetServerModId(pEnchantment->formID, arEntry.ExtraEnchantId);
+
+            if (pEnchantment->formID & 0xFF000000)
             {
-                TP_ASSERT(pEffectItem, "pEffectItem is null.");
-                if (!pEffectItem)
-                    continue;
+                for (EffectItem* pEffectItem : pEnchantment->listOfEffects)
+                {
+                    TP_ASSERT(pEffectItem, "pEffectItem is null.");
+                    if (!pEffectItem || !pEffectItem->pEffectSetting)
+                        continue;
 
-                Inventory::EffectItem effect;
-                effect.Magnitude = pEffectItem->data.fMagnitude;
-                effect.Area = pEffectItem->data.iArea;
-                effect.Duration = pEffectItem->data.iDuration;
-                effect.RawCost = pEffectItem->fRawCost;
-                modSystem.GetServerModId(pEffectItem->pEffectSetting->formID, effect.EffectId);
-                arEntry.EnchantData.Effects.push_back(effect);
+                    Inventory::EffectItem effect;
+                    effect.Magnitude = pEffectItem->data.fMagnitude;
+                    effect.Area = pEffectItem->data.iArea;
+                    effect.Duration = pEffectItem->data.iDuration;
+                    effect.RawCost = pEffectItem->fRawCost;
+                    modSystem.GetServerModId(pEffectItem->pEffectSetting->formID, effect.EffectId);
+                    arEntry.EnchantData.Effects.push_back(effect);
+                }
+
+                uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
+                TESForm* pObject = TESForm::GetById(objectId);
+                if (pObject)
+                    arEntry.EnchantData.IsWeapon = pObject->formType == FormType::Weapon;
             }
-
-            uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
-            TESForm* pObject = TESForm::GetById(objectId);
-            if (pObject)
-                arEntry.EnchantData.IsWeapon = pObject->formType == FormType::Weapon;
+        }
+        else
+        {
+            spdlog::error("Null enchantment in ExtraEnchantment.");
         }
 
         arEntry.ExtraEnchantCharge = pExtraEnchantment->usCharge;
@@ -616,7 +628,17 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
 
         TP_ASSERT(pEnchantment, "No Enchantment created or found.");
 
-        pExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
+        // Both branches above can hand back a null: the game id of an enchantment that
+        // arrived over the wire does not have to resolve to a form, and the created
+        // object manager is free to refuse. Passing null into the engine setter crashed.
+        if (pEnchantment)
+        {
+            pExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
+        }
+        else
+        {
+            spdlog::error("{}: Enchantment not found, {:X}:{:X}.", __FUNCTION__, arEntry.ExtraEnchantId.ModId, arEntry.ExtraEnchantId.BaseId);
+        }
     }
 
     if (arEntry.ExtraPoisonId != 0)

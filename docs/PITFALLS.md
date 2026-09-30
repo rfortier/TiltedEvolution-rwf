@@ -7217,3 +7217,151 @@ python Tools\Scripts\check_docs.py
 > 不是看有没有**运算**。第三条:上界常量要挂在**结构体**上而不是某一个 `.cpp` 里,
 > 因为同一个结构体会被四个消息、服务端账本与两个方向的 `Deserialize` 共用;挂在结构体上,
 > 后来的人改一处就够,挂在 `.cpp` 里则必然漏掉其余五处。
+
+## 61. 2026-09-29 场次:一个宏既叫「断言」又不中止 —— 判据是「它失败之后控制流去了哪」
+
+> **锚点**:`Code/client/Utils.h:11-15` 的 `TP_ASSERT` 与 `Code/client/Utils.h:28-34` 的
+> `Utils::Assert`。它被用在 9 处,其中 4 处后面没有任何真分支。这是崩溃面,不是失步面:
+> 一个只写日志的宏,在 release 构建里等于不存在。
+
+### 61.1 缺陷:宏的名字叫断言,行为是日志
+
+**现象**:`Code/client/Games/Skyrim/Projectiles/Projectile.cpp:101` 与 `:106`、
+`Code/client/Games/Skyrim/TESObjectREFR.cpp:521` 与 `:617` 各自写着 `TP_ASSERT(指针, "...")`,
+紧接着就解引用同一个指针。读代码的人(包括写下它们的作者)会认为「判过了」。
+
+**根因**(修复前):
+```cpp
+// Code/client/Utils.h:11-15
+#define TP_ASSERT(Expr, Msg, ...)                                    \
+    if (!(Expr))                                                     \
+    {                                                                \
+        Utils::Assert(#Expr, fmt::format(Msg, __VA_ARGS__).c_str()); \
+    }
+
+// Code/client/Utils.h:28-34
+static void Assert(const char* apExpression, const char* apMessage)
+{
+    spdlog::critical("Assertion failed ({}): {}", apExpression, apMessage);
+    if (IsDebuggerPresent())
+        __debugbreak();
+}
+```
+它不 `abort`、不 `throw`、不返回失败;`__debugbreak()` 也只在挂了调试器时执行。
+文件上方作者自己写着 `// TODO: should this be debug only? I removed the check since
+debug is broken, can only use releasedbg` —— 也就是说这条「断言」在唯一的构建里
+连调试器路径都没有。`Utils::Assert` 的直接调用者全仓只有这个宏(`git grep "Utils::Assert"`
+1 命中),所以它没有任何其他语义可以依赖。
+
+### 61.2 判据:「它失败之后控制流去了哪」
+
+审查一个判空/断言时,唯一有用的问题是**失败之后控制流去了哪**。`TP_ASSERT` 的答案
+是「原地继续」。同族的三种形状在这里可以直接排序:
+
+- `if (!p) return;` / `continue;` —— 真门。
+- `if (!p) { log; return; }` —— 真门,且有证据。
+- `if (!p) log;`(或宏展开成这个) —— **不是门**,后面每一行都在解引用。
+
+按这条判据重扫 `Code/client`,9 个 `TP_ASSERT` 里 5 个后面本来就有真 `if`
+(`Projectile.cpp:20`→`:21`、`:30`→`:31`、`TESObjectREFR.cpp:529`→`:530`、`:559`→`:560`,
+`:626` 是值断言不是指针),**4 个没有**:`Projectile.cpp:101`、`Projectile.cpp:106`、
+`TESObjectREFR.cpp:521`、`TESObjectREFR.cpp:617`。同一次扫描还带出 `TESObjectREFR.cpp:538` 的
+`pEffectItem->pEffectSetting->formID` —— 同一表达式里连着两次解引用,而前一行的 `TP_ASSERT`
+只判了 `pEffectItem`。
+
+### 61.3 可达性:四条指针来源全部允许为空
+
+**判据**:引擎给出的指针,要去它自己的定义里看返回语句有没有可能给出 `nullptr`。
+
+- `Code/client/Games/Skyrim/Projectiles/Projectile.cpp:99` 的 `ThisCall(RealLaunch, ...)`
+  把结果写进出参,返回值未判。
+- `Code/client/Games/Skyrim/TESObjectREFR.cpp:126-140 TESObjectREFR::GetByHandle`
+  显式写成 `TESObjectREFR* pResult = nullptr;` → 引擎调用 → `if (pResult) ...` → `return pResult;`。
+  **它自己就用 `if (pResult)` 承认了可能为空。**
+- `Code/client/Games/Skyrim/RTTI.h:17-27` 的 `Cast<>` 在 RTTI 未映射时**恒**返回 `nullptr`,注释逐字:
+  `// guard against unmapped rtti ids (legacy game versions): the game's dynamic cast dereferences`。
+  这一条对 1.5.x / 1.6.x / 1.7.x 的兼容性尤其要紧 —— 未映射就是旧版游戏。
+- `Code/client/Games/Skyrim/Forms/EnchantmentItem.cpp:39` 的 `EnchantmentItem* pItem = nullptr;`,
+  创建被引擎拒绝时原样返回。
+
+附魔那两条路径**线上可达**:`Inventory::Entry.ExtraEnchantId` 随 `NotifyInventoryChanges` /
+`NotifyObjectInventoryChanges` 过线(`Code/encoding/Structs/Inventory.cpp:64`),
+`GetExtraDataFromItem` 里 `arEntry.ExtraEnchantId.ModId == 0xFFFFFFFF` 走 `EnchantmentItem::Create`,
+否则走 `Cast<EnchantmentItem>(TESForm::GetById(modSystem.GetGameId(...)))` —— 两条分支都能给出空指针,
+随后直接进引擎的 `Code/client/Games/Skyrim/ExtraData/ExtraDataList.cpp:130-135 SetEnchantmentData`
+(纯 `ThisCall`,没有判空)。
+
+### 61.4 修法:把日志换成分支,并且想清楚「不发」和「发错」哪个更糟
+
+```cpp
+// Code/client/Games/Skyrim/Projectiles/Projectile.cpp(修复后,:99-124)
+    auto result = TiltedPhoques::ThisCall(RealLaunch, apThis, arData);
+
+    if (!result)
+    {
+        spdlog::error("No projectile handle returned.");
+        return nullptr;
+    }
+
+    TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
+    Projectile* pProjectile = Cast<Projectile>(pObject);
+
+    if (pProjectile)
+        Event.Power = pProjectile->fPower;
+    else
+        spdlog::error("No projectile found, announcing the launch data power instead.");
+
+    World::Get().GetRunner().Trigger(Event);
+```
+
+**一处刻意的取舍**:拿到空的 `pProjectile` 时**不跳过事件**。`Event.Power` 在
+`Projectile.cpp:90` 已经从 `arData.fPower` 取过一次初值,此时留在那个值上仍然是一个合理的
+抛射物,而**少发一个抛射物比发一个数值不准的更糟** —— 前者让同场玩家的世界里凭空少一发,后者
+只是一发的伤害/速度偏一点。所以 `World::Get().GetRunner().Trigger(Event);` 留在原位。
+
+另外三处:
+
+- `GetItemFromExtraData`(`Code/client/Games/Skyrim/TESObjectREFR.cpp:521-562`)把 `pEnchantment`
+  的整段(`GetServerModId`、`formID & 0xFF000000`、`listOfEffects` 遍历)移进 `if (pEnchantment)`,
+  并把 `if (!pEffectItem) continue;` 收紧成 `if (!pEffectItem || !pEffectItem->pEffectSetting) continue;`。
+- `arEntry.ExtraEnchantCharge` / `ExtraEnchantRemoveUnequip` **仍在 `if` 之外**赋值 —— 它们来自
+  `pExtraEnchantment` 本身,与 `pEnchantment` 是否为空无关。收紧它们是把门修错了地方。
+- `GetExtraDataFromItem`(`Code/client/Games/Skyrim/TESObjectREFR.cpp:634-641`)把 `SetEnchantmentData`
+  包进 `if (pEnchantment)`。
+
+### 61.5 复核命令(照抄)
+
+```powershell
+# 1. 宏的定义与它调用的函数
+node -e "const s=require('fs').readFileSync('Code/client/Utils.h','utf8');console.log(s.split(/\r?\n/).slice(8,36).join('\n'))"
+
+# 2. 全部 TP_ASSERT 站点,以及每个站点后面三行
+node -e "const fs=require('fs');for(const f of ['Code/client/Games/Skyrim/Projectiles/Projectile.cpp','Code/client/Games/Skyrim/TESObjectREFR.cpp']){const L=fs.readFileSync(f,'utf8').split(/\r?\n/);L.forEach((t,i)=>{if(/^\s*TP_ASSERT\(/.test(t))console.log(f+':'+(i+1)+' -> '+[L[i+1],L[i+2]].map(s=>(s||'').trim()).join(' || '))})}"
+
+# 3. 指针来源是否允许为空
+git grep -n 'pResult = nullptr' -- Code/client/Games/Skyrim/TESObjectREFR.cpp
+git grep -n 'return nullptr' -- Code/client/Games/Skyrim/RTTI.h
+
+# 4. 大括号平衡(三个文件都应为 0)
+node -e "const fs=require('fs');for(const f of ['Code/client/Games/Skyrim/Projectiles/Projectile.cpp','Code/client/Games/Skyrim/TESObjectREFR.cpp']){const s=fs.readFileSync(f,'utf8');console.log(f,(s.match(/\{/g)||[]).length-(s.match(/\}/g)||[]).length)}"
+
+# 5. 文档门禁
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:宏的失败路径只有 `spdlog::critical` 与 `IsDebuggerPresent()` 分支,没有 `abort`/`return`;
+重扫后 9 个 `TP_ASSERT` 站点**每一个后面都紧跟真 `if`**(`Projectile.cpp:20`/`:30`/`:106`/`:116`、
+`TESObjectREFR.cpp:536`/`:571`,以及 `:521`/`:629` 的注释与其后的 `:528 if (pEnchantment)` /
+`:634 if (pEnchantment)`);`TESObjectREFR.cpp` 的 `TP_ASSERT` 文本计数由 5 增至 6(新增注释里引用了宏名);
+三个文件大括号平衡均为 0。
+
+**验证**:这四处是引擎指针判空,`Code/tests` 只覆盖 `Code/encoding`,且 `Projectile::Launch` /
+`GetItemFromExtraData` / `GetExtraDataFromItem` 都依赖引擎与 `World::Get()` —— **没有可写的单元测试**,
+以静态复核为准。`python Tools/Scripts/check_docs.py` 全绿。
+
+> **教训**:第一条:审查判空时不要看有没有 `if`,要看**失败之后控制流去了哪** —— 一个展开成
+> `if (!p) log;` 的宏,在读代码时和真门长得一模一样,只有展开之后才看得出后面每一行都在解引用。
+> 第二条:宏的名字不是它的语义。叫 `ASSERT` 的东西在本仓里既不 `abort` 也不返回,`IS_MASTER`
+> 又把 `#if (!IS_MASTER)` 的代码整段剥掉,所以「release 里它还在不在」要按**展开结果**判,不能按
+> 名字判。第三条:把日志改成分支时,顺带问一句「这个分支是继续更糟还是停止更糟」——
+> `Projectile.cpp` 的答案是「事件照发、数值退回初值」,而不是「整条路 `return`」。

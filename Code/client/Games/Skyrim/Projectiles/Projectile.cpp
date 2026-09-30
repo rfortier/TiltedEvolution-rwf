@@ -98,14 +98,26 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
 
     auto result = TiltedPhoques::ThisCall(RealLaunch, apThis, arData);
 
+    // TP_ASSERT only logs unless a debugger is attached, so it is not a guard: the
+    // engine can fail to hand back a projectile, and the cast resolves to nothing
+    // whenever the RTTI of the running build is not mapped. Dereferencing either of
+    // them crashed the launch. The event still goes out, with the launch data power
+    // the engine has not had a chance to adjust.
     TP_ASSERT(result, "No projectile handle returned.");
+    if (!result)
+    {
+        spdlog::error("No projectile handle returned.");
+        return nullptr;
+    }
 
     TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
     Projectile* pProjectile = Cast<Projectile>(pObject);
 
     TP_ASSERT(pProjectile, "No projectile found.");
-
-    Event.Power = pProjectile->fPower;
+    if (pProjectile)
+        Event.Power = pProjectile->fPower;
+    else
+        spdlog::error("No projectile found, announcing the launch data power instead.");
 
     World::Get().GetRunner().Trigger(Event);
 
