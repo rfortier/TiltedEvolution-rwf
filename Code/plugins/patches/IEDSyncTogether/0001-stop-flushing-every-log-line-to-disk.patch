@@ -1,0 +1,17 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index 49ae2dd..6919183 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -20,7 +20,11 @@ namespace
+         auto logger = std::make_shared<spdlog::logger>("IEDSyncTogether", std::move(sink));
+         spdlog::set_default_logger(std::move(logger));
+         spdlog::set_level(spdlog::level::trace);
+-        spdlog::flush_on(spdlog::level::trace);
++        // flush_on(trace) wrote every line to disk before the emitting thread
++        // could continue, and the level above enables trace by default.
++        // Warnings stay immediate; the rest is flushed once a second.
++        spdlog::flush_every(std::chrono::seconds(1));
++        spdlog::flush_on(spdlog::level::warn);
+     }
+ 
+     void OnSKSEMessage(SKSE::MessagingInterface::Message* message)

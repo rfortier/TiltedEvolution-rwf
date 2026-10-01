@@ -1,0 +1,19 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index 370d195..e60254d 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -17,9 +17,13 @@ namespace
+         auto logger = std::make_shared<spdlog::logger>("TradeTogether", std::move(sink));
+ 
+         logger->set_level(spdlog::level::trace);
+-        logger->flush_on(spdlog::level::info);
++        // flush_on(info) wrote every line to disk before the emitting thread
++        // could continue. Warnings stay immediate; the rest is flushed once a
++        // second, after the logger is registered below.
++        logger->flush_on(spdlog::level::warn);
+         logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [TradeTogether] [%l] [%s:%#] %v");
+         spdlog::set_default_logger(std::move(logger));
++        spdlog::flush_every(std::chrono::seconds(1));
+     }
+ 
+     void OnSKSEMessage(SKSE::MessagingInterface::Message* a_message)

@@ -8811,4 +8811,162 @@ C++ 编译由 CI 执行(`windows.yml`)。`python Tools/Scripts/check_docs.py` �
 > 第三条:**字段宽度不是实现细节,它是接口的一部分。**
 > `TeleportRequest::PlayerId` 的 16 位与它的读侧 32 位掩码放在一起时,缺陷是自证的;
 > 而两者分处两个文件、中间隔着一次 CEF 的 `int`,于是它活了很久 —— 直到有人把「id 从哪来」追到发号器。
+## 72. 2026-10-05 场次:四个插件的最高频日志点也都在同步刷盘 —— 判据是「这个 logger 让哪一级消息立刻进内核,而它的等级设置开着哪一级」
+
+> **锚点**:本节的修复落在 `plugins/DAVSyncTogether`、`plugins/IEDSyncTogether`、`plugins/TradeTogether`、
+> `plugins/OStimTogether` 四个子模块的 `src/main.cpp`,交付形式是四个补丁:
+> `Code/plugins/patches/DAVSyncTogether/0002-stop-flushing-every-log-line-to-disk.patch`、
+> `Code/plugins/patches/IEDSyncTogether/0001-stop-flushing-every-log-line-to-disk.patch`、
+> `Code/plugins/patches/TradeTogether/0001-stop-flushing-every-log-line-to-disk.patch`、
+> `Code/plugins/patches/OStimTogether/0005-stop-flushing-every-log-line-to-disk.patch`
+> —— 这四个插件都是子模块,CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改动,只有补丁能落地。
+
+### 72.1 缺陷:§67 与 §68 修掉的是两个插件,而同一行配置在另外四个插件里逐字存在
+
+`flush_on(N)` 的参数是**刷盘起点**而不是日志等级(§67.2 已经论证过),所以 `flush_on(trace)` 等价于「每条都刷」。
+§67 与 §68 各修了一个插件,但这一行不是那一个插件的写法,而是整层的写法:
+
+| 插件 | 初始化位置 | `set_level` | `flush_on`(修复前) |
+| --- | --- | --- | --- |
+| `DAVSyncTogether` | `src/main.cpp:9-29` | `trace`(`:27`) | `trace`(`:28`) |
+| `IEDSyncTogether` | `src/main.cpp:10-24` | `trace`(`:22`) | `trace`(`:23`) |
+| `TradeTogether` | `src/main.cpp:8-23` | `trace`(`:19`) | **`info`**(`:20`) |
+| `OStimTogether` | `src/main.cpp:35-52` | `trace`(`:50`) | `trace`(`:51`) |
+
+四个插件的写法里只有一处不同:前三个用 `spdlog::` 的全局函数,`TradeTogether` 用 `logger->` 的成员函数
+(`plugins/TradeTogether/src/main.cpp:19-22`),而它的刷盘起点写的是 `info` 而不是 `trace`。
+这一处不同不是「它比较轻」:`info` 是这四份代码里最高频的那个等级,`trace` 那一级在实测日志里一条都没有出现过。
+
+**四个插件的日志初始化里都没有 `spdlog::flush_every(...)`。** 参照组是主程序与 §67/§68 已经修好的两个插件:
+
+```cpp
+// Code/client/TiltedOnlineApp.cpp:75-80(本仓既有策略)
+spdlog::flush_every(std::chrono::seconds(1));
+logger->flush_on(spdlog::level::warn);
+```
+
+```cpp
+// Code/plugins/patches/MorphSyncTogether/0003-...(§68 已交付的同款修法)
+-        spdlog::flush_on(spdlog::level::trace);
++        // flush_on(trace) pushed every line to disk before the game thread could
++        spdlog::flush_every(std::chrono::seconds(1));
++        spdlog::flush_on(spdlog::level::warn);
+```
+
+### 72.2 判据:刷盘起点是一个数,而等级是另一个数 —— 两个都要读,而且要看它写在谁身上
+
+1. `flush_on(N)` 的语义是「任何 level >= N 的消息,打完立刻进内核」(`spdlog` 的 `flush_on` 就是
+   「达到这个等级就 flush」),所以 `flush_on(trace)` 覆盖全部消息,`flush_on(info)` 覆盖 info 及以上。
+2. `set_level(L)` 决定哪一级**打得出来**。`set_level(trace)` 意味着这一层里所有的 trace/debug 调用点都是活的,
+   而四个插件的源码里确实有这些调用点(`IEDSyncTogether/src/RemoteIEDRenderer.cpp:473`、
+   `OStimTogether/src/CoopSessionManager.h:56`、`src/FreeScenePhaseSync.cpp:428`/`:608`、
+   `src/EquipmentLock.cpp:531`、`src/NetworkProbe.cpp:504`)。
+3. `flush_every` 是**默认 logger** 的全局设置,`flush_on` 是**某一个 logger** 的设置 —— 两者的接收者不同,
+   所以 `TradeTogether` 那一份不能照抄前三份:它的 `flush_on` 必须留在 `logger->` 上,而 `flush_every` 必须写在
+   `spdlog::set_default_logger(std::move(logger));` **之后**,否则它作用在一个还不是默认 logger 的对象上。
+
+判据因此是一句话:**这个 logger 让哪一级消息立刻进内核,而它的等级设置开着哪一级。**
+两个答案都在同一段初始化里,不需要跑起来才知道。
+
+### 72.3 可达性:四个插件的实测日志都很小,而这不是「无害」的证据
+
+本机 10 分钟会话的日志(路径见 72.5)按体量排:
+
+| 日志 | 体量 | 行数 | 状态 |
+| --- | --- | --- | --- |
+| `AnimSyncTogether.log` | 7345371 B | 43271 | §67 已修 |
+| `MorphSyncTogether.log` | 356845 B | 1864 | §68 已修 |
+| `DAVSyncTogether.log` | 17981 B | 100 | 本节 |
+| `OStimTogether.log` | 7049 B | 44 | 本节 |
+| `TradeTogether.log` | 3483 B | 31 | 本节 |
+| `IEDSyncTogether.log` | 958 B | 6 | 本节 |
+
+剩下四个的体量比前两个小两到四个数量级 —— **但那一次会话没有触发它们的功能**(没有交易、没有换装、
+没有 DAV 变体、没有 IED 重挂),所以这六个数字里只有前两行能当频率证据用。
+四个插件的日志调用点计数说明它们一旦被触发就不会安静:
+`DAVSyncTogether` 36 处(info 21)、`IEDSyncTogether` 96 处(info 44)、`TradeTogether` 80 处(info 42)、
+`OStimTogether` 396 处(info 231,其中 `src/OStimBridge.cpp` 一个文件 74 处)。
+**⇒ 判据不能是「实测日志大不大」,只能是「这一行配置让每条消息落盘吗」。**
+
+### 72.4 修法:只改刷盘策略,不动等级、不动日志点
+
+四个补丁都只改一段初始化,`set_level(trace)` 全部保留 —— 抬等级是行为变化(会让 trace 调用点消失),
+而这次的缺陷是刷盘策略,两者必须分开改:
+
+```cpp
+// plugins/DAVSyncTogether/src/main.cpp:26-32(修复后,另外两个 trace 插件逐字同款)
+spdlog::set_default_logger(std::move(log));
+spdlog::set_level(spdlog::level::trace);
+// flush_on(trace) wrote every line to disk before the emitting thread
+// could continue, and the level above enables trace by default.
+// Warnings stay immediate; the rest is flushed once a second.
+spdlog::flush_every(std::chrono::seconds(1));
+spdlog::flush_on(spdlog::level::warn);
+```
+
+`TradeTogether` 是唯一一份需要区别对待的(见 72.2 第 3 条):
+
+```cpp
+// plugins/TradeTogether/src/main.cpp:19-26(修复后)
+logger->set_level(spdlog::level::trace);
+// flush_on(info) wrote every line to disk before the emitting thread
+// could continue. Warnings stay immediate; the rest is flushed once a
+// second, after the logger is registered below.
+logger->flush_on(spdlog::level::warn);
+logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [TradeTogether] [%l] [%s:%#] %v");
+spdlog::set_default_logger(std::move(logger));
+spdlog::flush_every(std::chrono::seconds(1));
+```
+
+**没有降任何一条日志的等级。** 这四个插件里「每次收发都会打」的 warn 确实存在
+(`IEDSyncTogether/src/STRPMAdapter.cpp:224`/`:514`/`:539`、`src/UdpTransport.cpp:772`、
+`OStimTogether/src/AddonBridge.cpp:268`/`:277`/`:283`/`:484`/`:494`/`:510`/`:587`/`:598`、
+`TradeTogether/src/Trade.cpp:1055`/`:1063`/`:1080`/`:1110`/`:1165`、`DAVSyncTogether/src/DAVNetworkService.cpp:144`/`:156`),
+但它们是「对端可控输入触发」的路径 —— 降级会让现场只剩沉默。新策略下它们本来就是立即落盘的,这不需要改。
+同理,已经按 `500ms` 节流的热点(`OStimTogether/src/FreeSceneSelfOriginLock.cpp:13` 的 `kLogInterval`、
+`IEDSyncTogether/src/SyncService.cpp:181-213` 的 `changed`/`resendDue` 双重门)也不需要动。
+
+### 72.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+git -C plugins/DAVSyncTogether grep -n "flush_on\|flush_every\|set_level"
+git -C plugins/IEDSyncTogether grep -n "flush_on\|flush_every\|set_level"
+git -C plugins/TradeTogether grep -n "flush_on\|flush_every\|set_level"
+git -C plugins/OStimTogether grep -n "flush_on\|flush_every\|set_level"
+python Code\plugins\tools\plugin_snapshot.py verify
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`PATCH VERIFY OK` / `17 patch(es) apply to their pinned commits`(13 → 17);`PATCH CHECK OK`;
+`flush_on(spdlog::level::trace)` 在四个插件的 `src/main.cpp` 上已无命中,`flush_every(std::chrono::seconds(1))` 命中
+`DAVSyncTogether/src/main.cpp:31`、`IEDSyncTogether/src/main.cpp:26`、`OStimTogether/src/main.cpp:54`、
+`TradeTogether/src/main.cpp:26`;`flush_on(spdlog::level::warn)` 命中 `:32`/`:27`/`:55`/`:23`(前三个是 `spdlog::`,
+`TradeTogether` 是 `logger->`);`plugin_snapshot.py verify` → `SNAPSHOT OK` / `8 plugin(s)`
+(`pinned_blob()` 读的是 pin 而不是工作树,所以本节的工作树改动不会让这条门禁变红);`check_docs.py` → `DOC CHECK OK`。
+
+**验证**:四个补丁已应用到各自子模块的工作树,`plugin_patches.py` 的两条独立路径都通过 ——
+`is_applied`(`git apply --check --reverse`,查工作树)与 `cmd_verify`(`git apply --check --cached`,查索引 = pin 的内容)。
+工作树是 CRLF、pin 是 LF(四个子模块 `core.autocrlf=true`),补丁按 `Code/plugins/patches/**/*.patch text eol=lf`
+写成纯 LF,`git diff` 生成的正是 blob 的 LF 形式。
+插件 README 不受影响:这四个 README 里唯一提到 `trace` 的地方是 `IEDSyncTogether/README.md:111`
+(`If IED resets the same object again later, trace logs show:`),而它引的 `REMOTE IED WATCHDOG recorrected:` 本来就是 trace 级。
+
+> **教训**:第一条:**同一行配置可以横向复制到整个插件层,而每个副本都略有不同。**
+> §67 与 §68 修掉的两行,在另外四个插件里逐字存在,只有 `TradeTogether` 把刷盘起点写成了 `info` ——
+> 而这一处不同恰好是最重的那个:`trace` 级在实测日志里一条都没出现过,`info` 是唯一一直有输出的等级。
+> 修一个插件时顺手看一眼同层的其它插件,比事后逐个发现便宜得多。
+> 第二条:**`flush_every` 和 `flush_on` 不是同一个对象的设置,所以顺序和接收者都要对上。**
+> 前者是默认 logger 的全局设置,后者是某一个 logger 的设置;把 `flush_every` 写在
+> `set_default_logger` 之前,或者把它写成 `logger->flush_every`,都会得到一个静默失效的配置。
+> 第三条:**用 pin 的内容覆盖子模块工作树,会静默抹掉已经应用在它上面的补丁 hunk,而 `verify` 不会发现。**
+> 本次生成补丁时用 `git show HEAD:src/main.cpp` 覆盖了 `plugins/OStimTogether/src/main.cpp`,
+> 把补丁 0003 已应用的 `ClearRemoteState()` 一起抹掉,`plugin_patches.py apply` 才在 0003 上报
+> `PATCH FAILED ... error: patch failed: src/AddonBridge.cpp:636`。
+> `verify` 用 `--cached` 查的是 pin,所以它当时仍然是全绿的 —— 这道门禁证明不了工作树完好。
+> 恢复方式是把该文件 `git checkout --` 回 pin,再把 0003 的 hunk 手工补回去(`:220` 的
+> `OStimTogether::PPAIntegration::GetSingleton().Reset();` 之后一行,工作树是 CRLF 所以锚点要带 `\r\n`)。
+> **⇒ 覆盖子模块工作树之前,先确认这个文件上有哪些已应用的补丁。**
+
 

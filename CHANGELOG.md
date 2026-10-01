@@ -1798,6 +1798,59 @@ PlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF; // 读侧按 32 位�
 对 `0`/`1`/`0xFFFF`/`0x10000`/`0x10001`/`0xFFFFFFFF` 各做一次整包往返并断言 `received.PlayerId == aPlayerId` ——
 `0x10000` 与 `0x10001` 正是 16 位字段会塌成同一个值的两个 id。其余四处在 `Code/client/Services/Generic/` 里,
 C++ 编译由 CI 执行(`windows.yml`)。`python Tools/Scripts/check_docs.py` 全绿。
+### 修复:另外四个插件的最高频日志点也都在同步刷盘
+**现象**:`DAVSyncTogether`、`IEDSyncTogether`、`TradeTogether`、`OStimTogether` 四个插件里,每一条日志都会在
+产生它的那个线程上**同步写进内核**,而它们的等级设置默认开着 `trace` —— 也就是说这两层里所有 trace/debug 调用点
+都是活的,并且每一条都要等磁盘。这与 §67/§68 已经修好的 `AnimSyncTogether`、`MorphSyncTogether` 是同一行配置。
+
+**根因**:`spdlog::flush_on(N)` 的参数是**刷盘起点**而不是日志等级 —— 它表示「level >= N 的消息打完立刻 flush」,
+所以 `flush_on(trace)` 覆盖全部消息。四个插件的初始化里各写着这一行,而写法只有一处不同:
+`plugins/DAVSyncTogether/src/main.cpp:28`、`plugins/IEDSyncTogether/src/main.cpp:23`、
+`plugins/OStimTogether/src/main.cpp:51` 是 `spdlog::flush_on(spdlog::level::trace);`,
+`plugins/TradeTogether/src/main.cpp:20` 是 `logger->flush_on(spdlog::level::info);` ——
+`info` 恰好是这四个插件里唯一一直有输出的等级,所以它比另外三处更重。
+四段初始化里都没有 `spdlog::flush_every(...)`,而本仓既有的策略(§67 起)是每秒 flush 一次、warn 及以上立即落盘。
+
+**判据**:刷盘起点是一个数,而等级是另一个数,两个都要读;而 `flush_every` 是**默认 logger** 的全局设置,
+`flush_on` 是**某一个 logger** 的设置,所以 `TradeTogether` 那一份不能照抄另外三份 ——
+它的 `flush_on` 必须留在 `logger->` 上,`flush_every` 必须写在 `spdlog::set_default_logger(...)` **之后**。
+
+**修法**:四个补丁各只改一段初始化,`set_level(trace)` 全部保留(抬等级是行为变化,与本次缺陷无关):
+
+```cpp
+// plugins/DAVSyncTogether/src/main.cpp:26-32(修复后,IEDSyncTogether 与 OStimTogether 逐字同款)
+spdlog::set_default_logger(std::move(log));
+spdlog::set_level(spdlog::level::trace);
+// flush_on(trace) wrote every line to disk before the emitting thread
+// could continue, and the level above enables trace by default.
+// Warnings stay immediate; the rest is flushed once a second.
+spdlog::flush_every(std::chrono::seconds(1));
+spdlog::flush_on(spdlog::level::warn);
+```
+
+```cpp
+// plugins/TradeTogether/src/main.cpp:19-26(修复后,唯一需要区别对待的一份)
+logger->set_level(spdlog::level::trace);
+logger->flush_on(spdlog::level::warn);
+logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [TradeTogether] [%l] [%s:%#] %v");
+spdlog::set_default_logger(std::move(logger));
+spdlog::flush_every(std::chrono::seconds(1));
+```
+
+没有降任何一条日志的等级:这四个插件里「每次收发都会打」的 warn(`IEDSyncTogether/src/STRPMAdapter.cpp:224`/`:514`/`:539`、
+`OStimTogether/src/AddonBridge.cpp:268`/`:277`/`:283`/`:484`/`:494`/`:510`/`:587`/`:598`、
+`TradeTogether/src/Trade.cpp:1055`/`:1063`/`:1080`/`:1110`/`:1165`、`DAVSyncTogether/src/DAVNetworkService.cpp:144`/`:156`)
+都是「对端可控输入触发」的路径,降级只会让现场剩下一片沉默,而新策略下它们本来就是立即落盘的。
+
+**验证**:交付形式是四个补丁(`Code/plugins/patches/DAVSyncTogether/0002-stop-flushing-every-log-line-to-disk.patch`、
+`Code/plugins/patches/IEDSyncTogether/0001-stop-flushing-every-log-line-to-disk.patch`、
+`Code/plugins/patches/TradeTogether/0001-stop-flushing-every-log-line-to-disk.patch`、
+`Code/plugins/patches/OStimTogether/0005-stop-flushing-every-log-line-to-disk.patch`)—— 这四个插件都是子模块,
+CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改动。
+`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / `17 patch(es) apply to their pinned commits`(13 → 17);
+同目录下 `check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK`;
+四个 `src/main.cpp` 上 `flush_on(spdlog::level::trace)` 已无命中,`flush_every(std::chrono::seconds(1))` 各命中一处
+(`DAVSyncTogether:31`、`IEDSyncTogether:26`、`OStimTogether:54`、`TradeTogether:26`)。`check_docs.py` 全绿。
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

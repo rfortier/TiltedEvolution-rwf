@@ -1,0 +1,17 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index 5634786..ae61c21 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -48,7 +48,11 @@ namespace
+ 
+         spdlog::set_default_logger(std::move(log));
+         spdlog::set_level(spdlog::level::trace);
+-        spdlog::flush_on(spdlog::level::trace);
++        // flush_on(trace) wrote every line to disk before the emitting thread
++        // could continue, and the level above enables trace by default.
++        // Warnings stay immediate; the rest is flushed once a second.
++        spdlog::flush_every(std::chrono::seconds(1));
++        spdlog::flush_on(spdlog::level::warn);
+     }
+ 
+     void RefreshOptionalOCumPapyrusRegistration(std::string_view reason)
