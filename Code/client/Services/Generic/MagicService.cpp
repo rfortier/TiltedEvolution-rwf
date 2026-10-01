@@ -148,12 +148,28 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
     TESForm* pForm = TESForm::GetById(formIdComponent.Id);
     Actor* pActor = Cast<Actor>(pForm);
 
+    // Cast resolves to null whenever the RTTI of the running build is not mapped, and the
+    // peer picked which remote id this resolves through.
+    if (!pActor)
+    {
+        spdlog::warn("{}: caster {:X} is not a loaded actor", __FUNCTION__, formIdComponent.Id);
+        return;
+    }
+
     pActor->GenerateMagicCasters();
+
+    // GenerateMagicCasters only fills a slot when the engine hands one back, so the array can
+    // still be null here.
+    if (!pActor->casters[CS::LEFT_HAND])
+    {
+        spdlog::warn("{}: caster {:X} has no left hand caster", __FUNCTION__, formIdComponent.Id);
+        return;
+    }
 
     // Only left hand casters need dual casting (?)
     pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);
 
-    if (acMessage.CastingSource >= 4)
+    if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
     {
         spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
         return;
@@ -263,7 +279,7 @@ void MagicService::OnInterruptCastEvent(const InterruptCastEvent& acEvent) const
 
 void MagicService::OnNotifyInterruptCast(const NotifyInterruptCast& acMessage) const noexcept
 {
-    if (acMessage.CastingSource >= 4)
+    if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
     {
         spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
         return;
@@ -282,6 +298,12 @@ void MagicService::OnNotifyInterruptCast(const NotifyInterruptCast& acMessage) c
 
     const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
     Actor* pActor = Cast<Actor>(pForm);
+
+    if (!pActor)
+    {
+        spdlog::warn("{}: caster {:X} is not a loaded actor", __FUNCTION__, formIdComponent.Id);
+        return;
+    }
 
     pActor->GenerateMagicCasters();
 

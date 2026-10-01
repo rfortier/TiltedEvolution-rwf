@@ -124,6 +124,12 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
     const uint32_t cProjectileBaseId = modSystem.GetGameId(acMessage.ProjectileBaseID);
     launchData.pProjectileBase = TESForm::GetById(cProjectileBaseId);
 
+    if (!launchData.pProjectileBase)
+    {
+        spdlog::warn("Cannot launch projectile, invalid projectile base: {:X}", cProjectileBaseId);
+        return;
+    }
+
     const uint32_t cFromWeaponId = modSystem.GetGameId(acMessage.WeaponID);
     launchData.pFromWeapon = Cast<TESObjectWEAP>(TESForm::GetById(cFromWeaponId));
 
@@ -137,7 +143,13 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
     const uint32_t cSpellId = modSystem.GetGameId(acMessage.SpellID);
     launchData.pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
 
-    launchData.eCastingSource = (MagicSystem::CastingSource)acMessage.CastingSource;
+    if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
+    {
+        spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
+        return;
+    }
+
+    launchData.eCastingSource = static_cast<MagicSystem::CastingSource>(acMessage.CastingSource);
 
     launchData.iArea = acMessage.Area;
     launchData.fPower = acMessage.Power;

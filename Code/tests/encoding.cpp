@@ -33,6 +33,7 @@
 #include <Messages/SendChatMessageRequest.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Messages/SyncExperienceRequest.h>
+#include <Messages/TeleportRequest.h>
 #include <Structs/ActorValues.h>
 #include <Structs/Mods.h>
 #include <Structs/TimeModel.h>
@@ -1193,4 +1194,36 @@ TEST_CASE("A non finite wire float is replaced where it is read", "[encoding.fin
 
         REQUIRE(received == sent);
     }
+}
+
+TEST_CASE("A teleport request carries the whole player id", "[encoding.teleport_request]")
+{
+    // Player ids come from a monotonic counter that never wraps and never reuses a value, so
+    // the 65536th connection is an ordinary connection. The field was 16 bits wide while the
+    // reader masked 32, which made the overlay teleport to whoever held the low half.
+    const auto roundTrip = [](const uint32_t aPlayerId) {
+        TeleportRequest sent{};
+        sent.PlayerId = aPlayerId;
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.Serialize(writer);
+
+        TeleportRequest received{};
+        uint64_t opcode = 0;
+        Buffer::Reader reader(&buff);
+        reader.ReadBits(opcode, 8);
+        received.DeserializeRaw(reader);
+
+        REQUIRE(received.PlayerId == aPlayerId);
+        REQUIRE(received == sent);
+    };
+
+    roundTrip(0);
+    roundTrip(1);
+    roundTrip(0xFFFF);
+    // The two ids the 16 bit field used to collapse into one.
+    roundTrip(0x10000);
+    roundTrip(0x10001);
+    roundTrip(0xFFFFFFFF);
 }

@@ -1721,6 +1721,83 @@ warn 及以上仍立刻落盘;`set_level(trace)` **保留不动**(该插件全�
 → `PATCH VERIFY OK` / `13 patch(es) apply to their pinned commits`;同目录下 `check` → `PATCH CHECK OK`。
 `git -C plugins/MorphSyncTogether grep -n "flush_on\|flush_every\|set_level"` 命中 `src/main.cpp:25`/`:26`,
 `flush_on(spdlog::level::trace)` 已无命中。`python Tools/Scripts/check_docs.py` 全绿。
+### 修复:客户端可控的 id 与索引在五个使用点上都没被判定过「它真的有效」
+**现象**:一次远程施法、一次远程打断施法、一发远程弹道到达时,发送方在包里选中的是哪个 actor、
+用哪只手施法、弹丸基类存不存在,接收方都不判定就往下用;覆层的「传送到队员」按钮则会在
+第 65536 个玩家之后把人送到**另一个人**身边。这五处都不是崩溃,而是「对端说什么就是什么」:
+`Cast<Actor>` 在运行版本的 RTTI 没有映射时**返回空指针**(`Code/client/Games/Skyrim/RTTI.h:17-27`),
+`GenerateMagicCasters` 只在引擎肯给的时候才填槽(`Code/client/Games/Skyrim/Actor.cpp:915-924`),
+`CastingSource` 是 `int32_t`(`Code/encoding/Messages/NotifySpellCast.h:22`、`NotifyInterruptCast.h:20`、
+`NotifyProjectileLaunch.h:42`、`ProjectileLaunchRequest.h:45`),而读侧只判了上界、没判下界。
+
+**根因**(修复前):
+
+```cpp
+// Code/client/Services/Generic/MagicService.cpp:149-156(修复前,OnNotifySpellCast)
+Actor* pActor = Cast<Actor>(pForm);
+pActor->GenerateMagicCasters();                       // Cast 可以是空的
+
+// Only left hand casters need dual casting (?)
+pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);   // 槽可以是空的
+
+if (acMessage.CastingSource >= 4)                     // int32_t:-1 进不来
+    return;
+
+pSpell = pActor->magicItems[acMessage.CastingSource]; // 于是负数索引到了 magicItems[4]
+```
+
+```cpp
+// Code/client/Services/Generic/MagicService.cpp:284-286(修复前,OnNotifyInterruptCast)
+Actor* pActor = Cast<Actor>(pForm);
+pActor->GenerateMagicCasters();                       // 同上一处,没有判空
+```
+
+```cpp
+// Code/client/Services/Generic/CombatService.cpp:125 / :140(修复前,OnNotifyProjectileLaunch)
+launchData.pProjectileBase = TESForm::GetById(cProjectileBaseId);   // 可以是空的
+
+launchData.eCastingSource = (MagicSystem::CastingSource)acMessage.CastingSource;   // 没有范围判定
+```
+
+```cpp
+// Code/encoding/Messages/TeleportRequest.h:20 / TeleportRequest.cpp:12(修复前)
+uint16_t PlayerId{};                                        // 字段 16 位
+PlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF; // 读侧按 32 位掩码
+```
+
+前四处各自都能落到一次无效解引用或一次越界索引上,而它们要的只是「这个值有效吗」这一句判断;
+第五处的字段宽度则与它要装的东西不是一回事:玩家 id 由 `Code/server/Game/Player.cpp:1-30` 的
+`static constinit std::atomic<uint32_t> s_counter{1};` 单调发号、**从 1 开始、不回收、不回绕**,所以
+第 65536 个连接是一个普通连接;而 `Code/encoding/Messages/NotifyPartyInfo.h:25 Vector<uint32_t> PlayerIds{};`
+送到覆层的 id 本来就是 32 位(`Code/client/Services/Generic/PartyService.cpp:126`/`:168` 取,`:137-141` 转发给 CEF),
+`Code/client/Services/Generic/OverlayClient.cpp:170 request.PlayerId = aEventArgs->GetInt(0);` 又是一次 `int → uint16_t`,
+两次窄化之后服务端 `Code/server/Services/OverlayService.cpp:90` 用它 `GetById` —— 指向的是**另一个**玩家。
+
+**判据**:`Cast<T>` 会返回空、`GenerateMagicCasters` 会留下空槽、`CastingSource` 是带符号的、
+玩家 id 是 32 位且不回收 —— 这四条都是**被调用方写明的**事实,而五个使用点都假设了反面。
+同族的对照组就在同一个文件里:`Code/client/Games/Skyrim/Projectiles/Projectile.cpp:56-68` 对
+`Cast<Actor>(arData.pShooter)` 判了空,`Code/client/Services/Generic/CombatService.cpp:112-116` 对
+`Cast<TESObjectCELL>` 也判了空 —— 也就是说这一族在本仓是**多数守住了、少数没守住**,而不是没有范式。
+
+**修法**:
+
+1. `Code/client/Services/Generic/MagicService.cpp:151-157`(`OnNotifySpellCast`)与 `:302-306`(`OnNotifyInterruptCast`)
+   在 `Cast<Actor>` 之后加 `if (!pActor) { spdlog::warn(...); return; }`。
+2. 同文件 `:161-167` 再加一道 `if (!pActor->casters[CS::LEFT_HAND])` —— `GenerateMagicCasters` 的循环体是
+   `if (casters[i] == nullptr) casters[i] = Cast<ActorMagicCaster>(GetMagicCaster(static_cast<CS>(i)));`,
+   引擎不给就仍然是空。
+3. `:172` 与 `:274` 的范围判定补上下界:`if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)`;
+   `Code/client/Services/Generic/CombatService.cpp:146-152` 把弹道路径上那句 C 风格强转换成同一段判定 + `static_cast`。
+4. `Code/client/Services/Generic/CombatService.cpp:127-131` 在 `pProjectileBase` 赋值之后判空(弹丸基类不存在时
+   `Projectile::Launch` 拿不到任何东西可发)。
+5. `Code/encoding/Messages/TeleportRequest.h:23` 把 `uint16_t PlayerId{};` 加宽成 `uint32_t PlayerId{};`,
+   `Code/client/Services/Generic/OverlayClient.cpp:170` 改成 `static_cast<uint32_t>(aEventArgs->GetInt(0))`;
+   读侧 `& 0xFFFFFFFF` 与写侧 `WriteVarInt` 都不用动,线格式对已存在的小 id 完全不变。
+
+**验证**:`Code/tests/encoding.cpp` 新增 `TEST_CASE("A teleport request carries the whole player id", "[encoding.teleport_request]")`,
+对 `0`/`1`/`0xFFFF`/`0x10000`/`0x10001`/`0xFFFFFFFF` 各做一次整包往返并断言 `received.PlayerId == aPlayerId` ——
+`0x10000` 与 `0x10001` 正是 16 位字段会塌成同一个值的两个 id。其余四处在 `Code/client/Services/Generic/` 里,
+C++ 编译由 CI 执行(`windows.yml`)。`python Tools/Scripts/check_docs.py` 全绿。
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

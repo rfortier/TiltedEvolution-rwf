@@ -8611,5 +8611,204 @@ C++ 测试由 CI 执行(`windows.yml:585-638` 的 `Run the encoding tests` 要�
 > 血量增量带「正负即判决」,所以它必须夹到边界;落点、角度、强度、经验都不带这种语义,
 > 所以对它们来说任何区间都是凭空发明的 —— 而凭空发明的区间会改掉合法数据。
 > 第三条:**先例只有一个的时候,它就不是先例,是例外。**
-> 这一族此前只有血量与 `TimeModel` 两处钳制,而 `ReadFloat` 在 `Code/encoding/Messages/` 上有 29 处 ——
+> 这一族此前只有血量与 `TimeModel` 两处钳制,而 `ReadFloat` 在 `Code/encoding/Messages/` 上有 28 处 ——
 > 把「有一个地方做了」当成「这一类都做过了」,就是这一节二十处缺陷能一起活到现在的原因。
+## 71. 2026-10-04 场次:五处「对端选定的 id 与索引」都没有被判定过有效性 —— 判据是「这个值有效吗,而它接下来被用来做什么」
+
+> **锚点**:本节的修复落在 `Code/client/Services/Generic/MagicService.cpp`、`Code/client/Services/Generic/CombatService.cpp`、
+> `Code/encoding/Messages/TeleportRequest.h`、`Code/client/Services/Generic/OverlayClient.cpp` 与 `Code/tests/encoding.cpp`,
+> 交付形式是仓库内的直接提交(不是插件补丁 —— 这四个文件属于主仓,CI 直接编译)。
+
+### 71.1 缺陷:五个使用点各自假设了「送来的东西一定有效」,而同一个文件里就写着它不一定的理由
+
+| 位置 | 送来的东西 | 使用点假设了 |
+| --- | --- | --- |
+| `Code/client/Services/Generic/MagicService.cpp:149` | 远程 id 解析出的 actor | `Cast<Actor>` 一定有值 |
+| `Code/client/Services/Generic/MagicService.cpp:159-170` | 上一步的 actor 的施法槽 | `GenerateMagicCasters` 之后 `casters[0]` 一定有值 |
+| `Code/client/Services/Generic/MagicService.cpp:172-180` | `CastingSource` | 它非负 |
+| `Code/client/Services/Generic/CombatService.cpp:125-152` | 弹丸基类与施法源 | 前者有值、后者落在 `[0,4)` |
+| `Code/encoding/Messages/TeleportRequest.h:23` | 玩家 id | 它装得进 16 位 |
+
+**「一定有值」这件事,本仓自己在两个地方写清楚了它不成立。**
+
+```cpp
+// Code/client/Games/Skyrim/RTTI.h:17-27
+template <class T, class U>
+T* Cast(U* apPtr)
+{
+    const void* pBaseRtti = internal::RttiLocator<std::remove_cv_t<U>>::Get();
+    const void* pTargetRtti = internal::RttiLocator<std::remove_cv_t<T>>::Get();
+
+    if (pBaseRtti == nullptr || pTargetRtti == nullptr || apPtr == nullptr)
+        return nullptr;
+
+    return reinterpret_cast<T*>(internal::DynamicCast.Get()((void*)apPtr, 0, pBaseRtti, pTargetRtti, 0));
+}
+```
+
+```cpp
+// Code/client/Games/Skyrim/Actor.cpp:915-924
+void Actor::GenerateMagicCasters() noexcept
+{
+    using CS = MagicSystem::CastingSource;
+
+    for (int i = 0; i < 4; i++)
+    {
+        if (casters[i] == nullptr)
+            casters[i] = Cast<ActorMagicCaster>(GetMagicCaster(static_cast<CS>(i)));
+    }
+}
+```
+
+第一个是「RTTI 没有映射就返回空」,第二个是「引擎不给就仍然空」—— 而 `casters` 与 `magicItems` 都是定长四元数组
+(`Code/client/Games/Skyrim/Actor.h:359-360` 的 `ActorMagicCaster* casters[4];` / `MagicItem* magicItems[4];`)。
+于是 `Code/client/Services/Generic/MagicService.cpp:149-170`(修复前)是:
+
+```cpp
+// Code/client/Services/Generic/MagicService.cpp:149-170(修复前,OnNotifySpellCast)
+Actor* pActor = Cast<Actor>(pForm);
+pActor->GenerateMagicCasters();
+
+// Only left hand casters need dual casting (?)
+pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);
+
+if (acMessage.CastingSource >= 4)
+{
+    spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
+    return;
+}
+
+pSpell = pActor->magicItems[acMessage.CastingSource];
+```
+
+同一个函数在 16 行之后又给了自己一个反例 —— 它**知道** `CastingSource` 可能越界,只是只判了上界。
+而 `CastingSource` 是**带符号**的:`Code/encoding/Messages/NotifySpellCast.h:22 int32_t CastingSource;`、
+`NotifyInterruptCast.h:20`、`NotifyProjectileLaunch.h:42`、`ProjectileLaunchRequest.h:45` 四处同型。
+读侧 `NotifySpellCast.cpp:18 CastingSource = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;` 保住的正是低 32 位,
+所以一个负值能原样穿过整条链:`Code/server/Services/MagicService.cpp:31 notify.CastingSource = message.CastingSource;`
+是逐字转发,全仓没有任何一处判定过 `>= 0`。`-1` 于是索引到 `magicItems[-1]`,即数组前面那四个字节。
+
+`Code/client/Services/Generic/MagicService.cpp:300-308`(修复前,`OnNotifyInterruptCast`)是同一族的第二处,形状完全相同:
+
+```cpp
+// Code/client/Services/Generic/MagicService.cpp:300-308(修复前,OnNotifyInterruptCast)
+Actor* pActor = Cast<Actor>(pForm);
+pActor->GenerateMagicCasters();
+```
+
+第三、四处在 `Code/client/Services/Generic/CombatService.cpp:125-152`(修复前,`OnNotifyProjectileLaunch`):
+
+```cpp
+// Code/client/Services/Generic/CombatService.cpp:125 / :140-152(修复前)
+launchData.pProjectileBase = TESForm::GetById(cProjectileBaseId);
+
+launchData.eCastingSource = (MagicSystem::CastingSource)acMessage.CastingSource;
+```
+
+第五处不在 `Code/client/Services/` 里,它是一条字段宽度与它要装的东西不匹配的链:
+
+```cpp
+// Code/encoding/Messages/TeleportRequest.h:20 / TeleportRequest.cpp:12(修复前)
+uint16_t PlayerId{};                                        // 字段 16 位
+PlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF; // 读侧按 32 位掩码
+```
+
+### 71.2 判据:被调用方写明的失效条件,在调用点被判定了吗
+
+这一节没有新的机制,只有一条判据:**凡是「由对端选定的 id 或索引」,使用之前必须判定它指向的东西真的存在。**
+四条失效条件是本仓自己写下来的,不需要猜:
+
+1. `Cast<T>` 在 `pBaseRtti`/`pTargetRtti`/`apPtr` 任一为空时返回空(`Code/client/Games/Skyrim/RTTI.h:23-24`);
+2. `GenerateMagicCasters` 只写「引擎返回了非空」的槽(`Code/client/Games/Skyrim/Actor.cpp:921-922`);
+3. `CastingSource` 的声明类型是 `int32_t`,而 `magicItems` 是四元数组 —— 有效区间是 `[0, 4)`;
+4. 玩家 id 由 `Code/server/Game/Player.cpp:1-30` 的 `static constinit std::atomic<uint32_t> s_counter{1};` 单调发号,
+   **从 1 开始、不回收、不回绕**,所以它没有 16 位的上界。
+
+**这一族在本仓是「多数守住了、少数没守住」,所以判据有现成的对照组。**
+
+```cpp
+// Code/client/Games/Skyrim/Projectiles/Projectile.cpp:56-68(同族已守住的写法)
+if (arData.pShooter)
+{
+    Actor* pActor = Cast<Actor>(arData.pShooter);
+    if (pActor)
+    {
+        ActorExtension* pExtendedActor = pActor->GetExtension();
+        if (pExtendedActor->IsRemote())
+        {
+            apThis->handle.iBits = 0;
+            return apThis;
+        }
+    }
+}
+```
+
+`Code/client/Services/Generic/CombatService.cpp:112-116` 对 `Cast<TESObjectCELL>` 判空、
+`Code/client/Services/Generic/OverlayService.cpp:524-529` 与 `Code/client/Services/Generic/CommandService.cpp:62-67` 对 `Cast<TESWorldSpace>` 判空 ——
+也就是说这五个使用点不是「仓库里没人这么干」,而是**漏掉了**。
+
+### 71.3 可达性:五处都不需要「恶意客户端」,只需要一个被改过的客户端
+
+- **远程施法/打断施法**:`Code/encoding/Messages/SpellCastRequest.h:22` 与 `InterruptCastRequest.h:20` 的 `CastingSource` 都是
+  `int32_t`,服务端 `Code/server/Services/MagicService.cpp:24-51` 只做逐字转发(`notify.CastingSource = message.CastingSource;`)
+  再 `SendToPlayersInRange`。任何一个改过的客户端送 `-1` 或一个不存在的 `CasterId`,收到这个包的每个客户端就走进上面那两段。
+- **远程弹道**:`Code/server/Services/CombatService.cpp:15-56` 把 22 个字段逐字转发,`ProjectileBaseID` 与 `CastingSource` 都不例外,
+  而 `Code/client/Services/Generic/CombatService.cpp` 是唯一的消费者。
+- **覆层传送**:`Code/client/Services/Generic/OverlayClient.cpp:167-173` 是 `TeleportRequest` 的**唯一发送方**,
+  它的输入来自 CEF 覆层的 `player.id`;`Code/encoding/Messages/NotifyPartyInfo.h:25 Vector<uint32_t> PlayerIds{};` 送到覆层的本来就是 32 位
+  (`Code/client/Services/Generic/PartyService.cpp:126`/`:168` 取,`:137-141` 转发),`OverlayClient.cpp:170` 却把它赋给一个 `uint16_t`。
+  服务端 `Code/server/Services/OverlayService.cpp:90` 用这个值 `GetById` —— 第 65536 个玩家之后,按下的按钮指向**另一个人**。
+
+五条里没有一条能打崩服务器:**前四条是客户端侧的无效解引用与越界索引,第五条是一次「送错人」。**
+这正是它们能活到现在的原因 —— 它们不在崩溃报告里,只在「偶尔怪怪的」里。
+
+### 71.4 修法:把「有效吗」这一句判断放在使用点之前
+
+1. `Code/client/Services/Generic/MagicService.cpp:151-157` 与 `:302-306`:`Cast<Actor>` 之后加
+   `if (!pActor) { spdlog::warn(...); return; }`。
+2. 同文件 `:161-167`:再加一道 `if (!pActor->casters[CS::LEFT_HAND])`,位置在 `GenerateMagicCasters()` 之后、
+   `SetDualCasting` 之前。
+3. 同文件 `:172` 与 `:282`:`if (acMessage.CastingSource >= 4)` 补成 `if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)`。
+4. `Code/client/Services/Generic/CombatService.cpp:146-152`:把 C 风格强转换换成同一段范围判定 + `static_cast`;
+   `:127-131` 在 `pProjectileBase` 赋值之后判空。
+5. `Code/encoding/Messages/TeleportRequest.h:23`:`uint16_t PlayerId{};` → `uint32_t PlayerId{};`;
+   `Code/client/Services/Generic/OverlayClient.cpp:170`:`request.PlayerId = static_cast<uint32_t>(aEventArgs->GetInt(0));`。
+
+第 5 条不需要改线格式:写侧一直是 `Serialization::WriteVarInt(aWriter, PlayerId);`(`TeleportRequest.cpp:5`),
+读侧一直是 32 位掩码,`& 0xFFFFFFFF` 与 `WriteVarInt` 在 16 位以内的 id 上产生完全相同的字节。
+改动只发生在**字段宽度**这一层,所以它对已存在的存档、已连接的小 id 玩家都是透明的。
+
+### 71.5 复核命令(照抄)
+
+```powershell
+git grep -n "Cast<Actor>\|GenerateMagicCasters\|casters\[" Code/client/Services/Generic/MagicService.cpp
+git grep -n "CastingSource" Code/client/Services/Generic/MagicService.cpp Code/client/Services/Generic/CombatService.cpp
+git grep -n "pProjectileBase" Code/client/Services/Generic/CombatService.cpp
+git grep -n "uint16_t PlayerId\|uint32_t PlayerId" Code/encoding/Messages/TeleportRequest.h
+git grep -n "request.PlayerId" Code/client/Services/Generic/OverlayClient.cpp
+git grep -n "teleport_request" Code/tests/encoding.cpp
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`MagicService.cpp` 上 `Cast<Actor>` 之后紧跟判空(共两处,`:153` 与 `:302`),`casters[` 的唯一解引用点
+`:170` 之前有 `:163` 的判空;`CastingSource` 在本仓客户端侧共有三处范围判定,其中 `:172`/`:282` 是本批补上下界的,
+`CombatService.cpp:146` 是第三处;`pProjectileBase` 的赋值 `:125` 与判定 `:127` 相邻;
+`TeleportRequest.h` 上 `uint16_t PlayerId` 已无命中,`uint32_t PlayerId` 命中 `:23`。
+
+**验证**:`Code/tests/encoding.cpp` 新增 `TEST_CASE("A teleport request carries the whole player id", "[encoding.teleport_request]")`,
+对 `0`/`1`/`0xFFFF`/`0x10000`/`0x10001`/`0xFFFFFFFF` 各做一次整包往返并断言 `received.PlayerId == aPlayerId` 与 `received == sent`;
+`0x10000` 与 `0x10001` 正是 16 位字段会塌成同一个值的两个 id —— 把字段改回 `uint16_t` 会让这两条断言失败。
+其余四处(两个 Cast 判空、施法槽判空、施法源范围)在 `Code/client/Services/Generic/` 里,判定的是运行期才可能为空的引擎指针,**没有能在无游戏进程的单元测试里造出来的前置条件**,
+所以它们的证据是逐字核对 + 同族对照组(`Projectile.cpp:56-68`、`CombatService.cpp:112-116`、`OverlayService.cpp:524-529`),
+C++ 编译由 CI 执行(`windows.yml`)。`python Tools/Scripts/check_docs.py` 全绿。
+
+> **教训**:第一条:**「多数地方守住了」不是「这一族守住了」。**
+> `Cast<T>` 之后的判空在本仓有几十处,`Projectile.cpp:56-68` 与 `CombatService.cpp:112-116` 都在其中 ——
+> 而正是这份密度让漏掉的那几处读起来像是「这里不需要」。
+> 第二条:**判据要写在「值被使用的那一行」,不是写在「值被赋值的那一行」。**
+> `CastingSource` 的 `>= 4` 判定在修复前就存在,它离使用点只隔八行,却因为漏了下界而完全无效;
+> 一个判定了半个区间的检查比没有检查更难发现,因为它会让读者以为这里已经检查过了。
+> 第三条:**字段宽度不是实现细节,它是接口的一部分。**
+> `TeleportRequest::PlayerId` 的 16 位与它的读侧 32 位掩码放在一起时,缺陷是自证的;
+> 而两者分处两个文件、中间隔着一次 CEF 的 `int`,于是它活了很久 —— 直到有人把「id 从哪来」追到发号器。
+

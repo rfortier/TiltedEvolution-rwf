@@ -167,7 +167,7 @@ void OverlayClient::ProcessSetTimeCommand(CefRefPtr<CefListValue> aEventArgs)
 void OverlayClient::ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs)
 {
     TeleportRequest request{};
-    request.PlayerId = aEventArgs->GetInt(0);
+    request.PlayerId = static_cast<uint32_t>(aEventArgs->GetInt(0));
 
     m_transport.Send(request);
 }
