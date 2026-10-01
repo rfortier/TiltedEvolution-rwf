@@ -1,0 +1,58 @@
+diff --git a/src/ActorResolver.h b/src/ActorResolver.h
+index 82fa807..13f6ac5 100644
+--- a/src/ActorResolver.h
++++ b/src/ActorResolver.h
+@@ -101,6 +101,11 @@ namespace OStimTogether
+ 
+         std::mutex _mutex;
+ 
++        // Every key below is built from strings a remote peer chooses, and
++        // nothing erases them, so they are bounded here.
++        static constexpr std::size_t kMaxResolvedEntries = 512;
++        static constexpr std::size_t kMaxRemoteNames = 512;
++
+         // key = sender|thread|participantIndex (diagnostic/cache)
+         std::unordered_map<std::string, RE::FormID> _resolved;
+ 
+diff --git a/src/ActorResolverSTRPM.cpp b/src/ActorResolverSTRPM.cpp
+index 71f842b..d825c76 100644
+--- a/src/ActorResolverSTRPM.cpp
++++ b/src/ActorResolverSTRPM.cpp
+@@ -658,9 +658,22 @@ namespace OStimTogether
+ 
+         std::scoped_lock lock(_mutex);
+         for (const auto& name : names) {
+-            if (!name.empty()) {
+-                _strpmRemoteByName[name] = formID;
++            if (name.empty()) {
++                continue;
++            }
++
++            if (!_strpmRemoteByName.contains(name) &&
++                _strpmRemoteByName.size() >= kMaxRemoteNames) {
++                // The names come from the remote side and the map is a
++                // resolution cache, so a full cache is a miss, not a failure.
++                SKSE::log::warn(
++                    "OSTNET STRPM RESOLVE name cache full size={} name=\"{}\", dropping",
++                    _strpmRemoteByName.size(),
++                    name);
++                continue;
+             }
++
++            _strpmRemoteByName[name] = formID;
+         }
+     }
+ 
+@@ -925,6 +938,12 @@ namespace OStimTogether
+                 i);
+             {
+                 std::scoped_lock lock(_mutex);
++                if (!_resolved.contains(key) &&
++                    _resolved.size() >= kMaxResolvedEntries)
++                {
++                    _resolved.clear();
++                }
++
+                 _resolved[key] = resolved.chosen;
+             }
+         }

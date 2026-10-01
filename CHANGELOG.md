@@ -1851,6 +1851,83 @@ CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改�
 同目录下 `check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK`;
 四个 `src/main.cpp` 上 `flush_on(spdlog::level::trace)` 已无命中,`flush_every(std::chrono::seconds(1))` 各命中一处
 (`DAVSyncTogether:31`、`IEDSyncTogether:26`、`OStimTogether:54`、`TradeTogether:26`)。`check_docs.py` 全绿。
+### 修复:插件层一次节点变化就起两个线程,以及三张只增不减的对端可控缓存
+
+**现象**:两件事,都发生在 OStim 多人场景里。其一,场景每换一个动画节点,`OStimTogether` 就为每个非玩家 actor 起 2 个 detached 线程(250ms 与 1100ms 各一个),节点切得越密线程起得越多;其二,插件的四张缓存键全部由对端在载荷里自选,而它们只在读档时清空一次,会话内没有上限。
+
+**根因**:
+
+一、重放调度没有合并,而两个调用点都在游戏线程上:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp(修复前)
+schedule(std::chrono::milliseconds(250), "T250");
+schedule(std::chrono::milliseconds(1100), "T1100");
+```
+
+调用点一是 `plugins/OStimTogether/src/AddonStateRepair.cpp:86`(在 `OStim::ThreadInterface::registerNodeChangedListener` 的回调里对每个非玩家 actor 调一次),节点变化来自 `plugins/OStimNG/skse/src/Core/Thread.cpp:337` 的 `EventUtil::invokeListeners(nodeChangedListeners);`;调用点二是 `plugins/OStimTogether/src/OStimBridge.cpp:3941`(停止场景时对同一批 actor 再调一轮)。
+
+二、缓存键由对端选,而没有任何删除路径:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp(修复前)
+auto& cached = _remoteOverlays[actor->GetFormID()][cacheKey];      // :531
+_remoteObjects[actor->GetFormID()][key] = CachedObjectState{...};  // :617
+// plugins/OStimTogether/src/ActorResolverSTRPM.cpp(修复前)
+_strpmRemoteByName[name] = formID;   // :662
+_resolved[key] = resolved.chosen;    // :928
+```
+
+`IsSafeAddonToken` 只约束每个键的长度与字符集,不约束**数量**;唯一的清理点是 `ClearRemoteState()`,而它只在 `plugins/OStimTogether/src/main.cpp:227` 的 `kPreLoadGame` 被调一次。
+
+**判据可机械执行**:「这个键是谁选的,而它什么时候被删掉」—— 键由对端选、又没有任何删除路径 = 缺陷。
+
+**修法**:
+
+一、重放合并成一个可自愈的守卫:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp(修复后)
+constexpr auto kReapplyGuardWindow = std::chrono::seconds(5);
+...
+const auto now = std::chrono::steady_clock::now();
+std::scoped_lock lock(_stateMutex);
+const auto it = _reapplyPending.find(actorFormID);
+if (it != _reapplyPending.end() && it->second > now)
+{
+    return;
+}
+_reapplyPending[actorFormID] = now + kReapplyGuardWindow;
+```
+
+末阶段(`"T1100"`)在 `sleep_for` 之后 `_reapplyPending.erase(actorFormID)`。用过期时间而不是只用一个 set:如果这中间游戏读了档,`kPreLoadGame` 会重置十个子系统,那个线程可能再也跑不到 erase,守卫会把 actor 永久锁死。
+
+二、两张远程缓存按 actor 设上限:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp(修复后)
+constexpr std::size_t kMaxRemoteChannelsPerActor = 16;
+constexpr std::size_t kMaxRemoteObjectsPerActor = 16;
+```
+
+先判 `contains` 再判上限:已有的 channel 永远还能更新,被拒的只是**新**键。
+
+三、两个解析缓存设界(`ActorResolver.h` 的 `kMaxResolvedEntries = 512` / `kMaxRemoteNames = 512`):名字缓存满了跳过这一个名字(它是「省一次扫描」的缓存,满了只是多扫一次),解析缓存满了直接清空(它没有任何读者)。
+
+**验证**:
+
+两处修改都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
+
+- `Code/plugins/patches/OStimTogether/0006-coalesce-the-addon-state-reapply-and-bound-the-remote-caches.patch`
+- `Code/plugins/patches/OStimTogether/0007-bound-the-resolver-caches.patch`
+
+`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / `19 patch(es) apply to their pinned commits`(17 → 19);同目录下 `check` → `PATCH CHECK OK`;`apply` → `patches: 0 applied, 19 already present`;`python Tools/Scripts/check_docs.py` 全绿。插件是 CMake 工程、本机不编译(`plugins/OStimNG/skse/AGENTS.md` 明写不要构建 C++/CMake),所以这一批的证据是补丁门禁 + 逐字命中。
+
+**教训**:后台线程的数量不能由对端或事件频率决定。
+
+**教训**:「有校验」不等于「有上限」—— 判据要问「这个键是谁选的,而它什么时候被删掉」,不是「这个键合法吗」。
+
+**教训**:合并用的守卫必须能自己过期,否则一次中途读档就能把它变成死锁。
 ### 修复:管理员判定由对端自称的 id 决定,拒绝的调用仍然改状态,以及一个 `assert` 就长在收包路径上
 
 **现象**:三件事,都可以由一个普通玩家触发。其一,任何玩家在聊天框打 `/settime 12 00` 都能改全服时间,

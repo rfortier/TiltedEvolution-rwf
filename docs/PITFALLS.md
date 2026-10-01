@@ -9274,4 +9274,182 @@ git grep -n "kMaxTimeScale" -- Code/
 > 对一个可以被任何对端构造出来的输入断言,等于把进程的存活交给对端;
 > 而 `releasedbg` 是发布流水线的默认模式,`noexcept` 又拿走了「抛出去让人接」这条退路。
 
+## 74. 2026-10-07 场次:插件层一次节点变化起两个线程、三张只增不减的对端可控缓存 —— 判据是「这个键是谁选的,而它什么时候被删掉」
+
+> **锚点**:两处修复,都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
+> `Code/plugins/patches/OStimTogether/0006-coalesce-the-addon-state-reapply-and-bound-the-remote-caches.patch`
+> 改 `plugins/OStimTogether/src/AddonBridge.cpp` 与 `src/AddonBridge.h`,
+> `Code/plugins/patches/OStimTogether/0007-bound-the-resolver-caches.patch`
+> 改 `plugins/OStimTogether/src/ActorResolver.h` 与 `src/ActorResolverSTRPM.cpp`;
+> 两者由 `Code/plugins/tools/plugin_patches.py apply` 在 CI 配置阶段应用。
+
+### 74.1 缺陷:三处,两处没有上限,一处没有合并
+
+| 位置 | 作用 |
+| --- | --- |
+| `plugins/OStimTogether/src/AddonBridge.cpp:639`(修复前) | 每次调用起 2 个 detached 线程,同一 actor 的重复请求不合并 |
+| `plugins/OStimTogether/src/AddonBridge.cpp:531`(修复前) | 覆盖层缓存按「对端选的 channel」增长,没有上限 |
+| `plugins/OStimTogether/src/AddonBridge.cpp:617`(修复前) | 物体缓存按「对端选的 channel 与 objectType」增长,没有上限 |
+| `plugins/OStimTogether/src/ActorResolverSTRPM.cpp:662`(修复前) | 名字缓存按「对端给的显示名」增长,没有上限 |
+| `plugins/OStimTogether/src/ActorResolverSTRPM.cpp:928`(修复前) | 解析缓存按「发送者与线程与下标」增长,没有上限 |
+
+第一处:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp(修复前)
+const auto schedule = [this, actorFormID, reasonCopy](std::chrono::milliseconds delay, const char* phase)
+{
+    std::thread([...]()
+    {
+        std::this_thread::sleep_for(delay);
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) return;
+        tasks->AddTask([...]() { /* 读缓存、重放、打一行 info */ });
+    }).detach();
+};
+
+schedule(std::chrono::milliseconds(250), "T250");
+schedule(std::chrono::milliseconds(1100), "T1100");
+```
+
+第二、三处:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp(修复前)
+auto& cached = _remoteOverlays[actor->GetFormID()][cacheKey];   // :531
+_remoteObjects[actor->GetFormID()][key] = CachedObjectState{...}; // :617
+```
+
+第四、五处:
+
+```cpp
+// plugins/OStimTogether/src/ActorResolverSTRPM.cpp(修复前)
+_strpmRemoteByName[name] = formID;   // :662
+_resolved[key] = resolved.chosen;    // :928
+```
+
+### 74.2 判据:对端能选的键必须有上限,而后台线程的数量不能由对端决定
+
+1. **两个调用点都在游戏线程上,所以线程数是同步事件数的两倍。**
+   `plugins/OStimTogether/src/AddonStateRepair.cpp:86` 在
+   `OStim::ThreadInterface::registerNodeChangedListener` 的回调里对每个非玩家 actor 调一次;
+   而节点变化来自 `plugins/OStimNG/skse/src/Core/Thread.cpp:337`
+   (`ChangeNode` 末尾的 `EventUtil::invokeListeners(nodeChangedListeners);`)——
+   `ChangeNode` 全仓 20 个调用点,一次场景里每切一个动画节点就触发一轮。
+   `plugins/OStimTogether/src/OStimBridge.cpp:3941` 是第二个调用点,在停止场景时对同一批 actor 再调一轮。
+2. **两个阶段读的是「执行时刻」的缓存,不是「排程时刻」的快照。**
+   线程体持 `_stateMutex` 从 `_remoteOverlays`/`_remoteObjects` 现拷两份副本再重放
+   (工作树 `AddonBridge.cpp:741-753`),所以一个已经排队的 pair 天然覆盖了它排队期间到达的所有状态;
+   再排一对只是把同样的工作重复一遍。
+3. **键的形状有上限,数量没有。** `IsSafeAddonToken` 只约束长度 ≤128 与字符集
+   (`AddonBridge.cpp:31-43`),`count`/`seq` 也只约束到 64 —— 一个对端仍然可以用任意多个合法 token
+   把 `_remoteOverlays`/`_remoteObjects` 撑开;这两张表的唯一清理点是 `ClearRemoteState()`,
+   而它只在 `main.cpp:227` 的 `kPreLoadGame` 被调一次。
+4. **缓存满 = 一次 miss,不是失败。** `ResolveRemotePlayerByName`(`ActorResolverSTRPM.cpp:789-820`)
+   查不到 `_strpmRemoteByName` 就回落到 `ResolveParticipant` 的 ProcessLists 名称扫描;
+   `_resolved` 更是没有任何读者。所以给它们设界不会改变行为,只是把内存交还给游戏。
+
+### 74.3 可达性
+
+第一处:**任何进入 OStim 多人场景的玩家**。场景每换一个动画节点,插件为每个非玩家 actor
+起 2 个 detached 线程;一次场景几十个节点就是几十到上百个线程的创建与销毁,
+全部发生在游戏线程同步调用的回调里。这不是「崩服」级别的缺陷,是**过场与场景交互卡顿**级别的:
+线程创建要拿内核锁,而回调本身在游戏线程上。
+
+第二、三处:**同一个对端**,用任意多个 ≤128 字符的合法 channel 名(不限于 `ocum`)反复发包。
+每包都会往 `_remoteOverlays` 里插一个新键,会话内没有上限。
+
+第四处:**同一个对端**,每发一包 `HandleSTRPMPacket` 就会写一次 `_strpmRemoteByName`
+(`ActorResolverSTRPM.cpp:1166`,只要 `connectionID != 0` 且 proxy 解析成功);
+第五处:每个 `sender|thread|index` 三元组一次,而 `sender` 由对端在载荷里自选。
+
+### 74.4 修法
+
+一、重放调度合并成一个可自愈的守卫:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp(修复后)
+constexpr auto kReapplyGuardWindow = std::chrono::seconds(5);
+...
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::scoped_lock lock(_stateMutex);
+
+    const auto it = _reapplyPending.find(actorFormID);
+    if (it != _reapplyPending.end() && it->second > now) {
+        return;
+    }
+
+    _reapplyPending[actorFormID] = now + kReapplyGuardWindow;
+}
+```
+
+守卫带过期时间而不是只用一个 set:`schedule` 的末阶段(`"T1100"`)负责 `_reapplyPending.erase(actorFormID)`,
+而它在线程里 `sleep_for` 之后执行 —— 如果这中间游戏读了档,`kPreLoadGame` 会重置十个子系统,
+那个线程可能再也跑不到 erase。5 秒比 250ms + 1100ms 长得多,所以正常路径下它永远是末阶段先删、
+下一次调用重新排队;只有被读档打断的那一对才会让守卫自然过期。
+
+二、两张远程缓存按 actor 设上限:
+
+```cpp
+// plugins/OStimTogether/src/AddonBridge.cpp(修复后)
+constexpr std::size_t kMaxRemoteChannelsPerActor = 16;
+constexpr std::size_t kMaxRemoteObjectsPerActor = 16;
+...
+auto& channels = _remoteOverlays[actor->GetFormID()];
+if (!channels.contains(cacheKey) && channels.size() >= kMaxRemoteChannelsPerActor) {
+    SKSE::log::warn("OSTNET ADDON OVR RX channel limit sender={} actor={:08X} channels={}", sender, actor->GetFormID(), channels.size());
+    return;
+}
+auto& cached = channels[cacheKey];
+```
+
+物体分支同形(`kMaxRemoteObjectsPerActor` / `"OSTNET ADDON OBJ RX object limit ..."`)。
+先判 `contains` 再判上限:已有的 channel 永远还能更新,被拒的只是**新**键。
+
+三、两个解析缓存设界,且按各自的语义设界:
+
+```cpp
+// plugins/OStimTogether/src/ActorResolver.h(修复后)
+static constexpr std::size_t kMaxResolvedEntries = 512;
+static constexpr std::size_t kMaxRemoteNames = 512;
+```
+
+名字缓存满了就跳过这一个名字(`SKSE::log::warn("OSTNET STRPM RESOLVE name cache full ...")`),
+因为它是「省一次扫描」的缓存,满了只是多扫一次;解析缓存满了直接 `_resolved.clear()`,
+因为它没有任何读者,清空不改变任何行为。
+
+### 74.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\plugin_patches.py apply
+python Tools\Scripts\check_docs.py
+git -C plugins/OStimTogether grep -n "ScheduleRemoteStateReapply" -- src/
+git -C plugins/OStimTogether grep -n "_reapplyPending" -- src/
+git -C plugins/OStimTogether grep -n "kMaxRemoteChannelsPerActor" -- src/
+git -C plugins/OStimTogether grep -n "kMaxRemoteNames" -- src/
+```
+
+复核结果:`plugin_patches.py verify` → `PATCH VERIFY OK` / `19 patch(es) apply to their pinned commits`;
+`check` → `PATCH CHECK OK`;`apply` → `patches: 0 applied, 19 already present`;
+`check_docs.py` → `DOC CHECK OK`。
+`ScheduleRemoteStateReapply` 只剩定义(`AddonBridge.cpp:682`)与两个调用点(`AddonStateRepair.cpp:86`、`OStimBridge.cpp:3941`);
+`_reapplyPending` 的 5 处命中就是「一处声明、一处读、一处写、一处删、一处声明于头文件」;
+两个上限常量各只有一处定义与一处判定。
+
+**验证**:插件是 CMake 工程、本机不编译(`plugins/OStimNG/skse/AGENTS.md` 明写不要构建 C++/CMake),
+所以这一批的证据是补丁门禁 + 逐字命中,不是编译产物。
+两处修改都不引入新的 include:`src/PCH.h` 已含 `<chrono>`、`<mutex>`、`<thread>`、`<unordered_map>`、`<unordered_set>`。
+
+> **教训**:第一条:**后台线程的数量不能由对端或事件频率决定。**
+> 一次节点变化起两个线程本身不是错,错在「同一个 actor 的请求可以无限叠加」;
+> 而合并的正确性来自一个事实:两个阶段读的是执行时刻的缓存,所以排队中的那一对已经覆盖了后来的请求。
+> 第二条:**「有校验」不等于「有上限」。**
+> `IsSafeAddonToken` 把每个键的形状管得很好,而键的**数量**没人管;
+> 判据要问的是「这个键是谁选的,而它什么时候被删掉」,而不是「这个键合法吗」。
+> 第三条:**合并用的守卫必须能自己过期。**
+> 只用一个 set 的实现依赖「末阶段一定会执行」,而它在一个 `sleep_for` 之后的 detached 线程里 ——
+> 中间读一次档,这个假设就没了,守卫会把那个 actor 永久锁死。
 

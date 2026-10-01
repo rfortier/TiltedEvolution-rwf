@@ -1,0 +1,165 @@
+diff --git a/src/AddonBridge.cpp b/src/AddonBridge.cpp
+index f950ac2..d74f5d2 100644
+--- a/src/AddonBridge.cpp
++++ b/src/AddonBridge.cpp
+@@ -149,6 +149,18 @@ namespace OStimTogether
+             }
+             return chunks;
+         }
++
++        // The channel and object type names come from the remote peer, so the
++        // cache below is keyed by strings the remote side chooses. These caps
++        // keep one peer from growing it without bound.
++        constexpr std::size_t kMaxRemoteChannelsPerActor = 16;
++        constexpr std::size_t kMaxRemoteObjectsPerActor = 16;
++
++        // How long one queued reapply pair may keep later requests for the same
++        // actor out. It is longer than the pair itself (250ms + 1100ms), so the
++        // entry can only outlive the pair if the last phase never ran, which is
++        // what happens when the game loads a save mid-pair.
++        constexpr auto kReapplyGuardWindow = std::chrono::seconds(5);
+     }
+ 
+     AddonBridge& AddonBridge::GetSingleton()
+@@ -528,7 +540,19 @@ namespace OStimTogether
+ 
+             {
+                 std::scoped_lock lock(_stateMutex);
+-                auto& cached = _remoteOverlays[actor->GetFormID()][cacheKey];
++                auto& channels = _remoteOverlays[actor->GetFormID()];
++
++                if (!channels.contains(cacheKey) &&
++                    channels.size() >= kMaxRemoteChannelsPerActor) {
++                    SKSE::log::warn(
++                        "OSTNET ADDON OVR RX channel limit sender={} actor={:08X} channels={}",
++                        sender,
++                        actor->GetFormID(),
++                        channels.size());
++                    return;
++                }
++
++                auto& cached = channels[cacheKey];
+ 
+                 // ADDONOVR is ordered. seq=0 starts a new snapshot even if the
+                 // chunk count matches the previous one.
+@@ -614,7 +638,19 @@ namespace OStimTogether
+             {
+                 std::scoped_lock lock(_stateMutex);
+                 const auto key = fmt::format("{}|{}", *channel, *objectType);
+-                _remoteObjects[actor->GetFormID()][key] = CachedObjectState{
++                auto& objects = _remoteObjects[actor->GetFormID()];
++
++                if (!objects.contains(key) &&
++                    objects.size() >= kMaxRemoteObjectsPerActor) {
++                    SKSE::log::warn(
++                        "OSTNET ADDON OBJ RX object limit sender={} actor={:08X} objects={}",
++                        sender,
++                        actor->GetFormID(),
++                        objects.size());
++                    return;
++                }
++
++                objects[key] = CachedObjectState{
+                     *channel,
+                     *objectType,
+                     equipped };
+@@ -636,6 +672,13 @@ namespace OStimTogether
+         }
+     }
+ 
++    void AddonBridge::ClearRemoteState()
++    {
++        std::scoped_lock lock(_stateMutex);
++        _remoteOverlays.clear();
++        _remoteObjects.clear();
++    }
++
+     void AddonBridge::ScheduleRemoteStateReapply(
+         RE::Actor* actor,
+         std::string_view reason)
+@@ -647,18 +690,41 @@ namespace OStimTogether
+         const auto actorFormID = actor->GetFormID();
+         const std::string reasonCopy(reason);
+ 
++        {
++            const auto now = std::chrono::steady_clock::now();
++            std::scoped_lock lock(_stateMutex);
++
++            const auto it = _reapplyPending.find(actorFormID);
++            if (it != _reapplyPending.end() && it->second > now) {
++                // A reapply is already queued for this actor. Both phases read
++                // the cache when they run, so the queued pair already applies
++                // the state this call was made for; a second pair would only
++                // repeat the same work on the game thread.
++                return;
++            }
++
++            _reapplyPending[actorFormID] = now + kReapplyGuardWindow;
++        }
++
+         const auto schedule =
+             [this, actorFormID, reasonCopy](
+                 std::chrono::milliseconds delay,
+-                const char* phase) {
++                const char* phase,
++                bool isFinalPhase) {
+                 std::thread(
+                     [this,
+                      actorFormID,
+                      reasonCopy,
+                      delay,
+-                     phase = std::string(phase)]() {
++                     phase = std::string(phase),
++                     isFinalPhase]() {
+                         std::this_thread::sleep_for(delay);
+ 
++                        if (isFinalPhase) {
++                            std::scoped_lock lock(_stateMutex);
++                            _reapplyPending.erase(actorFormID);
++                        }
++
+                         auto* tasks = SKSE::GetTaskInterface();
+                         if (!tasks) {
+                             return;
+@@ -718,7 +784,7 @@ namespace OStimTogether
+                     }).detach();
+             };
+ 
+-        schedule(std::chrono::milliseconds(250), "T250");
+-        schedule(std::chrono::milliseconds(1100), "T1100");
++        schedule(std::chrono::milliseconds(250), "T250", false);
++        schedule(std::chrono::milliseconds(1100), "T1100", true);
+     }
+ }
+diff --git a/src/AddonBridge.h b/src/AddonBridge.h
+index b062689..5a4ecbd 100644
+--- a/src/AddonBridge.h
++++ b/src/AddonBridge.h
+@@ -26,6 +26,11 @@ namespace OStimTogether
+             RE::Actor* actor,
+             std::string_view reason);
+ 
++        // Drops every cached remote addon state. The cache is keyed by FormID
++        // and a new game hands those ids out again, so state captured for one
++        // save would otherwise be replayed onto whoever now carries that id.
++        void ClearRemoteState();
++
+     private:
+         AddonBridge() = default;
+ 
+@@ -86,5 +91,15 @@ namespace OStimTogether
+             RE::FormID,
+             std::unordered_map<std::string, CachedObjectState>>
+             _remoteObjects;
++
++        // FormIDs with a reapply pair in flight, and the time the guard for
++        // them expires. Both phases read the cache when they run, so one queued
++        // pair already covers every request made while it is pending. The last
++        // phase removes the entry; the expiry keeps a pair that was cut short
++        // (a save load) from blocking later requests forever.
++        std::unordered_map<
++            RE::FormID,
++            std::chrono::steady_clock::time_point>
++            _reapplyPending;
+     };
+ }
