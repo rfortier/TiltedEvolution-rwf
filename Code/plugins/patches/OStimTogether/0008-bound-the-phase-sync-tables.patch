@@ -1,0 +1,56 @@
+diff --git a/src/FreeScenePhaseSync.cpp b/src/FreeScenePhaseSync.cpp
+index cb2bae1..c04295d 100644
+--- a/src/FreeScenePhaseSync.cpp
++++ b/src/FreeScenePhaseSync.cpp
+@@ -494,6 +494,16 @@ namespace OStimTogether
+         if (it != _lastReadyToken.end() && it->second == prep.token) {
+             return;
+         }
++        if (it == _lastReadyToken.end() && _lastReadyToken.size() >= kMaxReadyTokens) {
++            // The key is a connection and a thread id the peer chooses, and
++            // nothing erases it. The table only suppresses a duplicate send, so
++            // clearing it costs one repeated packet.
++            SKSE::log::warn(
++                "OSTNET PHASE READY TX token table full size={}; clearing",
++                _lastReadyToken.size());
++            _lastReadyToken.clear();
++        }
++
+         _lastReadyToken[readyKey] = prep.token;
+ 
+         std::thread([this, localThreadID, prep = std::move(prep), delay]() mutable {
+@@ -603,6 +613,17 @@ namespace OStimTogether
+                                existing.ownerThreadID == *ownerThread;
+                     }),
+                 _remotePreps.end());
++            if (_remotePreps.size() >= kMaxRemotePreps) {
++                // The key is a connection and a thread id the peer chooses, so
++                // the table is bounded here. The oldest entry is the least
++                // likely to still be in flight.
++                SKSE::log::warn(
++                    "OSTNET PHASE PREP RX table full size={} ownerThread={}; dropping oldest",
++                    _remotePreps.size(),
++                    *ownerThread);
++                _remotePreps.erase(_remotePreps.begin());
++            }
++
+             _remotePreps.push_back(prep);
+ 
+             SKSE::log::trace(
+diff --git a/src/FreeScenePhaseSync.h b/src/FreeScenePhaseSync.h
+index 242efb7..bdd5225 100644
+--- a/src/FreeScenePhaseSync.h
++++ b/src/FreeScenePhaseSync.h
+@@ -289,6 +289,12 @@ namespace OStimTogether
+ 
+         std::uint64_t _nextToken{ 1 };
+         std::optional<OwnerPhase> _ownerPhase;
++        // Both tables are keyed by values the remote peer picks, and nothing
++        // erases them on its own, so they are bounded here. A full table drops
++        // or clears instead of growing without limit.
++        static constexpr std::size_t kMaxRemotePreps = 32;
++        static constexpr std::size_t kMaxReadyTokens = 256;
++
+         std::vector<RemotePrep> _remotePreps;
+         std::unordered_map<std::string, std::uint64_t> _lastReadyToken;
+         std::unordered_set<std::int32_t> _startedThreads;

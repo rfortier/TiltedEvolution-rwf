@@ -1851,6 +1851,83 @@ CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改�
 同目录下 `check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK`;
 四个 `src/main.cpp` 上 `flush_on(spdlog::level::trace)` 已无命中,`flush_every(std::chrono::seconds(1))` 各命中一处
 (`DAVSyncTogether:31`、`IEDSyncTogether:26`、`OStimTogether:54`、`TradeTogether:26`)。`check_docs.py` 全绿。
+### 修复:三个插件的对端可控缓存只增不减,以及一个「门禁全绿却装不上」的补丁
+
+**现象**:两件事。其一,`IEDSyncTogether`、`MorphSyncTogether`(含 `TngSync`)、`OStimTogether` 的四张远端缓存表全部以「对端在载荷里自选的字符串」为键,唯一清空点是读档,会话内没有上限 —— 而它们每 750ms/1s 会被遍历一次做演员名字扫描,所以表越大,游戏线程上的那次扫描越贵;其二,上一版提交的 `OStimTogether/0006` 补丁从 pin 出发装不上,`plugin_patches.py apply` 直接中止,而 `verify` 与 `check` 两条门禁当时都是绿的。
+
+**根因**:
+
+一、四张表的键由对端写,而全仓没有 `erase`:
+
+```cpp
+// plugins/IEDSyncTogether/src/SyncService.cpp(修复前)
+const auto instanceID = ReadField(packet, "id");   // :232,长度零检查
+auto& snapshot = _remoteSnapshots[*instanceID];    // :262,insert-or-default
+// plugins/MorphSyncTogether/src/MorphSyncService.cpp(修复前)
+auto& snapshot = _remoteSnapshots[sender];         // :667
+auto& snapshot = _remotePubicSnapshots[sender];    // :742
+// plugins/MorphSyncTogether/src/TngSync.cpp(修复前)
+auto& state = _remoteStates[sender];               // :221
+```
+
+IED 的 `id=` 是它自己的包装字段,由对端整包替换(`plugins/IEDSyncTogether/src/StrTransport.cpp:302-309` 拼的是 `IEDST|v1|id={}|from={}|relay=0|{}`,而 `UdpTransport.cpp:680` 只查前缀);Morph/TNG 的 `from=` 来自 `plugins/MorphSyncTogether/src/UdpTransport.cpp:219-222` 的对端显示名,过一道 `SanitizeField`(`:26-37`,只换 `|`/CR/LF、空则 `"Player"`,**没有长度上限**)。同族的 `_assemblies` 是唯一有 prune 的表(`MorphSyncService.cpp:356-366`,15 秒过期),旁边两张快照表没有。
+
+二、补丁的基线选错了:
+
+```powershell
+git apply --check --cached  # verify:对 index,即 pin
+git apply --check --reverse # check:对工作树,只问「是否已应用」
+git apply                   # apply:CI 的那条路,从 pin 出发按文件名顺序落
+```
+
+`0006` 是拿 pin 当基线生成的,于是把 `0003` 的 `AddonBridge.cpp`/`AddonBridge.h` 两段 hunk 又抄了一遍;对 pin 自洽、对「`0003` 已应用」的工作树则找不到锚点。
+
+**判据可机械执行**:「这个键是谁选的,而它什么时候被删掉」—— 键由对端选、又没有任何删除路径 = 缺陷;补丁门禁则要问「这条门禁跑在哪种工作树上」—— 只有从 pin 出发的 `apply` 能发现基线选错。
+
+**修法**:
+
+一、四张表各自设上限,满了丢包而不是丢表:
+
+```cpp
+// plugins/IEDSyncTogether/src/SyncService.h(修复后)
+static constexpr std::size_t kMaxRemoteSnapshots = 64;
+// plugins/MorphSyncTogether/src/MorphSyncService.h(修复后)
+static constexpr std::size_t kMaxRemoteSnapshots = 64;
+static constexpr std::size_t kMaxRemotePubicSnapshots = 64;
+// plugins/MorphSyncTogether/src/TngSync.h(修复后)
+static constexpr std::size_t kMaxRemoteStates = 64;
+```
+
+先判 `contains` 再判上限:已有的键永远还能更新,被拒的只是**新**键。
+
+二、`FreeScenePhaseSync` 的两张表按各自语义设界:
+
+```cpp
+// plugins/OStimTogether/src/FreeScenePhaseSync.h(修复后)
+static constexpr std::size_t kMaxRemotePreps = 32;
+static constexpr std::size_t kMaxReadyTokens = 256;
+```
+
+`_remotePreps` 是有序队列,满了 `erase(_remotePreps.begin())` 丢掉的正是最不可能还在飞的那条;`_lastReadyToken` 没有顺序语义,满了整体清空只值一包。
+
+三、重写 `0006`,把基线从 pin 改成「`0003` 已应用」:先把已应用的工作树 `git add -A` 进 index,再 `git diff`,落盘后 `git reset` 把 index 还原成 pin,让 `verify` 仍然有意义。补丁从 6567 B 变成 5780 B,少掉的正是 `0003` 的 `ClearRemoteState` 两段 hunk。
+
+**验证**:
+
+四处修改都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
+
+- `Code/plugins/patches/IEDSyncTogether/0002-bound-the-remote-snapshot-table.patch`
+- `Code/plugins/patches/MorphSyncTogether/0004-bound-the-remote-snapshot-tables.patch`
+- `Code/plugins/patches/OStimTogether/0008-bound-the-phase-sync-tables.patch`
+- `Code/plugins/patches/OStimTogether/0006-coalesce-the-addon-state-reapply-and-bound-the-remote-caches.patch`(重写)
+
+`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / `22 patch(es) apply to their pinned commits`(19 → 22);`apply` → **`patches: 22 applied, 0 already present`**(从干净工作树,这是 CI 的那条路径);`check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK`;`check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`;`check_docs.py` 全绿。另有一项更强的复核:22 个补丁从 pin 依次应用后,九个被改文件与手工编辑的版本**逐字节相同**。
+
+**教训**:「这个键合法吗」和「这个键能有几个」是两个问题 —— `SanitizeField`/`IsSafeAddonToken` 把形状管得很好,条数没人管。
+
+**教训**:同族的表要用同一把尺子量 —— `_assemblies` 有 15 秒 prune 而旁边两张快照表没有,缺陷的形状是「同一处清理里,谁缺席」。
+
+**教训**:门禁要跑在它实际会跑的那种工作树上 —— `verify` 对 index、`check` 对工作树,两者都看不出「补丁的基线选错了」。
 ### 修复:插件层一次节点变化就起两个线程,以及三张只增不减的对端可控缓存
 
 **现象**:两件事,都发生在 OStim 多人场景里。其一,场景每换一个动画节点,`OStimTogether` 就为每个非玩家 actor 起 2 个 detached 线程(250ms 与 1100ms 各一个),节点切得越密线程起得越多;其二,插件的四张缓存键全部由对端在载荷里自选,而它们只在读档时清空一次,会话内没有上限。

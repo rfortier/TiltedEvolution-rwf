@@ -1,0 +1,127 @@
+diff --git a/src/MorphSyncService.cpp b/src/MorphSyncService.cpp
+index 743e9eb..56fa28f 100644
+--- a/src/MorphSyncService.cpp
++++ b/src/MorphSyncService.cpp
+@@ -664,6 +664,15 @@ namespace MorphSyncTogether
+ 
+             _assemblies.erase(it);
+ 
++            if (!_remoteSnapshots.contains(sender) &&
++                _remoteSnapshots.size() >= kMaxRemoteSnapshots) {
++                SKSE::log::warn(
++                    "MST MORPH RX snapshot dropped: sender table full size={} sender=\"{}\"",
++                    _remoteSnapshots.size(),
++                    sender);
++                return;
++            }
++
+             auto& snapshot = _remoteSnapshots[sender];
+             snapshot.hash = hash;
+             snapshot.values = values;
+@@ -739,6 +748,15 @@ namespace MorphSyncTogether
+ 
+         {
+             std::scoped_lock lock(_remoteMutex);
++            if (!_remotePubicSnapshots.contains(sender) &&
++                _remotePubicSnapshots.size() >= kMaxRemotePubicSnapshots) {
++                SKSE::log::warn(
++                    "MST PUBES RX snapshot dropped: sender table full size={} sender=\"{}\"",
++                    _remotePubicSnapshots.size(),
++                    sender);
++                return;
++            }
++
+             auto& snapshot = _remotePubicSnapshots[sender];
+             snapshot.hash = hash;
+             snapshot.state = state;
+diff --git a/src/MorphSyncService.h b/src/MorphSyncService.h
+index 977ae90..7eb1c45 100644
+--- a/src/MorphSyncService.h
++++ b/src/MorphSyncService.h
+@@ -126,6 +126,13 @@ namespace MorphSyncTogether
+         std::chrono::steady_clock::time_point _lastSentPubicAt{};
+ 
+         mutable std::mutex _remoteMutex;
++
++        // The sender field is a display name the remote peer supplies, and
++        // nothing erases an entry, so both snapshot tables are bounded here.
++        // A full table drops the packet instead of growing without limit.
++        static constexpr std::size_t kMaxRemoteSnapshots = 64;
++        static constexpr std::size_t kMaxRemotePubicSnapshots = 64;
++
+         std::unordered_map<std::string, IncomingAssembly> _assemblies;
+         std::unordered_map<std::string, RemoteSnapshot> _remoteSnapshots;
+         std::unordered_map<std::string, RemotePubicSnapshot> _remotePubicSnapshots;
+diff --git a/src/MorphSyncServiceBodyHair.cpp b/src/MorphSyncServiceBodyHair.cpp
+index 07077fa..f048716 100644
+--- a/src/MorphSyncServiceBodyHair.cpp
++++ b/src/MorphSyncServiceBodyHair.cpp
+@@ -140,6 +140,15 @@ namespace MorphSyncTogether
+ 
+             _assemblies.erase(it);
+ 
++            if (!_remoteSnapshots.contains(sender) &&
++                _remoteSnapshots.size() >= kMaxRemoteSnapshots) {
++                SKSE::log::warn(
++                    "MST MORPH RX snapshot dropped: sender table full size={} sender=\"{}\"",
++                    _remoteSnapshots.size(),
++                    sender);
++                return;
++            }
++
+             auto& snapshot = _remoteSnapshots[sender];
+             sameAppliedSnapshot = snapshot.hash == hash && snapshot.everApplied;
+             const auto previousActorFormID = snapshot.lastActorFormID;
+@@ -236,6 +245,15 @@ namespace MorphSyncTogether
+ 
+         {
+             std::scoped_lock lock(_remoteMutex);
++            if (!_remotePubicSnapshots.contains(sender) &&
++                _remotePubicSnapshots.size() >= kMaxRemotePubicSnapshots) {
++                SKSE::log::warn(
++                    "MST BODYHAIR RX snapshot dropped: sender table full size={} sender=\"{}\"",
++                    _remotePubicSnapshots.size(),
++                    sender);
++                return;
++            }
++
+             auto& snapshot = _remotePubicSnapshots[sender];
+             snapshot.hash = hash;
+             snapshot.state = state;
+diff --git a/src/TngSync.cpp b/src/TngSync.cpp
+index 385994b..7cf7389 100644
+--- a/src/TngSync.cpp
++++ b/src/TngSync.cpp
+@@ -218,6 +218,15 @@ namespace MorphSyncTogether
+         bool repeated = false;
+         {
+             std::scoped_lock lock(_remoteMutex);
++            if (!_remoteStates.contains(sender) &&
++                _remoteStates.size() >= kMaxRemoteStates) {
++                SKSE::log::warn(
++                    "MST TNG RX state dropped: sender table full size={} sender=\"{}\"",
++                    _remoteStates.size(),
++                    sender);
++                return;
++            }
++
+             auto& state = _remoteStates[sender];
+             repeated = state.everApplied && NearlyEqual(state.scale, *scale);
+             state.scale = *scale;
+diff --git a/src/TngSync.h b/src/TngSync.h
+index 7bc2e5c..223a31a 100644
+--- a/src/TngSync.h
++++ b/src/TngSync.h
+@@ -49,6 +49,12 @@ namespace MorphSyncTogether
+         std::chrono::steady_clock::time_point _lastSentAt{};
+ 
+         mutable std::mutex _remoteMutex;
++
++        // The sender is a display name the remote peer supplies, and nothing
++        // erases an entry, so the table is bounded here. A full table drops the
++        // packet instead of growing without limit.
++        static constexpr std::size_t kMaxRemoteStates = 64;
++
+         std::unordered_map<std::string, RemoteState> _remoteStates;
+     };
+ }

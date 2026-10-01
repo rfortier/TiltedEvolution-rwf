@@ -9453,3 +9453,183 @@ git -C plugins/OStimTogether grep -n "kMaxRemoteNames" -- src/
 > 只用一个 set 的实现依赖「末阶段一定会执行」,而它在一个 `sleep_for` 之后的 detached 线程里 ——
 > 中间读一次档,这个假设就没了,守卫会把那个 actor 永久锁死。
 
+## 75. 2026-10-08 场次:三个插件的对端可控缓存只增不减,以及一个「门禁全绿却装不上」的补丁 —— 判据是「这个键是谁选的,而门禁是在哪种工作树上跑的」
+
+> **锚点**:三处修复 + 一处交付修复,都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
+> `Code/plugins/patches/IEDSyncTogether/0002-bound-the-remote-snapshot-table.patch`
+> 改 `plugins/IEDSyncTogether/src/SyncService.h` 与 `src/SyncService.cpp`,
+> `Code/plugins/patches/MorphSyncTogether/0004-bound-the-remote-snapshot-tables.patch`
+> 改 `plugins/MorphSyncTogether/src/MorphSyncService.h`、`src/MorphSyncService.cpp`、
+> `src/MorphSyncServiceBodyHair.cpp`、`src/TngSync.h`、`src/TngSync.cpp`,
+> `Code/plugins/patches/OStimTogether/0008-bound-the-phase-sync-tables.patch`
+> 改 `plugins/OStimTogether/src/FreeScenePhaseSync.h` 与 `src/FreeScenePhaseSync.cpp`;
+> 以及重写的 `Code/plugins/patches/OStimTogether/0006-coalesce-the-addon-state-reapply-and-bound-the-remote-caches.patch`。
+> 四者由 `Code/plugins/tools/plugin_patches.py apply` 在 CI 配置阶段应用(`.github/workflows/plugins.yml:150`、`windows.yml:208`)。
+
+### 75.1 缺陷:五处,四处是同一类,一处是「补丁自己装不上」
+
+| 位置 | 作用 |
+| --- | --- |
+| `plugins/IEDSyncTogether/src/SyncService.h:56`(修复前) | 远端快照表按「对端自选的 id」增长,没有上限 |
+| `plugins/MorphSyncTogether/src/MorphSyncService.h:130`/`:131`(修复前) | 两张远端快照表按「对端自选的显示名」增长,没有上限 |
+| `plugins/MorphSyncTogether/src/TngSync.h:52`(修复前) | 同上的第三张表,key 是同一个显示名 |
+| `plugins/OStimTogether/src/FreeScenePhaseSync.h:292`/`:293`(修复前) | 远端准备表与 ready 去重表按「对端 connection + 对端自选的线程号」增长 |
+| `Code/plugins/patches/OStimTogether/0006-…patch`(修复前) | 补丁是拿 pin 当基线生成的,于是把 `0003` 的 hunk 又抄了一遍 |
+
+第一处:
+
+```cpp
+// plugins/IEDSyncTogether/src/SyncService.cpp(修复前)
+const auto instanceID = ReadField(packet, "id");   // :232,长度零检查
+...
+auto& snapshot = _remoteSnapshots[*instanceID];    // :262,insert-or-default
+```
+
+第二、三处:
+
+```cpp
+// plugins/MorphSyncTogether/src/MorphSyncService.cpp(修复前)
+auto& snapshot = _remoteSnapshots[sender];        // :667
+auto& snapshot = _remotePubicSnapshots[sender];   // :742
+```
+
+第四处:
+
+```cpp
+// plugins/MorphSyncTogether/src/TngSync.cpp(修复前)
+auto& state = _remoteStates[sender];              // :221
+```
+
+第五处:
+
+```cpp
+// plugins/OStimTogether/src/FreeScenePhaseSync.cpp(修复前)
+_remotePreps.push_back(prep);                     // :597-606,只有同 key 覆盖
+_lastReadyToken[readyKey] = prep.token;           // :497
+```
+
+### 75.2 判据:对端能选的键必须有上限,而「上限」要按每张表自己的语义来设
+
+1. **三张表的 key 都是对端写的字符串,而且都不做长度约束。**
+   IED 的 `id=` 是它自己包装字段,由对端整包替换:
+   `plugins/IEDSyncTogether/src/StrTransport.cpp:302-309` 拼的是
+   `IEDST|v1|id={}|from={}|relay=0|{}`,而 `UdpTransport.cpp:680` 只查前缀 `IEDST|v1|`。
+   Morph 的 `from=` 来自 `plugins/MorphSyncTogether/src/UdpTransport.cpp:219-222`
+   (`message.sender.displayName` 优先,否则 `connection-<id>`),过一道 `SanitizeField`
+   (`:26-37`,只把 `|`/CR/LF 换成 `_`、空则 `"Player"`,**没有长度上限**),
+   再在 `:234-238` 拼进 `{}from={}|{}`。
+2. **这四张表全仓没有 `erase`。** 唯一清空点是读档:
+   `SyncService.cpp:135`(IED `Reset()`)、`MorphSyncService.cpp:241-242`(Morph `Reset()`)、
+   `TngSync.cpp:126`(TNG `Reset()`)、`FreeScenePhaseSync.cpp:270`/`:457`。
+   同族的 `_assemblies` 是唯一有 prune 的表 ——
+   `MorphSyncService.cpp:356-366` `// Drop incomplete chunk assemblies after 15 seconds.` ——
+   而它旁边两张快照表没有,这正是判据的形状:**同一把清理里,谁缺席**。
+3. **表越大,游戏线程上的每次 tick 越贵。** Morph 的 `TickOnGameThread` 把两张表的 key 并成
+   `std::unordered_set<std::string>` 再逐 key 走 `ResolveRemoteProxyByName`
+   (`MorphSyncService.cpp:337-354`),而后者是 ProcessLists 全表扫描 + `EqualsInsensitive` + `GetDistance`;
+   IED 的 `Tick()` 第一句就是 `RefreshProxyMitigation()`(`SyncService.cpp:158-179`),
+   由 `TimerLoop` 每 `_config.captureIntervalMs`(默认 750)驱动一次。
+   所以这不是「内存慢慢涨」,是**每 750ms/1s 一次的 O(表大小 × 演员数)扫描**。
+4. **满表 = 一次 miss,不是失败。** Morph/IED/TNG 的表是「上一包是什么」的缓存,
+   丢一包等于等下一包;`_lastReadyToken` 只是抑制重复发包,清掉最多多发一包。
+   所以设界不改变行为。
+5. **判据用在交付上:门禁全绿 ≠ 补丁装得上。**
+   `plugin_patches.py verify` 用 `git apply --check --cached`(对 **index**,即 pin),
+   `check` 用 `git apply --check --reverse`(对 **工作树**,只问「是否已应用」)。
+   两条都不看「这个补丁从 pin 出发能不能按顺序落到工作树上」——
+   那只有 `apply`(CI 跑的那条)会看。
+
+### 75.3 可达性
+
+第一处:**同一个对端**,反复发 `IEDST|v1|id=<任意字符串>|...`。
+每个新 `id` 都是一条新记录,会话内没有上限;`RefreshProxyMitigation` 每 750ms 遍历全表。
+
+第二、三、四处:**同一个对端**,把 `displayName` 换成任意字符串(或干脆留空,让
+`connection-<id>` 当 key)。每完成一次分片重组就插一条;`TickOnGameThread` 每秒遍历全表。
+
+第五处:**同一个对端**,每发一包 `PHASE_PREP|` 就写一次 `_remotePreps`
+(`FreeScenePhaseSync.cpp:579-606`),`connectionID` 与 `ownerThread` 都由对端选;
+`_lastReadyToken` 的 key 是 `fmt::format("{}|{}", prep.ownerConnectionID, prep.ownerThreadID)`(`:492`)。
+
+第五处(交付):**每一次 CI 的插件作业**。`0006` 从 `8214f64d` 起就是坏的,
+只是本地工作树一直处在「已应用」状态,`verify` 与 `check` 都看不出来。
+
+### 75.4 修法
+
+一、四张表各自设上限,满了就丢包(而不是丢表):
+
+```cpp
+// plugins/IEDSyncTogether/src/SyncService.h(修复后)
+static constexpr std::size_t kMaxRemoteSnapshots = 64;
+```
+
+```cpp
+// plugins/IEDSyncTogether/src/SyncService.cpp(修复后)
+if (!_remoteSnapshots.contains(*instanceID) &&
+    _remoteSnapshots.size() >= kMaxRemoteSnapshots) {
+    SKSE::log::warn("Remote IED state dropped: peer table full size={} peer={}", _remoteSnapshots.size(), *instanceID);
+    return;
+}
+```
+
+Morph 两张表同形(`kMaxRemoteSnapshots` / `kMaxRemotePubicSnapshots`,都是 64),
+TNG 一张(`kMaxRemoteStates = 64`)。
+先判 `contains` 再判上限:**已有的键永远还能更新,被拒的只是新键**。
+
+二、`_remotePreps` 满了丢最旧的一条,`_lastReadyToken` 满了整体清空 —— 两张表的语义不同:
+
+```cpp
+// plugins/OStimTogether/src/FreeScenePhaseSync.h(修复后)
+static constexpr std::size_t kMaxRemotePreps = 32;
+static constexpr std::size_t kMaxReadyTokens = 256;
+```
+
+`_remotePreps` 是有序的、按到达时间排队,所以 `_remotePreps.erase(_remotePreps.begin())`
+丢掉的正是最不可能还在飞的那一条;`_lastReadyToken` 没有顺序语义,清空只值一包。
+
+三、重写 `0006`:把它从「pin → 最终」改成「`0003` 已应用 → 最终」。
+生成方式是**先把已应用的工作树 `git add -A` 进 index,再 `git diff`**
+(index→工作树),落盘后再 `git reset` 把 index 还原成 pin,让 `verify` 仍然有意义。
+重写后 `0006` 从 6567 B 变成 5780 B,少了 `ClearRemoteState` 的整段 hunk 与
+`AddonBridge.h` 的 `@@ -26,6 +26,11 @@` —— **那两段本来就是 `0003` 的内容。**
+
+### 75.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py apply
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\plugin_snapshot.py verify
+python Code\plugins\tools\check_transport_compat.py
+python Tools\Scripts\check_docs.py
+git -C plugins/IEDSyncTogether grep -n "kMaxRemoteSnapshots" -- src/
+git -C plugins/MorphSyncTogether grep -n "kMaxRemoteSnapshots\|kMaxRemotePubicSnapshots\|kMaxRemoteStates" -- src/
+git -C plugins/OStimTogether grep -n "kMaxRemotePreps\|kMaxReadyTokens" -- src/
+```
+
+复核结果:`verify` → `PATCH VERIFY OK` / `22 patch(es) apply to their pinned commits`;
+**`apply` → `patches: 22 applied, 0 already present`(从干净工作树,这是 CI 的那条路径)**;
+`check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK` / `8 plugin(s) have a durable copy matching the pinned commit`;
+`check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`;`check_docs.py` → `DOC CHECK OK`。
+另有一项更强的复核:**22 个补丁从 pin 依次应用后,九个被改文件与手工编辑的版本逐字节相同**
+(行数:`SyncService.h` 66 / `SyncService.cpp` 422 / `MorphSyncService.h` 141 /
+`MorphSyncService.cpp` 1145 / `MorphSyncServiceBodyHair.cpp` 399 / `TngSync.h` 61 /
+`TngSync.cpp` 346 / `FreeScenePhaseSync.h` 303 / `FreeScenePhaseSync.cpp` 1041;
+`AddonBridge.cpp` 791 / `AddonBridge.h` 106)。
+
+**验证**:插件是 CMake 工程、本机不编译(`plugins/OStimNG/skse/AGENTS.md` 明写不要构建 C++/CMake),
+所以这一批的证据是补丁门禁 + 逐字节比对,不是编译产物。
+四处修改都不引入新的 include:三个 `src/PCH.h` 已含 `<cstdint>`、`<unordered_map>`、`<mutex>`、`<chrono>`;
+`std::size_t` 来自它们已含的 `<cstdint>`/`<string>`。
+
+> **教训**:第一条:**「这个键合法吗」和「这个键能有几个」是两个问题。**
+> `SanitizeField` 把分隔符管得很好、`IsSafeAddonToken` 把字符集管得很好,
+> 而两张表的**条数**没人管;判据要问的是「这个键是谁选的,而它什么时候被删掉」。
+> 第二条:**同族的表要用同一把尺子量。**
+> `_assemblies` 有 15 秒 prune 而它旁边两张快照表没有 ——
+> 缺陷的形状就是「同一处清理里,谁缺席」,而不是「这个容器看起来危险吗」。
+> 第三条:**门禁要跑在它实际会跑的那种工作树上。**
+> `verify` 对 index、`check` 对工作树,两者都不会发现「补丁的基线选错了」;
+> 只有从 pin 出发的 `apply` 会 —— 而它正是 CI 的那条路。
+> 生成补丁前先 `git add -A` 让 index 等于基线,再用 `git diff`,落盘后 `git reset`。
+

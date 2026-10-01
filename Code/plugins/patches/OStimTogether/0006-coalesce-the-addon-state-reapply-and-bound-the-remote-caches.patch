@@ -1,5 +1,5 @@
 diff --git a/src/AddonBridge.cpp b/src/AddonBridge.cpp
-index f950ac2..d74f5d2 100644
+index 3b9b9fd..d74f5d2 100644
 --- a/src/AddonBridge.cpp
 +++ b/src/AddonBridge.cpp
 @@ -149,6 +149,18 @@ namespace OStimTogether
@@ -63,21 +63,7 @@ index f950ac2..d74f5d2 100644
                      *channel,
                      *objectType,
                      equipped };
-@@ -636,6 +672,13 @@ namespace OStimTogether
-         }
-     }
- 
-+    void AddonBridge::ClearRemoteState()
-+    {
-+        std::scoped_lock lock(_stateMutex);
-+        _remoteOverlays.clear();
-+        _remoteObjects.clear();
-+    }
-+
-     void AddonBridge::ScheduleRemoteStateReapply(
-         RE::Actor* actor,
-         std::string_view reason)
-@@ -647,18 +690,41 @@ namespace OStimTogether
+@@ -654,18 +690,41 @@ namespace OStimTogether
          const auto actorFormID = actor->GetFormID();
          const std::string reasonCopy(reason);
  
@@ -121,7 +107,7 @@ index f950ac2..d74f5d2 100644
                          auto* tasks = SKSE::GetTaskInterface();
                          if (!tasks) {
                              return;
-@@ -718,7 +784,7 @@ namespace OStimTogether
+@@ -725,7 +784,7 @@ namespace OStimTogether
                      }).detach();
              };
  
@@ -132,22 +118,10 @@ index f950ac2..d74f5d2 100644
      }
  }
 diff --git a/src/AddonBridge.h b/src/AddonBridge.h
-index b062689..5a4ecbd 100644
+index 451ac02..5a4ecbd 100644
 --- a/src/AddonBridge.h
 +++ b/src/AddonBridge.h
-@@ -26,6 +26,11 @@ namespace OStimTogether
-             RE::Actor* actor,
-             std::string_view reason);
- 
-+        // Drops every cached remote addon state. The cache is keyed by FormID
-+        // and a new game hands those ids out again, so state captured for one
-+        // save would otherwise be replayed onto whoever now carries that id.
-+        void ClearRemoteState();
-+
-     private:
-         AddonBridge() = default;
- 
-@@ -86,5 +91,15 @@ namespace OStimTogether
+@@ -91,5 +91,15 @@ namespace OStimTogether
              RE::FormID,
              std::unordered_map<std::string, CachedObjectState>>
              _remoteObjects;
