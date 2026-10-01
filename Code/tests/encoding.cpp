@@ -25,6 +25,7 @@
 #include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/NotifyHealthChangeBroadcast.h>
 #include <Messages/NotifyProjectileLaunch.h>
+#include <Messages/NotifySetTimeResult.h>
 #include <Messages/NotifySubtitle.h>
 #include <Messages/NotifySyncExperience.h>
 #include <Messages/ProjectileLaunchRequest.h>
@@ -35,6 +36,7 @@
 #include <Messages/SyncExperienceRequest.h>
 #include <Messages/TeleportRequest.h>
 #include <Structs/ActorValues.h>
+#include <Structs/CachedString.h>
 #include <Structs/Mods.h>
 #include <Structs/TimeModel.h>
 #include <Structs/Vector2_NetQuantize.h>
@@ -1226,4 +1228,78 @@ TEST_CASE("A teleport request carries the whole player id", "[encoding.teleport_
     roundTrip(0x10000);
     roundTrip(0x10001);
     roundTrip(0xFFFFFFFF);
+}
+
+TEST_CASE("A refused set time names which refusal it was", "[encoding.set_time_result]")
+{
+    // The server answers every /settime, and the client picks its message from this value. The
+    // third one was appended rather than inserted, so the two that existed keep the bytes they
+    // had; a reader that takes the low 8 bits still lands on the right member.
+    REQUIRE(static_cast<uint8_t>(NotifySetTimeResult::SetTimeResult::kSuccess) == 0);
+    REQUIRE(static_cast<uint8_t>(NotifySetTimeResult::SetTimeResult::kNoPermission) == 1);
+    REQUIRE(static_cast<uint8_t>(NotifySetTimeResult::SetTimeResult::kInvalidTime) == 2);
+
+    const auto roundTrip = [](const NotifySetTimeResult::SetTimeResult aResult) {
+        NotifySetTimeResult sent{};
+        sent.Result = aResult;
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.Serialize(writer);
+
+        NotifySetTimeResult received{};
+        uint64_t opcode = 0;
+        Buffer::Reader reader(&buff);
+        reader.ReadBits(opcode, 8);
+        received.DeserializeRaw(reader);
+
+        REQUIRE(received.Result == aResult);
+        REQUIRE(received == sent);
+    };
+
+    roundTrip(NotifySetTimeResult::SetTimeResult::kSuccess);
+    roundTrip(NotifySetTimeResult::SetTimeResult::kNoPermission);
+    roundTrip(NotifySetTimeResult::SetTimeResult::kInvalidTime);
+}
+
+TEST_CASE("A cached string with an unknown id reads as empty", "[encoding.cached_string]")
+{
+    // An id is only written for a string the sender believes the receiver already holds, so an
+    // id outside the local cache means the two caches disagree rather than that the reader is
+    // wrong. That used to be an assert(false): it aborts the process, in a frame that is
+    // noexcept, on a value any peer can put on the wire, in the releasedbg build the release
+    // workflow ships. The name now comes back empty, which the consumers of a cached name
+    // already read as "not one of the names I know".
+    auto& cache = StringCache::Get();
+    cache.Clear();
+
+    Buffer unknown(1000);
+    Buffer::Writer unknownWriter(&unknown);
+    Serialization::WriteBool(unknownWriter, true);     // the name is an id ...
+    Serialization::WriteVarInt(unknownWriter, 0xFFFF); // ... for a string this cache never held
+
+    CachedString name{};
+    name = String("not empty");
+    Buffer::Reader unknownReader(&unknown);
+    name.Deserialize(unknownReader);
+
+    REQUIRE(name.empty());
+    REQUIRE(name == String());
+
+    // An id that is in the cache still resolves, so the fallback did not swallow the hit path.
+    const auto cId = cache.Add("Hello");
+    REQUIRE(cId == 0);
+
+    Buffer known(1000);
+    Buffer::Writer knownWriter(&known);
+    Serialization::WriteBool(knownWriter, true);
+    Serialization::WriteVarInt(knownWriter, cId);
+
+    CachedString resolved{};
+    Buffer::Reader knownReader(&known);
+    resolved.Deserialize(knownReader);
+
+    REQUIRE(resolved == String("Hello"));
+
+    cache.Clear();
 }

@@ -46,7 +46,10 @@ void CommandService::OnSetTimeResult(const NotifySetTimeResult& acMessage) noexc
     if (acMessage.Result == RT::kSuccess)
         return; // the calendar update that follows is the visible result
 
-    m_world.GetOverlayService().SendSystemMessage("Only an admin, or the party leader on a private server, can change the time.");
+    if (acMessage.Result == RT::kNoPermission)
+        m_world.GetOverlayService().SendSystemMessage("Only an admin, or the party leader on a private server, can change the time.");
+    else
+        m_world.GetOverlayService().SendSystemMessage("That is not a time. Use /settime HH MM, with hours 0-23 and minutes 0-59.");
 }
 
 void CommandService::OnTeleportCommandResponse(const TeleportCommandResponse& acMessage) noexcept

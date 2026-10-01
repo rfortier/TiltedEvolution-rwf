@@ -19,7 +19,10 @@ struct NotifySetTimeResult final : ServerMessage
     enum class SetTimeResult : uint8_t
     {
         kSuccess,
-        kNoPermission
+        kNoPermission,
+        // The request was understood and authorized, but the hour or the minute in it
+        // was not a time. Appended, so the two values above keep their bytes.
+        kInvalidTime
     };
 
     SetTimeResult Result{};

@@ -41,8 +41,15 @@ void CachedString::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
         }
         else
         {
-            // If we receive an id but is not in our local cache, then something fucked up
-            assert(false);
+            // A peer only writes an id for a string it believes we already hold, so an id
+            // outside our cache means the two caches disagree - not that this code is
+            // wrong. It used to assert(false), which aborts the process: this frame is
+            // noexcept, so there is no way to fail softly, and the input is a packet any
+            // peer can send (the default build is releasedbg, where the assert is live).
+            // The name is left empty, which the consumers of a cached name already read
+            // as "not one of the names I know" - ActionReplayCache.cpp:66 and :81 test
+            // the name against a fixed list and fall through when it matches nothing.
+            *this = TiltedPhoques::String();
         }
     }
     else

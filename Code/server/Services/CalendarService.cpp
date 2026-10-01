@@ -10,6 +10,8 @@
 
 #include "Game/Player.h"
 
+#include <cmath>
+
 CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher)
     : m_world(aWorld)
 {
@@ -65,21 +67,30 @@ void CalendarService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
 
 bool CalendarService::SetTime(int aHours, int aMinutes, float aScale) noexcept
 {
+    // Everything is checked before anything is written. The scale used to be assigned
+    // first, so a call that was then refused for its hours or minutes still changed the
+    // rate the whole world runs at - and it wrote that value straight past both bounds
+    // the same field has everywhere else: the one SetTimeScale enforces (:148) and the
+    // one the wire applies to it (TimeModel::kMaxTimeScale). A scale that is not a
+    // finite number is refused here too, because it lands in DateTime::Update as a
+    // multiplier and a NaN there reaches a float to uint32_t cast.
+    if (!std::isfinite(aScale) || aScale < 0.f || aScale > TimeModel::kMaxTimeScale)
+        return false;
+
+    if (aHours < 0 || aHours > 23 || aMinutes < 0 || aMinutes > 59)
+        return false;
+
     m_dateTime.m_timeModel.TimeScale = aScale;
 
-    if (aHours >= 0 && aHours <= 23 && aMinutes >= 0 && aMinutes <= 59)
-    {
-        // encode time as skyrim time
-        auto minutes = static_cast<float>(aMinutes) * 0.17f;
-        minutes = floor(minutes * 100) / 1000;
-        m_dateTime.m_timeModel.Time = static_cast<float>(aHours) + minutes;
+    // encode time as skyrim time
+    auto minutes = static_cast<float>(aMinutes) * 0.17f;
+    minutes = std::floor(minutes * 100) / 1000;
+    m_dateTime.m_timeModel.Time = static_cast<float>(aHours) + minutes;
 
-        SendTimeResync();
+    SendTimeResync();
 
-        GameServer::Get()->GetWorld().GetScriptService().HandleSetTime(aHours, aMinutes, aScale);
-        return true;
-    }
-    return false;
+    GameServer::Get()->GetWorld().GetScriptService().HandleSetTime(aHours, aMinutes, aScale);
+    return true;
 }
 
 bool CalendarService::SetDate(int aDay, int aMonth, float aYear) noexcept
@@ -112,10 +123,10 @@ void CalendarService::SendTimeResync() noexcept
 
 CalendarService::TTime CalendarService::GetTime() const noexcept
 {
-    const auto hour = floor(m_dateTime.m_timeModel.Time);
+    const auto hour = std::floor(m_dateTime.m_timeModel.Time);
     const auto minutes = (m_dateTime.m_timeModel.Time - hour) / 17.f;
 
-    const auto flatMinutes = static_cast<int>(ceil((minutes * 100.f) * 10.f));
+    const auto flatMinutes = static_cast<int>(std::ceil((minutes * 100.f) * 10.f));
     return {static_cast<int>(hour), flatMinutes};
 }
 

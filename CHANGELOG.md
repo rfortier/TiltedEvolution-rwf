@@ -1851,6 +1851,164 @@ CI 的 `git submodule update --init --force --recursive` 会丢弃工作树改�
 同目录下 `check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK`;
 四个 `src/main.cpp` 上 `flush_on(spdlog::level::trace)` 已无命中,`flush_every(std::chrono::seconds(1))` 各命中一处
 (`DAVSyncTogether:31`、`IEDSyncTogether:26`、`OStimTogether:54`、`TradeTogether:26`)。`check_docs.py` 全绿。
+### 修复:管理员判定由对端自称的 id 决定,拒绝的调用仍然改状态,以及一个 `assert` 就长在收包路径上
+
+**现象**:三件事,都可以由一个普通玩家触发。其一,任何玩家在聊天框打 `/settime 12 00` 都能改全服时间,
+不需要是管理员;其二,管理员打 `/settime 99 99` 会看到「成功」,而服务器的时间倍率被这一条非法参数**改掉**了;
+其三,服务端在 `releasedbg` 构建下收到一个「指向本地缓存里没有的字符串 id」的包会直接 `abort`。
+
+**根因**:
+
+一、`CommandService::OnSetTimeCommand` 的管理员分支拿 `acMessage.Packet.PlayerId` 去比对管理员列表:
+
+```cpp
+// Code/server/Services/CommandService.cpp(修复前)
+const auto cPlayerId = static_cast<uint32_t>(acMessage.Packet.PlayerId);
+for (const auto session : GameServer::Get()->GetAdminSessions())
+{
+    const auto* pAdmin = PlayerManager::Get()->GetByConnectionId(session);
+    if (!pAdmin)
+        continue;
+    if (pAdmin->GetId() == cPlayerId)   // ← 「某个管理员的 id 等于我自称的 id」
+```
+
+`Packet.PlayerId` 是**发送者自己填的**:客户端在 `Code/client/Services/Generic/OverlayClient.cpp:163`
+把 `m_transport.GetLocalPlayerId()` 写进 `SetTimeCommandEvent`,再由
+`Code/client/Services/Generic/CommandService.cpp:35 request.PlayerId = acEvent.PlayerId;` 原样上线。
+而每个玩家的 id 都是公开的 —— `NotifyPlayerJoined` 会把它广播给所有人。于是判定退化成「我知道某个管理员的
+id,我就能当管理员」。对照同函数下面的队长分支:`pPartyService->IsPlayerLeader(acMessage.pPlayer)` 用的是
+**真指针**,`PartyService.cpp:50` 从队伍表里读 `LeaderPlayerId` —— 同一个 handler 里两种判定,一种用真身份、
+一种用对端字段,这个不一致本身就是判据。
+
+同一段循环还有第二个缺陷:`GetByConnectionId` 对「还没有 player row 的会话」返回 `nullptr`,而管理员的
+connection id 在 `GameServer.cpp:909`(`m_adminSessions.insert(aConnectionId)`)就进了集合,player row 要到
+`:990`(`GetPlayerManager().Create`)才建,中间有三条提前返回(模组策略不符 `:960`、重复认证 `:996`、脚本拒绝
+入服 `:1013`)都不会回头清理这个集合 —— 集合只在断线时 `:612 m_adminSessions.erase(aConnectionId);`。
+`pAdmin` 判空写成了 `continue`,所以这一段不会崩;真正的问题是**判空之后仍然拿 `GetId()` 去比**,而
+「某个管理员的 id 等于我自称的 id」这个条件与「我是那个管理员」无关。
+
+二、`CalendarService::SetTime` 把赋值放在了校验之前:
+
+```cpp
+// Code/server/Services/CalendarService.cpp(修复前)
+m_dateTime.m_timeModel.TimeScale = aScale;          // ← 先写
+if (aHours >= 0 && aHours <= 23 && aMinutes >= 0 && aMinutes <= 59)
+{
+    ...
+    return true;
+}
+return false;                                        // ← 拒绝了,但上面已经写了
+```
+
+`TimeScale` 是**整个世界**的时间倍率(`DateTime::GetDeltaTime` 拿它乘每帧的毫秒数,`Code/common/DateTime.cpp:35`)。
+于是「时/分不合法」这条拒绝路径反而把倍率改了,而且**绕过了这个字段在别处的两道界**:
+`SetTimeScale`(`Code/server/Services/CalendarService.cpp:148`)要求 `0..1000`,线上读取
+(`Code/encoding/Structs/TimeModel.cpp:47 ClampFloat(TimeScale, kMaxTimeScale)`)也要求 `0..1000`,
+只有这一处裸写。更糟的是 `aScale` 可以是非有限值:`NaN` 会顺着 `GetDeltaTime` 进 `DateTime::Update`,
+最后落在 `static_cast<uint32_t>(m_timeModel.Time / 24.f)`(`Code/common/DateTime.cpp`)—— 把 `NaN` 转成无符号整数
+是未定义行为。两个调用点(`Code/server/Services/CommandService.cpp:58`、`:75`)**都没有看返回值**,
+一律回 `kSuccess`,于是玩家看到「成功」而什么都没发生。
+
+判据是同族的三处写法:`SetDate`(`:96-113`)先判后写、`SetTimeScale`(`:148`)先判后写、
+`GameServer_Bindings.cpp:35-37` 的 Lua `SetTime` 绑定**先夹再调**
+(`aHours = std::max(0, std::min(aHours, 23));` … `aScale = std::max(1.0f, std::min(aScale, 100.0f));`)。
+同一个函数在脚本绑定里先夹、在聊天命令里不夹 —— 「多数地方守住了」不是「这一族守住了」。
+
+三、`CachedString::Deserialize` 对「收到一个本地缓存里没有的 id」直接 `assert(false)`:
+
+```cpp
+// Code/encoding/Structs/CachedString.cpp(修复前)
+const auto cValue = StringCache::Get()[cId];
+if (cValue)
+    *this = *cValue;
+else
+    assert(false);   // ← 对端可控的输入,断言 = 进程终止
+```
+
+`CachedString` 出现在 `ActionEvent::EventName` / `TargetEventName`,而 `ActionEvent` 经
+`ReferenceUpdate.cpp:43 Actions[i].ApplyDifferential(aReader);` 从 `ClientReferencesMoveRequest` 的
+`Map<uint32_t, ReferenceUpdate> Updates` 读进来 —— 这是**每帧都在跑的活流量**,不是死代码。
+`assert` 的活性:`xmake.lua:27` 只有 `mode.debug`/`mode.releasedbg`/`mode.release`,全仓没有 `NDEBUG`,
+而 `.github/workflows/windows.yml:11-14` 的 `build-mode` 默认值是 `releasedbg` —— **发布构建里这个断言是活的**。
+这条路径整条是 `noexcept`(`DeserializeRaw` 是 `noexcept` 虚函数),所以没有「抛出去让人接」这个选项。
+
+**判据可机械执行**:「授权判定读的是对端给的字段,而不是这次连接本身的身份」= 缺陷;
+「函数先写成员再校验参数,失败分支不撤销」= 缺陷;「`assert` 的输入来自线上」= 缺陷。
+
+**修法**:
+
+1. 管理员判定改成问这次连接本身:`if (GameServer::Get()->GetAdminSessions().contains(acMessage.pPlayer->GetConnectionId()))`。
+   `m_adminSessions` 存的就是 connection id(`GameServer.h:124`),而 `acMessage.pPlayer` 由
+   `GameServer.cpp:254-279` 的 handler 生成器保证非空(它先 `GetByConnectionId` 再 `trigger`)。
+   这一改同时消掉了那个循环 —— 不再需要「遍历 + 判空 + continue」。`Packet.PlayerId` 仍是线上字段,
+   但服务端不再读它。
+2. `CalendarService::SetTime` 改成先判后写,并把倍率的界写全:
+
+```cpp
+// Code/server/Services/CalendarService.cpp(修复后)
+if (!std::isfinite(aScale) || aScale < 0.f || aScale > TimeModel::kMaxTimeScale)
+    return false;
+
+if (aHours < 0 || aHours > 23 || aMinutes < 0 || aMinutes > 59)
+    return false;
+
+m_dateTime.m_timeModel.TimeScale = aScale;
+```
+
+   界用的是 `TimeModel::kMaxTimeScale` 而不是再写一个字面量 `1000.f` —— 这个常量本来就是「服务端手工设置倍率时
+   拒绝的上界」(注释原文)。`std::isfinite` 判的是「这是不是一个数」:`NaN` 夹进任何区间都还是 `NaN`,所以是非有限
+   值一律拒绝,与 `WireLimits::ClampFinite` 同一策略。顺带把该文件里裸写的 `floor(` / `ceil(` 补上 `std::`
+   并显式 `#include <cmath>` —— 这个头此前是靠传递包含进来的。
+3. 两个调用点尊重返回值,并把「参数不合法」与「没有权限」分成两个结果:
+
+```cpp
+// Code/encoding/Messages/NotifySetTimeResult.h(修复后)
+enum class SetTimeResult : uint8_t
+{
+    kSuccess,
+    kNoPermission,
+    // The request was understood and authorized, but the hour or the minute in it
+    // was not a time. Appended, so the two values above keep their bytes.
+    kInvalidTime
+};
+```
+
+   追加在末尾而不是插在中间:枚举按字节上线(`NotifySetTimeResult.cpp:5-6` 写 8 位、`:14` 读 8 位),
+   而 `Code/encoding/Opcodes.h:57-59` 的注释要求「只许追加」;`Code/plugins/tools/check_transport_compat.py`
+   也只约束 opcode 的相对顺序,不看枚举值。客户端 `OnSetTimeResult` 据此分两条提示:
+   `kNoPermission` → 「只有管理员/私服队长能改时间」,其余 → 「那不是时间,用 /settime HH MM,小时 0-23、分钟 0-59」。
+4. `assert(false)` 换成把名字留空:
+
+```cpp
+// Code/encoding/Structs/CachedString.cpp(修复后)
+*this = TiltedPhoques::String();
+```
+
+   空名字不是「静默吞掉」:消费这个字段的 `Code/server/Game/Animation/ActionReplayCache.cpp:66` 与 `:81`
+   本来就是拿名字去查固定表(`AnimationEventLists::kExitSpecial.contains(...)` / `kIgnore.contains(...)`),
+   查不到即返回 `false`,空串走的是同一条路。修掉的是**进程终止**,不是这个字段的语义。
+
+**验证**:
+
+`Code/tests/encoding.cpp` 新增两个用例:
+
+- `TEST_CASE("A refused set time names which refusal it was", "[encoding.set_time_result]")`(`:1232-1262`)
+  先断言三个枚举值的字节依次是 `0`/`1`/`2`(证明 `kInvalidTime` 是追加的),再对三者各做一次整包往返并
+  `REQUIRE(received == sent)`。
+- `TEST_CASE("A cached string with an unknown id reads as empty", "[encoding.cached_string]")`(`:1264-1304`)
+  先造一个「有 id、但 id 不在缓存里」的包,断言名字变成空串而不是进程死;再往缓存里放一条真实字符串,
+  断言同一个字段仍然解析得出内容 —— 证明兜底没有把命中路径一起吃掉。
+
+`Code/server/Services/CommandService.cpp` 与 `Code/server/Services/CalendarService.cpp` 是服务端 C++,
+本机不编译(`docs/PITFALLS.md` §0/§1:Windows/MSVC 只由 GitHub CI 验证);
+`python Tools/Scripts/check_docs.py` 全绿。
+
+**教训**:一个字段只要发送者能自己填,它就不能用来回答「你是谁」。
+
+**教训**:「拒绝」必须发生在任何写入之前 —— 否则「失败」这个词只是返回值的样子。
+
+**教训**:`assert` 是给「代码自己错了」用的;对端可控的输入落在它上面,就是把进程的存活交给对端。
+
 ## v1.1.8(2026-09-28)
 
 ### 修复:任意玩家一条聊天消息即可打崩专用服务器

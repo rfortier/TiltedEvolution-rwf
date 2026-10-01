@@ -8969,4 +8969,309 @@ python Tools/Scripts/check_docs.py
 > `OStimTogether::PPAIntegration::GetSingleton().Reset();` 之后一行,工作树是 CRLF 所以锚点要带 `\r\n`)。
 > **⇒ 覆盖子模块工作树之前,先确认这个文件上有哪些已应用的补丁。**
 
+## 73. 2026-10-06 场次:管理员这道门由对端自称的 id 判定、被拒绝的调用仍然改状态、一个 `assert` 长在收包路径上 —— 判据是「这个值是谁写的,而它接下来决定了什么」
+
+> **锚点**:三处修复,全部在 `Code/` 里(非子模块,直接改源码):
+> `Code/server/Services/CommandService.cpp`(管理员判定 + 尊重返回值)、
+> `Code/server/Services/CalendarService.cpp`(先判后写 + 倍率的界)、
+> `Code/encoding/Messages/NotifySetTimeResult.h`(新增枚举值)、
+> `Code/client/Services/Generic/CommandService.cpp`(把两条拒绝分开提示)、
+> `Code/encoding/Structs/CachedString.cpp`(去掉 `assert(false)`);
+> 测试在 `Code/tests/encoding.cpp`。
+
+### 73.1 缺陷:三处,都在收包路径上
+
+| 位置 | 作用 |
+| --- | --- |
+| `Code/server/Services/CommandService.cpp:30`(修复前) | 用 `Packet.PlayerId` 判断发送者是不是管理员 |
+| `Code/server/Services/CalendarService.cpp:68`(修复前) | 校验之前就写 `TimeScale`,失败分支不撤销 |
+| `Code/encoding/Structs/CachedString.cpp:45`(修复前) | 对端可控的 id 落空即 `assert(false)` |
+
+第一处:
+
+```cpp
+// Code/server/Services/CommandService.cpp(修复前)
+const auto cPlayerId = static_cast<uint32_t>(acMessage.Packet.PlayerId);
+
+for (const auto session : GameServer::Get()->GetAdminSessions())
+{
+    const auto* pAdmin = PlayerManager::Get()->GetByConnectionId(session);
+    if (!pAdmin)
+        continue;
+
+    if (pAdmin->GetId() == cPlayerId)   // ← 「某个管理员的 id 等于我自称的 id」
+    {
+        const auto cHours = static_cast<int>(acMessage.Packet.Hours);
+        const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
+
+        m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale());
+
+        response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
+        acMessage.pPlayer->Send(response);
+
+        return;
+    }
+}
+```
+
+第二处:
+
+```cpp
+// Code/server/Services/CalendarService.cpp(修复前)
+bool CalendarService::SetTime(int aHours, int aMinutes, float aScale) noexcept
+{
+    m_dateTime.m_timeModel.TimeScale = aScale;      // ← 先写
+
+    if (aHours >= 0 && aHours <= 23 && aMinutes >= 0 && aMinutes <= 59)
+    {
+        // encode time as skyrim time
+        auto minutes = static_cast<float>(aMinutes) * 0.17f;
+        minutes = floor(minutes * 100) / 1000;
+        m_dateTime.m_timeModel.Time = static_cast<float>(aHours) + minutes;
+
+        SendTimeResync();
+
+        GameServer::Get()->GetWorld().GetScriptService().HandleSetTime(aHours, aMinutes, aScale);
+        return true;
+    }
+    return false;                                   // ← 拒绝了,但上面已经写了
+}
+```
+
+第三处:
+
+```cpp
+// Code/encoding/Structs/CachedString.cpp(修复前)
+const auto cValue = StringCache::Get()[cId];
+if (cValue)
+{
+    *this = *cValue;
+}
+else
+{
+    // If we receive an id but is not in our local cache, then something fucked up
+    assert(false);
+}
+```
+
+### 73.2 判据:授权要问「这次连接是谁」,写入要在校验之后,断言不能长在对端输入上
+
+1. **`Packet.PlayerId` 是发送者自己填的。** 客户端在 `Code/client/Services/Generic/OverlayClient.cpp:163`
+   把 `m_transport.GetLocalPlayerId()` 写进 `SetTimeCommandEvent`,
+   `Code/client/Services/Generic/CommandService.cpp:35` 把它原样上线(`request.PlayerId = acEvent.PlayerId;`)。
+   而玩家 id 是**公开**的:`NotifyPlayerJoined` 会把每个玩家的 id 广播给所有人。
+   于是这个判定等价于「我知道某个管理员的 id」。
+2. **同一个 handler 里就有对照组。** 下面那个队长分支用的是真指针:
+   `pPartyService->IsPlayerLeader(acMessage.pPlayer)`,
+   而 `Code/server/Services/PartyService.cpp:50` 是从队伍表里读 `LeaderPlayerId == apPlayer->GetId()`。
+   一个 handler 里两种判定,一种用真身份、一种用对端字段 —— 这个不一致本身就是判据。
+3. **能回答「这次连接是谁」的只有 `acMessage.pPlayer`。** 它由 `Code/server/GameServer.cpp:254-279` 的
+   handler 生成器构造:先 `GetByConnectionId(aConnectionId)` 判空并 `Kick`,
+   再 `trigger(PacketEvent<T>(pRealMessage.get(), pPlayer))` —— 所以 `pPlayer` 非空,
+   且它的 `GetConnectionId()` 就是这次连接,不是包里的任何字段。
+4. **`m_adminSessions` 存的本来就是 connection id。** `Code/server/GameServer.h:124` 是
+   `TiltedPhoques::Set<ConnectionId_t> m_adminSessions;`,
+   `:92 AddAdminSession(ConnectionId_t)`、`:94 RemoveAdminSession(ConnectionId_t)`,写入点是
+   `Code/server/GameServer.cpp:909`(`m_adminSessions.insert(aConnectionId)`,管理员密码通过时)与
+   `:429`/`:440`(`addadmin` 控制台命令),唯一删除点是 `:612`(断线)。
+   **这个集合从头到尾就没有存过 `PlayerId`** —— 旧代码是查完它之后再去比另一个空间里的数。
+5. **「拒绝」必须发生在任何写入之前。** `TimeScale` 是整个世界的时间倍率:
+   `Code/common/DateTime.cpp:35` 的 `GetDeltaTime` 拿它乘每帧毫秒数,`Update` 再把它累加进 `m_timeModel.Time`,
+   最后 `static_cast<uint32_t>(m_timeModel.Time / 24.f)` 转成天数。
+   「时/分不合法」这条拒绝路径却把倍率改掉了,而且**绕过了这个字段在别处的两道界**:
+   `Code/server/Services/CalendarService.cpp:148`(`SetTimeScale`)要求 `aScale >= 0.f && aScale <= 1000.f`,
+   `Code/encoding/Structs/TimeModel.cpp:47`(`ClampFloat(TimeScale, kMaxTimeScale)`)同样要求 `0..1000`。
+   只有这一处是裸写。
+6. **`aScale` 可以是非有限值。** `NaN` 参与算术后仍是 `NaN`,夹进任何区间都还是 `NaN`,
+   所以判据不是「在不在范围内」而是「这是不是一个数」—— 与 `WireLimits::ClampFinite` 同一条:
+   非有限值**替换**而不是夹取。`NaN` 一路进 `DateTime::Update`,落在 `static_cast<uint32_t>(NaN / 24.f)` 上,
+   而把 `NaN` 转成无符号整数是**未定义行为**。
+7. **两个调用点都不看返回值。** `Code/server/Services/CommandService.cpp:60` 与 `:76`(修复前)都是
+   「调 `SetTime` 然后无条件 `response.Result = kSuccess`」——
+   于是「参数不合法」在协议层与「成功」不可区分,客户端只能什么都不显示。
+   对照组:`Code/server/GameServer.cpp:379-389` 的控制台 `SetTime` 命令**看了返回值**并打
+   `out->error("Hour must be between 0-23 and minute must be between 0-59")`;
+   `Code/server/Scripting/GameServer_Bindings.cpp:35-37` 的 Lua 绑定**先夹再调**。
+8. **`assert` 的活性要按构建模式读。** 全仓没有 `NDEBUG`(`git grep -rn NDEBUG` 零命中),
+   `xmake.lua:27` 只有 `mode.debug`/`mode.releasedbg`/`mode.release`,
+   而 `.github/workflows/windows.yml:11-14` 的 `build-mode` 默认值是 `releasedbg`
+   —— **发布流水线用的那个模式里断言是活的**。
+9. **这条路径整条是 `noexcept`。** `DeserializeRaw` 是 `noexcept` 虚函数,
+   所以「抛出去让人接」不是一个选项:`assert` 失败 = `abort` = 整个进程。
+10. **它是活流量,不是死代码。** `CachedString` 是 `ActionEvent::EventName` / `TargetEventName`
+    (`Code/encoding/Structs/ActionEvent.h:19-20`),而 `ActionEvent::ApplyDifferential` 由
+    `Code/encoding/Structs/ReferenceUpdate.cpp:43 Actions[i].ApplyDifferential(aReader);` 调用,
+    `ReferenceUpdate` 又装在 `ClientReferencesMoveRequest` 的 `Map<uint32_t, ReferenceUpdate> Updates` 里
+    —— 每帧都在跑。
+
+**判据可机械执行**:
+
+| 形状 | 判定 |
+| --- | --- |
+| 授权判定读的是包里的字段,而不是 `acMessage.pPlayer` | 缺陷 |
+| 同一个 handler 里另一个分支用的是真指针 | 上面那条的判据 |
+| 成员赋值出现在参数校验之前,失败分支不撤销 | 缺陷 |
+| `assert(` 的实参来自线上解析结果 | 缺陷 |
+| 同一字段在别处有界、只有这一处裸写 | 上面那条的判据 |
+
+### 73.3 可达性
+
+第一处:**任何玩家**,在聊天框打 `/settime 12 00`。
+`Code/skyrim_ui/src/app/services/chat/commands.ts:20-44` 的 UI 侧只校验「两个参数」与「0-23 / 0-59」,
+不校验权限 —— 权限完全由服务端这道门决定。
+
+第二处:**管理员**(或私服队长)打 `/settime 99 99`。
+`SetTimeCommandRequest::Hours`/`Minutes` 是 `uint8_t`,所以 `99` 原样到达 `SetTime` 并走失败分支。
+注意这**不是**「只有管理员能触发的缺陷」:被拒绝的那一次已经把倍率改成了 `aScale`,
+而 `aScale` 来自 `m_world.GetCalendarService().GetTimeScale()` —— 也就是说,第二次非法调用会把
+「上一次非法调用写进去的值」再写一遍。真正的后果是**倍率与配置值永久不一致**,且没有任何日志。
+
+第三处:**任何已认证玩家**,发一个 `ClientReferencesMoveRequest`,其中某个 `ActionEvent` 的 `EventName`
+用一个**服务端缓存里不存在的 id**(字段 `cHasId` 写 `true`,后面跟任意 `VarInt`)。
+服务端 `releasedbg` 构建下 `abort`。
+
+### 73.4 修法
+
+一、管理员判定改成问这次连接本身:
+
+```cpp
+// Code/server/Services/CommandService.cpp(修复后)
+if (GameServer::Get()->GetAdminSessions().contains(acMessage.pPlayer->GetConnectionId()))
+{
+    const auto cHours = static_cast<int>(acMessage.Packet.Hours);
+    const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
+
+    // SetTime refuses hours, minutes and a scale it cannot apply, and the reply
+    // has to say which of the two happened: answering success for a call that
+    // changed nothing left the player waiting for a calendar resync that was
+    // never coming.
+    if (m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale()))
+        response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
+    else
+        response.Result = NotifySetTimeResult::SetTimeResult::kInvalidTime;
+
+    acMessage.pPlayer->Send(response);
+
+    return;
+}
+```
+
+整个 `for` 循环随之消失 —— 不再需要「遍历 + 判空 + `continue`」。
+`TiltedPhoques::Set` 有 `.contains()`(同族先例 `Code/server/Game/Animation/ActionReplayCache.cpp:66`)。
+`Packet.PlayerId` 仍是线上字段,但服务端不再读它(`Code/encoding/Messages/SetTimeCommandRequest.h` 不动,
+因为协议只许追加,删字段会改线格式)。
+
+二、`CalendarService::SetTime` 改成先判后写,并把界写全:
+
+```cpp
+// Code/server/Services/CalendarService.cpp(修复后)
+if (!std::isfinite(aScale) || aScale < 0.f || aScale > TimeModel::kMaxTimeScale)
+    return false;
+
+if (aHours < 0 || aHours > 23 || aMinutes < 0 || aMinutes > 59)
+    return false;
+
+m_dateTime.m_timeModel.TimeScale = aScale;
+
+// encode time as skyrim time
+auto minutes = static_cast<float>(aMinutes) * 0.17f;
+minutes = std::floor(minutes * 100) / 1000;
+m_dateTime.m_timeModel.Time = static_cast<float>(aHours) + minutes;
+
+SendTimeResync();
+
+GameServer::Get()->GetWorld().GetScriptService().HandleSetTime(aHours, aMinutes, aScale);
+return true;
+```
+
+界用的是 `TimeModel::kMaxTimeScale` 而不是再写一个字面量 `1000.f`:
+这个常量的注释原文就是「the server refuses a time scale above this when one is set by hand」
+—— 它本来就是为这一处准备的。顺带把该文件里裸写的 `floor(` / `ceil(` 补上 `std::` 限定,
+并显式 `#include <cmath>`(这个头此前是靠传递包含进来的;`Code/server/` 里 `#include <cmath>` 零命中),
+与 `Code/server/Services/PluginMessagingService.cpp:12-14` 的「std 头放最后」风格一致。
+
+三、两个调用点尊重返回值,并把「参数不合法」与「没有权限」分成两个结果:
+
+```cpp
+// Code/encoding/Messages/NotifySetTimeResult.h(修复后)
+enum class SetTimeResult : uint8_t
+{
+    kSuccess,
+    kNoPermission,
+    // The request was understood and authorized, but the hour or the minute in it
+    // was not a time. Appended, so the two values above keep their bytes.
+    kInvalidTime
+};
+```
+
+**追加在末尾而不是插在中间**:枚举按字节上线(`Code/encoding/Messages/NotifySetTimeResult.cpp:5-6` 写 8 位、
+`:14` 读 8 位),而 `Code/encoding/Opcodes.h:57-59` 的注释要求「Appended, never inserted」;
+`Code/plugins/tools/check_transport_compat.py` 也只约束 opcode 的相对顺序、不看枚举值。
+客户端据此分两条提示:
+
+```cpp
+// Code/client/Services/Generic/CommandService.cpp(修复后)
+if (acMessage.Result == RT::kNoPermission)
+    m_world.GetOverlayService().SendSystemMessage("Only an admin, or the party leader on a private server, can change the time.");
+else
+    m_world.GetOverlayService().SendSystemMessage("That is not a time. Use /settime HH MM, with hours 0-23 and minutes 0-59.");
+```
+
+四、`assert(false)` 换成把名字留空:
+
+```cpp
+// Code/encoding/Structs/CachedString.cpp(修复后)
+*this = TiltedPhoques::String();
+```
+
+空名字不是「静默吞掉」:消费这个字段的 `Code/server/Game/Animation/ActionReplayCache.cpp:66` 与 `:81`
+本来就是拿名字去查固定表(`AnimationEventLists::kExitSpecial.contains(...)` / `kIgnore.contains(...)`),
+查不到即返回 `false`,空串走的是同一条路。
+修掉的是**进程终止**,不是这个字段的语义。
+
+### 73.5 复核命令(照抄)
+
+```powershell
+python Tools\Scripts\check_docs.py
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\check_transport_compat.py
+git grep -n "assert(false)" -- Code/encoding/
+git grep -n "GetAdminSessions()" -- Code/
+git grep -n "SetTimeResult" -- Code/
+git grep -n "Packet.PlayerId" -- Code/server/
+git grep -n "kMaxTimeScale" -- Code/
+```
+
+复核结果:`check_docs.py` → `DOC CHECK OK`;`plugin_patches.py verify` → `PATCH VERIFY OK` /
+`17 patch(es) apply to their pinned commits`;`check` → `PATCH CHECK OK`;`check_transport_compat.py` →
+`TRANSPORT COMPATIBILITY OK`(`client opcodes: 53 in use` / `server opcodes: 56 in use`);
+`assert(false)` 在 `Code/encoding/` 已无命中(`Code/encoding/StringCache.cpp:78`/`:85` 的两处
+是「发送侧与接收侧缓存连续性」的不变量断言,不在本节范围内);
+`GetAdminSessions()` 只剩定义(`Code/server/GameServer.h:90`)与本节这一处读者;
+`SetTimeResult` 的三个值各只有一处生产者/消费者。
+
+**验证**:`Code/tests/encoding.cpp` 新增两个用例:
+
+- `TEST_CASE("A refused set time names which refusal it was", "[encoding.set_time_result]")`(`:1232-1262`)
+  先断言三个枚举值的字节依次是 `0` / `1` / `2`(证明 `kInvalidTime` 是追加的),
+  再对三者各做一次整包往返并 `REQUIRE(received == sent)`。
+- `TEST_CASE("A cached string with an unknown id reads as empty", "[encoding.cached_string]")`(`:1264-1304`)
+  先造一个「有 id、但 id 不在缓存里」的包,断言名字变成空串而不是进程死;
+  再往缓存里放一条真实字符串,断言同一个字段仍然解析得出内容 —— 证明兜底没有把命中路径一起吃掉。
+
+`Code/server/Services/CommandService.cpp` 与 `Code/server/Services/CalendarService.cpp` 是服务端 C++,
+本机不编译(§0/§1:Windows/MSVC 只由 GitHub CI 验证)。
+
+> **教训**:第一条:**一个字段只要发送者能自己填,它就不能用来回答「你是谁」。**
+> `Packet.PlayerId` 的语义是「我(客户端)的 id」,不是「服务端认为我是谁」;
+> 两者在正常客户端上恰好相等,而这个巧合让判定看起来是对的 —— 直到有人把它当成身份用。
+> 第二条:**「拒绝」必须发生在任何写入之前。**
+> `SetTime` 的失败分支只写了 `return false`,而上面那行赋值照样生效;
+> 于是「失败」这个词只是返回值的样子,调用方看见它、状态却已经变了。
+> 判据是顺序,不是有没有校验:这个函数在修复前**有**校验,只是校验晚了一行。
+> 第三条:**`assert` 是给「代码自己错了」用的,不是给「对端不守约」用的。**
+> 对一个可以被任何对端构造出来的输入断言,等于把进程的存活交给对端;
+> 而 `releasedbg` 是发布流水线的默认模式,`noexcept` 又拿走了「抛出去让人接」这条退路。
+
 

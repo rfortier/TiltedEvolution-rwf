@@ -27,43 +27,42 @@ void CommandService::OnSetTimeCommand(const PacketEvent<SetTimeCommandRequest>& 
 {
     NotifySetTimeResult response{};
 
-    const auto cPlayerId = static_cast<uint32_t>(acMessage.Packet.PlayerId);
-
     // Admin override: always allowed.
     //
-    // GetByConnectionId answers null for a session that has no player row, and
-    // an admin session is not guaranteed to have one. The connection id is
-    // inserted at GameServer.cpp:896, the row is only created at :977, and the
-    // authentication path has three ways to leave without the pair matching: a
-    // mod-policy mismatch returns at :947 (no row was ever made), a duplicate
-    // authentication returns at :983, and a script that cancels the join removes
-    // the row again at :999. None of them goes back to clean up the set, which
-    // is only ever erased on disconnect (GameServer.cpp:612).
+    // The decision is made from the connection this packet arrived on, never from
+    // Packet.PlayerId. That field is filled in by the sender itself - the client
+    // writes its own id into it at OverlayClient.cpp:163 - and every player learns
+    // every other player's id from NotifyPlayerJoined, so the old test ("some
+    // admin's id equals the id I claim") let any player pass as an admin by naming
+    // one. The set holds connection ids, and the sender's own connection id is the
+    // only thing in this handler that cannot be chosen by the sender.
     //
-    // The rest of this codebase already treats that as reachable rather than
-    // theoretical - the sibling readers of the same set all guard, and one of
-    // them logs it by name ("Admin session not found", GameServer.cpp:496-502);
-    // GetAdminByUsername guards too (:1096, :1110). This loop was the only
-    // reader that did not, and dereferencing the null here killed the whole
-    // server from any player's /settime chat command, not just an admin's.
-    for (const auto session : GameServer::Get()->GetAdminSessions())
+    // Reading the set this way also removes the null dereference the old loop had.
+    // GetByConnectionId answers null for a session that has no player row, and an
+    // admin session is not guaranteed to have one: the connection id is inserted at
+    // GameServer.cpp:909, the row is only created at :990, and the authentication
+    // path has three ways to leave without the pair matching - a mod-policy mismatch
+    // returns at :960 (no row was ever made), a duplicate authentication returns at
+    // :996, and a script that cancels the join removes the row again at :1013. None
+    // of them goes back to clean up the set, which is only ever erased on disconnect
+    // (GameServer.cpp:612).
+    if (GameServer::Get()->GetAdminSessions().contains(acMessage.pPlayer->GetConnectionId()))
     {
-        const auto* pAdmin = PlayerManager::Get()->GetByConnectionId(session);
-        if (!pAdmin)
-            continue;
+        const auto cHours = static_cast<int>(acMessage.Packet.Hours);
+        const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
 
-        if (pAdmin->GetId() == cPlayerId)
-        {
-            const auto cHours = static_cast<int>(acMessage.Packet.Hours);
-            const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
-
-            m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale());
-
+        // SetTime refuses hours, minutes and a scale it cannot apply, and the reply
+        // has to say which of the two happened: answering success for a call that
+        // changed nothing left the player waiting for a calendar resync that was
+        // never coming.
+        if (m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale()))
             response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
-            acMessage.pPlayer->Send(response);
+        else
+            response.Result = NotifySetTimeResult::SetTimeResult::kInvalidTime;
 
-            return;
-        }
+        acMessage.pPlayer->Send(response);
+
+        return;
     }
 
     // Party leader allowed on private servers only
@@ -73,9 +72,11 @@ void CommandService::OnSetTimeCommand(const PacketEvent<SetTimeCommandRequest>& 
         const auto cHours = static_cast<int>(acMessage.Packet.Hours);
         const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
 
-        m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale());
+        if (m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale()))
+            response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
+        else
+            response.Result = NotifySetTimeResult::SetTimeResult::kInvalidTime;
 
-        response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
         acMessage.pPlayer->Send(response);
 
         return;
