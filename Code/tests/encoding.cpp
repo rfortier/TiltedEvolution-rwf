@@ -18,15 +18,21 @@
 
 #include <catch2/catch.hpp>
 
+#include <Messages/AddTargetRequest.h>
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/NotifyActorValueChanges.h>
+#include <Messages/NotifyAddTarget.h>
 #include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/NotifyHealthChangeBroadcast.h>
+#include <Messages/NotifyProjectileLaunch.h>
 #include <Messages/NotifySubtitle.h>
+#include <Messages/NotifySyncExperience.h>
+#include <Messages/ProjectileLaunchRequest.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
 #include <Messages/SendChatMessageRequest.h>
 #include <Messages/ServerMessageFactory.h>
+#include <Messages/SyncExperienceRequest.h>
 #include <Structs/ActorValues.h>
 #include <Structs/Mods.h>
 #include <Structs/TimeModel.h>
@@ -1024,4 +1030,167 @@ TEST_CASE("Subtitle topic travels in both directions", "[encoding.subtitle]")
     recvNotify.DeserializeRaw(reader2);
     REQUIRE(recvNotify == notify);
     REQUIRE(recvNotify.TopicFormId == cTopicFormId);
+}
+TEST_CASE("A non finite wire float is replaced where it is read", "[encoding.finite_floats]")
+{
+    // A NaN or an infinity is not a large number, it is the absence of one: it survives
+    // every arithmetic operation it takes part in and every comparison it is put through,
+    // and the engine checks none of the fields these packets fill. The reader therefore
+    // has to. A finite value the sender can express must come out untouched, which is why
+    // every receiver below is seeded with 1.f: the replacement is the only thing that can
+    // turn that into the zero the assertion expects.
+    const auto cNotANumber = std::numeric_limits<float>::quiet_NaN();
+    const auto cInfinity = std::numeric_limits<float>::infinity();
+
+    REQUIRE(WireLimits::ClampFinite(1.5f) == 1.5f);
+    REQUIRE(WireLimits::ClampFinite(-1.5f) == -1.5f);
+    REQUIRE(WireLimits::ClampFinite(0.f) == 0.f);
+    REQUIRE(WireLimits::ClampFinite(cNotANumber) == 0.f);
+    REQUIRE(WireLimits::ClampFinite(cInfinity) == 0.f);
+    REQUIRE(WireLimits::ClampFinite(-cInfinity) == 0.f);
+
+    const auto hostileRoundTrip = [](auto& arSent, auto& arReceived) {
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        arSent.Serialize(writer);
+
+        uint64_t opcode = 0;
+        Buffer::Reader reader(&buff);
+        reader.ReadBits(opcode, 8);
+        arReceived.DeserializeRaw(reader);
+    };
+
+    // A spell effect magnitude reaches MagicTarget::AddTarget as fMagnitude.
+    {
+        AddTargetRequest sent{};
+        sent.TargetId = 7;
+        sent.CasterId = 8;
+        sent.Magnitude = cNotANumber;
+
+        AddTargetRequest received{};
+        received.Magnitude = 1.f;
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received.TargetId == 7);
+        REQUIRE(received.CasterId == 8);
+        REQUIRE(received.Magnitude == 0.f);
+    }
+
+    {
+        NotifyAddTarget sent{};
+        sent.TargetId = 9;
+        sent.Magnitude = cInfinity;
+
+        NotifyAddTarget received{};
+        received.Magnitude = 1.f;
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received.TargetId == 9);
+        REQUIRE(received.Magnitude == 0.f);
+    }
+
+    // Experience goes straight into PlayerCharacter::AddSkillExperience.
+    {
+        SyncExperienceRequest sent{};
+        sent.Experience = cNotANumber;
+
+        SyncExperienceRequest received{};
+        received.Experience = 1.f;
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received.Experience == 0.f);
+    }
+
+    {
+        NotifySyncExperience sent{};
+        sent.Experience = -cInfinity;
+
+        NotifySyncExperience received{};
+        received.Experience = 1.f;
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received.Experience == 0.f);
+    }
+
+    // The launch packet fills a Projectile::LaunchData, whose eight floats the engine
+    // copies into the projectile and into its angles.
+    {
+        ProjectileLaunchRequest sent{};
+        sent.ShooterID = 11;
+        sent.OriginX = cNotANumber;
+        sent.OriginY = cInfinity;
+        sent.OriginZ = -cInfinity;
+        sent.ZAngle = cNotANumber;
+        sent.XAngle = cInfinity;
+        sent.YAngle = -cInfinity;
+        sent.Power = cNotANumber;
+        sent.Scale = cInfinity;
+
+        ProjectileLaunchRequest received{};
+        received.OriginX = received.OriginY = received.OriginZ = 1.f;
+        received.ZAngle = received.XAngle = received.YAngle = 1.f;
+        received.Power = received.Scale = 1.f;
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received.ShooterID == 11);
+        REQUIRE(received.OriginX == 0.f);
+        REQUIRE(received.OriginY == 0.f);
+        REQUIRE(received.OriginZ == 0.f);
+        REQUIRE(received.ZAngle == 0.f);
+        REQUIRE(received.XAngle == 0.f);
+        REQUIRE(received.YAngle == 0.f);
+        REQUIRE(received.Power == 0.f);
+        REQUIRE(received.Scale == 0.f);
+    }
+
+    {
+        NotifyProjectileLaunch sent{};
+        sent.ShooterID = 12;
+        sent.OriginX = cInfinity;
+        sent.OriginY = cNotANumber;
+        sent.OriginZ = cInfinity;
+        sent.ZAngle = -cInfinity;
+        sent.XAngle = cNotANumber;
+        sent.YAngle = cInfinity;
+        sent.Power = -cInfinity;
+        sent.Scale = cNotANumber;
+
+        NotifyProjectileLaunch received{};
+        received.OriginX = received.OriginY = received.OriginZ = 1.f;
+        received.ZAngle = received.XAngle = received.YAngle = 1.f;
+        received.Power = received.Scale = 1.f;
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received.ShooterID == 12);
+        REQUIRE(received.OriginX == 0.f);
+        REQUIRE(received.OriginY == 0.f);
+        REQUIRE(received.OriginZ == 0.f);
+        REQUIRE(received.ZAngle == 0.f);
+        REQUIRE(received.XAngle == 0.f);
+        REQUIRE(received.YAngle == 0.f);
+        REQUIRE(received.Power == 0.f);
+        REQUIRE(received.Scale == 0.f);
+    }
+
+    // A launch the game itself produces has to survive the read untouched: a reader that
+    // pulled every value into a range would silently move every projectile.
+    {
+        NotifyProjectileLaunch sent{};
+        sent.ShooterID = 13;
+        sent.OriginX = -1234.5f;
+        sent.OriginY = 0.25f;
+        sent.OriginZ = 99999.f;
+        sent.ZAngle = -3.5f;
+        sent.XAngle = 0.f;
+        sent.YAngle = 3.5f;
+        sent.Power = 12.5f;
+        sent.Scale = 1.f;
+        sent.AlwaysHit = true;
+        sent.ForceConeOfFire = true;
+
+        NotifyProjectileLaunch received{};
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received == sent);
+    }
 }

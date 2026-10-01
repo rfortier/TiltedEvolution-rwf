@@ -1583,6 +1583,59 @@ SKSE::log::info("AnimInput actor=00000014 localPlayer=true event='{}' result={} 
 → `PATCH VERIFY OK` / `12 patch(es) apply to their pinned commits`;同目录下 `check` → `PATCH CHECK OK`。
 `git -C plugins/AnimSyncTogether grep -n "flush_on\|flush_every\|set_level"` 命中 `src/main.cpp:28`/`:32`/`:33`,
 `flush_on(spdlog::level::trace)` 已无命中。`python Tools/Scripts/check_docs.py` 全绿。
+### 修复:二十处「对端说了算」的浮点直接进了引擎,而 NaN 之后每一次比较都不再成立
+
+**现象**:一个法术效果强度、一次经验同步、一发弹道的落点与朝向,发送方都可以写成 `NaN` 或 `±Inf`。
+这二十个字段读完就交给引擎,中间没有任何一处检查 —— 而 `NaN` 不是「很大的数」,它是「没有数」:
+它参与算术之后仍然是 `NaN`,参与比较永远为假,所以它落到哪个引擎字段上,哪个字段就再也不可比较、
+不可夹紧、不可存储。`Inf` 是同一件事的另一半。
+
+**根因**(修复前):
+
+```cpp
+// Code/encoding/Messages/AddTargetRequest.cpp:23(修复前,NotifyAddTarget.cpp:23 同)
+Magnitude = Serialization::ReadFloat(aReader);
+
+// Code/encoding/Messages/SyncExperienceRequest.cpp:12(修复前,NotifySyncExperience.cpp:12 同)
+Experience = Serialization::ReadFloat(aReader);
+
+// Code/encoding/Messages/ProjectileLaunchRequest.cpp:44-46 / :52-54 / :62-63(修复前,NotifyProjectileLaunch.cpp 同)
+OriginX = Serialization::ReadFloat(aReader);
+OriginY = Serialization::ReadFloat(aReader);
+OriginZ = Serialization::ReadFloat(aReader);
+ZAngle = Serialization::ReadFloat(aReader);
+XAngle = Serialization::ReadFloat(aReader);
+YAngle = Serialization::ReadFloat(aReader);
+Power = Serialization::ReadFloat(aReader);
+Scale = Serialization::ReadFloat(aReader);
+```
+
+这三个家族各有各的落点,但都落在引擎里:
+
+1. `Magnitude` 经 `Code/client/Services/Generic/MagicService.cpp:450 data.fMagnitude = acMessage.Magnitude;`
+   进 `MagicTarget::AddTargetData`,再交给 `pActor->magicTarget.AddTarget(data, ...)`。
+2. `Experience` 经 `Code/client/Services/Generic/CharacterService.cpp:1094 OnNotifySyncExperience` 直接进
+   `PlayerCharacter::AddSkillExperience`(`Code/client/Games/Skyrim/PlayerCharacter.cpp:74-87`),
+   那个函数把值原样传给 `RealAddSkillExperience`,再回读 `newExperience - oldExperience` —— 两个 `NaN` 相减还是 `NaN`。
+3. 那八个浮点填的是 `Projectile::LaunchData`(`Code/client/Games/Skyrim/Projectiles/Projectile.h:18-50`,
+   `static_assert(sizeof(LaunchData) == 0xA8)`),`Projectile::Launch` 把 `fPower` 写进弹丸实体,
+   其余进 `pProjectile` 的弹道解算。
+
+同族的既有先例只有两处:`Code/encoding/Messages/RequestHealthChangeBroadcast.cpp:20` 的 `std::isfinite` 夹紧
+(`kMaxHealthDelta = 100000.f`)与 `Code/encoding/Structs/TimeModel.cpp:11-15` 的 `ClampFloat`。
+两者都在 `Code/encoding/` 里,`WireLimits.h` 的头部注释本来就写着这些读侧钳制该怎么放。
+
+**修法**:`Code/encoding/WireLimits.h` 新增 `inline float ClampFinite(const float aValue) noexcept`,
+非有限值**替换**为 `0.f` 而不是夹进某个区间 —— 没有任何区间能让 `NaN` 变得有意义,而这批字段里也没有哪一个
+像血量增量那样带「正负即判决」的语义。六个 `.cpp` 的第 2 行加 `#include <WireLimits.h>`,二十处读取改成
+`X = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));`。
+**有限的合法值必须原样通过**:发送方真的能产生 `99999.f` 的落点与 `-1234.5f` 的角度,
+把它们夹进某个范围就等于每一发弹道都被悄悄挪位。
+
+**验证**:`Code/tests/encoding.cpp` 新增 `TEST_CASE("A non finite wire float is replaced where it is read", "[encoding.finite_floats]")`
+—— 先直接断言 `ClampFinite` 对 `1.5f`/`-1.5f`/`0.f` 恒等、对 `NaN`/`±Inf` 给 `0.f`,
+再对六个消息各做一次「整包往返 + 每个接收对象先写哨兵 `1.f`」,最后用一条 `REQUIRE(received == sent)`
+证明合法弹道原样通过。`python Tools/Scripts/check_docs.py` 全绿。
 ### 修复:血量广播的读取被钳制块挤掉了,于是这个包一直在送未初始化的血量增量
 **现象**:一个 `RequestHealthChangeBroadcast` / `NotifyHealthChangeBroadcast` 到达时,包里 `DeltaHealth`
 的那四个字节**从不被消费**;紧接着的 `if (!std::isfinite(DeltaHealth))` 检查的是**未初始化的成员** ——

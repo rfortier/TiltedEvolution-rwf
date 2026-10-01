@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include <cmath>
+
 // Upper bounds for every string that arrives over the wire.
 //
 // A string on the wire is a length followed by that many bytes, and the length is
@@ -58,6 +60,20 @@ inline void Clamp(TiltedPhoques::String& aValue, const uint32_t aMaxBytes) noexc
 {
     if (aValue.size() > aMaxBytes)
         aValue.resize(aMaxBytes);
+}
+
+// A float that arrives over the wire and is handed to the engine. A NaN or an infinity
+// is not a large number but the absence of one: it survives every arithmetic operation
+// it takes part in, so a peer that sends one turns whatever it lands in into a value
+// nobody can compare, clamp or store. The engine checks nothing, and so did the readers
+// that filled these fields.
+//
+// A non finite value is replaced rather than clamped into a range: no range makes a NaN
+// meaningful, and unlike a health delta none of these fields carries a sign dependent
+// decision that a bound would have to respect.
+inline float ClampFinite(const float aValue) noexcept
+{
+    return std::isfinite(aValue) ? aValue : 0.f;
 }
 
 } // namespace WireLimits

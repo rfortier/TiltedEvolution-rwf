@@ -1,4 +1,5 @@
 #include <Messages/AddTargetRequest.h>
+#include <WireLimits.h>
 
 void AddTargetRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -20,7 +21,7 @@ void AddTargetRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) no
     CasterId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     SpellId.Deserialize(aReader);
     EffectId.Deserialize(aReader);
-    Magnitude = Serialization::ReadFloat(aReader);
+    Magnitude = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
     IsDualCasting = Serialization::ReadBool(aReader);
     ApplyHealPerkBonus = Serialization::ReadBool(aReader);
     ApplyStaminaPerkBonus = Serialization::ReadBool(aReader);

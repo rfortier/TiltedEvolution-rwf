@@ -8465,3 +8465,151 @@ python Tools/Scripts/check_docs.py
 > 给接收对象写一个落在钳制恒等区间的有限哨兵,才能把「读进来了」变成断言成立的唯一解释。
 > 第三条:**`noexcept` 链上的不确定值不是「小问题」,它是把控制权交给了内存布局。**
 > 这个值一路走到 `ForceActorValue` 与 `pActor->Kill()`,中间没有任何一处能发现它是垃圾。
+## 70. 2026-10-01 场次:二十处「对端说了算」的浮点直接进了引擎 —— 判据是「这个 float 是有限数吗,而它接下来会被谁用掉」
+
+> **锚点**:本节的修复落在 `Code/encoding/WireLimits.h` 与 `Code/encoding/Messages/` 下的六个 `.cpp`
+> (`AddTargetRequest.cpp`、`NotifyAddTarget.cpp`、`SyncExperienceRequest.cpp`、`NotifySyncExperience.cpp`、
+> `ProjectileLaunchRequest.cpp`、`NotifyProjectileLaunch.cpp`),交付形式是仓库内的直接提交
+> (不是插件补丁 —— 这些文件属于主仓,CI 直接编译)。
+
+### 70.1 缺陷:读侧对「非有限数」没有任何处置,而这批字段全都要交给引擎
+
+| 位置 | 作用 |
+| --- | --- |
+| `Code/encoding/Messages/AddTargetRequest.cpp:23` / `NotifyAddTarget.cpp:23`(修复前) | `Magnitude` 裸读,进 `MagicTarget::AddTargetData.fMagnitude` |
+| `Code/encoding/Messages/SyncExperienceRequest.cpp:12` / `NotifySyncExperience.cpp:12`(修复前) | `Experience` 裸读,直接进 `PlayerCharacter::AddSkillExperience` |
+| `Code/encoding/Messages/ProjectileLaunchRequest.cpp:44-46`/`:52-54`/`:62-63`,`NotifyProjectileLaunch.cpp` 同(修复前) | 八个浮点裸读,填 `Projectile::LaunchData` |
+| `Code/encoding/WireLimits.h:74-77`(修复后) | 新增 `inline float ClampFinite(const float aValue) noexcept` |
+
+六个文件在修复前都是裸读,形状完全一样:
+
+```cpp
+// Code/encoding/Messages/AddTargetRequest.cpp:23(修复前,NotifyAddTarget.cpp:23 同)
+Magnitude = Serialization::ReadFloat(aReader);
+
+// Code/encoding/Messages/SyncExperienceRequest.cpp:12(修复前,NotifySyncExperience.cpp:12 同)
+Experience = Serialization::ReadFloat(aReader);
+
+// Code/encoding/Messages/ProjectileLaunchRequest.cpp:44-46 / :52-54 / :62-63(修复前,NotifyProjectileLaunch.cpp 同)
+OriginX = Serialization::ReadFloat(aReader);
+OriginY = Serialization::ReadFloat(aReader);
+OriginZ = Serialization::ReadFloat(aReader);
+ZAngle = Serialization::ReadFloat(aReader);
+XAngle = Serialization::ReadFloat(aReader);
+YAngle = Serialization::ReadFloat(aReader);
+Power = Serialization::ReadFloat(aReader);
+Scale = Serialization::ReadFloat(aReader);
+```
+
+`NaN` 不是「很大的数」,它是「没有数」:它参与任何算术之后仍然是 `NaN`,参与任何比较永远为假,
+所以它落到哪个引擎字段上,哪个字段就再也不可比较、不可夹紧、不可存储;`±Inf` 是同一件事的另一半。
+这三批字段各有一个落点,而**没有一个落点在读侧做过检查**:
+
+1. `Magnitude` → `Code/client/Services/Generic/MagicService.cpp:450 data.fMagnitude = acMessage.Magnitude;`
+   → `pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);`(`:470`)。
+2. `Experience` → `Code/client/Services/Generic/CharacterService.cpp:1094-1104 OnNotifySyncExperience`
+   → `pPlayer->AddSkillExperience(PlayerCharacter::LastUsedCombatSkill, acMessage.Experience);`
+   → `Code/client/Games/Skyrim/PlayerCharacter.cpp:74-87` 把它原样交给 `RealAddSkillExperience`,
+   再回读 `float deltaExperience = newExperience - oldExperience;` —— 两个 `NaN` 相减还是 `NaN`。
+3. 那八个浮点 → `Projectile::LaunchData`(`Code/client/Games/Skyrim/Projectiles/Projectile.h:18-50`,
+   `static_assert(sizeof(Projectile::LaunchData) == 0xA8);` 在 `:65`),`Projectile::Launch`
+   (`Code/client/Games/Skyrim/Projectiles/Projectile.cpp:37`)把 `fPower` 写进弹丸实体,其余进弹道解算。
+
+同族的既有先例**全仓只有两处**,而且都在 `Code/encoding/` 里:`RequestHealthChangeBroadcast.cpp:20` 的
+`std::isfinite` 夹紧(`kMaxHealthDelta = 100000.f`)与 `Structs/TimeModel.cpp:11-15` 的 `ClampFloat`。
+`Code/encoding/WireLimits.h:23-26` 的头部注释本来就写着「读侧钳制而不是拒绝」该怎么落。
+
+### 70.2 判据:非有限值**替换**而不是夹进区间,而有限的合法值必须原样通过
+
+判据分两半,缺任何一半都会写出一个错的修复:
+
+- **非有限值没有区间可言。** 没有任何区间能让 `NaN` 变得有意义,而且这批字段里没有哪一个像血量增量那样
+  带「正负即判决」的语义(那个字段的正负决定目标死不死,所以它必须夹到 `±kMaxHealthDelta`),
+  所以这里取**替换**为 `0.f`。
+- **有限值不能动。** 发送方真的能产生 `99999.f` 的落点与 `-1234.5f` 的角度,把有限值夹进某个「合理范围」
+  等于每一发弹道都被悄悄挪位 —— 那是把稳定性修复变成新的失步。
+
+```cpp
+// Code/encoding/WireLimits.h:65-77(修复后)
+// A float that arrives over the wire and is handed to the engine. A NaN or an infinity
+// is not a large number but the absence of one: it survives every arithmetic operation
+// it takes part in, so a peer that sends one turns whatever it lands in into a value
+// nobody can compare, clamp or store. The engine checks nothing, and so did the readers
+// that filled these fields.
+//
+// A non finite value is replaced rather than clamped into a range: no range makes a NaN
+// meaningful, and unlike a health delta none of these fields carries a sign dependent
+// decision that a bound would have to respect.
+inline float ClampFinite(const float aValue) noexcept
+{
+    return std::isfinite(aValue) ? aValue : 0.f;
+}
+```
+
+用例同时钉住这两半:`Code/tests/encoding.cpp` 新增
+`TEST_CASE("A non finite wire float is replaced where it is read", "[encoding.finite_floats]")`,
+先直接断言 `ClampFinite` 对 `1.5f`/`-1.5f`/`0.f` 恒等、对 `NaN`/`+Inf`/`-Inf` 给 `0.f`,
+再对六个消息各做一次整包往返,最后用一条 `REQUIRE(received == sent)` 把「合法弹道原样通过」也钉住。
+**每个接收对象都先写哨兵 `1.f`** —— 理由与 §69.2 相同:没有哨兵,「读都没读」和「读到了 0」在断言上无法区分。
+
+### 70.3 可达性:三个家族的发送侧都只由「本地真实事件」驱动,但读侧从不检查发送方是谁
+
+`Magnitude` 的发送侧是 `Code/client/Services/Generic/MagicService.cpp:328 request.Magnitude = acEvent.Magnitude;`,
+服务端 `Code/server/Services/MagicService.cpp:62 notify.Magnitude = message.Magnitude;` 是纯转发
+—— `Code/server/Services/MagicService.cpp` 的四个 handler(`OnSpellCastRequest:24-38`、
+`OnInterruptCastRequest:40-51`、`OnAddTargetRequest:53-70`、`OnRemoveSpellRequest:72-85`)**没有任何 ownership 判定**。
+`Experience` 的发送侧 `RunExperienceUpdates` 只在自己队里发(`if (!World::Get().GetPartyService().IsInParty()) return;`),
+服务端 `Code/server/Services/CharacterService.cpp:548-558 OnSyncExperienceRequest` 按队伍转发;
+弹道由 `Code/server/Services/CombatService.cpp:15-56` 转发给 `SendToPlayersInRange`,**字段逐个原样拷贝,零校验**。
+⇒ 一个自制的客户端不需要攻破任何东西:它只要在包里把这二十个字段之一写成 `NaN`,接收方就会把它交给引擎。
+这与 §59 的判据同源(「一个增量字段既是值又是判决」),只是这里的后果不是秒杀,而是**让引擎的某个数永久失效**。
+
+### 70.4 修法:在既有落点加一个替换函数,六个文件各改第 2 行 include 与 N 处读取
+
+`WireLimits.h` 是 `Code/encoding` 里既有的「wire 侧钳制」落点(22 个消息 `.cpp` 第 2 行 `#include <WireLimits.h>`),
+新增函数放在 `Clamp` 之后、`} // namespace WireLimits` 之前;六个 `.cpp` 沿用同一 include 风格,二十处读取改成:
+
+```cpp
+// Code/encoding/Messages/ProjectileLaunchRequest.cpp:45-47(修复后,其余 18 处同构)
+OriginX = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+OriginY = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+OriginZ = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+```
+
+`CastingSource` 与 `Area` 仍是 `Serialization::ReadVarInt(aReader) & 0xFFFFFFFF`(整数,不是 float),
+本批未动 —— 它们的缺陷是另一类(见 §66 的判据),不在这一节的范围内。
+
+### 70.5 复核命令(照抄)
+
+```powershell
+git grep -n "ClampFinite" Code/encoding/WireLimits.h Code/encoding/Messages/
+git grep -c "ReadFloat" Code/encoding/Messages/
+git grep -n "ReadFloat" Code/encoding/Messages/ | Select-String -NotMatch "ClampFinite"
+git grep -n "finite_floats" Code/tests/encoding.cpp
+git diff --stat
+python Tools/Scripts/check_docs.py
+```
+
+复核结果:`ClampFinite` 命中 `WireLimits.h:74`(定义)与六个消息文件共 20 处读取;
+`ReadFloat` 在 `Code/encoding/Messages/` 上共 28 行,其中 20 行是本批、4 行是 actor value 一族
+(`NotifyActorValueChanges.cpp:40`/`RequestActorValueChanges.cpp:40`/`NotifyActorMaxValueChanges.cpp:40`/
+`RequestActorMaxValueChanges.cpp:40`,走 `ActorValues::IsValidActorValue` 的 `std::isfinite`)、
+2 行是血量一族(`RequestHealthChangeBroadcast.cpp:16`/`NotifyHealthChangeBroadcast.cpp:16`,§69 的 `kMaxHealthDelta` 夹紧)、
+2 行是 `Percentage`(`NotifyPlayerHealthUpdate.cpp:15`/`RequestPlayerHealthUpdate.cpp:13`,消费侧
+`Code/client/Services/Generic/OverlayService.cpp:543` 的 `acMessage.Percentage >= 0.f ? … : 0.f` 把 `NaN` 变成 `0.f`);
+过滤掉 `ClampFinite` 之后**没有一条裸读属于这六个文件**。`check_docs.py` → `DOC CHECK OK`。
+C++ 测试由 CI 执行(`windows.yml:585-638` 的 `Run the encoding tests` 要求退出码 0 **且**输出里含 `All tests passed`)。
+
+**验证**:六处修改前的内容与修改后的内容都逐字核对过;新增用例的哨兵 `1.f` 落在 `ClampFinite` 的恒等区间内,
+所以删掉任意一处 `ClampFinite` 都会让对应的 `== 0.f` 断言失败(该位置在 `ClampFinite` 之前是裸读,
+删掉包装后 `NaN` 会原样留下,断言同样失败)。`REQUIRE(received == sent)` 则保证修复没有把有限值也改掉。
+
+> **教训**:第一条:**「引擎会检查」和「读侧检查过」是两件不同的事,而 diff 里只看得到后者。**
+> 这二十处读取与它们各自的引擎落点之间,隔着一整个 `Code/client/Services` —— 判据必须落在**读取那一行**上,
+> 而不是落在「下游大概会判空」上。
+> 第二条:**「夹紧」和「替换」不是同一种修复,选择依据是这个值的语义,不是这个值的类型。**
+> 血量增量带「正负即判决」,所以它必须夹到边界;落点、角度、强度、经验都不带这种语义,
+> 所以对它们来说任何区间都是凭空发明的 —— 而凭空发明的区间会改掉合法数据。
+> 第三条:**先例只有一个的时候,它就不是先例,是例外。**
+> 这一族此前只有血量与 `TimeModel` 两处钳制,而 `ReadFloat` 在 `Code/encoding/Messages/` 上有 29 处 ——
+> 把「有一个地方做了」当成「这一类都做过了」,就是这一节二十处缺陷能一起活到现在的原因。

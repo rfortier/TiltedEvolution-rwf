@@ -1,4 +1,5 @@
 #include <Messages/NotifySyncExperience.h>
+#include <WireLimits.h>
 
 void NotifySyncExperience::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -9,5 +10,5 @@ void NotifySyncExperience::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader
 {
     ServerMessage::DeserializeRaw(aReader);
 
-    Experience = Serialization::ReadFloat(aReader);
+    Experience = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
 }

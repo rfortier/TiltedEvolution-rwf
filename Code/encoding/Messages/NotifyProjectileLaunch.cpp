@@ -1,4 +1,5 @@
 #include <Messages/NotifyProjectileLaunch.h>
+#include <WireLimits.h>
 
 void NotifyProjectileLaunch::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -41,17 +42,17 @@ void NotifyProjectileLaunch::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRead
 
     ShooterID = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
-    OriginX = Serialization::ReadFloat(aReader);
-    OriginY = Serialization::ReadFloat(aReader);
-    OriginZ = Serialization::ReadFloat(aReader);
+    OriginX = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+    OriginY = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+    OriginZ = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
 
     ProjectileBaseID.Deserialize(aReader);
     WeaponID.Deserialize(aReader);
     AmmoID.Deserialize(aReader);
 
-    ZAngle = Serialization::ReadFloat(aReader);
-    XAngle = Serialization::ReadFloat(aReader);
-    YAngle = Serialization::ReadFloat(aReader);
+    ZAngle = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+    XAngle = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+    YAngle = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
 
     ParentCellID.Deserialize(aReader);
     SpellID.Deserialize(aReader);
@@ -59,8 +60,8 @@ void NotifyProjectileLaunch::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRead
     CastingSource = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
     Area = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-    Power = Serialization::ReadFloat(aReader);
-    Scale = Serialization::ReadFloat(aReader);
+    Power = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+    Scale = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
 
     AlwaysHit = Serialization::ReadBool(aReader);
     NoDamageOutsideCombat = Serialization::ReadBool(aReader);
