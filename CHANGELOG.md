@@ -9,6 +9,118 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:中继的四个身份字段可以被对端抢注 —— 判据是「同一个名字,中继写在尾、对端写在头,而读取器取的是第一个」
+
+**现象**:插件层的传输通道上,中继脚本每转发一封信封,就把服务端认证过的身份追加在**尾部**:
+
+```lua
+-- plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua(修复前 :180-185)
+local relayEnvelope =
+    message ..
+    "|sender=" .. tostring(senderConnectionId) ..
+    "|senderPlayerId=" .. tostring(senderPlayerId) ..
+    "|senderName=" .. safeField(player:GetUsername()) ..
+    "|serverTick=" .. tostring(gameServer:GetTick())
+```
+
+而 `message` 整段是**发送方自己拼的**。信封的头由对端写、尾由中继写,
+同一个名字因此可以在一封信封里出现两次 —— 谁赢,取决于读的人取的是哪一个。
+
+**根因**:两侧取的是相反的。中继脚本的字段表是**后者胜**:
+
+```lua
+-- main.lua(修复前 :30-41)
+local function splitFields(envelope)
+  local fields = {}
+  ...
+      fields[key] = value                                   -- :37,后出现的覆盖先出现的
+```
+
+而接收侧桥的读取器是**前者胜**:
+
+```cpp
+// plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp(修复前 :758-774)
+std::optional<std::string_view> ReadField(std::string_view packet, std::string_view key)
+{
+    ...
+        if (token.size() > key.size() && token.starts_with(key) && token[key.size()] == '=')
+            return token.substr(key.size() + 1);              // :769,第一个匹配就返回
+```
+
+中继自己不会被骗 —— 它不读 `fields["sender"]`,它用的是 `player:GetConnectionId()` 与
+`player:GetId()`(修复前 `:168-169`),取的是会话真值。被欺骗的是**接收方客户端**:
+`AddFragment`(修复前 `:825-924`)的九次 `ReadField` 里有两次读的是保留字段,
+`:869 pending.senderName = senderName ? std::string(*senderName) : std::string(fallbackPlayerName);`
+之后一路写到
+
+```cpp
+// plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp(修复前 :936-937)
+message.sender.connectionID = completed->senderId;
+message.sender.displayName = completed->senderName.c_str();
+```
+
+第二处在 `src/STRPMProxyResolverBridge.h`:`ObserveIncomingEnvelope` 读 `sender`/`senderPlayerId`
+后直接 `ObserveSender(*connectionID, *playerId)`(修复前 `:886`),写进 `g_connectionToPlayer`。
+
+**为什么没有任何东西报错**:抢注出来的是**合法值**。`senderName` 是一个合法字符串,
+`sender` 是一个合法连接号,信封本身仍然过 `validateEnvelope`(修复前 `:82-111`)——
+它校验 `msg`/`seq`/`channel`/`payload`/`flags`/`part`/`parts`/`target`,
+**从不过问字段集合**,所以多一个 `|sender=` 不是畸形。受害面是所有以 displayName 为键的表:
+`plugins/MorphSyncTogether/src/UdpTransport.h:48`、`src/TngSync.h:58`、
+`MorphSyncService.h:130-134`、`plugins/IEDSyncTogether/src/STRPMAdapter.h:63`、
+`plugins/TradeTogether/src/StrMessagingTransport.cpp:517`;
+而 `plugins/MorphSyncTogether/src/MorphSyncService.cpp:1012` 的
+`if (!rawName || !EqualsInsensitive(rawName, name)) return;` 会把伪造的名字解析成
+**一个真实存在的代理角色** —— 于是外观 / TNG / 交易的身份可以按名字冒充。
+
+**为什么 CI 挡不住、本地也看不见**:`check_transport_compat.py` 当时只把中继的
+`MAX_ENVELOPE_LENGTH` 与 `WireLimits.h` 的 `kMaxChatMessageBytes` 放在一起看
+(上一节刚加的那条),以及两个 opcode 下标。**没有任何一条检查把中继追加的字段名
+与读取它们的字段名放在一起看** —— 而这正是缺陷所在:名字是同一个,位置是两头。
+每一层单独读都是对的:中继确实追加了真值,桥确实读了一个 `senderName`。
+
+**修法**:保留字段单独按「尾部」读,其余字段的读法一个都不动。
+
+- `src/STRPluginMessagingBridgeReceive.cpp:776-797` 与 `src/STRPMProxyResolverBridge.h:681-702`:
+  新增 `ReadRelayField`,与前者的唯一区别是**记下最后一个匹配再返回**(`found = token.substr(...)`,
+  循环结束才 `return found;`)。桥里只有 `sender`/`senderName` 两处换成它,另外七个字段
+  (`msg`/`channel`/`seq`/`flags`/`part`/`parts`/`payload`)都是客户端写、中继不改的,仍走 `ReadField`。
+- `src/STRPMProxyResolverBridge.h`:该文件的两个读取点**都**是保留字段,没有客户端字段的读者,
+  所以原来的 `ReadField` 整体被 `ReadRelayField` 取代。
+- `extras/str-server-resources/strpm-chat-relay/main.lua:13-17`、`:88-95`、`:183-187`:
+  中继自己判一次 —— `RESERVED_FIELDS = { "sender", "senderPlayerId", "senderName", "serverTick" }`,
+  信封里已经带了其中任何一个就丢弃并打印
+  `[STRPM] Dropped envelope carrying reserved field <name>`。这一条挡的是**转发**,
+  上面两条挡的是**读取**,两层各自独立成立。
+- `docs/OFFICIAL_STR_CHAT_TUNNEL.md:86-95`(子模块内):追加字段那行补上漏写的
+  `senderPlayerId`,并写明这四个名字是保留名、中继会拒收已带保留名的信封、桥从尾部读。
+
+**没有把 `ReadField` 整体翻成后者胜**,这是这次修复里最容易做错的一步:`payload` 必须保持**前者胜**。
+identity 通道(`main.lua:176-178`,修复前)用 `replacePayload(message, hexEncodeAscii(tostring(senderPlayerId)))`
+覆写的是**第一个** `|payload=`(修复前 `:70-80` 的 `string.gsub(..., 1)`),中继写进去的 PlayerId
+就落在第一个 `payload=` 上。整体翻转的话,客户端在尾部补一个 `|payload=` 就能顶掉它 ——
+「认证过的身份」会从另一个口子漏掉。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),所以证据是逐字命中 + 门禁 + 反向验证,不是编译产物。
+`Code/plugins/tools/check_transport_compat.py` 新增一段(三部分:三个文件必须都在、
+`main.lua` 必须声明 `RESERVED_FIELDS` 且**真的调用** `reservedFieldPresent(fields)` 且在追加字段之前、
+两个 C++ 文件各自的 `ReadRelayField` 函数体必须含 `found = token.substr` 且不得含 `return token.substr`),
+并把 `ReadRelayField(envelope, "sender")`/`"senderName"`/`"senderPlayerId"` 三个调用点写死。
+反向验证过两轮:把桥的 `found = token.substr(...)` 改回 `return token.substr(...)`,
+门禁立刻 exit 1 并给出「ReadRelayField returns the first match again」;
+把 `local reserved = reservedFieldPresent(fields)` 改成 `local reserved = nil`,
+门禁立刻 exit 1 并给出「declares RESERVED_FIELDS but never calls reservedFieldPresent」;
+两次都恢复后回到 `TRANSPORT COMPATIBILITY OK`。
+交付是 `Code/plugins/patches/STRPluginMessagingAPI/0003-read-the-relays-own-sender-fields-from-the-tail.patch`
+(7076 字节 / 156 行 LF / 9 个 hunk / 4 个文件),按 0001 → 0002 → 0003 的顺序对 pin `62143fd` 全部应用成功。
+
+> **教训**:第一条:**同一个名字可以在一份报文里出现两次,而「谁赢」是两个相反的实现细节。**
+> 中继的 Lua 表是后者胜,接收侧桥的读取器是前者胜 —— 两个都对,合起来就是可抢注。
+> 定这类字段时先问「这个字段是**谁写的**,写在哪一段」,再问「读的人取第一个还是最后一个」。
+> 第二条:**「服务端认证过了」不等于「客户端读到的就是认证值」。**
+> 中继确实把真值追加进去了,认证没有失效;失效的是**读取**,而读取发生在别人机器上。
+> 第三条:**修一个「取第一个」的读取器时,要看同一个函数里有没有别的字段依赖「取第一个」。**
+> 这里 `payload` 就依赖 —— 翻整体的方向会把 identity 通道的认证从另一个口子放走。
 ### 修复:一个按「一行聊天」定的上限,把插件层的传输通道静默截断了 —— 截断后的 hex 仍然是合法 hex
 
 **现象**:`ChatMessage` 这一个线上字段同时承担两件事。对玩家它是聊天行;

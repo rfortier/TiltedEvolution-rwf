@@ -224,6 +224,14 @@ def uncompiled_patch_targets(plugin: dict) -> list[str]:
 # cannot fire on a legitimate spec.
 FORMAT_FIELD = re.compile(r'\{([^{}]*)\}')
 
+# ...and a spec is alignment, width, precision or a type letter, so it never
+# contains a comma or a space. Requiring a spec-shaped field is what keeps this
+# from firing on a brace group written in another language: a patch that edits
+# the relay's Lua carries `{ "sender", "senderPlayerId", ... }`, which holds
+# quotes but is not a placeholder at all. The typo this rule was built for
+# (`path="{"}"`, where the field is a lone quote) still matches.
+FORMAT_SPEC = re.compile(r'[^,\s]*')
+
 
 def unescape_cpp(literal: str) -> str:
     """The bytes the compiler sees, for the escapes that matter here."""
@@ -244,7 +252,7 @@ def malformed_format_fields(text: str) -> list[tuple[int, str]]:
         # fmt treats {{ and }} as literal braces, so drop them before parsing.
         candidate = unescape_cpp(line[1:]).replace('{{', '').replace('}}', '')
         for field in FORMAT_FIELD.findall(candidate):
-            if '"' in field:
+            if '"' in field and FORMAT_SPEC.fullmatch(field):
                 found.append((number, field))
                 break
     return found

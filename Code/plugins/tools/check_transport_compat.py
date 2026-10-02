@@ -199,6 +199,80 @@ else:
                 f'hex, so the receiver decodes a shorter buffer instead of dropping the message'
             )
 
+# The relay appends its own sender metadata to the tail of every envelope it forwards,
+# and the bridge reads that tail back. The envelope in front of it is written by a peer,
+# and both sides split fields by scanning for '|': the relay's own parser keeps the last
+# occurrence of a name while the bridge's kept the first. A peer that wrote '|sender=' or
+# '|senderName=' into its own envelope therefore had its value win on the receiving client
+# while the relay's authenticated value was ignored - the sender name is the key every
+# companion plugin uses to recognise a peer, so this was identity spoofing. The relay now
+# refuses the reserved names and the bridge reads them from the tail. Both halves are
+# checked here, because either one alone restores the old behaviour: a tail reader with no
+# relay-side refusal still lets the peer's copy sit in the envelope, and a relay-side
+# refusal with a first-match reader still trusts it if any other path forwards one.
+RECEIVE_REL = 'plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp'
+RESOLVER_REL = 'plugins/STRPluginMessagingAPI/src/STRPMProxyResolverBridge.h'
+RESERVED_FIELD_CLAIM = ('sender', 'senderPlayerId', 'senderName', 'serverTick')
+
+receive_path = ROOT / RECEIVE_REL
+resolver_path = ROOT / RESOLVER_REL
+for missing in (envelope_path, receive_path, resolver_path):
+    if not missing.is_file():
+        failures.append(
+            f'{missing.relative_to(ROOT).as_posix()} is missing, but it is one of the three'
+            f' files that decide whether a relayed envelope is attributed to its real sender'
+        )
+
+if envelope_path.is_file():
+    relay_text = envelope_path.read_text(encoding='utf-8')
+    if 'RESERVED_FIELDS' not in relay_text:
+        failures.append(
+            f'{ENVELOPE_REL} no longer declares RESERVED_FIELDS; a client can write'
+            f' |sender=/|senderName= into its own envelope again and the relay will append'
+            f' its authenticated copy behind the forged one'
+        )
+    else:
+        for name in RESERVED_FIELD_CLAIM:
+            if f'"{name}"' not in relay_text:
+                failures.append(
+                    f'{ENVELOPE_REL} no longer reserves {name}, which the relay writes itself'
+                )
+        # The definition alone proves nothing; the call is what drops the envelope.
+        refusal = relay_text.find('= reservedFieldPresent(fields)')
+        append = relay_text.find('"|sender="')
+        if refusal < 0:
+            failures.append(
+                f'{ENVELOPE_REL} declares RESERVED_FIELDS but never calls reservedFieldPresent,'
+                f' so a reserved field in a peer envelope is forwarded unexamined'
+            )
+        elif append >= 0 and refusal > append:
+            failures.append(
+                f'{ENVELOPE_REL} checks for reserved fields after it appends its own sender'
+                f' metadata; the peer envelope has already been forwarded by then'
+            )
+
+for path, rel in ((receive_path, RECEIVE_REL), (resolver_path, RESOLVER_REL)):
+    if not path.is_file():
+        continue
+    source = path.read_text(encoding='utf-8')
+    body = re.search(r'ReadRelayField\(std::string_view packet[^)]*\)\s*\{(.*?)\n        \}', source, re.S)
+    if body is None:
+        failures.append(
+            f'{rel} has no ReadRelayField; the relay fields it reads are the ones a peer can'
+            f' write into its own envelope, so they have to be read from the tail'
+        )
+    elif 'found = token.substr' not in body.group(1) or 'return token.substr' in body.group(1):
+        failures.append(
+            f'{rel} ReadRelayField returns the first match again; the peer writes the head of'
+            f' the envelope and the relay writes the tail, so the first match is the forged one'
+        )
+    for name in ('sender', 'senderName' if path is receive_path else 'senderPlayerId'):
+        if f'ReadRelayField(envelope, "{name}")' not in source:
+            failures.append(
+                f'{rel} reads {name} with ReadField rather than ReadRelayField; the relay'
+                f' writes that name at the tail of the envelope, not in the peer-written head'
+            )
+
 print(f'client opcodes: {len(client) - 1} in use, plugin request at index {request_index}')
 print(f'server opcodes: {len(server) - 1} in use, plugin notify at index {notify_index}')
 print(f'chat opcodes  : send {send_index}, broadcast {broadcast_index}')

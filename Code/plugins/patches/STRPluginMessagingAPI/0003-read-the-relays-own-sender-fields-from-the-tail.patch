@@ -1,0 +1,156 @@
+diff --git a/docs/OFFICIAL_STR_CHAT_TUNNEL.md b/docs/OFFICIAL_STR_CHAT_TUNNEL.md
+index 859de3c..3b3d858 100644
+--- a/docs/OFFICIAL_STR_CHAT_TUNNEL.md
++++ b/docs/OFFICIAL_STR_CHAT_TUNNEL.md
+@@ -86,9 +86,14 @@ STRPM|v2|msg=<id>|seq=<n>|channel=<channel>|target=<target>|flags=<n>|part=<i>|p
+ The relay appends authenticated sender metadata derived from the STR server session:
+ 
+ ```text
+-|sender=<connectionId>|senderName=<name>|serverTick=<tick>
++|sender=<connectionId>|senderPlayerId=<playerId>|senderName=<name>|serverTick=<tick>
+ ```
+ 
++These four names are reserved. The relay rejects an envelope that already carries one,
++and the bridge reads them from the tail of the envelope: the head is written by the peer
++and the tail is written by the relay, so a reader that takes the first match would take
++the peer's copy. Nothing in the peer-written head may reuse a reserved name.
++
+ Targets supported by the scripting relay are:
+ 
+ - `all`
+diff --git a/extras/str-server-resources/strpm-chat-relay/main.lua b/extras/str-server-resources/strpm-chat-relay/main.lua
+index 667121d..4287a00 100644
+--- a/extras/str-server-resources/strpm-chat-relay/main.lua
++++ b/extras/str-server-resources/strpm-chat-relay/main.lua
+@@ -10,6 +10,12 @@ local MAX_CHANNEL_LENGTH = 96
+ local MAX_PARTS = 64
+ local FLAG_ALLOW_LOOPBACK = 4
+ 
++-- The relay owns these four names: it appends them to the tail of every envelope it
++-- forwards, and the receiving bridge reads them from there. An envelope that already
++-- carries one is a client writing a field only the server may write, so it is dropped
++-- here rather than forwarded with the peer's copy in front of the relay's own.
++local RESERVED_FIELDS = { "sender", "senderPlayerId", "senderName", "serverTick" }
++
+ local gameServer = GameServer:get()
+ local playerManager = PlayerManager:get()
+ 
+@@ -79,6 +85,15 @@ local function replacePayload(envelope, payloadHex)
+   return envelope
+ end
+ 
++local function reservedFieldPresent(fields)
++  for _, name in ipairs(RESERVED_FIELDS) do
++    if fields[name] ~= nil then
++      return name
++    end
++  end
++  return nil
++end
++
+ local function validateEnvelope(fields)
+   if fields["msg"] == nil or not validUnsigned(fields["seq"]) then
+     return false, "missing msg/seq"
+@@ -165,6 +180,12 @@ addEventHandler("onChatMessage", function(entityId, message)
+     return
+   end
+ 
++  local reserved = reservedFieldPresent(fields)
++  if reserved ~= nil then
++    print("[STRPM] Dropped envelope carrying reserved field " .. reserved)
++    return
++  end
++
+   local senderConnectionId = player:GetConnectionId()
+   local senderPlayerId = player:GetId()
+   local flags = tonumber(fields["flags"]) or 0
+diff --git a/src/STRPMProxyResolverBridge.h b/src/STRPMProxyResolverBridge.h
+index 55eabd3..80a593f 100644
+--- a/src/STRPMProxyResolverBridge.h
++++ b/src/STRPMProxyResolverBridge.h
+@@ -678,8 +678,13 @@ namespace STRPMProxyResolverBridge
+             return envelope.starts_with(kEnvelopePrefix);
+         }
+ 
+-        std::optional<std::string_view> ReadField(std::string_view packet, std::string_view key)
++        // The relay appends its own sender metadata to the tail of every envelope it
++        // forwards, and the part in front of that tail comes from a peer. ReadField
++        // returns the first match, so a peer that writes |sender=... early keeps it and
++        // the relay's own value is never read. Read the relay's fields from the tail.
++        std::optional<std::string_view> ReadRelayField(std::string_view packet, std::string_view key)
+         {
++            std::optional<std::string_view> found;
+             std::size_t start = 0;
+             while (start <= packet.size())
+             {
+@@ -688,12 +693,12 @@ namespace STRPMProxyResolverBridge
+                     end = packet.size();
+                 const auto token = packet.substr(start, end - start);
+                 if (token.size() > key.size() && token.starts_with(key) && token[key.size()] == '=')
+-                    return token.substr(key.size() + 1);
++                    found = token.substr(key.size() + 1);
+                 if (end == packet.size())
+                     break;
+                 start = end + 1;
+             }
+-            return std::nullopt;
++            return found;
+         }
+ 
+         template <class T>
+@@ -874,8 +879,8 @@ namespace STRPMProxyResolverBridge
+                 return;
+             }
+ 
+-            const auto sender = ReadField(envelope, "sender");
+-            const auto senderPlayerId = ReadField(envelope, "senderPlayerId");
++            const auto sender = ReadRelayField(envelope, "sender");
++            const auto senderPlayerId = ReadRelayField(envelope, "senderPlayerId");
+             if (!sender || !senderPlayerId)
+                 return;
+             const auto connectionID = ParseUnsigned<STRPM::ConnectionID>(*sender);
+diff --git a/src/STRPluginMessagingBridgeReceive.cpp b/src/STRPluginMessagingBridgeReceive.cpp
+index 5ab0014..0c9fe8e 100644
+--- a/src/STRPluginMessagingBridgeReceive.cpp
++++ b/src/STRPluginMessagingBridgeReceive.cpp
+@@ -773,6 +773,29 @@ namespace STRPMBridgeReceive
+             return std::nullopt;
+         }
+ 
++        // The relay appends its own sender metadata to the tail of every envelope it
++        // forwards, and the part in front of that tail comes from a peer. ReadField
++        // returns the first match, so a peer that writes |sender=... early keeps it and
++        // the relay's own value is never read. Read the relay's fields from the tail.
++        std::optional<std::string_view> ReadRelayField(std::string_view packet, std::string_view key)
++        {
++            std::optional<std::string_view> found;
++            std::size_t start = 0;
++            while (start <= packet.size())
++            {
++                auto end = packet.find('|', start);
++                if (end == std::string_view::npos)
++                    end = packet.size();
++                const auto token = packet.substr(start, end - start);
++                if (token.size() > key.size() && token.starts_with(key) && token[key.size()] == '=')
++                    found = token.substr(key.size() + 1);
++                if (end == packet.size())
++                    break;
++                start = end + 1;
++            }
++            return found;
++        }
++
+         template <class T>
+         std::optional<T> ParseUnsigned(std::string_view text)
+         {
+@@ -828,8 +851,8 @@ namespace STRPMBridgeReceive
+         {
+             const auto messageId = ReadField(envelope, "msg");
+             const auto channel = ReadField(envelope, "channel");
+-            const auto sender = ReadField(envelope, "sender");
+-            const auto senderName = ReadField(envelope, "senderName");
++            const auto sender = ReadRelayField(envelope, "sender");
++            const auto senderName = ReadRelayField(envelope, "senderName");
+             const auto sequence = ReadField(envelope, "seq");
+             const auto flags = ReadField(envelope, "flags");
+             const auto part = ReadField(envelope, "part");

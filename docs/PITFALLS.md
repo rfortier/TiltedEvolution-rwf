@@ -10448,3 +10448,206 @@ exit 0 ⇒ 补丁既「对 pin 可应用」又「已经在工作树里」,这正
 > `recentIncoming` 有按龄清扫,看起来是自愈的;但 60 秒的窗口里行数完全由对端决定,
 > 而清扫本身每帧都要遍历整张表 —— 回收路径的**周期**决定了窗口内能堆多高。
 
+## 80. 2026-10-11 场次:中继的四个身份字段可以被对端抢注 —— 判据是「同一个名字,中继写在尾、对端写在头,而读取器取的是第一个」
+
+> **锚点**:一处修复,在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
+> `Code/plugins/patches/STRPluginMessagingAPI/0003-read-the-relays-own-sender-fields-from-the-tail.patch`
+> 改 `plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp`(新读取器 `:776-797`,
+> 两个换名的调用点 `:854`/`:855`)、
+> `plugins/STRPluginMessagingAPI/src/STRPMProxyResolverBridge.h`(旧 `ReadField` 被整体替换为
+> `ReadRelayField` `:681-702`,两个调用点 `:882`/`:883`)、
+> `plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua`
+> (`RESERVED_FIELDS` `:13-17`、判定函数 `:88-95`、调用点 `:183-187`)与
+> `plugins/STRPluginMessagingAPI/docs/OFFICIAL_STR_CHAT_TUNNEL.md:86-95`。
+> 门禁在 `Code/plugins/tools/check_transport_compat.py`(新增一段,三部分)。
+
+### 80.1 缺陷:同一个名字在信封里出现两次,而两端的「谁赢」是相反的
+
+中继脚本每转发一封信封,都把服务端认证过的身份追加在**尾部**:
+
+```lua
+-- plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua(修复前 :180-185)
+local relayEnvelope =
+    message ..
+    "|sender=" .. tostring(senderConnectionId) ..
+    "|senderPlayerId=" .. tostring(senderPlayerId) ..
+    "|senderName=" .. safeField(player:GetUsername()) ..
+    "|serverTick=" .. tostring(gameServer:GetTick())
+```
+
+而 `message` 整段是发送方自己拼的(`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridge.cpp:866-876`、
+`:895-899`)。中继脚本的字段表是**后者胜**:
+
+```lua
+-- main.lua(修复前 :30-41)
+local function splitFields(envelope)
+  local fields = {}
+  ...
+      fields[key] = value                                   -- :37,后出现的覆盖先出现的
+```
+
+接收侧桥的读取器是**前者胜**:
+
+```cpp
+// plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp(修复前 :758-774)
+std::optional<std::string_view> ReadField(std::string_view packet, std::string_view key)
+{
+    ...
+        if (token.size() > key.size() && token.starts_with(key) && token[key.size()] == '=')
+            return token.substr(key.size() + 1);              // :769,第一个匹配就返回
+}
+```
+
+| 位置 | 作用 |
+| --- | --- |
+| `src/STRPluginMessagingBridgeReceive.cpp:758-774`(修复前) | `ReadField` 取第一个匹配 —— 对端写在头部的副本胜出 |
+| `src/STRPluginMessagingBridgeReceive.cpp:869`(修复前) | `pending.senderName = senderName ? … : fallbackPlayerName` 收下这个值 |
+| `src/STRPluginMessagingBridgeReceive.cpp:936-937`(修复前) | `message.sender.connectionID` / `message.sender.displayName` 交给所有消费方 |
+| `src/STRPMProxyResolverBridge.h:681-697`(修复前) | 同体的第二份 `ReadField` |
+| `src/STRPMProxyResolverBridge.h:886`(修复前) | `ObserveSender(*connectionID, *playerId)` 把伪造值写进 `g_connectionToPlayer` |
+| `extras/str-server-resources/strpm-chat-relay/main.lua:82-111`(修复前) | `validateEnvelope` 只看 `msg`/`seq`/`channel`/`payload`/`flags`/`part`/`parts`/`target`,**从不看字段集合** |
+
+### 80.2 判据
+
+- **这四个字段是谁写的?** 头部的 `message` 由发送方拼,`sender`/`senderPlayerId`/`senderName`/`serverTick`
+  由中继追加 —— 一个字段有两个作者,而两者位置不同。
+- **读的人取第一个还是最后一个?** 桥取第一个(`return token.substr`),`main.lua` 取最后一个
+  (`fields[key] = value`)。中继自己不受影响,因为它**不读** `fields["sender"]`,
+  它用的是 `player:GetConnectionId()` 与 `player:GetId()`(修复前 `:168-169`)—— 会话真值。
+  受害者是**接收方客户端**。
+- **抢注出来的值合法吗?** 合法。`senderName` 是一个合法字符串,`sender` 是一个合法连接号,
+  信封仍然过 `validateEnvelope` —— 多一个 `|sender=` 不是畸形,只是没人问过。
+- **谁能被冒充?** 所有以 displayName 为键的表:
+  `plugins/MorphSyncTogether/src/UdpTransport.h:48`、`src/TngSync.h:58`、
+  `src/MorphSyncService.h:130-134`、`plugins/IEDSyncTogether/src/STRPMAdapter.h:63`、
+  `plugins/TradeTogether/src/StrMessagingTransport.cpp:517`。其中
+  `plugins/MorphSyncTogether/src/MorphSyncService.cpp:1012` 的
+  `if (!rawName || !EqualsInsensitive(rawName, name)) return;` 会把伪造的名字解析到
+  **一个真实存在的代理角色**(`:1040-1042` 取最近的一个)⇒ 外观 / TNG / 交易的身份可以按名字冒充。
+- **`payload` 也是保留字段吗?** 不是,而且**不能**一起翻。identity 通道
+  (`main.lua:176-178`,修复前)用 `replacePayload(message, hexEncodeAscii(tostring(senderPlayerId)))`
+  覆写的是**第一个** `|payload=`(修复前 `:70-80` 的 `string.gsub(..., 1)`),
+  中继写进去的 PlayerId 就落在第一个上。把 `ReadField` 整体翻成后者胜,
+  客户端在尾部补一个 `|payload=` 就能顶掉它 —— 「认证过的身份」会从另一个口子漏掉。
+
+### 80.3 可达性
+
+- 只要在**已连接的 STRPM 通道**上发一条以 `STRPM|v2|` 开头的聊天行即可,
+  信封头部的字段顺序由发送方自己决定 ⇒ 在 `|channel=` 之前插一个 `|senderName=Someone` 不需要任何权限。
+- 中继不拒(修复前 `validateEnvelope` 不看字段集合)、桥不拒(第一个匹配就返回),
+  于是伪造名一路到 `message.sender.displayName`。
+- 第二处(`STRPMProxyResolverBridge.h`)走的是 `ObserveIncomingEnvelope`,
+  它在 `OnConsume` 的异常处理里被调用(`:942-951`,`EXCEPTION_BREAKPOINT` + `address == g_onConsumeAddress`),
+  `return EXCEPTION_CONTINUE_SEARCH` ⇒ 伪造的 `sender`/`senderPlayerId` 会污染 `g_connectionToPlayer`(`:773`)。
+- 第三个消费者 `src/STRPluginMessagingBridgeSKSE.cpp:83-120` 的 `ReceiveIdentityAnnouncement`
+  在 `:94` 调 `ObserveSender(message->sender.connectionID, playerId)`:
+  **载荷**里的 PlayerId 是中继替换过的真值,而**绑定用的 connectionID** 来自可抢注的 `sender` 字段 ——
+  「authenticated identity payload」只认证了一半。
+
+### 80.4 修法
+
+一、保留字段单独按「尾部」读,其余字段一个都不动:
+
+```cpp
+// plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp:776-797(修复后)
+// The relay appends its own sender metadata to the tail of every envelope it
+// forwards, and the part in front of that tail comes from a peer. ReadField
+// returns the first match, so a peer that writes |sender=... early keeps it and
+// the relay's own value is never read. Read the relay's fields from the tail.
+std::optional<std::string_view> ReadRelayField(std::string_view packet, std::string_view key)
+{
+    std::optional<std::string_view> found;
+    ...
+        if (token.size() > key.size() && token.starts_with(key) && token[key.size()] == '=')
+            found = token.substr(key.size() + 1);             // 记下最后一个,循环结束才返回
+    ...
+    return found;
+}
+```
+
+桥里只有两处换名 —— 另外七个字段(`msg`/`channel`/`seq`/`flags`/`part`/`parts`/`payload`)
+都是客户端写、中继不改的,仍走 `ReadField`:
+
+```cpp
+// plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp:853-855(修复后)
+const auto channel = ReadField(envelope, "channel");
+const auto sender = ReadRelayField(envelope, "sender");
+const auto senderName = ReadRelayField(envelope, "senderName");
+```
+
+`src/STRPMProxyResolverBridge.h` 里两个读取点**都**是保留字段,没有客户端字段的读者,
+所以原来那份 `ReadField` 被整体替换成 `ReadRelayField`(`:681-702`),
+`ObserveIncomingEnvelope` 的两行换成 `ReadRelayField(envelope, "sender")` / `"senderPlayerId"`(`:882-883`)。
+
+二、中继自己判一次 —— 这一条挡的是**转发**,上面两条挡的是**读取**:
+
+```lua
+-- main.lua:13-17(修复后)
+local RESERVED_FIELDS = { "sender", "senderPlayerId", "senderName", "serverTick" }
+...
+-- main.lua:88-95(修复后)
+local function reservedFieldPresent(fields)
+  for _, name in ipairs(RESERVED_FIELDS) do
+    if fields[name] ~= nil then
+      return name
+    end
+  end
+  return nil
+end
+...
+-- main.lua:183-187(修复后),在追加字段之前、在 validateEnvelope 之后
+  local reserved = reservedFieldPresent(fields)
+  if reserved ~= nil then
+    print("[STRPM] Dropped envelope carrying reserved field " .. reserved)
+    return
+  end
+```
+
+三、子模块文档 `docs/OFFICIAL_STR_CHAT_TUNNEL.md:86-95` 补上漏写的 `senderPlayerId`,
+并写明这四个名字是保留名、中继会拒收已带保留名的信封、桥从尾部读、头部由对端写。
+
+四、交付:四个文件都在 `plugins/STRPluginMessagingAPI` 子模块里,而 CI 的
+`git submodule update --init --force --recursive --depth=1` 会丢弃只改工作树的改动,
+所以修复以 `Code/plugins/patches/STRPluginMessagingAPI/0003-read-the-relays-own-sender-fields-from-the-tail.patch`
+交付(7076 字节 / 156 行 LF / 9 个 hunk;基线是「0001 与 0002 已应用」,
+因为 0002 也改这个子模块的 `src/`)。
+
+### 80.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\check_transport_compat.py
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Tools\Scripts\check_docs.py
+
+# 两个读取器的当前形态(前者胜 / 后者胜)
+git grep -n "ReadRelayField\|found = token.substr" -- plugins/STRPluginMessagingAPI/src
+# 保留字段的三处落点:声明、判定函数、调用点(调用点必须在追加之前)
+git grep -n "RESERVED_FIELDS\|reservedFieldPresent\|reserved ~= nil" -- plugins/STRPluginMessagingAPI/extras
+
+# 补丁对 pin 可应用、且已经在工作树里
+git -C plugins/STRPluginMessagingAPI apply --check --cached ..\..\Code\plugins\patches\STRPluginMessagingAPI\0003-read-the-relays-own-sender-fields-from-the-tail.patch
+git -C plugins/STRPluginMessagingAPI apply --check --reverse ..\..\Code\plugins\patches\STRPluginMessagingAPI\0003-read-the-relays-own-sender-fields-from-the-tail.patch
+```
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),所以这一批的证据是逐字命中 + 门禁 + 反向验证,
+不是编译产物。`check_transport_compat.py` 新增的一段是三部分:三个文件缺一即失败;
+`main.lua` 必须声明 `RESERVED_FIELDS` 且**真的调用** `reservedFieldPresent(fields)`
+(必须匹配带 `= ` 的调用行 —— 只匹配 `reservedFieldPresent(fields)` 会命中函数定义而漏判,
+这是第一轮反向验证没报错的原因)且调用位置早于 `"|sender="` 追加行;
+两个 C++ 文件的 `ReadRelayField` 函数体必须含 `found = token.substr` 且不得含 `return token.substr`。
+反向验证过两轮:把桥的 `found = token.substr(...)` 改回 `return token.substr(...)` ⇒
+`TRANSPORT COMPATIBILITY FAILED (1)` + 「ReadRelayField returns the first match again; the peer writes
+the head of the envelope and the relay writes the tail, so the first match is the forged one」;
+把 `local reserved = reservedFieldPresent(fields)` 改成 `local reserved = nil` ⇒
+`TRANSPORT COMPATIBILITY FAILED (1)` + 「declares RESERVED_FIELDS but never calls reservedFieldPresent,
+so a reserved field in a peer envelope is forwarded unexamined」;两次恢复后回到 exit 0。
+补丁按 0001 → 0002 → 0003 的顺序对 pin `62143fd` 全部应用成功,工作树 9 个 ` M`。
+
+> **教训**:第一条:**同一个名字可以在一份报文里出现两次,而「谁赢」是两个相反的实现细节。**
+> 中继的 Lua 表是后者胜,接收侧桥的读取器是前者胜 —— 两个都对,合起来就是可抢注。
+> 定这类字段时先问「这个字段是**谁写的**、写在哪一段」,再问「读的人取第一个还是最后一个」。
+> 第二条:**「服务端认证过了」不等于「客户端读到的就是认证值」。**
+> 中继确实把真值追加进去了,认证没有失效;失效的是**读取**,而读取发生在别人的机器上。
+> 第三条:**修一个「取第一个」的读取器时,要看同一个函数里有没有别的字段依赖「取第一个」。**
+> 这里 `payload` 就依赖 —— 翻整体的方向会把 identity 通道的认证从另一个口子放走。
