@@ -2,6 +2,8 @@
 
 #include <Events/PacketEvent.h>
 
+#include <cstdint>
+
 struct World;
 struct PlayerLeaveCellEvent;
 struct ActivateRequest;
@@ -25,6 +27,14 @@ private:
     void OnScriptAnimationRequest(const PacketEvent<ScriptAnimationRequest>&) noexcept;
 
     World& m_world;
+
+    // An object entity is created by a request the client sends, and the only
+    // place that destroys one is OnPlayerLeaveCellEvent: as long as a single
+    // player stays in a cell, its objects survive. The count therefore only
+    // grows with the cells that are occupied, and it is bounded here like every
+    // other table whose key the peer picks. A full table refuses the new object
+    // instead of growing without limit.
+    static constexpr std::uint32_t kMaxObjectEntities = 64 * 1024;
 
     entt::scoped_connection m_leaveCellConnection;
     entt::scoped_connection m_assignObjectConnection;

@@ -9632,4 +9632,238 @@ git -C plugins/OStimTogether grep -n "kMaxRemotePreps\|kMaxReadyTokens" -- src/
 > `verify` 对 index、`check` 对工作树,两者都不会发现「补丁的基线选错了」;
 > 只有从 pin 出发的 `apply` 会 —— 而它正是 CI 的那条路。
 > 生成补丁前先 `git add -A` 让 index 等于基线,再用 `git diff`,落盘后 `git reset`。
+## 76. 2026-10-09 场次:一张行数由客户端决定的实体表,以及它旁边那个只写不读的指针 —— 判据是「这张表什么时候变小」与「谁读这个字段」
+
+> **锚点**:两处修复,都在服务端,加上同一批最后 6 处未夹取的线上浮点:
+> `Code/server/Services/ObjectService.h`(新增 `kMaxObjectEntities`)、
+> `Code/server/Services/ObjectService.cpp:64-68`/`:100-107`/`:127-129`(计数 + 拒绝 + 告警)、
+> `Code/server/Components/ObjectComponent.h`(删掉 `pLastSender` 与带参构造)、
+> `Code/encoding/Messages/RequestPlayerHealthUpdate.cpp:14`、
+> `Code/encoding/Messages/NotifyPlayerHealthUpdate.cpp:16`、
+> `Code/encoding/Structs/Inventory.cpp:19`/`:22`/`:63`/`:76`、
+> `Code/encoding/Structs/AnimationVariables.cpp:149`;
+> 测试在 `Code/tests/encoding.cpp` 的 `[encoding.finite_floats]`(`:1203-1300`)。
+
+### 76.1 缺陷:一张实体表,和它里面一个没人读的指针
+
+| 位置 | 作用 |
+| --- | --- |
+| `Code/server/Services/ObjectService.cpp:96`(修复前) | `m_world.create()` 没有计数、没有上限,实体数完全由客户端决定 |
+| `Code/server/Components/ObjectComponent.h:12-17`(修复前) | `Player* pLastSender` 只写不读,而它指向的 `Player` 会在掉线时被释放 |
+| `Code/encoding/Messages/RequestPlayerHealthUpdate.cpp:13`(修复前) | 血量百分比裸读,接收侧只挡负数 |
+| `Code/encoding/Messages/NotifyPlayerHealthUpdate.cpp:15`(修复前) | 同上,同一个值的下行方向 |
+| `Code/encoding/Structs/Inventory.cpp:18`/`:21`(修复前) | 附魔效果的 `Magnitude`/`RawCost` 裸读,直接写进引擎 `EffectItem` |
+| `Code/encoding/Structs/Inventory.cpp:62`/`:75`(修复前) | `ExtraCharge`/`ExtraHealth` 裸读,而它们下游的门是「大于零」 |
+| `Code/encoding/Structs/AnimationVariables.cpp:149`(修复前) | 动画变量浮点裸读,读不读由对端填的位图决定 |
+
+第一处:
+
+```cpp
+// Code/server/Services/ObjectService.cpp(修复前)
+else
+{
+    const auto cEntity = m_world.create();          // :96
+    m_world.emplace<FormIdComponent>(cEntity, object.Id);
+    auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity, acMessage.pPlayer);
+    objectComponent.CurrentLockData = object.CurrentLockData;
+    m_world.emplace<CellIdComponent>(cEntity, object.CellId, object.WorldSpaceId, object.CurrentCoords);
+    auto& inventoryComp = m_world.emplace<InventoryComponent>(cEntity);
+    inventoryComp.Content = object.CurrentInventory;   // 对端给的 ≤ 4096 条 × 每条 ≤ 64 个效果
+    ...
+}
+```
+
+第二处:
+
+```cpp
+// Code/server/Components/ObjectComponent.h(修复前)
+struct ObjectComponent
+{
+    ObjectComponent(Player* apLastSender)
+        : pLastSender(apLastSender)
+    {
+    }
+
+    Player* pLastSender;
+    LockData CurrentLockData{};
+};
+```
+
+### 76.2 判据:先问「这张表什么时候变小」,再问「谁读这个字段」
+
+1. **这张表只有一条回收路径,而它由「房间里还有人吗」决定。**
+   `ObjectService::OnPlayerLeaveCellEvent`(`Code/server/Services/ObjectService.cpp:31-56`)是
+   **全仓唯一销毁对象实体的地方**,而它开头就是:
+
+   ```cpp
+   for (Player* pPlayer : m_world.GetPlayerManager())
+   {
+       if (pPlayer->GetCellComponent().Cell == acEvent.OldCell)
+           return;                       // 还有人待在这个 cell 里
+   }
+   ```
+
+   ⇒ 只要有一个玩家留在这个 cell 里,它里面的对象就永远活着;而写入端没有速率限制、
+   `AssignObjectsRequest` 每个包最多 255 个对象(`Code/encoding/Messages/AssignObjectsRequest.cpp:7`
+   的 `kMaxObjectCount = 0xFF` 只管单包),**总数没有任何上界**。
+
+2. **同一个系统里的另一条容量路径早就有上限。**
+   `Code/server/GameServer.cpp:877` 在
+   `m_pWorld->GetPlayerManager().Count() >= uMaxPlayerCount.value_as<uint32_t>()` 时直接拒绝入服
+   (默认 8,声明在 `GameServer.cpp:29`),拒绝方式就是 `return`;插件层同族的每一张对端可控表
+   (`kMaxRemoteSnapshots` / `kMaxRemotePubicSnapshots` / `kMaxRemoteStates` / `kMaxRemotePreps` /
+   `kMaxReadyTokens`)这一轮之前也全部补上了上限。**缺席的只有这张实体表。**
+
+3. **「对端声称的 cell」不能拿来当校验条件 —— 合法流量下它也会不一致。**
+   `Code/client/Services/Generic/DiscoveryService.cpp` 只有 `gameCenterGrid` 变化才发
+   `ShiftGridCellRequest`,而 `gameCurrentGrid` 单独变化时只发 `CellChangeEvent`;并且
+   `Code/client/World.cpp` 里 `ObjectService` 的 `CellChangeEvent` sink 注册在 `:47`、
+   `PlayerService` 在 `:55` ⇒ 客户端**总是先发** `AssignObjectsRequest`、之后才更新自己的
+   `CellIdComponent`。所以这一条不做 —— 严格相等会打断正常同步。
+
+4. **`pLastSender` 的判据是「谁读它」。**
+   `git grep -rn pLastSender -- Code` 只有 3 处命中(构造参数、初始化、字段本身),**没有任何读者**;
+   而 `Player` 在 `Code/server/GameServer.cpp:610-670 OnDisconnection` 里被
+   `m_pWorld->GetPlayerManager().Remove(pPlayer)` 释放,对象实体却要活到 cell 空掉为止 ⇒
+   这个指针在玩家掉线后必然悬垂。**没有人读的字段,删掉它比给它补一处清理更安全。**
+
+5. **6 处浮点的判据是「这个值接下来决定了什么」。**
+   `ExtraCharge` 在 `Code/client/Games/Skyrim/TESObjectREFR.cpp:611` 过的是
+   `if (arEntry.ExtraCharge > 0.f)` 才 `SetChargeData`,`ExtraHealth` 在 `:657` 同形地进 `SetHealth`
+   —— **`+inf` 比 `0.f` 大,所以它过得去**;`Magnitude`/`RawCost` 在
+   `Code/client/Games/Skyrim/Forms/EnchantmentItem.cpp:24-27` 直接写进引擎的 `EffectItem`;
+   血量百分比在 `Code/client/Services/Generic/OverlayService.cpp:543` 只做
+   `acMessage.Percentage >= 0.f ? acMessage.Percentage : 0.f` 的三元,**同样只有 `+inf` 过得去**;
+   `AnimationVariables::ApplyDiff` 的浮点读不读由对端填的位图决定(`:143-149`)。
+
+### 76.3 可达性
+
+- 第一处:任何**已认证**的客户端,在自己所在的 cell 里正常走一遍 `OnCellChange` 就会发这个包;
+  反复发、或每次改一个 `object.Id`,就能持续新建实体。每个实体带一份对端给的 `Inventory`,
+  而 `Inventory::Deserialize` 的上界是 `kMaxEntryCount = 0x1000` 条、每条最多
+  `kMaxEffectCount = 0x40` 个效果 ⇒ **单包就能让服务端多分配一份最多 4096×64 个效果的内存**。
+- 第二处:`pLastSender` 不产生崩溃(没人读它),但它让「这个字段还能用」成为一句空话 ——
+  下一个想用它的人拿到的就是悬垂指针。修法是把负债删掉。
+- 6 处浮点:`RequestPlayerHealthUpdate` 由客户端 `RunPlayerHealthUpdates` 每 500ms 发一次
+  (`Code/client/Services/Generic/OverlayService.cpp:600-626`),`Inventory` 经
+  `NotifyInventoryChanges` / `AssignObjectsRequest` 过线,`AnimationVariables` 随
+  `ClientReferencesMoveRequest` 每帧过线。
+
+### 76.4 修法
+
+一、实体表按「已有键永远仍可用、被拒的只是新键」的既有范式加上限:
+
+```cpp
+// Code/server/Services/ObjectService.h(修复后)
+static constexpr std::uint32_t kMaxObjectEntities = 64 * 1024;
+```
+
+```cpp
+// Code/server/Services/ObjectService.cpp(修复后)
+uint32_t objectCount = 0;
+for (auto it = std::begin(view); it != std::end(view); ++it)
+    ++objectCount;
+
+uint32_t refusedCount = 0;
+...
+else if (objectCount >= kMaxObjectEntities)     // :100
+{
+    ++refusedCount;
+}
+else
+{
+    const auto cEntity = m_world.create();
+    ++objectCount;                              // :107,只有真的建了才加
+    ...
+}
+```
+
+饱和时只记一条告警,不抛异常、不改已建实体的行为:
+
+```cpp
+// Code/server/Services/ObjectService.cpp:127-129(修复后)
+if (refusedCount != 0)
+    spdlog::warn("Object table is full ({} objects), {} of {} requested objects from player {} were refused",
+                 objectCount, refusedCount, acMessage.Packet.Objects.size(), acMessage.pPlayer->GetId());
+```
+
+常量取 `64 * 1024`:实体本身 4 字节 ⇒ 约 256 KiB,而任何真实 cell 的容器与门都在几十到几千量级。
+被拒的实体不进 `response`,客户端 `Code/client/Services/Generic/ObjectService.cpp:200-243`
+对「回包里没有这一项」的处理本来就是「不建本地映射」⇒ **少同步一个对象,而不是记错一个对象**。
+`ObjectService.h` 顺带补了 `#include <cstdint>`(`Code/server/Pch.h` 没有 `<algorithm>`,
+而 `std::uint32_t` 要显式可见;写法与 `Code/server/Services/PluginMessagingService.h:44-47` 一致)。
+
+二、删掉只写不读的字段:
+
+```cpp
+// Code/server/Components/ObjectComponent.h(修复后)
+struct ObjectComponent
+{
+    LockData CurrentLockData{};
+};
+```
+
+`#include <Game/Player.h>` 保留 —— 它是组件头里唯一 include 它的地方,别的 TU 靠它传递拿完整
+`Player`;`Code/server/Services/ObjectService.cpp:111` 随之变成
+`m_world.emplace<ObjectComponent>(cEntity);`。
+
+三、6 处浮点统一走 `Code/encoding/WireLimits.h:74` 已有的 `ClampFinite`:
+
+```cpp
+// Code/encoding/Structs/Inventory.cpp(修复后)
+Magnitude   = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));   // :19
+RawCost     = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));   // :22
+ExtraCharge = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));   // :63
+ExtraHealth = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));   // :76
+```
+
+```cpp
+// Code/encoding/Structs/AnimationVariables.cpp:149(修复后)
+Floats[i] = WireLimits::ClampFinite(TiltedPhoques::Serialization::ReadFloat(aReader));
+```
+
+`RequestPlayerHealthUpdate.cpp` / `NotifyPlayerHealthUpdate.cpp` 同形,四个文件各补一行
+`#include <WireLimits.h>`(写在第 2 行、紧跟消息头,与
+`Code/encoding/Messages/AddTargetRequest.cpp:1-2` 同形)。**非有限值替换为 `0.f` 而不是夹进区间**
+—— 没有任何区间能让 `NaN` 有意义;而有限的合法值原样通过(`ExtraCharge` 真的会是 `0.5f` 这种值)。
+
+### 76.5 复核命令(照抄)
+
+```powershell
+python Tools\Scripts\check_docs.py
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\plugin_snapshot.py verify
+python Code\plugins\tools\check_transport_compat.py
+git grep -rn "pLastSender" -- Code                 # 期望 exit 1 / 零命中
+git grep -rn "kMaxObjectEntities" -- Code
+git grep -rn "ClampFinite" -- Code/encoding
+git grep -n "objectCount\|refusedCount" -- Code/server/Services/ObjectService.cpp
+git grep -n "ExtraCharge == 0.f\|ExtraHealth == 0.f\|RawCost == 0.f\|Floats\[3\] == 2.5f" -- Code/tests/encoding.cpp
+```
+
+复核结果:`check_docs.py` → `DOC CHECK OK` / `coverage 3069/3082 stated consistently in 4 doc(s)`;
+`plugin_patches.py verify` → `PATCH VERIFY OK` / `22 patch(es) apply to their pinned commits`;
+`check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK` / `8 plugin(s) have a durable
+copy matching the pinned commit`;`check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`
+(`client opcodes: 53 in use` / `server opcodes: 56 in use`,**这一批没有动线格式**);
+`pLastSender` **零命中**;`kMaxObjectEntities` 命中 `ObjectService.h:37` 与
+`ObjectService.cpp:100`;`ClampFinite` 在 `Code/encoding` 命中 28 处(含定义 `WireLimits.h:74`)。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),所以这一批的证据是逐字命中 + 门禁 + 用例断言,
+不是编译产物。新增的五个断言块全部把接收对象先写成有限哨兵 `1.f`,使「读的时候替换了」成为
+断言成立的唯一原因;`AnimationVariables` 那一条用 `GenerateDiff`/`ApplyDiff` 走真正的位图路径,
+并用 `2.5f` 证明有限的合法值原样通过。服务端两处修改都不引入新的头(`ObjectService.h` 补的
+`<cstdint>` 是唯一新增)。
+
+> **教训**:第一条:**先问「这张表什么时候变小」,再问「它能变多大」。**
+> 只在「房间空了」时回收,就等于「只要有人待着就一直涨」;
+> 而 `AssignObjectsRequest` 确实是合法包、`object.Id` 也确实在 2^64 的取值空间里 ——
+> 缺陷不在「值非法」,而在「行数没人管」。
+> 第二条:**只写不读的字段是负债,不是接口。**
+> `pLastSender` 没有读者,所以它不产生崩溃,只让「这个字段还能用」成为一句空话;
+> 删掉它比给它补一处失效通知便宜,也比等下一个使用者踩上去便宜。
+> 第三条:**「下游会不会挡住」要用下游真正的条件去试。**
+> `ExtraCharge`/`ExtraHealth` 的下游门是 `> 0.f`,而 `+inf` 比 `0.f` 大 ——
+> 一道「大于零」的门对非有限值等于不存在。
 

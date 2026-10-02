@@ -24,6 +24,7 @@
 #include <Messages/NotifyAddTarget.h>
 #include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/NotifyHealthChangeBroadcast.h>
+#include <Messages/NotifyPlayerHealthUpdate.h>
 #include <Messages/NotifyProjectileLaunch.h>
 #include <Messages/NotifySetTimeResult.h>
 #include <Messages/NotifySubtitle.h>
@@ -31,12 +32,15 @@
 #include <Messages/ProjectileLaunchRequest.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
+#include <Messages/RequestPlayerHealthUpdate.h>
 #include <Messages/SendChatMessageRequest.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Messages/SyncExperienceRequest.h>
 #include <Messages/TeleportRequest.h>
 #include <Structs/ActorValues.h>
+#include <Structs/AnimationVariables.h>
 #include <Structs/CachedString.h>
+#include <Structs/Inventory.h>
 #include <Structs/Mods.h>
 #include <Structs/TimeModel.h>
 #include <Structs/Vector2_NetQuantize.h>
@@ -1195,6 +1199,105 @@ TEST_CASE("A non finite wire float is replaced where it is read", "[encoding.fin
         hostileRoundTrip(sent, received);
 
         REQUIRE(received == sent);
+    }
+
+    // A weapon charge and an armour health reach the extra data list behind a "greater
+    // than zero" gate, so an infinity is not refused by it: it is applied.
+    {
+        Inventory::Entry sent{};
+        sent.ExtraCharge = cInfinity;
+        sent.ExtraHealth = cNotANumber;
+
+        Inventory::Entry received{};
+        received.ExtraCharge = 1.f;
+        received.ExtraHealth = 1.f;
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+        received.Deserialize(reader);
+
+        REQUIRE(received.ExtraCharge == 0.f);
+        REQUIRE(received.ExtraHealth == 0.f);
+    }
+
+    // An enchantment effect is copied into EnchantmentItem data, which the engine uses
+    // as it is.
+    {
+        Inventory::EffectItem sent{};
+        sent.Magnitude = cInfinity;
+        sent.RawCost = -cInfinity;
+
+        Inventory::EffectItem received{};
+        received.Magnitude = 1.f;
+        received.RawCost = 1.f;
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+        received.Deserialize(reader);
+
+        REQUIRE(received.Magnitude == 0.f);
+        REQUIRE(received.RawCost == 0.f);
+    }
+
+    // The party overlay draws its health bar from this percentage, and the reader keeps
+    // every value that is not negative.
+    {
+        RequestPlayerHealthUpdate sent{};
+        sent.Percentage = cInfinity;
+
+        RequestPlayerHealthUpdate received{};
+        received.Percentage = 1.f;
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received.Percentage == 0.f);
+    }
+
+    {
+        NotifyPlayerHealthUpdate sent{};
+        sent.PlayerId = 21;
+        sent.Percentage = cInfinity;
+
+        NotifyPlayerHealthUpdate received{};
+        received.Percentage = 1.f;
+        hostileRoundTrip(sent, received);
+
+        REQUIRE(received.PlayerId == 21);
+        REQUIRE(received.Percentage == 0.f);
+    }
+
+    // An animation variable float is read only when the change table says it moved, and
+    // that table is a bitmap the peer fills in.
+    {
+        AnimationVariables sent{};
+        sent.Floats.push_back(cNotANumber);
+        sent.Floats.push_back(cInfinity);
+        sent.Floats.push_back(-cInfinity);
+        sent.Floats.push_back(2.5f);
+
+        AnimationVariables received{};
+        received.Floats.push_back(1.f);
+        received.Floats.push_back(1.f);
+        received.Floats.push_back(1.f);
+        received.Floats.push_back(1.f);
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.GenerateDiff(received, writer);
+
+        Buffer::Reader reader(&buff);
+        received.ApplyDiff(reader);
+
+        REQUIRE(received.Floats.size() == 4);
+        REQUIRE(received.Floats[0] == 0.f);
+        REQUIRE(received.Floats[1] == 0.f);
+        REQUIRE(received.Floats[2] == 0.f);
+        REQUIRE(received.Floats[3] == 2.5f);
     }
 }
 

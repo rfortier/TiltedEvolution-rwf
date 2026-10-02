@@ -1,4 +1,5 @@
 #include <Messages/NotifyPlayerHealthUpdate.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 
 void NotifyPlayerHealthUpdate::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
@@ -12,5 +13,5 @@ void NotifyPlayerHealthUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRe
     ServerMessage::DeserializeRaw(aReader);
 
     PlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-    Percentage = Serialization::ReadFloat(aReader);
+    Percentage = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
 }

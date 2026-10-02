@@ -146,5 +146,5 @@ void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader) noexc
             Integers[i] = TiltedPhoques::Serialization::ReadVarInt(aReader);
     for (size_t i = 0; i < floatsSize; i++)
         if (*biter++)
-            Floats[i] = TiltedPhoques::Serialization::ReadFloat(aReader);
+            Floats[i] = WireLimits::ClampFinite(TiltedPhoques::Serialization::ReadFloat(aReader));
 }

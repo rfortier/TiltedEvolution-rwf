@@ -61,6 +61,12 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
 {
     auto view = m_world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
 
+    uint32_t objectCount = 0;
+    for (auto it = std::begin(view); it != std::end(view); ++it)
+        ++objectCount;
+
+    uint32_t refusedCount = 0;
+
     AssignObjectsResponse response;
 
     for (const ObjectData& object : acMessage.Packet.Objects)
@@ -91,13 +97,18 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
 
             response.Objects.push_back(objectData);
         }
+        else if (objectCount >= kMaxObjectEntities)
+        {
+            ++refusedCount;
+        }
         else
         {
             const auto cEntity = m_world.create();
+            ++objectCount;
 
             m_world.emplace<FormIdComponent>(cEntity, object.Id);
 
-            auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity, acMessage.pPlayer);
+            auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity);
             objectComponent.CurrentLockData = object.CurrentLockData;
 
             m_world.emplace<CellIdComponent>(cEntity, object.CellId, object.WorldSpaceId, object.CurrentCoords);
@@ -112,6 +123,10 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
             response.Objects.push_back(objectData);
         }
     }
+
+    if (refusedCount != 0)
+        spdlog::warn("Object table is full ({} objects), {} of {} requested objects from player {} were refused", objectCount, refusedCount,
+                     acMessage.Packet.Objects.size(), acMessage.pPlayer->GetId());
 
     if (!response.Objects.empty())
         acMessage.pPlayer->Send(response);

@@ -1,4 +1,5 @@
 #include <Structs/Inventory.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 #include <algorithm>
 
@@ -15,10 +16,10 @@ void Inventory::EffectItem::Serialize(TiltedPhoques::Buffer::Writer& aWriter) co
 
 void Inventory::EffectItem::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    Magnitude = Serialization::ReadFloat(aReader);
+    Magnitude = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
     Area = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     Duration = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-    RawCost = Serialization::ReadFloat(aReader);
+    RawCost = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
     EffectId.Deserialize(aReader);
 }
 
@@ -59,7 +60,7 @@ void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexc
     BaseId.Deserialize(aReader);
     Count = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
-    ExtraCharge = Serialization::ReadFloat(aReader);
+    ExtraCharge = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
 
     ExtraEnchantId.Deserialize(aReader);
     ExtraEnchantCharge = Serialization::ReadVarInt(aReader) & 0xFFFF;
@@ -72,7 +73,7 @@ void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexc
         EnchantData.Effects.push_back(effect);
     }
 
-    ExtraHealth = Serialization::ReadFloat(aReader);
+    ExtraHealth = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
 
     ExtraPoisonId.Deserialize(aReader);
     ExtraPoisonCount = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;

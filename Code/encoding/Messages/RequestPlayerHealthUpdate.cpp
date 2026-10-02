@@ -1,4 +1,5 @@
 #include <Messages/RequestPlayerHealthUpdate.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 
 void RequestPlayerHealthUpdate::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
@@ -10,5 +11,5 @@ void RequestPlayerHealthUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aR
 {
     ClientMessage::DeserializeRaw(aReader);
 
-    Percentage = Serialization::ReadFloat(aReader);
+    Percentage = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
 }

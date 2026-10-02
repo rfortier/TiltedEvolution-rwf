@@ -9,6 +9,111 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:对象实体表只增不减 —— 一张行数由客户端决定、却只由「房间空掉」回收的表
+
+**现象**:服务端 `ObjectService` 的实体数由客户端发来的 `AssignObjectsRequest` 决定:
+每个包里最多 255 个对象,而**包没有速率限制**、实体总数**没有上限**。每个新建实体都带一份
+对端给的 `Inventory`(≤ 4096 条 × 每条 ≤ 64 个附魔效果),而全仓唯一销毁它的地方是
+`OnPlayerLeaveCellEvent` —— 也就是说**只要有一个玩家待在这个 cell 里,它里面的对象就永远活着**。
+一个客户端反复发同一个包(哪怕每次只改一个 `Id`)就能让实体表一直涨下去。
+
+**根因**:这条路径上没有任何一处问过「现在有多少」:
+
+```cpp
+// Code/server/Services/ObjectService.cpp(修复前)
+else
+{
+    const auto cEntity = m_world.create();          // :96,没有计数、没有上限
+    m_world.emplace<FormIdComponent>(cEntity, object.Id);
+    auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity, acMessage.pPlayer);
+    ...
+}
+```
+
+判据是**同一个系统里的另一条容量路径早就有上限**:`GameServer.cpp:877` 在
+`GetPlayerManager().Count() >= uMaxPlayerCount.value_as<uint32_t>()` 时直接拒绝入服
+(默认 8,`GameServer.cpp:29`),而同族的每一张对端可控表(插件层的 `kMaxRemoteSnapshots`、
+`kMaxRemotePreps`、`kMaxReadyTokens`)都已经有上限 —— 缺席的只有这张实体表。
+
+**为什么不在服务端校验 `object.CellId`**:看起来「对端声称的对象所在 cell」应该等于发送者
+当前的 cell,但**合法流量下这两个值也会不一致**:`Code/client/Services/Generic/DiscoveryService.cpp`
+只有 `gameCenterGrid` 变化才发 `ShiftGridCellRequest`,而 `gameCurrentGrid` 单独变化时只发
+`CellChangeEvent`;并且 `Code/client/World.cpp` 里 `ObjectService`(`:47`)的 `CellChangeEvent`
+sink 注册早于 `PlayerService`(`:55`)⇒ 客户端**总是先发** `AssignObjectsRequest`、后更新自己的
+`CellIdComponent`。严格相等会打断正常同步,所以这条不做。
+
+**同一文件里的第二个缺陷**是只写不读的字段:
+
+```cpp
+// Code/server/Components/ObjectComponent.h(修复前)
+struct ObjectComponent
+{
+    ObjectComponent(Player* apLastSender) : pLastSender(apLastSender) {}
+    Player* pLastSender;        // 全仓只有这三行:构造参数、初始化、字段本身
+    LockData CurrentLockData{};
+};
+```
+
+`git grep -rn pLastSender -- Code` 只有 3 处命中、**没有任何读者**;而 `Player` 由
+`GameServer.cpp:610-670 OnDisconnection` 里的 `m_pWorld->GetPlayerManager().Remove(pPlayer)`
+释放,对象实体却要活到 cell 空掉为止 —— 于是这个指针在玩家掉线后必然悬垂。判据是
+**「没有人读的字段」比「加一处清理」更安全的修法是删掉它**,不是给它补一个失效通知。
+
+**修法**:
+
+- `Code/server/Services/ObjectService.h:37` 加类内常量(与 `PluginMessagingService.h:44-47`
+  的 `static constexpr std::uint32_t kMax…` 同形),`:29-34` 写清它为什么存在:
+  `static constexpr std::uint32_t kMaxObjectEntities = 64 * 1024;`
+  (4 字节/实体 ⇒ 约 256 KiB,远大于任何真实 cell 的容器与门;`Pch.h` 无 `<algorithm>`,
+  所以这里补了 `#include <cstdint>`。)
+- `Code/server/Services/ObjectService.cpp:64-68` 在 `view` 建立之后数一遍现有实体
+  (`uint32_t objectCount` / `for (auto it = std::begin(view); …) ++objectCount;`),
+  `:100-107` 未命中分支改成 `else if (objectCount >= kMaxObjectEntities) { ++refusedCount; }`,
+  只有能建的那一支才 `++objectCount;` —— **已有的对象永远仍能命中查询分支**,
+  被拒的只是新实体。
+- `:127-129` 饱和时打一条 `spdlog::warn("Object table is full ({} objects), {} of {} requested
+  objects from player {} were refused", …)`。被拒的实体不进 `response`,客户端那一侧
+  (`Code/client/Services/Generic/ObjectService.cpp:200-243`)对「回包里没有这一项」的处理
+  本来就是「不建本地映射」,所以是**少同步一个对象,而不是记错一个对象**。
+- `Code/server/Components/ObjectComponent.h` 删掉带参构造与 `pLastSender`(保留
+  `#include <Game/Player.h>`:它是组件头里唯一 include 它的地方,别的 TU 靠它传递拿完整 `Player`);
+  `Code/server/Services/ObjectService.cpp:111` 随之改成 `m_world.emplace<ObjectComponent>(cEntity);`。
+
+**顺带补掉同一批浮点读取里最后 6 处**:`Code/encoding/Messages/RequestPlayerHealthUpdate.cpp:14`、
+`NotifyPlayerHealthUpdate.cpp:16`、`Code/encoding/Structs/Inventory.cpp:19`(效果强度 `Magnitude`)、
+`:22`(`RawCost`)、`:63`(`ExtraCharge`)、`:76`(`ExtraHealth`),以及
+`Code/encoding/Structs/AnimationVariables.cpp:149`(动画变量浮点)。判据是**这些值接下来决定了什么**:
+`ExtraCharge` 经 `Code/client/Games/Skyrim/TESObjectREFR.cpp:611` 的 `if (arEntry.ExtraCharge > 0.f)`
+进 `SetChargeData`、`ExtraHealth` 经 `:657` 同形的门进 `SetHealth` —— **`+inf` 比 `0.f` 大,所以它过得去**;
+`Magnitude`/`RawCost` 经 `Code/client/Games/Skyrim/Forms/EnchantmentItem.cpp:24-27` 直接写进引擎的
+`EffectItem`;血量百分比在 `Code/client/Services/Generic/OverlayService.cpp:543` 只做
+`>= 0.f ? … : 0.f` 的三元,**同样是 `+inf` 过得去**;而 `AnimationVariables` 的浮点由对端填的
+位图决定读不读(`:143-149`)。六处统一改成 `WireLimits::ClampFinite(Serialization::ReadFloat(aReader))`
+(`Code/encoding/WireLimits.h:74` 已有),四个文件各补 `#include <WireLimits.h>`(写在第 2 行,
+与 `Code/encoding/Messages/AddTargetRequest.cpp:1-2` 同形)。
+
+**验证**:`Code/tests/encoding.cpp` 的 `[encoding.finite_floats]` 新增五个块,接收对象一律先写有限哨兵
+`1.f`,让「读的时候替换了」成为断言成立的唯一原因:`Inventory::Entry` 的 `ExtraCharge = +inf` /
+`ExtraHealth = NaN` 读回 `0.f`(`:1222-1223`)、`Inventory::EffectItem` 的 `Magnitude = +inf` /
+`RawCost = -inf` 读回 `0.f`(`:1244-1245`)、`RequestPlayerHealthUpdate` 与 `NotifyPlayerHealthUpdate`
+各做一次整包往返(`:1258`/`:1271`,后者同时断言 `PlayerId == 21` 证明字段顺序没被改动)、
+`AnimationVariables` 用 `GenerateDiff`/`ApplyDiff` 走位图路径断言 `{0, 0, 0, 2.5}`(`:1295-1300`,
+2.5 那一条证明**有限的合法值原样通过**)。`git grep -rn "ClampFinite" -- Code/encoding` 现在 28 处命中、
+`ClampFinite` 定义本身在 `WireLimits.h:74`;`git grep -rn "pLastSender" -- Code` **exit 1 / 零命中**;
+`python Tools\Scripts\check_docs.py` → `DOC CHECK OK`;
+`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / `22 patch(es)`;
+`check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK`;
+`check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`(没有新 opcode,`Code/encoding` 的线格式不变)。
+本机不编译(仓库约束),所以证据是逐字命中与门禁,不是编译产物。
+
+**教训**:「这个字段合法吗」和「这个字段能有多少个」是两个问题 —— `object.Id` 的取值空间是 2^64、
+`AssignObjectsRequest` 也确实是合法包,而表的**行数**没人管。
+
+**教训**:回收路径决定了上限的必要性 —— 只在「房间空了」时回收,就等于「只要有人待着就一直涨」;
+先问「这张表什么时候变小」,再问「它能变多大」。
+
+**教训**:只写不读的字段是负债而不是接口 —— 它不会因为「反正没人用」而安全,只会等到有人用它时
+才发现它已经悬垂了;删掉它比给它补清理便宜。
 ### 修复:任意客户端一个畸形包即可打崩专用服务器,并修掉一整类「线上计数与实体数不一致」
 
 **现象**:专用服务器上,一个**还没通过认证**的连接发一个畸形的
