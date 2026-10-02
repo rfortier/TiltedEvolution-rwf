@@ -1,0 +1,113 @@
+diff --git a/src/AppearanceProbe.cpp b/src/AppearanceProbe.cpp
+index 7b1ca6b..c26aab9 100644
+--- a/src/AppearanceProbe.cpp
++++ b/src/AppearanceProbe.cpp
+@@ -724,6 +724,13 @@ namespace MorphSyncTogether
+             return;
+         }
+ 
++        if (key.size() > kMaxProbeKeyBytes) {
++            SKSE::log::warn(
++                "MST APPEARANCE probe dropped: key too long bytes={}",
++                key.size());
++            return;
++        }
++
+         const auto now = std::chrono::steady_clock::now();
+         {
+             std::scoped_lock lock(_stateMutex);
+@@ -745,6 +752,14 @@ namespace MorphSyncTogether
+         std::uint64_t previous = 0;
+         {
+             std::scoped_lock lock(_stateMutex);
++            if (!_snapshots.contains(key) && _snapshots.size() >= kMaxProbeSnapshots) {
++                SKSE::log::warn(
++                    "MST APPEARANCE probe dropped: snapshot table full size={} keyBytes={}",
++                    _snapshots.size(),
++                    key.size());
++                return;
++            }
++
+             auto& state = _snapshots[key];
+             first = !state.initialized;
+             previous = state.hash;
+@@ -1166,6 +1181,14 @@ namespace MorphSyncTogether
+         std::vector<FaceMaterialSnapshot> baselineForLog;
+         {
+             std::scoped_lock lock(_stateMutex);
++            if (!_appearanceCaches.contains(key) && _appearanceCaches.size() >= kMaxAppearanceCaches) {
++                SKSE::log::warn(
++                    "MST APPEARANCE cache dropped: appearance table full size={} keyBytes={}",
++                    _appearanceCaches.size(),
++                    key.size());
++                return;
++            }
++
+             auto& cache = _appearanceCaches[key];
+             firstCache = !cache.valid;
+             previousActorFormID = cache.actorFormID;
+diff --git a/src/AppearanceProbe.h b/src/AppearanceProbe.h
+index 99d9684..4786079 100644
+--- a/src/AppearanceProbe.h
++++ b/src/AppearanceProbe.h
+@@ -169,6 +169,15 @@ namespace MorphSyncTogether
+         std::uint32_t _materialRebindFollowups{ 3 };
+         std::uint32_t _materialRebindIntervalMs{ 1000 };
+ 
++        // The key is built from a display name the remote peer supplies and the
++        // transient proxy FormID it is attached to, and nothing removes an entry
++        // once it is written, so both tables are bounded here. A key longer than
++        // the probe accepts can never be matched again, and a full table drops
++        // the sample instead of growing without limit.
++        static constexpr std::size_t kMaxProbeKeyBytes = 256;
++        static constexpr std::size_t kMaxProbeSnapshots = 256;
++        static constexpr std::size_t kMaxAppearanceCaches = 128;
++
+         mutable std::mutex _stateMutex;
+         std::unordered_map<std::string, Snapshot> _snapshots;
+         std::unordered_map<std::string, AppearanceCache> _appearanceCaches;
+diff --git a/src/UdpTransport.cpp b/src/UdpTransport.cpp
+index 383cc18..fa89b69 100644
+--- a/src/UdpTransport.cpp
++++ b/src/UdpTransport.cpp
+@@ -10,6 +10,15 @@ namespace MorphSyncTogether
+     {
+         constexpr char kChannel[] = "morphsync.together.v1";
+         constexpr std::string_view kGameplayPrefix = "MSTUDP|v1|";
++
++        // The sender name is a display name the remote side supplies, and the only
++        // thing that ever removes a row is Stop(), which nothing calls after Start(),
++        // so both the key length and the row count are bounded here. A name longer
++        // than any real player name cannot belong to a proxy actor, and a full table
++        // drops the packet instead of growing without limit. The row cap matches
++        // MorphSyncService::kMaxRemoteSnapshots so both halves refuse the same peers.
++        constexpr std::size_t kMaxSenderNameBytes = 256;
++        constexpr std::size_t kMaxSenderConnections = 64;
+     }
+ 
+     UdpTransport& UdpTransport::GetSingleton()
+@@ -221,8 +230,24 @@ namespace MorphSyncTogether
+             fmt::format("connection-{}", message.sender.connectionID);
+         sender = SanitizeField(std::move(sender));
+ 
++        if (sender.size() > kMaxSenderNameBytes) {
++            SKSE::log::warn(
++                "MST STRPM RX dropped: sender name too long bytes={}",
++                sender.size());
++            return;
++        }
++
+         {
+             std::scoped_lock lock(_senderMutex);
++            if (!_senderConnections.contains(sender) &&
++                _senderConnections.size() >= kMaxSenderConnections) {
++                SKSE::log::warn(
++                    "MST STRPM RX dropped: sender table full size={} sender=\"{}\"",
++                    _senderConnections.size(),
++                    sender);
++                return;
++            }
++
+             _senderConnections[sender] = message.sender.connectionID;
+         }
+ 

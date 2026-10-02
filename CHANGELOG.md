@@ -9,6 +9,59 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:Morph 的三张表,键由对端选、键长也由对端选,而唯一的清理点是读档 —— 判据是「这个键是谁选的,而它什么时候被删掉」
+
+**现象**:同一个对端每包换一个显示名,`plugins/MorphSyncTogether` 里三张表就每包多一行,
+再也没有一行被删掉。三张表分别是 `UdpTransport::_senderConnections`(显示名 → 连接号)、
+`AppearanceProbe::_snapshots`(显示名 + proxy FormID → 采样)、
+`AppearanceProbe::_appearanceCaches`(显示名 → 面部材质基线)。
+
+**根因**:三张表的键里都有对端自报的 `displayName`,而三处都没做长度判定、也都没做行数判定。
+`UdpTransport.cpp` 的 `SanitizeField` 只把 `|`/CR/LF 换成 `_`、空则填 `"Player"` ——
+它看起来像一道净化,净化的却是**分隔符**,不是长度。写入点则是每次收包无条件
+`_senderConnections[sender] = message.sender.connectionID;`,连 `contains` 判定都没有。
+`AppearanceProbe` 侧更隐蔽:两张表全文件只有两个 `operator[]` 插入点
+(`AppearanceProbe.cpp` 的 `_snapshots[key]` 与 `_appearanceCaches[key]`),
+其余 19 个读者全是 `find`,从不插入 —— 所以只要拦住这两个 `operator[]`,表就不会被撑大。
+
+**为什么没有任何东西报错**:三张表都是「上一包是什么」的缓存,键配不上任何东西时本来也只返回
+`nullptr`。表涨大不会让任何一次查询失败,只会让 `MorphSyncService.cpp` 每 tick 的那轮
+`senderSet` 收集与 `ResolveRemoteProxyByName` 扫描变长 —— 那不是「内存慢慢涨」,
+是每秒一次的 O(表大小 × 演员数)扫描,而它表现为卡顿,不表现为报错。
+
+**为什么 CI 挡不住、本地也看不见**:清理代码是**存在**的 —— `UdpTransport::Stop()` 里有
+`_senderConnections.clear()`,`AppearanceProbe::Reset()` 里有两个 `clear()`。
+但 `Stop()` 的唯一调用者是 `~UdpTransport()`,`src/main.cpp` 只调 `Start()`;
+`Reset()` 的唯一调用者是 `kPreLoadGame` 事件。也就是说:**进程起来之后,第一张表永远不清;
+另外两张表只在读档时清。** 判据不是「有没有清理代码」,是「这行清理跑得到吗」——
+而这一点,只有把调用者一路查到底才看得见。
+
+**修法**:
+- `plugins/MorphSyncTogether/src/UdpTransport.cpp`:加 `kMaxSenderNameBytes = 256` 与
+  `kMaxSenderConnections = 64`,写入前先判键长,再在锁内判 `contains` / 行数;满了丢这一包并 `warn`。
+- `plugins/MorphSyncTogether/src/AppearanceProbe.h`:加 `kMaxProbeKeyBytes = 256`、
+  `kMaxProbeSnapshots = 256`、`kMaxAppearanceCaches = 128`。
+- `plugins/MorphSyncTogether/src/AppearanceProbe.cpp`:键长门禁放在 `Probe()` 最前,
+  两张表的行数上限各自贴在自己的 `operator[]` 前面。三处都是「满了丢这一次采样」,不是「清表」。
+- 交付为 `Code/plugins/patches/MorphSyncTogether/0005-bound-the-peer-supplied-probe-keys-and-the-sender-name-table.patch`
+  (插件是子模块,本仓不拥有也不能 push,CI 的 `git submodule update --init --force --recursive` 会丢弃只改工作树的改动)。
+
+**验证**:本机不编译,证据是逐字命中 + 门禁 + 顺序应用。
+`python Code\plugins\tools\plugin_patches.py verify` 从 24 个补丁变成 25 个并全绿;
+`plugin_patches.py check` 报 `PATCH CHECK OK`;
+`python Code\plugins\tools\check_transport_compat.py` 报 `TRANSPORT COMPATIBILITY OK`;
+`python Tools\Scripts\check_docs.py` 报 `DOC CHECK OK`。
+补丁的三个目标文件都能从 `src/AppearanceProbeBodyHair.cpp:9 #include "AppearanceProbe.cpp"`
+这条链到达(`AppearanceProbe.cpp` 与 `MorphSyncService.cpp` 都不在 `CMakeLists.txt` 的 `SOURCES` 里,
+它们是被 `#include` 编进去的),所以 §78 那条编译闭包门禁没有报「文件不在构建闭包里」。
+按 0001 → 0002 → 0003 → 0004 → 0005 的顺序对 pin `017c7b0c` 全部应用成功。
+
+> **教训**:第一条:**「键由对端选」要连着问「键有多长」,因为这两件事通常由同一段代码负责 —— 而它只做了其中一件。**
+> 第二条:**一个只增不减的表,要看它唯一的清理点是谁在什么时候调。**
+> 「有 `clear()`」不等于「`clear()` 会跑」;两张表的答案是「读档」,第三张表的答案是「析构」,而那个析构函数在进程起来之后再也不会被调用。
+> 第三条:**节流不等于上限。** `Probe()` 的节流门禁查的是「这个键在不在表里」,
+> 所以它对**新键**完全无效 —— 越是攻击者想要的路径,越是节流管不着的那条。
+
 ### 修复:中继的四个身份字段可以被对端抢注 —— 判据是「同一个名字,中继写在尾、对端写在头,而读取器取的是第一个」
 
 **现象**:插件层的传输通道上,中继脚本每转发一封信封,就把服务端认证过的身份追加在**尾部**:

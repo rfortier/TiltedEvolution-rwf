@@ -10651,3 +10651,175 @@ so a reserved field in a peer envelope is forwarded unexamined」;两次恢复�
 > 中继确实把真值追加进去了,认证没有失效;失效的是**读取**,而读取发生在别人的机器上。
 > 第三条:**修一个「取第一个」的读取器时,要看同一个函数里有没有别的字段依赖「取第一个」。**
 > 这里 `payload` 就依赖 —— 翻整体的方向会把 identity 通道的认证从另一个口子放走。
+
+## 81. 2026-10-11 场次:Morph 的三张表,键由对端选、键长也由对端选,而唯一的清理点是读档 —— 判据是「这个键是谁选的,而它什么时候被删掉」
+
+> **锚点**:一处修复(三张表),在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
+> `Code/plugins/patches/MorphSyncTogether/0005-bound-the-peer-supplied-probe-keys-and-the-sender-name-table.patch`
+> 改 `plugins/MorphSyncTogether/src/UdpTransport.cpp`(常量 `:14-21`,写入点 `:233-252`)、
+> `plugins/MorphSyncTogether/src/AppearanceProbe.h`(常量 `:172-179`)、
+> `plugins/MorphSyncTogether/src/AppearanceProbe.cpp`(键长门禁 `:727-732`、
+> 快照表写入点 `:755-763`、外观缓存写入点 `:1184-1192`)。
+> 三者由 `Code/plugins/tools/plugin_patches.py apply` 在 CI 配置阶段应用
+> (`.github/workflows/plugins.yml:150`、`windows.yml:208`)。
+
+### 81.1 缺陷:三张表,三个由对端填的键,而唯一的清理点在读档
+
+第一张在 `UdpTransport`,键是**显示名**:
+
+```cpp
+// plugins/MorphSyncTogether/src/UdpTransport.cpp(修复前)
+std::string sender = message.sender.displayName && *message.sender.displayName ?
+    message.sender.displayName :                                  // :219-220,对端自报
+    fmt::format("connection-{}", message.sender.connectionID);
+sender = SanitizeField(std::move(sender));                        // :222
+{
+    std::scoped_lock lock(_senderMutex);
+    _senderConnections[sender] = message.sender.connectionID;      // :226,每次收包无条件写
+}
+```
+
+第二、三张在 `AppearanceProbe`,键是显示名加一个**临时的 proxy FormID**:
+
+```cpp
+// plugins/MorphSyncTogether/src/AppearanceProbe.cpp(修复前)
+Probe(fmt::format("REMOTE:{}:{:08X}", sender, actor->GetFormID()), // :483-488
+      "REMOTE", sender, actor, nullptr);
+...
+auto& state = _snapshots[key];                                    // :748
+...
+auto& cache = _appearanceCaches[key];                             // :1169
+```
+
+| 位置 | 作用 |
+| --- | --- |
+| `plugins/MorphSyncTogether/src/UdpTransport.cpp:219-222`(修复前) | 键 = 对端自报的 `displayName`,否则 `connection-<id>` |
+| `plugins/MorphSyncTogether/src/UdpTransport.cpp:26-37`(修复前) | `SanitizeField` 只把 `|`/CR/LF 换成 `_`、空则 `"Player"` —— **没有长度上限** |
+| `plugins/MorphSyncTogether/src/UdpTransport.cpp:226`(修复前) | 每次收包 `_senderConnections[sender] = …`,无 `contains` 判定、无行数上限 |
+| `plugins/MorphSyncTogether/src/UdpTransport.cpp:163-166`(修复前) | 全文件唯一的 `_senderConnections.clear()`,在 `Stop()` 里 |
+| `plugins/MorphSyncTogether/src/AppearanceProbe.cpp:748`/`:1169`(修复前) | 两张表的 `operator[]` 插入点 —— 全文件仅有的两个 |
+| `plugins/MorphSyncTogether/src/AppearanceProbe.cpp:458-464`(修复前) | 唯一的清理点 `Reset()`,两个 `clear()` |
+
+### 81.2 判据
+
+1. **这个键是谁选的?** 两张表的键里都有对端的 `displayName`。
+   `UdpTransport.cpp:219-220` 直接取 `message.sender.displayName`(STRPM 消息头,由对端填);
+   `AppearanceProbe.cpp:483-488` 的 `sender` 来自 `MorphSyncService.cpp:337-346` 收集的
+   `senderSet` —— 那是两张远端快照表的键,同样是显示名。
+2. **这个键的长度谁管?** 没人。`SanitizeField`(`:26-37`)只做字符替换,不截断;
+   而它的返回值在 `:234-238` 被拼进 `"{}from={}|{}"` —— 一个 100 KB 的名字会让这个包也变成 100 KB,
+   但**写进表里的那一条**才是留下来的东西:名字越长,它越不可能再被匹配上,却照样占着一行。
+3. **这张表什么时候变小?** `_senderConnections` 只有 `Stop()` 会清,而 `Stop()` 的唯一调用者是
+   `~UdpTransport()`(`:21-24`);`src/main.cpp:36` 只调 `Start()`,
+   `:40-43` 的 `kPreLoadGame` 只重置 `MorphSyncService` 与 `TngSync`
+   ⇒ **进程起来之后它永远不清**。两张探针表只有 `Reset()` 会清,调用者是
+   `MorphSyncService.cpp:245`(同样是 `kPreLoadGame`)⇒ 只在读档时清。
+4. **新的键会被节流挡住吗?** 不会。`AppearanceProbe.cpp:730-731` 的节流门禁是
+   `const auto it = _snapshots.find(key); if (it != _snapshots.end() && …)` ——
+   一个**从没见过的**键一定走到 `operator[]`。节流保护的恰恰不是这条路径。
+5. **贵在哪一步?** `MorphSyncService.cpp:337-354` 每 tick 把两张表的键并成一个
+   `std::unordered_set<std::string>` 再逐键走 `ResolveRemoteProxyByName`
+   (`:981-1045`:ProcessLists 全表扫描 + `EqualsInsensitive` + `GetDistance`)。
+   这不是「内存慢慢涨」,是**每秒一次的 O(表大小 × 演员数)扫描**。
+6. **满表 = 一次 miss,不是失败。** 三张表都是「上一包是什么」的缓存:丢一包等于等下一包,
+   名字配不上任何 proxy 本来也就是 `nullptr`。所以设界不改变行为。
+
+### 81.3 可达性
+
+**同一个对端**,每包换一个 `displayName`(或干脆留空,让 `connection-<id>` 当键、每包换一个 connection id)。
+每包插一行,没有回收;探针那两张表还会在每次 `TickOnGameThread` 上被遍历一遍。
+`_assemblies` 是同一个文件里唯一有 prune 的表(`MorphSyncService.cpp:356-366`,
+`// Drop incomplete chunk assemblies after 15 seconds.`),而它旁边的表没有 ——
+这正是判据的形状:**同一把清理里,谁缺席**。
+
+### 81.4 修法
+
+一、`UdpTransport` 加两个常量,写入前先判键长、再判行数(已存在的键仍可更新):
+
+```cpp
+// plugins/MorphSyncTogether/src/UdpTransport.cpp:14-21(修复后)
+// The sender name is a display name the remote side supplies, and the only
+// thing that ever removes a row is Stop(), which nothing calls after Start(),
+// so both the key length and the row count are bounded here. ...
+constexpr std::size_t kMaxSenderNameBytes = 256;
+constexpr std::size_t kMaxSenderConnections = 64;
+```
+
+```cpp
+// plugins/MorphSyncTogether/src/UdpTransport.cpp:233-252(修复后)
+if (sender.size() > kMaxSenderNameBytes) {
+    SKSE::log::warn("MST STRPM RX dropped: sender name too long bytes={}", sender.size());
+    return;
+}
+{
+    std::scoped_lock lock(_senderMutex);
+    if (!_senderConnections.contains(sender) &&
+        _senderConnections.size() >= kMaxSenderConnections) {
+        SKSE::log::warn(
+            "MST STRPM RX dropped: sender table full size={} sender=\"{}\"",
+            _senderConnections.size(), sender);
+        return;
+    }
+    _senderConnections[sender] = message.sender.connectionID;
+}
+```
+
+二、`AppearanceProbe` 同理,三个常量(键长一份、两张表各一份上限):
+
+```cpp
+// plugins/MorphSyncTogether/src/AppearanceProbe.h:172-179(修复后)
+static constexpr std::size_t kMaxProbeKeyBytes = 256;
+static constexpr std::size_t kMaxProbeSnapshots = 256;
+static constexpr std::size_t kMaxAppearanceCaches = 128;
+```
+
+键长门禁放在 `Probe()` 最前(`AppearanceProbe.cpp:727-732`,在取 `now` 之前),
+两张表的行数上限各自贴在自己的 `operator[]` 前面(`:755-761` 与 `:1184-1190`)。
+三处都是「满了丢这一次采样」,不是「清表」。
+
+三、交付:三个文件都在 `plugins/MorphSyncTogether` 子模块里,而 CI 的
+`git submodule update --init --force --recursive --depth=1` 会丢弃只改工作树的改动,
+所以修复以 `Code/plugins/patches/MorphSyncTogether/0005-bound-the-peer-supplied-probe-keys-and-the-sender-name-table.patch`
+交付(4838 字节 / 113 行 LF / 6 个 hunk / 3 个文件;基线是「0001 到 0004 已应用」,
+因为 0001 与 0004 也改这个子模块的 `src/`)。
+
+**注意这两张表为什么能改对**:编译闭包陷阱在这里是**反着的** ——
+`src/AppearanceProbe.cpp` 与 `src/MorphSyncService.cpp` 都不在
+`plugins/MorphSyncTogether/CMakeLists.txt` 的 `SOURCES` 里,
+它们是被 `src/AppearanceProbeBodyHair.cpp:9` / `src/MorphSyncServiceBodyHair.cpp:11` 用
+`#include "…cpp"` 编进去的(前者还先 `#define` 了两个名字,见 `0004` 的五个目标文件)。
+所以改 `AppearanceProbe.cpp` 是有效的,而 §78 那条门禁(`plugin_patches.py:99-211`)
+正是为了确认这一点才存在 —— 它现在能从 `AppearanceProbeBodyHair.cpp` 顺着 `#include` 走到 `AppearanceProbe.cpp`。
+
+### 81.5 复核命令(照抄)
+
+```powershell
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Tools\Scripts\check_docs.py
+
+# 三张表的常量与写入点(每张表都应当有一个 contains 判定紧挨着 operator[])
+git grep -n "kMaxSenderNameBytes\|kMaxSenderConnections" -- plugins/MorphSyncTogether/src/UdpTransport.cpp
+git grep -n "kMaxProbeKeyBytes\|kMaxProbeSnapshots\|kMaxAppearanceCaches" -- plugins/MorphSyncTogether/src/AppearanceProbe.h
+git grep -n "_snapshots\[\|_appearanceCaches\[\|_senderConnections\[" -- plugins/MorphSyncTogether/src
+
+# 补丁对 pin 可应用、且已经在工作树里
+git -C plugins/MorphSyncTogether apply --check --cached ..\..\Code\plugins\patches\MorphSyncTogether\0005-bound-the-peer-supplied-probe-keys-and-the-sender-name-table.patch
+git -C plugins/MorphSyncTogether apply --check --reverse ..\..\Code\plugins\patches\MorphSyncTogether\0005-bound-the-peer-supplied-probe-keys-and-the-sender-name-table.patch
+```
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),所以证据是逐字命中 + 门禁 + 顺序应用,不是编译产物。
+`plugin_patches.py verify` 从 24 个补丁变成 25 个并全绿;该补丁的目标三个文件都能从
+`AppearanceProbeBodyHair.cpp` / `MorphSyncServiceBodyHair.cpp` 的 `#include` 链到达
+(§78 那条门禁 `uncompiled_patch_targets` 报的是「文件不在构建闭包里」,它没报 ——
+反过来说明闭包走得通)。按 0001 → 0002 → 0003 → 0004 → 0005 的顺序对 pin `017c7b0c` 全部应用成功,
+工作树 13 个 ` M`。
+
+> **教训**:第一条:**「键由对端选」要连着问「键有多长」,因为这两件事通常由同一段代码负责 —— 而它只做了其中一件。**
+> `SanitizeField` 看起来像一道净化,它净化的却是**分隔符**,不是长度。
+> 第二条:**一个只增不减的表,要看它唯一的清理点是谁在什么时候调。**
+> 这里两张表的答案是「读档」,第三张表的答案是「析构」—— 而那个析构函数在进程起来之后再也不会被调用。
+> 判据不是「有没有清理代码」,是「这行清理跑得到吗」。
+> 第三条:**节流不等于上限。** `Probe()` 的节流门禁查的是「这个键在不在表里」,
+> 所以它对**新键**完全无效 —— 越是攻击者想要的路径,越是节流管不着的那条。
+
