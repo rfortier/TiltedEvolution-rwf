@@ -1,11 +1,6 @@
 #include <Messages/AssignObjectsRequest.h>
 #include <algorithm>
 
-// The count field is 8 bits wide, so a longer list could not be received anyway:
-// clamp it, or the reader consumes only the low 8 bits worth of entries and then
-// misparses the rest of the packet.
-static constexpr size_t kMaxObjectCount = 0xFF;
-
 void AssignObjectsRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     const auto count = std::min<size_t>(Objects.size(), kMaxObjectCount);

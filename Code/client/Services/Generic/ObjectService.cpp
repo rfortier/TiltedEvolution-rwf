@@ -159,6 +159,9 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
     // Door seemed to be at the wrong form id (29, now 32), verify this.
     Vector<TESObjectREFR*> objects = pCell->GetRefsByFormTypes(formTypes);
 
+    // The count travels in 8 bits, so a cell with more containers and doors than that
+    // needs more than one packet. Handing the whole list to one request is not an option:
+    // the writer clamps the count, and everything past the clamp is never sent at all.
     AssignObjectsRequest request{};
 
     const Set<const TESObjectREFR*> playerStashContainers = GetPlayerStashContainers();
@@ -191,10 +194,17 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
         if (pObject->baseForm && pObject->baseForm->formType == FormType::Container)
             objectData.CurrentInventory = pObject->GetInventory();
 
+        if (request.Objects.size() == AssignObjectsRequest::kMaxObjectCount)
+        {
+            m_transport.Send(request);
+            request.Objects.clear();
+        }
+
         request.Objects.push_back(objectData);
     }
 
-    m_transport.Send(request);
+    if (!request.Objects.empty())
+        m_transport.Send(request);
 }
 
 void ObjectService::OnAssignObjectsResponse(const AssignObjectsResponse& acMessage) noexcept

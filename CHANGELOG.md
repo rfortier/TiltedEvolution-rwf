@@ -9,6 +9,71 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:一个 cell 里第 256 个之后的容器与门永远不同步 —— 判据是「写侧夹住了计数,那被夹掉的那些谁负责」
+
+**现象**:一个放着 255 个以上容器与门的 cell,进去之后只有前 255 个会同步。第 256 个开始,门锁不上、
+容器里的东西两边不一样,而且**每一次**重进这个 cell 都是同样一批被丢掉 —— 不是偶发,不是顺序问题。
+
+**根因**:`AssignObjectsRequest` 的计数只有 8 位,写侧的处理是自洽的:
+
+```cpp
+// Code/encoding/Messages/AssignObjectsRequest.cpp(修复前 :11-14)
+const auto count = std::min<size_t>(Objects.size(), kMaxObjectCount);   // :11 夹住
+aWriter.WriteBits(count, 8);
+
+for (size_t i = 0; i < count; ++i)                                      // :14 只写 count 条
+    Objects[i].Serialize(aWriter);
+```
+
+包因此永远是合法的:计数与实际写出的条目数一致,读侧消费 `count` 条之后游标正好落在包尾。
+但发送侧并不知道有这道夹取 —— `Code/client/Services/Generic/ObjectService.cpp` 把
+`pCell->GetRefsByFormTypes({FormType::Container, FormType::Door})` 的**全部**结果推进 `request.Objects`,
+然后 `:197 m_transport.Send(request);` **只发一次、不问多少条**。超过 255 条的那些既没进这个包,
+也没有第二个包。
+
+**为什么没有任何东西报错**:这是这一族里最容易被放过的一种形状。§49 修的是**写侧与读侧不一致**
+(写侧只写计数低位、循环却写全部条目)⇒ 读侧少消费、剩余字节被当下一条消息解析 ⇒ **整条流失步**,
+那种缺陷会以「连不上」「同步乱掉」的形式炸出来。这里写侧与读侧完全一致,流也没有失步:
+丢的是**服务端从没听说过的那几个对象**,而客户端对「回包里没有这一项」的处理本来就是「不建本地映射」
+(`Code/client/Services/Generic/ObjectService.cpp:200-243` 逐条 `GetGameId` + `Cast<TESObjectREFR>`,
+命中才 `CreateObjectEntity`)—— 于是「服务端拒绝了它」与「这个对象根本不存在」在客户端看来是同一件事。
+两边都没有一行日志。
+
+**为什么 CI 挡不住、本地也看不见**:门禁能查的是「解析器信不信对端给的数」,而这里的数字是**写侧自己算的**,
+永远自洽 —— 没有任何断言能从一条合法包上看出一部分内容根本没进包。本地也难碰上:
+`docs/PITFALLS.md:9823` 自己写着任何真实 cell 的容器与门都在**几十到几千**量级,
+所以 255 这个数看着绰绰有余,而「几千」那一半正是这个上限够不着的地方。
+
+**修法**:
+- 常量上移到两个消息头(`Code/encoding/Messages/AssignObjectsRequest.h:24-27`、
+  `AssignObjectsResponse.h:23-26`,先例是 `Code/encoding/Structs/Tints.h:30-33`)。
+  它原来是两个 `.cpp` 里的 file-scope `static`,而**发送侧现在也要按同一个数切片** ——
+  一个约定只能有一个出处。
+- `Code/client/Services/Generic/ObjectService.cpp:197-201`:在 `push_back` **之前**判满,
+  满则先 `Send` 再 `clear`;收尾 `:206-207` 从无条件 `Send` 改成 `if (!request.Objects.empty())`,
+  否则空 cell(或全被 `ShouldSyncObject` 过滤掉的 cell)会多发一个空包。
+- **服务端不需要跟着改**:`response.Objects` 只在该 handler 的两处 push(命中 `Code/server/Services/ObjectService.cpp:98`、
+  新建 `:123`),拒绝分支 `:100-103` 不 push ⇒ `response.Objects.size() <= acMessage.Packet.Objects.size()`。
+  请求侧切片之后,响应侧永远到不了 255,`AssignObjectsResponse` 的夹取再也触发不到 ——
+  一次改动同时修好两个方向,但**只改生产者的那一侧**。
+
+**验证**:本机不编译,证据是逐字命中 + 新用例。`Code/tests/encoding.cpp:1462-1537` 新增
+`TEST_CASE("An object list longer than the 8 bit count is sent in slices", "[encoding.assign_objects]")`:
+先断言 `AssignObjectsRequest::kMaxObjectCount == 0xFF`,再造 258 条 `ObjectData`,
+第一片 255 条往返后 `Objects.size() == kMaxObjectCount` 且 `back().Id` 正是第 255 条,
+第二片 3 条往返后 `back().Id` 正是最后一条 —— 也就是「原来会被丢掉的那三条现在真的到了」。
+最后把 258 条整批交给一个请求,断言写侧仍然只发 255 条且尾条是第 255 条,
+把「发送侧必须切片」这个前提钉在用例里(否则以后有人删掉切片,这条断言会红)。
+
+> **教训**:第一条:**「写侧夹住了计数」不等于「被夹掉的东西有人管」。**
+> 夹取让包合法,而**合法正是它不报错的原因** —— 判据要问的是「这个上限是谁定的,超出它的那部分由谁负责」,
+> 而这里定上限的是编码层、超出的部分是发送方,两边互不知情。
+> 第二条:**同一个约定出现在两个文件里时,它迟早会变成两个各自为政的字面量。**
+> 常量留在 `.cpp` 的 file-scope `static` 里,是因为当时只有写侧一个读者;发送侧要切片时它就必须上移到消息头。
+> 第三条:**修一侧就够的时候,把「为什么另一侧不用改」的关系式写出来。**
+> `response.size() <= request.size()` 这句话就是「不用对称地改两遍」的全部理由;
+> 写不出这句话,就该两边都改。
+
 ### 修复:Morph 的三张表,键由对端选、键长也由对端选,而唯一的清理点是读档 —— 判据是「这个键是谁选的,而它什么时候被删掉」
 
 **现象**:同一个对端每包换一个显示名,`plugins/MorphSyncTogether` 里三张表就每包多一行,

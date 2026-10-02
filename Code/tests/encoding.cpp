@@ -19,6 +19,8 @@
 #include <catch2/catch.hpp>
 
 #include <Messages/AddTargetRequest.h>
+#include <Messages/AssignObjectsRequest.h>
+#include <Messages/AssignObjectsResponse.h>
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/NotifyActorValueChanges.h>
 #include <Messages/NotifyAddTarget.h>
@@ -1455,4 +1457,81 @@ TEST_CASE("A cached string with an unknown id reads as empty", "[encoding.cached
     REQUIRE(resolved == String("Hello"));
 
     cache.Clear();
+}
+
+TEST_CASE("An object list longer than the 8 bit count is sent in slices", "[encoding.assign_objects]")
+{
+    // The count travels in 8 bits. The writer clamps it and the reader only consumes the
+    // clamped number of entries, so a cell holding more containers and doors than the field
+    // can name used to lose everything past the clamp - on every visit, without a word.
+    // The sender slices now, and this pins down both halves of that.
+    REQUIRE(AssignObjectsRequest::kMaxObjectCount == 0xFF);
+
+    Vector<ObjectData> objects;
+    for (size_t i = 0; i < AssignObjectsRequest::kMaxObjectCount + 3; ++i)
+    {
+        ObjectData objectData{};
+        objectData.Id = GameId(1, static_cast<uint32_t>(i));
+        objectData.CellId = GameId(2, 3);
+        objects.push_back(objectData);
+    }
+
+    uint64_t trash;
+
+    // The first slice stops exactly at the bound, and the reader sees all of it.
+    AssignObjectsRequest first{};
+    for (size_t i = 0; i < AssignObjectsRequest::kMaxObjectCount; ++i)
+        first.Objects.push_back(objects[i]);
+
+    Buffer head(1 << 17);
+    Buffer::Writer headWriter(&head);
+    first.Serialize(headWriter);
+
+    Buffer::Reader headReader(&head);
+    headReader.ReadBits(trash, 8); // pop opcode
+
+    AssignObjectsRequest recvFirst{};
+    recvFirst.DeserializeRaw(headReader);
+
+    REQUIRE(recvFirst.Objects.size() == AssignObjectsRequest::kMaxObjectCount);
+    REQUIRE(recvFirst.Objects.back().Id == objects[AssignObjectsRequest::kMaxObjectCount - 1].Id);
+
+    // The three that did not fit travel in a second packet instead of being dropped.
+    AssignObjectsRequest second{};
+    for (size_t i = AssignObjectsRequest::kMaxObjectCount; i < objects.size(); ++i)
+        second.Objects.push_back(objects[i]);
+
+    Buffer tail(1 << 17);
+    Buffer::Writer tailWriter(&tail);
+    second.Serialize(tailWriter);
+
+    Buffer::Reader tailReader(&tail);
+    tailReader.ReadBits(trash, 8); // pop opcode
+
+    AssignObjectsRequest recvSecond{};
+    recvSecond.DeserializeRaw(tailReader);
+
+    REQUIRE(recvSecond.Objects.size() == 3);
+    REQUIRE(recvSecond.Objects.back().Id == objects.back().Id);
+
+    // The writer still clamps, which is why the caller above slices: handing it the whole
+    // list produces a valid packet that carries the first 255 entries and says nothing
+    // about the rest. A response is sized by its request, so a sliced request cannot in
+    // turn produce a response that needs slicing.
+    Buffer whole(1 << 17);
+    Buffer::Writer wholeWriter(&whole);
+    AssignObjectsRequest clamped{};
+    for (const ObjectData& objectData : objects)
+        clamped.Objects.push_back(objectData);
+    clamped.Serialize(wholeWriter);
+
+    Buffer::Reader wholeReader(&whole);
+    wholeReader.ReadBits(trash, 8); // pop opcode
+
+    AssignObjectsRequest recvClamped{};
+    recvClamped.DeserializeRaw(wholeReader);
+
+    REQUIRE(recvClamped.Objects.size() == AssignObjectsRequest::kMaxObjectCount);
+    REQUIRE(recvClamped.Objects.back().Id == objects[AssignObjectsRequest::kMaxObjectCount - 1].Id);
+    REQUIRE(AssignObjectsResponse::kMaxObjectCount == AssignObjectsRequest::kMaxObjectCount);
 }
