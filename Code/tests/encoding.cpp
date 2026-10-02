@@ -835,6 +835,56 @@ TEST_CASE("Wire string limits", "[encoding.wire_limits]")
     REQUIRE(receivedChat.ChatMessage.size() == WireLimits::kMaxChatMessageBytes);
     REQUIRE(receivedChat.MessageType == kLocalChat);
 
+    // That same field is the companion-plugin transport, and the transport needs more
+    // room than a chat line does. The STRPM bridge packs a "STRPM|v2|..." envelope into
+    // this field, the server relay script accepts an envelope of up to 4096 characters
+    // and then appends its own authenticated sender metadata before relaying it. A bound
+    // sized for one chat line cut the tail off the envelope's hex payload, and a shortened
+    // hex payload is still valid hex, so the receiver decoded a shorter buffer instead of
+    // rejecting the message: the transport failed silently rather than loudly.
+    //
+    // The relay's 4096 lives in a Lua resource, so it cannot be named from here. The size
+    // below is what the relay forwards at its own maximum, and check_transport_compat.py
+    // fails if the wire bound ever drops back under the relay's limit.
+    const String cRelayMetadata("|sender=1|senderPlayerId=2|senderName=Player|serverTick=3");
+    const String cLargestRelayedEnvelope(4096 + cRelayMetadata.size(), 'A');
+
+    // The regression this pins was a 512 byte bound, so the size assertion is the one that
+    // fails if the bound is ever sized for a chat line again.
+    REQUIRE(cLargestRelayedEnvelope.size() > 512);
+    REQUIRE(cLargestRelayedEnvelope.size() <= WireLimits::kMaxChatMessageBytes);
+
+    Buffer envelopeBuff(1 << 16);
+    Buffer::Writer envelopeWriter(&envelopeBuff);
+    SendChatMessageRequest sentEnvelope{};
+    sentEnvelope.MessageType = kLocalChat;
+    sentEnvelope.ChatMessage = cLargestRelayedEnvelope;
+    sentEnvelope.Serialize(envelopeWriter);
+
+    SendChatMessageRequest receivedEnvelope{};
+    Buffer::Reader envelopeReader(&envelopeBuff);
+    envelopeReader.ReadBits(trash, 8); // pop opcode
+    receivedEnvelope.DeserializeRaw(envelopeReader);
+
+    REQUIRE(receivedEnvelope.ChatMessage == cLargestRelayedEnvelope);
+
+    // The relay sends the envelope back out through the same field, so the broadcast
+    // direction has to carry it too.
+    Buffer relayedBuff(1 << 16);
+    Buffer::Writer relayedWriter(&relayedBuff);
+    NotifyChatMessageBroadcast sentRelayed{};
+    sentRelayed.MessageType = kLocalChat;
+    sentRelayed.PlayerName = "[Server]";
+    sentRelayed.ChatMessage = cLargestRelayedEnvelope;
+    sentRelayed.Serialize(relayedWriter);
+
+    NotifyChatMessageBroadcast receivedRelayed{};
+    Buffer::Reader relayedReader(&relayedBuff);
+    relayedReader.ReadBits(trash, 8); // pop opcode
+    receivedRelayed.DeserializeRaw(relayedReader);
+
+    REQUIRE(receivedRelayed.ChatMessage == cLargestRelayedEnvelope);
+
     // The broadcast direction is clamped on the client, which is the side that hands the
     // text to the overlay and to the dialogue subtitles.
     Buffer notifyBuff(1 << 16);

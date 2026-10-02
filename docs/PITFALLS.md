@@ -7447,7 +7447,9 @@ void sendPlayerMessage(const ChatMessageType acType, const String acContent, Pla
 `inline void Clamp(TiltedPhoques::String& aValue, const uint32_t aMaxBytes) noexcept`;
 22 个文件在读完之后调用它。上限取的是**宽松到没有任何合法发送方会碰到**的值:
 `kMaxDisplayNameBytes = 64`(与 `NotifyPluginMessaging` 已用的值一致)、
-`kMaxChatMessageBytes = 512`、`kMaxDialogueTextBytes = 1024`、`kMaxSoundPathBytes = 260`、
+`kMaxChatMessageBytes = 4096 + 512`(2026-10-10 更正:这个字段同时是插件层的传输通道,
+见 §79 —— 原先的 `512` 会把 STRPM 信封截断,而截断后的 hex 仍然是合法 hex,接收方于是解出一个更短的载荷),
+`kMaxDialogueTextBytes = 1024`、`kMaxSoundPathBytes = 260`、
 `kMaxFileNameBytes = 260`、`kMaxVersionBytes` / `kMaxTokenBytes = 64`、
 `kMaxAppearanceBytes = 1 << 15`、`kMaxCachedStringBytes = 512`。
 
@@ -10070,6 +10072,142 @@ git -C plugins/IEDSyncTogether apply --check --reverse ..\..\Code\plugins\patche
 > 第三条:**审计一个「热路径」之前,先问这段代码有没有被编译。**
 > `RefreshProxyMitigation()` 的四表扫描看起来是本插件最贵的循环,而它所在的文件
 > 从 2026-08-19 起就不在 `SOURCES` 里 —— 白读一小时,换来的是这一条判据。
+
+## 79. 2026-10-10 场次:一个上限把插件层的传输通道截断了,而截断后的 hex 仍然是合法 hex —— 判据是「这个字段除了聊天还有谁在用」
+
+> **锚点**:`Code/encoding/WireLimits.h:44` 的 `kMaxChatMessageBytes` 从 `512` 改成 `4096 + 512`,
+> 以及 `Code/plugins/tools/check_transport_compat.py:153-198` 新增的门禁 —— 它把这个上限与
+> `plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua:8` 的
+> `MAX_ENVELOPE_LENGTH` 绑在一起。测试在 `Code/tests/encoding.cpp:838-886`。
+>
+> **这一节修的是本仓自己上一轮引入的回归**(§62 是同一个字段的上限第一次被加上,
+> 那时只按「一行聊天」定大小)。
+
+### 79.1 缺陷:一个字段被两个互不知情的契约共用,而小的那个静默生效
+
+**现象**:`ChatMessage` 这一个线上字段同时承担两件事。对玩家它是聊天行;
+对 7 个伴生插件它是**唯一的传输通道** —— 桥把 `STRPM|v2|...` 信封塞进聊天行,
+服务端的中继脚本把信封读出来、再转发给目标玩家。两条契约的尺寸相差 8 倍:
+
+```lua
+-- plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua
+local MAX_ENVELOPE_LENGTH = 4096                                        -- :8
+...
+if string.len(message) > MAX_ENVELOPE_LENGTH then
+  print("[STRPM] Dropped oversized envelope")                           -- :150-153
+  return
+end
+```
+
+而 `Code/encoding/Messages/SendChatMessageRequest.cpp` 按「一行聊天」夹取:
+
+```cpp
+// Code/encoding/Messages/SendChatMessageRequest.cpp(修复前)
+ChatMessage = Serialization::ReadString(aReader);
+WireLimits::Clamp(ChatMessage, WireLimits::kMaxChatMessageBytes);   // :16,当时是 512
+```
+
+`Code/encoding/Messages/NotifyChatMessageBroadcast.cpp:18-19` 在广播方向夹同一个字段,
+而**两个 `SerializeRaw` 都不夹** ⇒ 发送方写多长,线上就有多长,夹取只发生在接收方。
+
+**根因**:夹取发生在**中继脚本之前**。服务端的收包链是
+`Code/server/GameServer.cpp:572-602 OnConsume` → `ClientMessageFactory::Extract`
+(`Code/encoding/Messages/ClientMessageFactory.cpp:17-20` 里 `ptr->DeserializeRaw(aReader)`)→
+`Code/server/Services/OverlayService.cpp:60-81 HandleChatMessage` →
+`Code/server/Services/ScriptService.cpp:164-167` 的 `CallCancelableEvent("onChatMessage", ...)`,
+而中继脚本正是挂在 `onChatMessage` 上的。于是 >512 字符的信封在脚本看到它之前就已经短了一截。
+
+**为什么没有任何东西报错**:被切掉的是 `payload=<hex>` 的**尾巴**,而信封的字段顺序是
+`msg|seq|channel|target|flags|part|parts|payload`,中继追加的 `sender`/`senderPlayerId`/
+`senderName`/`serverTick` 在最后 ⇒ 截断后 `part`/`parts` 仍在,`validateEnvelope` 通过:
+
+```lua
+-- plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua:89
+if fields["payload"] == nil or string.match(fields["payload"], "^[0-9A-Fa-f]*$") == nil then
+  return false, "invalid payload"
+end
+```
+
+任何 hex 前缀都匹配 `^[0-9A-Fa-f]*$`。接收侧也只多判一条奇偶:
+`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp:798` 的
+`if ((text.size() & 1u) != 0) return std::nullopt;` —— 偶数长度的截断 hex 被**照常解码**,
+于是消费方拿到一个更短、内容错误的载荷,而不是「这条消息被丢了」。
+
+### 79.2 判据:这个字段除了它字面上的用途,还有谁在用
+
+两条,都可机械执行:
+
+1. **给一个字段定上限之前,先列出这个字段的全部消费者。** 判据不是「这个值叫什么名字」,
+   而是「还有哪个子系统把它当传输层用」。`ChatMessage` 的名字只说了聊天,
+   而 `plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridge.cpp:31` 的
+   `constexpr std::size_t kMaxEnvelopeChars = 3500;` 早就说明了它还有第二个用途 ——
+   这个常量与 `512` 同时存在于仓库里,矛盾是可见的。
+2. **跨文件的数值契约必须由门禁绑定。** 三个数值住在三个互不引用的文件里
+   (C++ 头、Lua 资源、C++ 桥),谁都不知道另外两个 ⇒ 只靠读代码迟早再次漂移。
+
+### 79.3 可达性
+
+**这条路径是活的,而且默认就开着。** `plugins/STRPluginMessagingAPI/CMakeLists.txt:9-13` 的
+`option(STRPM_ENABLE_UDP_BACKEND ... OFF)` 关掉的是**旧 UDP 后端**,与这里无关:
+发布构建走的是 STR 桥(`STRPluginMessagingBridge.cpp` 的 VEH 注入),信封经真实聊天包进出。
+`kMaxPayloadBytes = 24 * 1024`(`plugins/STRPluginMessagingAPI/include/STRPluginMessagingAPI/STRPluginMessagingAPI.h:21`)
+⇒ 单个合法载荷可达 24 KiB,hex 后 48 KiB,远超中继的 4096 ⇒ 中继自己会先丢;
+**能穿过中继的信封最大就是 4096 字符**,而 4096 > 512 ⇒ 中间那一整段(512~4096)全是静默截断区。
+
+Morph 的快照分块常量给出了这段区间的真实占用
+(`plugins/MorphSyncTogether/src/MorphSyncService.cpp:441` 的 `constexpr std::size_t kChunkLimit = 2200;`):
+一次形变快照被切成 2200 字符的块,每块再包一层 `MORPH|hash=|seq=|count=|props=` ⇒
+**单个信封常态就在 512 与 4096 之间**,不需要恶意构造就能命中。
+
+### 79.4 修法:把上限绑到中继的契约上,并让门禁守住它
+
+`Code/encoding/WireLimits.h:33-44` —— 常量改成中继的信封上限加中继自己追加的元数据长度,
+并把「为什么不是 512」写进注释(不写就会被下一个人按聊天行改回去):
+
+```cpp
+// Code/encoding/WireLimits.h
+// This field is also the companion-plugin transport. The STRPM bridge packs a
+// "STRPM|v2|..." envelope into a chat line, the server relay script reads that envelope
+// back out, accepts up to 4096 characters, and then appends its own sender metadata
+// before relaying it. ...
+inline constexpr uint32_t kMaxChatMessageBytes = 4096 + 512;
+```
+
+`Code/plugins/tools/check_transport_compat.py:153-198` 新增一段:读 `main.lua` 的
+`MAX_ENVELOPE_LENGTH`(`:172`)与 `WireLimits.h` 的 `kMaxChatMessageBytes`(`:174`),
+要求后者**严格大于**前者 —— 中继会在信封后面追加 `|sender=|senderPlayerId=|senderName=|serverTick=`。
+
+### 79.5 复核命令(照抄)
+
+```powershell
+# 1. 门禁本身(含反向验证:把上限改回 512 应当 exit 1)
+python Code\plugins\tools\check_transport_compat.py
+
+# 2. 两个数值的当前取值
+node -e "const fs=require('fs');const w=fs.readFileSync('Code/encoding/WireLimits.h','utf8');console.log(w.match(/kMaxChatMessageBytes\s*=\s*[^;]+;/)[0]);const l=fs.readFileSync('plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua','utf8');console.log(l.match(/MAX_ENVELOPE_LENGTH\s*=\s*\d+/)[0]);"
+
+# 3. 这个字段的全部消费者(夹取点 + 桥的信封上限)
+git grep -n "kMaxChatMessageBytes" -- Code
+git grep -n "kMaxEnvelopeChars\|MAX_ENVELOPE_LENGTH"
+```
+
+**验证**:本机不编译(§0/§1),所以证据是逐字命中 + 门禁 + 反向验证,不是编译产物。
+`check_transport_compat.py` 全绿(`client opcodes: 53 in use, plugin request at index 52` /
+`server opcodes: 56 in use, plugin notify at index 55` / `chat opcodes  : send 38, broadcast 36`);
+把 `WireLimits.h` 改回 `512` 后门禁立刻 exit 1 并给出上面那段文案,改回 `4096 + 512` 后恢复 exit 0。
+`Tools/Scripts/check_docs.py` 全绿。`Code/tests/encoding.cpp:838-886` 新增的断言要求
+一个「中继上限 + 元数据」大小的信封在 `SendChatMessageRequest` 与 `NotifyChatMessageBroadcast`
+两个方向都原样往返,并显式断言它 `> 512` —— 上限一旦按聊天行定大小,这条就红。
+
+> **教训**:第一条:**给字段定上限时,要问的不是「这个值多大」,而是「这个字段被当成什么在用」。**
+> `ChatMessage` 的名字只说了聊天,而同一个仓库里 `kMaxEnvelopeChars = 3500` 已经写着它还是传输层;
+> 两个常量同时存在却没人对比,于是小的那个静默生效。
+> 第二条:**截断一个 hex 字符串不会让它变成非法 —— 它会变成一个更短的合法值。**
+> 所以「下游会校验」在这里是空的:校验器能看出的只有奇偶,看不出内容少了一半。
+> 任何「长度由对端决定、而内容是自描述编码」的字段都有这个性质。
+> 第三条:**跨文件的数值契约要进门禁,不能靠注释。**
+> 这三个数字住在三个互不引用的文件里,注释只能提醒读到这里的人;
+> 门禁能在任何人改其中一个时立刻说话 —— 而它这次报的是本仓上一轮自己引入的回归。
 
 ## 77. 2026-10-10 场次:两张键由对端选、长度也由对端选的表 —— 判据是「这个键是谁写的,而它的长度谁管」
 

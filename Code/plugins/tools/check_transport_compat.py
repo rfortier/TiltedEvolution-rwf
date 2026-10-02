@@ -150,6 +150,55 @@ else:
                 f'both sit on disk after any install'
             )
 
+# The companion plugins do not open a socket of their own: they ride the chat field.
+# Three separate limits decide whether an envelope survives that trip, they live in
+# three files that do not reference each other, and the smallest one silently wins.
+# They drifted apart once already - the wire bound was set to one chat line while the
+# relay resource accepted eight times that - and the failure was invisible: what got
+# cut was the tail of a hex payload, and a shortened hex payload is still valid hex,
+# so the far side decoded a shorter buffer instead of rejecting the message. Bind the
+# wire bound to the relay's own limit so the transport contract is expressible.
+ENVELOPE_REL = 'plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua'
+WIRE_LIMITS_REL = 'Code/encoding/WireLimits.h'
+
+envelope_path = ROOT / ENVELOPE_REL
+if not envelope_path.is_file():
+    failures.append(
+        f'{ENVELOPE_REL} is missing, but it is the relay that defines how large a STRPM '
+        f'envelope may be; without it the wire bound cannot be checked against the transport'
+    )
+else:
+    relay_text = envelope_path.read_text(encoding='utf-8')
+    relay_limit = re.search(r'^\s*local\s+MAX_ENVELOPE_LENGTH\s*=\s*(\d+)', relay_text, re.M)
+    wire_text = (ROOT / WIRE_LIMITS_REL).read_text(encoding='utf-8')
+    wire_limit = re.search(r'kMaxChatMessageBytes\s*=\s*([0-9+\s]+);', wire_text)
+    if relay_limit is None:
+        failures.append(
+            f'{ENVELOPE_REL} no longer declares MAX_ENVELOPE_LENGTH; the envelope size the '
+            f'bridge fragments for cannot be read from it any more'
+        )
+    elif wire_limit is None:
+        failures.append(
+            f'{WIRE_LIMITS_REL} no longer declares kMaxChatMessageBytes; the bound on the '
+            f'field the STRPM envelope rides cannot be read from it any more'
+        )
+    else:
+        relay_chars = int(relay_limit.group(1))
+        # The bound is written as a sum so its intent survives a reader who only sees the
+        # header: the relay's own limit plus the metadata the relay appends to it.
+        wire_bytes = sum(int(part) for part in wire_limit.group(1).split('+'))
+        # The relay appends its own authenticated sender metadata to every envelope it
+        # forwards, so the wire bound has to cover the envelope plus that tail. The bridge
+        # also fragments below the relay limit for the same reason.
+        if wire_bytes <= relay_chars:
+            failures.append(
+                f'{WIRE_LIMITS_REL} bounds kMaxChatMessageBytes to {wire_bytes} bytes, but '
+                f'{ENVELOPE_REL} accepts an envelope of up to {relay_chars} characters and then '
+                f'appends its own sender metadata before relaying it. A bound below the relay '
+                f'limit truncates the envelope, and a truncated hex payload is still valid '
+                f'hex, so the receiver decodes a shorter buffer instead of dropping the message'
+            )
+
 print(f'client opcodes: {len(client) - 1} in use, plugin request at index {request_index}')
 print(f'server opcodes: {len(server) - 1} in use, plugin notify at index {notify_index}')
 print(f'chat opcodes  : send {send_index}, broadcast {broadcast_index}')

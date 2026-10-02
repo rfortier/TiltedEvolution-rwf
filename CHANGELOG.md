@@ -9,6 +9,73 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:一个按「一行聊天」定的上限,把插件层的传输通道静默截断了 —— 截断后的 hex 仍然是合法 hex
+
+**现象**:`ChatMessage` 这一个线上字段同时承担两件事。对玩家它是聊天行;
+对 7 个伴生插件它是**唯一的传输通道** —— 桥把 `STRPM|v2|...` 信封塞进聊天行,
+服务端的中继脚本把信封读出来再转发给目标玩家。两条契约的尺寸相差 8 倍:
+
+```lua
+-- plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua
+local MAX_ENVELOPE_LENGTH = 4096                                        -- :8
+...
+if string.len(message) > MAX_ENVELOPE_LENGTH then
+  print("[STRPM] Dropped oversized envelope")                           -- :150-153
+  return
+end
+```
+
+而上一轮给这个字段加的上限是按聊天行定的:
+
+```cpp
+// Code/encoding/Messages/SendChatMessageRequest.cpp(修复前)
+ChatMessage = Serialization::ReadString(aReader);
+WireLimits::Clamp(ChatMessage, WireLimits::kMaxChatMessageBytes);   // :16,当时是 512
+```
+
+**根因**:夹取发生在**中继脚本之前**。服务端收包链是
+`Code/server/GameServer.cpp:572-602 OnConsume` → `ClientMessageFactory::Extract`
+(`Code/encoding/Messages/ClientMessageFactory.cpp:17-20` 里 `ptr->DeserializeRaw(aReader)`)→
+`Code/server/Services/OverlayService.cpp:60-81 HandleChatMessage` →
+`Code/server/Services/ScriptService.cpp:164-167` 的 `CallCancelableEvent("onChatMessage", ...)`,
+而中继脚本正是挂在 `onChatMessage` 上的。>512 字符的信封在脚本看到它之前就已经短了一截,
+`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridge.cpp:31` 的
+`constexpr std::size_t kMaxEnvelopeChars = 3500;` 与这个 `512` 同时存在于仓库里,却没有任何一处对比过。
+
+**为什么没有任何东西报错**:被切掉的是 `payload=<hex>` 的**尾巴**。信封字段顺序是
+`msg|seq|channel|target|flags|part|parts|payload`,中继追加的 `sender`/`senderPlayerId`/
+`senderName`/`serverTick` 在最后 ⇒ 截断后 `part`/`parts` 仍在,中继脚本
+`plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua:89` 的
+`string.match(fields["payload"], "^[0-9A-Fa-f]*$")` 对任何 hex 前缀都通过;
+接收侧 `plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp:798` 的
+`if ((text.size() & 1u) != 0) return std::nullopt;` 只多判一条奇偶 ⇒
+偶数长度的截断 hex 被**照常解码**,消费方拿到一个更短、内容错误的载荷,而不是「这条消息被丢了」。
+
+**为什么 CI 挡不住、本地也看不见**:三个数值住在三个互不引用的文件里(C++ 头、Lua 资源、C++ 桥),
+没有任何一条检查把它们放在一起看。这不是编译能发现的问题 —— 每一层单独看都是对的。
+
+**修法**:
+- `Code/encoding/WireLimits.h:33-44`:`kMaxChatMessageBytes` 从 `512` 改成 `4096 + 512`,
+  并把「这个字段同时是插件层传输通道」与「截断 hex 仍是合法 hex」写进注释。
+- `Code/plugins/tools/check_transport_compat.py:153-198`:新增一段,读 `main.lua` 的
+  `MAX_ENVELOPE_LENGTH` 与 `WireLimits.h` 的 `kMaxChatMessageBytes`,要求后者**严格大于**前者
+  —— 中继会在信封后面追加 `|sender=|senderPlayerId=|senderName=|serverTick=`。
+- `Code/tests/encoding.cpp:838-886`:新增断言,要求一个「中继上限 + 元数据」大小的信封在
+  `SendChatMessageRequest` 与 `NotifyChatMessageBroadcast` 两个方向都原样往返,并显式断言它 `> 512`。
+- `docs/PITFALLS.md`:§62.4 里那句 `kMaxChatMessageBytes = 512` 已按同一提交更正,新增 §79。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),所以证据是逐字命中 + 门禁 + 反向验证,不是编译产物。
+`python Code/plugins/tools/check_transport_compat.py` 全绿
+(`client opcodes: 53 in use, plugin request at index 52` / `server opcodes: 56 in use, plugin notify at index 55` /
+`chat opcodes  : send 38, broadcast 36`);把 `WireLimits.h` 改回 `512` 后门禁立刻 exit 1 并给出上面那段文案,
+改回 `4096 + 512` 后恢复 exit 0。`python Tools/Scripts/check_docs.py` 全绿。
+
+> **教训**:第一条:**给字段定上限时,要问的不是「这个值多大」,而是「这个字段被当成什么在用」。**
+> `ChatMessage` 的名字只说了聊天,而同一个仓库里 `kMaxEnvelopeChars = 3500` 已经写着它还是传输层。
+> 第二条:**截断一个 hex 字符串不会让它变成非法 —— 它会变成一个更短的合法值。**
+> 「下游会校验」在这里是空的:校验器能看出的只有奇偶,看不出内容少了一半。
+> 第三条:**跨文件的数值契约要进门禁,不能靠注释。**
+> 注释只能提醒读到这里的人;门禁能在任何人改其中一个时立刻说话 —— 而它这次报的是本仓自己上一轮引入的回归。
 ### 修复:IEDSyncTogether 的一张上限加在一个从来没被编译的文件上 —— 三条门禁全绿,而那个文件不在任何二进制里
 
 **现象**:`plugins/IEDSyncTogether` 在 pin `ad4710a6` 上的 `src/` 有 25 个 `.cpp/.h`,
@@ -1578,7 +1645,7 @@ for (size_t i = 0; i < modCount; ++i)
 **修法**:新建 `Code/encoding/WireLimits.h`,把每个字段的上限写成具名常量,并提供
 `inline void Clamp(TiltedPhoques::String& aValue, const uint32_t aMaxBytes) noexcept`;
 22 个文件在读完字符串之后调用它。上限取的是**宽松到没有任何合法发送方会碰到**的值
-(`kMaxDisplayNameBytes = 64`、`kMaxChatMessageBytes = 512`、`kMaxDialogueTextBytes = 1024`、
+(`kMaxDisplayNameBytes = 64`、`kMaxChatMessageBytes = 4096 + 512`(2026-10-10 更正:该字段同时是插件层的传输通道,见本节之后的新条目)、`kMaxDialogueTextBytes = 1024`、
 `kMaxSoundPathBytes = 260`、`kMaxFileNameBytes = 260`、`kMaxVersionBytes` / `kMaxTokenBytes = 64`、
 `kMaxAppearanceBytes = 1 << 15`、`kMaxCachedStringBytes = 512`)。
 `kMaxAppearanceBytes` 不是拍出来的:`Code/client/Games/Forms.cpp:20-36` 的 `TESNPC::Serialize`

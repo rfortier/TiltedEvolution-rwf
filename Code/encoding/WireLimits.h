@@ -31,7 +31,17 @@ namespace WireLimits
 inline constexpr uint32_t kMaxDisplayNameBytes = 64;
 
 // One chat line. The chat input has no maxlength attribute, so this is the only cap.
-inline constexpr uint32_t kMaxChatMessageBytes = 512;
+//
+// This field is also the companion-plugin transport. The STRPM bridge packs a
+// "STRPM|v2|..." envelope into a chat line, the server relay script reads that envelope
+// back out, accepts up to 4096 characters, and then appends its own sender metadata
+// before relaying it. A bound sized for a chat line therefore truncated the transport,
+// and the truncation was silent: what got cut was the tail of a hex payload, and a
+// truncated hex string is still hex, so the receiver decoded a shorter, wrong buffer
+// instead of rejecting the message. The bound is the relay's envelope limit plus room
+// for the metadata it appends (|sender=|senderPlayerId=|senderName=|serverTick=), so a
+// whole envelope survives in both directions.
+inline constexpr uint32_t kMaxChatMessageBytes = 4096 + 512;
 
 // A dialogue line or a subtitle. Subtitles wrap over several lines in the UI.
 inline constexpr uint32_t kMaxDialogueTextBytes = 1024;
