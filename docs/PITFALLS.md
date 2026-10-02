@@ -9456,8 +9456,11 @@ git -C plugins/OStimTogether grep -n "kMaxRemoteNames" -- src/
 ## 75. 2026-10-08 场次:三个插件的对端可控缓存只增不减,以及一个「门禁全绿却装不上」的补丁 —— 判据是「这个键是谁选的,而门禁是在哪种工作树上跑的」
 
 > **锚点**:三处修复 + 一处交付修复,都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
-> `Code/plugins/patches/IEDSyncTogether/0002-bound-the-remote-snapshot-table.patch`
-> 改 `plugins/IEDSyncTogether/src/SyncService.h` 与 `src/SyncService.cpp`,
+> `Code/plugins/patches/IEDSyncTogether/0002-bound-the-live-peer-table-and-the-decoded-object-list.patch`
+> 改 `plugins/IEDSyncTogether/src/STRPMAdapter.h`、`src/STRPMAdapter.cpp`、
+> `src/LocalIEDState.h`、`src/LocalIEDState.cpp`(2026-10-10 更正:本节原先记的是
+> `src/SyncService.h` 与 `src/SyncService.cpp` —— 那两个文件在本插件的 `CMakeLists.txt`
+> 里从来没进过 `SOURCES`、也没有任何 `#include` 链到达,补丁打上去等于没打,见 §78),
 > `Code/plugins/patches/MorphSyncTogether/0004-bound-the-remote-snapshot-tables.patch`
 > 改 `plugins/MorphSyncTogether/src/MorphSyncService.h`、`src/MorphSyncService.cpp`、
 > `src/MorphSyncServiceBodyHair.cpp`、`src/TngSync.h`、`src/TngSync.cpp`,
@@ -9466,11 +9469,12 @@ git -C plugins/OStimTogether grep -n "kMaxRemoteNames" -- src/
 > 以及重写的 `Code/plugins/patches/OStimTogether/0006-coalesce-the-addon-state-reapply-and-bound-the-remote-caches.patch`。
 > 四者由 `Code/plugins/tools/plugin_patches.py apply` 在 CI 配置阶段应用(`.github/workflows/plugins.yml:150`、`windows.yml:208`)。
 
-### 75.1 缺陷:五处,四处是同一类,一处是「补丁自己装不上」
+### 75.1 缺陷:六处,五处是同一类,一处是「补丁自己装不上」
 
 | 位置 | 作用 |
 | --- | --- |
-| `plugins/IEDSyncTogether/src/SyncService.h:56`(修复前) | 远端快照表按「对端自选的 id」增长,没有上限 |
+| `plugins/IEDSyncTogether/src/STRPMAdapter.h:59`(修复前) | 远端快照表按「对端自选的 connection id」增长,没有上限 |
+| `plugins/IEDSyncTogether/src/LocalIEDState.h:33`(修复前) | 解码后的对象表按「对端自选的行数」增长,没有上限 |
 | `plugins/MorphSyncTogether/src/MorphSyncService.h:130`/`:131`(修复前) | 两张远端快照表按「对端自选的显示名」增长,没有上限 |
 | `plugins/MorphSyncTogether/src/TngSync.h:52`(修复前) | 同上的第三张表,key 是同一个显示名 |
 | `plugins/OStimTogether/src/FreeScenePhaseSync.h:292`/`:293`(修复前) | 远端准备表与 ready 去重表按「对端 connection + 对端自选的线程号」增长 |
@@ -9479,10 +9483,16 @@ git -C plugins/OStimTogether grep -n "kMaxRemoteNames" -- src/
 第一处:
 
 ```cpp
-// plugins/IEDSyncTogether/src/SyncService.cpp(修复前)
-const auto instanceID = ReadField(packet, "id");   // :232,长度零检查
-...
-auto& snapshot = _remoteSnapshots[*instanceID];    // :262,insert-or-default
+// plugins/IEDSyncTogether/src/STRPMAdapter.cpp(修复前)
+self->_remoteStates[senderID] = RemoteSnapshot{      // :555,insert-or-default,key 由对端选
+```
+
+```cpp
+// plugins/IEDSyncTogether/src/LocalIEDState.cpp(修复前)
+for (const auto line : Split(payload, '\n')) {       // :80
+    ...
+    if (line.starts_with("O|")) {
+        const auto fields = Split(line.substr(2), '|');   // :97,之后逐行 push_back
 ```
 
 第二、三处:
@@ -9510,26 +9520,32 @@ _lastReadyToken[readyKey] = prep.token;           // :497
 
 ### 75.2 判据:对端能选的键必须有上限,而「上限」要按每张表自己的语义来设
 
-1. **三张表的 key 都是对端写的字符串,而且都不做长度约束。**
-   IED 的 `id=` 是它自己包装字段,由对端整包替换:
-   `plugins/IEDSyncTogether/src/StrTransport.cpp:302-309` 拼的是
-   `IEDST|v1|id={}|from={}|relay=0|{}`,而 `UdpTransport.cpp:680` 只查前缀 `IEDST|v1|`。
+1. **两张表的 key 都是对端写的,而且都不做数量约束。**
+   IED 的 `_remoteStates` 以 `message->sender.connectionID` 为键(`STRPMAdapter.cpp:562`),
+   而 `senderID` 直接取自 STRPM 递过来的消息头(`:544`),长度与取值都由对端决定;
+   载荷那侧同理 —— `LocalIEDState` 是「一行一个对象」的文本,
+   `LocalIEDState.cpp:80-97` 对每一行 `O|` 都解一个对象,**行数没有任何上限**。
+   (本节原先记的是 `StrTransport.cpp:302-309` 的 `IEDST|v1|id={}…` ——
+   那条路径在本插件的 `CMakeLists.txt` 里根本没进过 `SOURCES`,见 §78。)
    Morph 的 `from=` 来自 `plugins/MorphSyncTogether/src/UdpTransport.cpp:219-222`
    (`message.sender.displayName` 优先,否则 `connection-<id>`),过一道 `SanitizeField`
    (`:26-37`,只把 `|`/CR/LF 换成 `_`、空则 `"Player"`,**没有长度上限**),
    再在 `:234-238` 拼进 `{}from={}|{}`。
-2. **这四张表全仓没有 `erase`。** 唯一清空点是读档:
-   `SyncService.cpp:135`(IED `Reset()`)、`MorphSyncService.cpp:241-242`(Morph `Reset()`)、
+2. **上限要问的是「谁把它变小」。** Morph/TNG/OStim 的四张表全仓没有 `erase`,
+   唯一清空点是读档:`MorphSyncService.cpp:241-242`(Morph `Reset()`)、
    `TngSync.cpp:126`(TNG `Reset()`)、`FreeScenePhaseSync.cpp:270`/`:457`。
+   IED 这张表**有**回收路径(`STRPMAdapter.cpp:475` 的 `_remoteStates.erase(event.connectionID)`,
+   `:187`/`:210`/`:484` 的三处 `clear()`),但那条路径由**对端是否被解析成 proxy** 驱动 ——
+   键还是对端选的,所以上限仍然要自己设。
    同族的 `_assemblies` 是唯一有 prune 的表 ——
    `MorphSyncService.cpp:356-366` `// Drop incomplete chunk assemblies after 15 seconds.` ——
    而它旁边两张快照表没有,这正是判据的形状:**同一把清理里,谁缺席**。
 3. **表越大,游戏线程上的每次 tick 越贵。** Morph 的 `TickOnGameThread` 把两张表的 key 并成
    `std::unordered_set<std::string>` 再逐 key 走 `ResolveRemoteProxyByName`
-   (`MorphSyncService.cpp:337-354`),而后者是 ProcessLists 全表扫描 + `EqualsInsensitive` + `GetDistance`;
-   IED 的 `Tick()` 第一句就是 `RefreshProxyMitigation()`(`SyncService.cpp:158-179`),
-   由 `TimerLoop` 每 `_config.captureIntervalMs`(默认 750)驱动一次。
-   所以这不是「内存慢慢涨」,是**每 750ms/1s 一次的 O(表大小 × 演员数)扫描**。
+   (`MorphSyncService.cpp:337-354`),而后者是 ProcessLists 全表扫描 + `EqualsInsensitive` + `GetDistance`。
+   IED 侧的形状不同但同源:对象的解码结果在**游戏线程**上被渲染
+   (`RemoteIEDRenderer`),对端多写一行,游戏线程就多渲染一个对象。
+   所以这不是「内存慢慢涨」,是**每 750ms/1s 一次的 O(表大小 × 演员数)扫描**与逐对象渲染。
 4. **满表 = 一次 miss,不是失败。** Morph/IED/TNG 的表是「上一包是什么」的缓存,
    丢一包等于等下一包;`_lastReadyToken` 只是抑制重复发包,清掉最多多发一包。
    所以设界不改变行为。
@@ -9541,8 +9557,9 @@ _lastReadyToken[readyKey] = prep.token;           // :497
 
 ### 75.3 可达性
 
-第一处:**同一个对端**,反复发 `IEDST|v1|id=<任意字符串>|...`。
-每个新 `id` 都是一条新记录,会话内没有上限;`RefreshProxyMitigation` 每 750ms 遍历全表。
+第一处(两张表):**同一个对端**,反复用不同的 `sender.connectionID` 发 IED 状态包 ——
+每个新 id 都是一条新记录;或者**同一包内**多写若干行 `O|`,每行一个对象。
+两条路径都没有上限,而解码与渲染都落在游戏线程上。
 
 第二、三、四处:**同一个对端**,把 `displayName` 换成任意字符串(或干脆留空,让
 `connection-<id>` 当 key)。每完成一次分片重组就插一条;`TickOnGameThread` 每秒遍历全表。
@@ -9556,21 +9573,29 @@ _lastReadyToken[readyKey] = prep.token;           // :497
 
 ### 75.4 修法
 
-一、四张表各自设上限,满了就丢包(而不是丢表):
+一、五张表各自设上限,满了就丢包(而不是丢表)。IED 两张:
 
 ```cpp
-// plugins/IEDSyncTogether/src/SyncService.h(修复后)
-static constexpr std::size_t kMaxRemoteSnapshots = 64;
+// plugins/IEDSyncTogether/src/STRPMAdapter.h(修复后)
+static constexpr std::size_t kMaxRemoteStates = 64;
 ```
 
 ```cpp
-// plugins/IEDSyncTogether/src/SyncService.cpp(修复后)
-if (!_remoteSnapshots.contains(*instanceID) &&
-    _remoteSnapshots.size() >= kMaxRemoteSnapshots) {
-    SKSE::log::warn("Remote IED state dropped: peer table full size={} peer={}", _remoteSnapshots.size(), *instanceID);
+// plugins/IEDSyncTogether/src/STRPMAdapter.cpp(修复后)
+if (!self->_remoteStates.contains(senderID) && self->_remoteStates.size() >= kMaxRemoteStates) {
+    SKSE::log::warn(
+        "STRPM IED state RX dropped: peer table full size={} sender={}",
+        self->_remoteStates.size(),
+        senderID);
     return;
 }
 ```
+
+同批还有第二处,在解码侧:载荷是「一行一个对象」,行数由对端选,
+`src/LocalIEDState.cpp` 逐行 `push_back` 而没有计数上限,所以同一张上限也放在那里 ——
+`src/LocalIEDState.h` 加 `static constexpr std::size_t kMaxObjects = 512;`,
+`src/LocalIEDState.cpp` 在 `O|` 分支里 `if (state.objects.size() >= LocalIEDState::kMaxObjects) { return std::nullopt; }`,
+整包拒收而不是截断(少了一半对象的状态会被渲染成「完整」)。
 
 Morph 两张表同形(`kMaxRemoteSnapshots` / `kMaxRemotePubicSnapshots`,都是 64),
 TNG 一张(`kMaxRemoteStates = 64`)。
@@ -9602,7 +9627,7 @@ python Code\plugins\tools\plugin_patches.py check
 python Code\plugins\tools\plugin_snapshot.py verify
 python Code\plugins\tools\check_transport_compat.py
 python Tools\Scripts\check_docs.py
-git -C plugins/IEDSyncTogether grep -n "kMaxRemoteSnapshots" -- src/
+git -C plugins/IEDSyncTogether grep -n "kMaxRemoteStates\|kMaxObjects" -- src/
 git -C plugins/MorphSyncTogether grep -n "kMaxRemoteSnapshots\|kMaxRemotePubicSnapshots\|kMaxRemoteStates" -- src/
 git -C plugins/OStimTogether grep -n "kMaxRemotePreps\|kMaxReadyTokens" -- src/
 ```
@@ -9616,6 +9641,12 @@ git -C plugins/OStimTogether grep -n "kMaxRemotePreps\|kMaxReadyTokens" -- src/
 `MorphSyncService.cpp` 1145 / `MorphSyncServiceBodyHair.cpp` 399 / `TngSync.h` 61 /
 `TngSync.cpp` 346 / `FreeScenePhaseSync.h` 303 / `FreeScenePhaseSync.cpp` 1041;
 `AddonBridge.cpp` 791 / `AddonBridge.h` 106)。
+
+> **补丁数(2026-10-10 更正)**:上面记的 22 是当时的数。IED 的 `0002` 之后被整条重写
+> (打到真正被编译的 `src/STRPMAdapter.{h,cpp}` 与 `src/LocalIEDState.{h,cpp}` 上),
+> 行数随之变成 `STRPMAdapter.h` 66 / `STRPMAdapter.cpp` 583 /
+> `LocalIEDState.h` 47 / `LocalIEDState.cpp` 146,而补丁**总数仍是 23**(重写不是新增);
+> 那份「九个文件逐字节相同」的复核已用新补丁重做过一遍,见 §78。
 
 **验证**:插件是 CMake 工程、本机不编译(`plugins/OStimNG/skse/AGENTS.md` 明写不要构建 C++/CMake),
 所以这一批的证据是补丁门禁 + 逐字节比对,不是编译产物。
@@ -9867,6 +9898,179 @@ copy matching the pinned commit`;`check_transport_compat.py` → `TRANSPORT COMP
 > `ExtraCharge`/`ExtraHealth` 的下游门是 `> 0.f`,而 `+inf` 比 `0.f` 大 ——
 > 一道「大于零」的门对非有限值等于不存在。
 
+## 78. 2026-10-10 场次:一个补丁改的文件从来没进过编译,而三条门禁都看不见它 —— 判据是「这个文件在不在构建闭包里」
+
+> **锚点**:两处,都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push)。
+> 第一处是**补丁换靶**:`Code/plugins/patches/IEDSyncTogether/0002-bound-the-live-peer-table-and-the-decoded-object-list.patch`
+> 取代已删除的 `0002-bound-the-remote-snapshot-table.patch`
+> (原版改 `plugins/IEDSyncTogether/src/SyncService.{h,cpp}`),新靶是
+> `plugins/IEDSyncTogether/src/STRPMAdapter.{h,cpp}`(新常量 `:58-61`,收包守卫 `:555-561`)
+> 与 `plugins/IEDSyncTogether/src/LocalIEDState.{h,cpp}`(新常量 `:32-36`,解码守卫 `:96-98`)。
+> 第二处是门禁:`Code/plugins/tools/plugin_patches.py` 的 `verify` 多了两条不变量
+> —— 每个补丁改的文件必须真的被编译(`:99-207`),文档点名的补丁路径与
+> `// plugins/<id>/<file>(修复后)` 标记必须真实存在(`:354-411`)。
+
+### 78.1 缺陷:上限加在一个从来没被编译的文件上
+
+| 位置 | 作用 |
+| --- | --- |
+| `plugins/IEDSyncTogether/CMakeLists.txt:15-32`(pin `ad4710a6`) | `SOURCES` 只列 16 项,`src/SyncService.cpp`、`src/SyncService.h` 不在其中 |
+| `ace777c16633ad4d368c5e9b5b58e7b83104dd7a`(2026-08-19,`Build v0.6.0 STRPM-only runtime`) | `CMakeLists.txt` +3/-15 —— 15 行源码从 `SOURCES` 里被删掉,文件留在树里 |
+| `0002-bound-the-remote-snapshot-table.patch`(修复前,已删除) | 改的正是这两个文件 ⇒ 那条上限从未进过任何二进制 |
+| `plugins/IEDSyncTogether/src/STRPMAdapter.h:63` / `src/STRPMAdapter.cpp:562`(修复前) | `_remoteStates[senderID] = RemoteSnapshot{…}`,键是对端填的 `ConnectionID`,表没有行数上界 |
+| `plugins/IEDSyncTogether/src/LocalIEDState.cpp:80-141`(修复前) | 逐行解 `O|`,行数由对端决定,`objects` 没有元素数上界 |
+
+第一处,`SOURCES` 与 `src/` 的差集(逐字取自 `plugins/IEDSyncTogether/CMakeLists.txt` 与 `src/` 实有文件):
+
+```text
+SOURCES(16): PCH.h main.cpp FormIdentity.{cpp,h} IEDBridge.{cpp,h} LocalIEDState.{cpp,h}
+             LocalCaptureProbe.{cpp,h} RemoteIEDRenderer.{cpp,h} STRPMAdapter.{cpp,h}
+             include/IEDSyncTogether/Interface.h include/STRPluginMessagingAPI/STRPluginMessagingAPI.h
+src/(25) 中不在 SOURCES 里的 13 个:
+             src/Config.{cpp,h} src/ProxyResolver.{cpp,h} src/StrServerDiscovery.{cpp,h}
+             src/StrTransport.{cpp,h} src/SyncService.{cpp,h} src/UdpTransport.{cpp,h}
+             integration/ied-dev/IEDSyncTogetherBridge.h
+```
+
+第二处,`src/LocalIEDState.cpp` 的解码循环(修复前,行数由对端决定):
+
+```cpp
+// plugins/IEDSyncTogether/src/LocalIEDState.cpp(修复前)
+if (!line.starts_with("O|")) {                            // :93
+    return std::nullopt;
+}
+
+const auto fields = Split(line.substr(2), '|');           // :100
+...
+state.objects.emplace_back(std::move(object));            // :140,每次循环追加一行
+```
+
+**现象**:补丁把 `_remoteSnapshots` 的行数上限加在 `src/SyncService.h` / `src/SyncService.cpp` 上,
+`plugin_patches.py verify`、`plugin_patches.py check`、`check_transport_compat.py` 三条门禁全绿,
+而那条上限**不在任何二进制里**。同一批里真正需要上界的两张表
+(`src/STRPMAdapter.h` 的 `_remoteStates`、`src/LocalIEDState.cpp` 解出的 `objects`)**一个都没修** ——
+`docs/PITFALLS.md` §75 的标题写着「三个插件的对端可控缓存只增不减」,而 IED 那一栏当时是空的。
+
+**根因**:`git apply` 的绿灯只证明「补丁的上下文行能对上 pin」,它不问这个文件**有没有被编译**。
+补丁改的文件在树里、在 pin 里、在 `git grep` 里都能命中,唯一不在的地方是构建。
+
+### 78.2 判据:两条,都可机械执行
+
+第一条:**「补丁能应用」和「补丁改的东西被编译」是两件事,判据是可达性而不是成员关系。**
+
+从 `CMakeLists.txt` 里所有 `.cpp/.cxx/.cc/.h/.hpp` token 出发,沿 `#include "…"` 做闭包,
+补丁的每个 `--- a/<path>` 目标都必须在闭包里。
+「在 `SOURCES` 里」既不是充分条件也不是必要条件:`MorphSyncTogether` 就不写
+`src/AppearanceProbe.cpp` 与 `src/MorphSyncService.cpp`,它们由 `src/AppearanceProbeBodyHair.cpp` /
+`src/MorphSyncServiceBodyHair.cpp` 改名入口点后 `#include` 进来 —— 只查 `SOURCES` 会把这两个文件误判成死代码。
+含 `GLOB` 的工程(`OStimNG` 走 `skse/cmake/lib/autoCollectSources.cmake`)无法静态枚举,门禁整体跳过:
+报「不知道」比报一条假的死代码便宜。
+
+第二条:**文档里的路径和补丁目录里的文件名是两个可以各说各话的字符串。**
+
+本轮新门禁第一次实跑就报出 **7 条、零误报**:4 条是文档点名的补丁路径已经不存在
+(`README.md`、`README_EN.md`、`CHANGELOG.md`、`docs/PITFALLS.md` 各 1),
+3 条是 `plugins/IEDSyncTogether/src/SyncService.{h,cpp}(修复后)` 这种标记还在,
+而那个文件已经没有任何补丁会改它。**标记比它出自的补丁活得久**,这就是判据。
+两处刻意的省略写法(含 `...` 的路径)未被误报 —— 判据要允许「这里本来就是省略」。
+
+### 78.3 可达性
+
+第一处:`RefreshProxyMitigation()`(`plugins/IEDSyncTogether/src/SyncService.cpp:302-379`)每 750 ms
+对每个 snapshot 调一次 `FindRemotePlayerProxy`,而每次都会重建 `FindRemotePlayerProxies()`
+的四张 `ProcessLists` 句柄数组扫描,外加每个候选一次 `GetName()` 与一次 `GetDistance()`。
+单看源码这是本插件最像「热路径缺陷」的一段 —— 它**不在任何发布产物里**:
+`src/SyncService.cpp` 不在 `SOURCES`,也没有任何 `#include` 链从被编译的文件到达它。
+**审计一个插件的「热路径」之前,先问这个文件有没有被编译。**
+
+第二处:门禁的两条新不变量都只挂在 `cmd_verify` 上,`cmd_check` 仍然只判「补丁是否已应用」。
+这是有意的:`check` 要在**已经被 `apply` 过的工作树**上跑,而那种工作树里补丁改的文件当然存在;
+`verify` 才是对 pin 的静态断言。两条判据的宿主不同,不能互换。
+
+### 78.4 修法
+
+- `Code/plugins/tools/plugin_patches.py:99-211` 新增 `build_roots` / `cmake_source_seeds` /
+  `include_closure` / `patch_targets` / `uncompiled_patch_targets`,接进 `cmd_verify:422-425`;
+  只对源码后缀判定,含 `GLOB` 的工程返回 `None` 直接跳过。
+- 同文件 `:354-411` 新增 `document_lines` / `patched_targets` / `unrecorded_patch_paths` /
+  `unrecorded_source_markers`,接进 `cmd_verify:419-420`;只扫 `README.md`、`README_EN.md`、
+  `CHANGELOG.md`、`docs/PITFALLS.md`,含 `...` 的刻意省略写法跳过,
+  标记里的 `:NN` / `:NN-MM` 行号后缀先剥掉再比对。
+- 补丁换靶(新文件 2735 B / 64 LF / 4 hunk):
+
+```cpp
+// plugins/IEDSyncTogether/src/STRPMAdapter.h(修复后)
+static constexpr std::size_t kMaxRemoteStates = 64;       // :61
+
+// plugins/IEDSyncTogether/src/STRPMAdapter.cpp(修复后)
+if (!self->_remoteStates.contains(senderID) && self->_remoteStates.size() >= kMaxRemoteStates) {   // :555
+    SKSE::log::warn("STRPM IED state RX dropped: peer table full size={} sender={}",              // :557
+                    self->_remoteStates.size(), senderID);
+    return;
+}
+self->_remoteStates[senderID] = RemoteSnapshot{          // :562,已有的键永远仍可更新
+
+// plugins/IEDSyncTogether/src/LocalIEDState.h(修复后)
+static constexpr std::size_t kMaxObjects = 512;          // :36
+
+// plugins/IEDSyncTogether/src/LocalIEDState.cpp(修复后)
+if (state.objects.size() >= LocalIEDState::kMaxObjects) {   // :96
+    return std::nullopt;
+}
+```
+
+  解码侧刻意**整包拒收而不是截断**:少几个对象的快照会被渲染成「完整快照」,
+  截断把一个上界问题换成一个静默的错帧问题。
+- 文档随之更正:`docs/PITFALLS.md` §75 的锚点/缺陷表/判据/可达性/修法/复核命令、§77.2 判据行、
+  `CHANGELOG.md` 三处、两份 README 的补丁路径。
+
+### 78.5 复核命令(照抄)
+
+```powershell
+python Tools\Scripts\check_docs.py
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\plugin_snapshot.py verify
+python Code\plugins\tools\check_transport_compat.py
+git -C plugins/IEDSyncTogether grep -n "kMaxRemoteStates\|kMaxObjects" -- src/
+git -C plugins/IEDSyncTogether grep -n "SyncService" -- CMakeLists.txt
+git -C plugins/IEDSyncTogether log --oneline -1 ace777c16633ad4d368c5e9b5b58e7b83104dd7a
+git -C plugins/IEDSyncTogether apply --check --cached ..\..\Code\plugins\patches\IEDSyncTogether\0002-bound-the-live-peer-table-and-the-decoded-object-list.patch
+git -C plugins/IEDSyncTogether apply --check --reverse ..\..\Code\plugins\patches\IEDSyncTogether\0002-bound-the-live-peer-table-and-the-decoded-object-list.patch
+```
+
+复核结果:`check_docs.py` → `DOC CHECK OK` / `coverage 3069/3082 stated consistently in 4 doc(s)`;
+`plugin_patches.py verify` → `PATCH VERIFY OK` / `23 patch(es) apply to their pinned commits`
+(**补丁总数仍是 23** —— 这一批是重写不是新增);`check` → `PATCH CHECK OK`;
+`plugin_snapshot.py verify` → `SNAPSHOT OK` / `8 plugin(s) have a durable copy matching the pinned commit`;
+`check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`(`client opcodes: 53 in use` /
+`server opcodes: 56 in use`,**这一批没有动线格式**);
+`kMaxRemoteStates` 命中 `STRPMAdapter.h:61` 与 `STRPMAdapter.cpp:555`,
+`kMaxObjects` 命中 `LocalIEDState.h:36` 与 `LocalIEDState.cpp:96`;
+`git grep -n "SyncService" -- CMakeLists.txt` **exit 1 / 零命中**;
+`git log -1 ace777c` → `ace777c16633ad4d368c5e9b5b58e7b83104dd7a` / `2026-08-19` /
+`Build v0.6.0 STRPM-only runtime` / `CMakeLists.txt | 18 +++---------------` / `1 file changed, 3 insertions(+), 15 deletions(-)`;
+最后两条 `git apply --check`:`--cached`(对 index = pin)exit 0,`--reverse`(对工作树)exit 0
+⇒ 补丁既「对 pin 可应用」又「已经在工作树里」;不带 `--cached`/`--reverse` 的 `git apply --check`
+对工作树**必然失败**(`error: patch failed: src/STRPMAdapter.cpp:552`),因为改动已经在里面。
+另:把新补丁的 `--- a/` 目标喂给 `plugin_patches.uncompiled_patch_targets` 复现闭包判定,
+`plugins/IEDSyncTogether` 的闭包 = 16 个 seed,无 include 扩展;同一函数对**已删除**的旧补丁报
+`edits src/SyncService.cpp, which this plugin's build never compiles …`。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),所以这一批的证据是构建闭包的静态判定 + 逐字命中 + 门禁,
+不是编译产物。两条新不变量都在**首次实跑就报出真问题**(7 条),不是事后补的说明;
+换靶后的补丁对 pin 可应用、对工作树已应用,两条 `git apply --check` 互为反向断言。
+
+> **教训**:第一条:**「补丁能应用」与「补丁改的东西被编译」是两条判据,而前者的绿灯很容易让人以为后者也绿了。**
+> `git apply --check` 只比对上下文行,它甚至不知道 CMake 存在;
+> 一个文件可以既在 pin 里、又在树里、又永远不进任何二进制 —— 判据必须落在构建闭包上。
+> 第二条:**门禁要报的是「不知道」,不是「猜」。**
+> 含 `GLOB` 的工程无法静态枚举,门禁整体跳过而不是按名字猜成员关系 ——
+> 假阳性会让下一次真阳性被忽略,而「跳过」是可以解释的。
+> 第三条:**审计一个「热路径」之前,先问这段代码有没有被编译。**
+> `RefreshProxyMitigation()` 的四表扫描看起来是本插件最贵的循环,而它所在的文件
+> 从 2026-08-19 起就不在 `SOURCES` 里 —— 白读一小时,换来的是这一条判据。
+
 ## 77. 2026-10-10 场次:两张键由对端选、长度也由对端选的表 —— 判据是「这个键是谁写的,而它的长度谁管」
 
 > **锚点**:两处修复,都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
@@ -9939,7 +10143,7 @@ state.recentIncoming.emplace(a_requestID, std::chrono::steady_clock::now());   /
   而 `HandleIncomingRequest` 的插入发生在**「本机是否正忙」这道判断之前**(`:754-766` 先插入,
   `:768` 才判 `state.session || state.pending`)⇒ 被自动拒绝的请求同样占一行,
   60 秒窗口内的行数完全由对端决定。
-- **同族的修法已经在仓里**:`IEDSyncTogether/0002` 的 `kMaxRemoteSnapshots = 64`、
+- **同族的修法已经在仓里**:`IEDSyncTogether/0002` 的 `kMaxRemoteStates = 64` 与 `kMaxObjects = 512`、
   `MorphSyncTogether/0004` 的 `kMaxRemoteSnapshots`/`kMaxRemotePubicSnapshots`/`kMaxRemoteStates = 64`、
   `OStimTogether/0007` 的 `kMaxResolvedEntries`/`kMaxRemoteNames = 512`、
   `0008` 的 `kMaxRemotePreps = 32`/`kMaxReadyTokens = 256` —— 全部是「先判 `contains` 再判上限,

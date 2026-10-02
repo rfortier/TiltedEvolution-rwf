@@ -19,7 +19,10 @@ submodule working tree immediately before the plugin is configured and built.
     apply   apply every patch (idempotent; the CI entry point)
     check   report whether every patch is currently applied
     revert  reverse every patch, restoring the pinned commit
-    verify  apply --check every patch against a pristine tree (the gate)
+    verify  apply --check every patch against a pristine tree, require every
+            patched file to be one the plugin's build actually compiles, and
+            require every patch path and every patched-source marker a document
+            names to be one this repository records (the gate)
 
 apply is written to be safe to run repeatedly: a patch that is already applied
 is detected and skipped rather than failing the build, and a patch that does not
@@ -70,6 +73,142 @@ def patch_files(plugin_id: str) -> list[Path]:
 
 def submodule_dir(plugin: dict) -> Path:
     return ROOT / plugin['submodule']
+
+
+# A patch is only a fix if the file it edits is compiled. Nothing else in this
+# tool can tell: git apply checks text, and the build checks whatever CMake was
+# told to compile, so a patch aimed at a source file the plugin's CMakeLists.txt
+# never mentions applies cleanly, verifies, builds, and changes nothing at all.
+# IEDSyncTogether/0002 was exactly that - it edited src/SyncService.cpp, which
+# the pinned CMakeLists.txt stopped listing in ace777c ("Build v0.6.0 STRPM-only
+# runtime"), so the bound it added was never in any binary.
+#
+# Reachability, not membership: MorphSyncTogether compiles src/AppearanceProbe.cpp
+# and src/MorphSyncService.cpp without naming them, because
+# src/AppearanceProbeBodyHair.cpp and src/MorphSyncServiceBodyHair.cpp #include
+# them after renaming the entry points. Asking "is this path in CMakeLists.txt"
+# would fail those two patches, so the question asked here is "does an #include
+# chain from a file CMakeLists.txt does name reach this one".
+IGNORED_DIRECTORIES = {'build', '.git', '.xmake', 'imgui', 'vcpkg', 'vcpkg_installed', 'out'}
+SOURCE_TOKEN = re.compile(r'[\w$./\\-]+\.(?:cpp|cxx|cc|h|hpp)')
+INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
+PATCH_TARGET = re.compile(r'^--- a/(\S+)$', re.MULTILINE)
+SOURCE_SUFFIXES = {'.cpp', '.cxx', '.cc', '.h', '.hpp'}
+
+
+def build_roots(plugin: dict) -> list[Path]:
+    """The CMakeLists.txt files that decide what this plugin compiles.
+
+    The plugin root is the usual place; OStimNG keeps its project one directory
+    down in skse/, so the tree is searched instead of assumed.
+    """
+    base = submodule_dir(plugin)
+    roots = []
+    for path in sorted(base.rglob('CMakeLists.txt')):
+        relative = path.relative_to(base)
+        if any(part in IGNORED_DIRECTORIES for part in relative.parts):
+            continue
+        if len(relative.parts) > 3:
+            continue
+        roots.append(path)
+    return roots
+
+
+def cmake_source_seeds(roots: list[Path], base: Path) -> set[Path] | None:
+    """Every source file the CMakeLists.txt files name, or None when the plugin
+    collects its sources with a glob.
+
+    A glob names no file, so there is nothing to seed a closure with and the
+    plugin cannot be checked this way. OStimNG builds through
+    skse/cmake/lib/autoCollectSources.cmake, which is a glob.
+    """
+    seeds = set()
+    for root in roots:
+        text = root.read_text(encoding='utf-8', errors='replace')
+        if 'GLOB' in text:
+            return None
+        for match in SOURCE_TOKEN.finditer(text):
+            token = match.group(0)
+            # A path may be spelled through a CMake variable - OStimTogether
+            # reads ${CMAKE_CURRENT_SOURCE_DIR}/src/OStimBridge.cpp, rewrites it
+            # and compiles the copy it writes - so the token can begin in the
+            # middle of a path. Every suffix is tried, which resolves both that
+            # and a leading separator.
+            parts = [part for part in re.split(r'[/\\]', token) if part]
+            for index in range(len(parts)):
+                name = '/'.join(parts[index:])
+                for candidate in (root.parent / name, base / name):
+                    if candidate.is_file():
+                        seeds.add(candidate.resolve())
+                        break
+                else:
+                    continue
+                break
+    return seeds
+
+
+def include_closure(seeds: set[Path], base: Path) -> set[Path]:
+    """Every file reachable from the seeds through #include "..."."""
+    reached = set()
+    pending = sorted(seeds)
+    while pending:
+        path = pending.pop()
+        if path in reached:
+            continue
+        reached.add(path)
+        text = path.read_text(encoding='utf-8', errors='replace')
+        for match in INCLUDE_RE.finditer(text):
+            name = match.group(1)
+            candidates = (
+                path.parent / name,
+                base / name,
+                base / 'src' / name,
+                base / 'include' / name,
+                base / 'skse' / 'src' / name,
+            )
+            for candidate in candidates:
+                if candidate.is_file():
+                    resolved = candidate.resolve()
+                    if resolved not in reached:
+                        pending.append(resolved)
+                    break
+    return reached
+
+
+def patch_targets(patch: Path) -> list[str]:
+    """The files a patch edits, taken from its '--- a/<path>' header lines.
+
+    Four of the recorded patches are written in the older format that has no
+    'diff --git' line, so the '---' header is the only target every patch shares.
+    """
+    targets = []
+    for match in PATCH_TARGET.finditer(patch.read_text(encoding='utf-8', errors='replace')):
+        if match.group(1) not in targets:
+            targets.append(match.group(1))
+    return targets
+
+
+def uncompiled_patch_targets(plugin: dict) -> list[str]:
+    """Patches whose edited source file the plugin's build never compiles."""
+    roots = build_roots(plugin)
+    if not roots:
+        return []
+    seeds = cmake_source_seeds(roots, submodule_dir(plugin))
+    if seeds is None:
+        return []
+    reached = include_closure(seeds, submodule_dir(plugin))
+    failures = []
+    for patch in patch_files(plugin['id']):
+        for target in patch_targets(patch):
+            if Path(target).suffix.lower() not in SOURCE_SUFFIXES:
+                continue
+            if (submodule_dir(plugin) / target).resolve() not in reached:
+                failures.append(
+                    f"{plugin['id']}/{patch.name} edits {target}, which this plugin's build "
+                    f"never compiles - no CMakeLists.txt source and no #include chain from "
+                    f"one reaches it, so the change cannot reach a release"
+                )
+    return failures
 
 
 # A format placeholder whose braces contain a quote. The C++ literal for
@@ -204,13 +343,86 @@ def lint_patches() -> list[str]:
     return failures
 
 
+# Two more ways a fix can be written down and still not exist. Both were live in
+# this repository at once: the changelog and both READMEs named a patch that had
+# just been deleted, and the changelog and the pitfalls notes quoted the "after"
+# source of that same deleted patch. Nothing caught either, because a document is
+# not compiled and this tool only ever looked at patches.
+#
+# A name containing '...' is how the documents abbreviate a path on purpose, so
+# those are skipped rather than reported.
+DOCUMENTS = ('README.md', 'README_EN.md', 'CHANGELOG.md', 'docs/PITFALLS.md')
+PATCH_PATH = re.compile(r'Code/plugins/patches/([A-Za-z0-9_]+)/([A-Za-z0-9_.\-]+\.patch)')
+SOURCE_MARKER = re.compile(r'//\s*plugins/([A-Za-z0-9_]+)/(\S+?)\(修复后\)')
+LINE_SUFFIX = re.compile(r':\d+(?:-\d+)?$')
+
+
+def document_lines() -> list[tuple[str, int, str]]:
+    """Every line of every document that quotes a repository path, with its number."""
+    lines = []
+    for name in DOCUMENTS:
+        path = ROOT / name
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding='utf-8', errors='replace')
+        for number, line in enumerate(text.splitlines(), 1):
+            lines.append((name, number, line))
+    return lines
+
+
+def patched_targets() -> dict[str, set[str]]:
+    """Every file each plugin has a patch for, by plugin id."""
+    targets = {}
+    for plugin in plugins():
+        recorded = targets.setdefault(plugin['id'], set())
+        for patch in patch_files(plugin['id']):
+            recorded.update(patch_targets(patch))
+    return targets
+
+
+def unrecorded_patch_paths() -> list[str]:
+    """Patch paths a document names that this repository does not have."""
+    failures = []
+    for name, number, line in document_lines():
+        for plugin_id, file_name in PATCH_PATH.findall(line):
+            if '...' in file_name:
+                continue
+            if not (ROOT / PATCH_DIR_REL / plugin_id / file_name).is_file():
+                failures.append(
+                    f"{name}:{number} names {plugin_id}/{file_name}, which is not a patch "
+                    f"this repository has - the document and the patch directory disagree"
+                )
+    return failures
+
+
+def unrecorded_source_markers() -> list[str]:
+    """'after the fix' markers quoting a file that plugin has no patch for."""
+    failures = []
+    recorded = patched_targets()
+    for name, number, line in document_lines():
+        for plugin_id, target in SOURCE_MARKER.findall(line):
+            target = LINE_SUFFIX.sub('', target)
+            if target not in recorded.get(plugin_id, set()):
+                failures.append(
+                    f"{name}:{number} quotes // plugins/{plugin_id}/{target} as the state "
+                    f"after the fix, but no {plugin_id} patch edits that file - the marker "
+                    f"outlived the patch it came from"
+                )
+    return failures
+
+
 def cmd_verify(_args) -> int:
-    """Every patch must apply to the pinned commit, and none may be unapplied
-    without being recorded. Run against a pristine tree (CI does)."""
+    """Every patch must apply to the pinned commit, edit a file the plugin
+    actually compiles, and be the patch the documents say it is. Run against a
+    pristine tree (CI does)."""
     failures = lint_patches()
+    failures.extend(unrecorded_patch_paths())
+    failures.extend(unrecorded_source_markers())
     total = 0
     for plugin in plugins():
         directory = submodule_dir(plugin)
+        if directory.is_dir():
+            failures.extend(uncompiled_patch_targets(plugin))
         for patch in patch_files(plugin['id']):
             total += 1
             if not directory.is_dir():

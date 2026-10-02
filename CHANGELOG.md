@@ -9,6 +9,78 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:IEDSyncTogether 的一张上限加在一个从来没被编译的文件上 —— 三条门禁全绿,而那个文件不在任何二进制里
+
+**现象**:`plugins/IEDSyncTogether` 在 pin `ad4710a6` 上的 `src/` 有 25 个 `.cpp/.h`,
+而 `CMakeLists.txt:15-32` 的 `SOURCES` 只列 16 项。`src/SyncService.{h,cpp}`、`src/ProxyResolver.{h,cpp}`、
+`src/Config.{h,cpp}`、`src/StrTransport.{h,cpp}`、`src/UdpTransport.{h,cpp}`、`src/StrServerDiscovery.{h,cpp}`
+这 12 个文件既不在 `SOURCES` 里,也没有任何 `#include` 链从 `SOURCES` 到达 —— 它们**不在任何二进制里**。
+
+**根因**:上一轮给这张「键由对端填」的表加上限时,补丁打的是 `src/SyncService.h` 与 `src/SyncService.cpp`。
+那是 STRPM-only 运行时之前的旧架构,`ace777c16633ad4d368c5e9b5b58e7b83104dd7a`(2026-08-19,
+`Build v0.6.0 STRPM-only runtime`)把它从 `SOURCES` 里删掉了 15 行,文件留在树里没删。
+于是那条上限**从未进过任何二进制**,而 `git apply` 只看文本能不能对上,一路绿灯。
+
+真正在编译的是 `src/STRPMAdapter.{h,cpp}` 与 `src/LocalIEDState.{h,cpp}`,两张表的实际位置是:
+
+```cpp
+// plugins/IEDSyncTogether/src/STRPMAdapter.h(修复前)
+std::unordered_map<STRPM::ConnectionID, RemoteSnapshot> _remoteStates;   // :63,键是对端填的
+
+// plugins/IEDSyncTogether/src/LocalIEDState.cpp(修复前)
+for (const auto line : Split(payload, '\n'))                            // :80,行数由对端决定
+    state.objects.emplace_back(std::move(object));                       // :140,每行追加一个
+```
+
+**为什么 CI 挡不住、本地也看不见**:`plugin_patches.py verify` 当时只判三件事 ——
+补丁能不能打上、`+` 行的 fmt 占位符有没有写错、补丁是不是已经应用过。
+这三件事**都只关心补丁的文本**,没有一件问过「被改的文件编不编」;
+而文档里点名的补丁路径、`// plugins/…(修复后)` 标记也没有任何东西核对过,
+所以旧补丁名可以删掉、标记可以继续指着一个没人再改的文件。
+
+**修法**:补丁换靶。删掉 `0002-bound-the-remote-snapshot-table.patch`,
+新增 `Code/plugins/patches/IEDSyncTogether/0002-bound-the-live-peer-table-and-the-decoded-object-list.patch`
+(4 个 hunk,2735 字节),打真正被编译的四个文件:
+
+- `src/STRPMAdapter.h:61` 加 `static constexpr std::size_t kMaxRemoteStates = 64;`,
+  `src/STRPMAdapter.cpp:555` 在 `_remoteStates[senderID] = RemoteSnapshot{…}` 之前守卫,
+  满表丢弃这个包并 `SKSE::log::warn("STRPM IED state RX dropped: peer table full size={} sender={}", …)`;
+- `src/LocalIEDState.h:36` 加 `static constexpr std::size_t kMaxObjects = 512;`,
+  `src/LocalIEDState.cpp:96` 在解 `O|` 行时判上限 —— **整包拒收而不是截断**,
+  因为少几个对象的快照会被下游当成完整快照渲染。
+
+**顺带加了两条门禁**(`Code/plugins/tools/plugin_patches.py`),都挂在 CI 已经在跑的那道 `verify` 上:
+
+1. **构建闭包**:从该插件每份 `CMakeLists.txt` 的源 token 出发做 `#include "…"` 闭包,
+   补丁改的每个源文件都必须落在这个闭包里,否则报错并直接说明「这个文件永远不会进二进制」。
+   含 `GLOB` 的插件(OStimNG)整插件跳过;MorphSyncTogether 那种靠 `#include "X.cpp"` 编译的文件靠闭包到达。
+2. **文档与补丁目录一致**:文档(`README.md`、`README_EN.md`、`CHANGELOG.md`、`docs/PITFALLS.md`)里
+   点名的 `Code/plugins/patches/<id>/<file>.patch` 必须真实存在,
+   点名的 `// plugins/<id>/<path>(修复后)` 标记必须真的是该插件某个补丁的 `--- a/` 目标。
+   含 `...` 的刻意的省略写法跳过。
+
+反向验证过:门禁**第一次实跑就报出 7 条、零误报** —— 4 条是文档点名的补丁路径已经不存在
+(`README.md`、`README_EN.md`、`CHANGELOG.md`、`docs/PITFALLS.md` 各 1),
+3 条是 `plugins/IEDSyncTogether/src/SyncService.{h,cpp}(修复后)` 这种标记还在、
+而那个文件已经没有任何补丁会改它。这 7 处引用全部改正,
+并且 §78 自己引用旧补丁名/旧标记的那三行也被自己的门禁抓出来、改成不带路径前缀的写法。
+
+**验证**:`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / `23 patch(es)`;
+补丁总数仍是 23(重写不是新增)。
+
+> **教训**:补丁能应用 ≠ 补丁编得过,也 ≠ **补丁改的文件编得过**。
+> `git apply` 的绿灯只证明文本能对上;一个文件从 `SOURCES` 里被删掉之后,
+> 树里那一份还在、`grep` 还找得到、补丁还能打上,唯一不再发生的事就是**它被编译**。
+>
+> **教训**:审计一个「热路径」之前,先问这个文件有没有被编译。
+> 这一轮最初怀疑的是 `src/SyncService.cpp:302-379` 的 `RefreshProxyMitigation()`
+> 每 750 ms 对每张快照做一次 ProcessLists 全表扫描 —— 结论是这个函数不在任何发布产物里,
+> 该候选因此结案,不是「不值得修」,而是**修了也没有任何效果**。
+>
+> **教训**:一条判据只有在**它能自己跑**的时候才算判据。
+> 「这个补丁改的文件在不在构建闭包里」是可以用 CMakeLists 的源列表 + `#include` 闭包机械判定的,
+> 所以它进了门禁;而「这条上限到底有没有生效」只能靠编译器,本地没有工具链时,
+> 唯一能守住的底线就是**别让补丁打到编译不到的地方**。
 ### 修复:两张键由对端选、长度也由对端选的表 —— TradeTogether 的对端名字表与请求 id 历史表
 
 **现象**:TradeTogether 的 `StrMessagingTransport` 把「对端名字 → 连接号」写进
@@ -59,7 +131,8 @@ state.recentIncoming.emplace(a_requestID, std::chrono::steady_clock::now());   /
 线性扫 `_namedConnections` 做大小写不敏感比较(`:241`),而它的唯一调用点是 `SendTo`(`:420`);
 `Update()` 的按龄清扫则挂在每帧输入事件(`Input.cpp:52`)与每个网络包(`Trade.cpp:976`/`:998`/`:1047`)上。
 
-**判据可机械执行**:同族的修法已经在仓里 —— `IEDSyncTogether/0002` 的 `kMaxRemoteSnapshots = 64`、
+**判据可机械执行**:同族的修法已经在仓里 —— `IEDSyncTogether/0002` 的 `kMaxRemoteStates = 64`
+与 `kMaxObjects = 512`、
 `MorphSyncTogether/0004` 的三张 64、`OStimTogether/0007` 的 `kMaxResolvedEntries`/`kMaxRemoteNames = 512`、
 `0008` 的 `kMaxRemotePreps = 32`/`kMaxReadyTokens = 256`,全部是「先判 `contains` 再判上限,
 已有的键永远仍可更新,被拒的只是新键」。这一批缺的只有这两张。
@@ -2087,11 +2160,11 @@ git apply                   # apply:CI 的那条路,从 pin 出发按文件名�
 
 **修法**:
 
-一、四张表各自设上限,满了丢包而不是丢表:
+一、五张表各自设上限,满了丢包而不是丢表:
 
 ```cpp
-// plugins/IEDSyncTogether/src/SyncService.h(修复后)
-static constexpr std::size_t kMaxRemoteSnapshots = 64;
+// plugins/IEDSyncTogether/src/STRPMAdapter.h(修复后)
+static constexpr std::size_t kMaxRemoteStates = 64;
 // plugins/MorphSyncTogether/src/MorphSyncService.h(修复后)
 static constexpr std::size_t kMaxRemoteSnapshots = 64;
 static constexpr std::size_t kMaxRemotePubicSnapshots = 64;
@@ -2117,7 +2190,7 @@ static constexpr std::size_t kMaxReadyTokens = 256;
 
 四处修改都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
 
-- `Code/plugins/patches/IEDSyncTogether/0002-bound-the-remote-snapshot-table.patch`
+- `Code/plugins/patches/IEDSyncTogether/0002-bound-the-live-peer-table-and-the-decoded-object-list.patch`(2026-10-10 重写:原版打在 `src/SyncService.{h,cpp}` 上,而这两个文件在本插件的 `CMakeLists.txt` 里从来没进过 `SOURCES`,补丁打上去等于没打;现在改打真正被编译的 `src/STRPMAdapter.{h,cpp}` 与 `src/LocalIEDState.{h,cpp}`)
 - `Code/plugins/patches/MorphSyncTogether/0004-bound-the-remote-snapshot-tables.patch`
 - `Code/plugins/patches/OStimTogether/0008-bound-the-phase-sync-tables.patch`
 - `Code/plugins/patches/OStimTogether/0006-coalesce-the-addon-state-reapply-and-bound-the-remote-caches.patch`(重写)

@@ -1,0 +1,64 @@
+diff --git a/src/LocalIEDState.cpp b/src/LocalIEDState.cpp
+index 26d1461..35913ab 100644
+--- a/src/LocalIEDState.cpp
++++ b/src/LocalIEDState.cpp
+@@ -93,6 +93,9 @@ namespace IEDSyncTogether
+             if (!line.starts_with("O|")) {
+                 return std::nullopt;
+             }
++            if (state.objects.size() >= LocalIEDState::kMaxObjects) {
++                return std::nullopt;
++            }
+ 
+             const auto fields = Split(line.substr(2), '|');
+             if (fields.size() != 21) {
+diff --git a/src/LocalIEDState.h b/src/LocalIEDState.h
+index 51a2159..653344e 100644
+--- a/src/LocalIEDState.h
++++ b/src/LocalIEDState.h
+@@ -29,6 +29,12 @@ namespace IEDSyncTogether
+ 
+     struct LocalIEDState
+     {
++        // The payload is one line per object and the peer chooses how many
++        // lines it sends, so the count is bounded here. A payload over the cap
++        // is refused whole rather than truncated: a state silently missing the
++        // objects past the cap would be rendered as if it were complete.
++        static constexpr std::size_t kMaxObjects = 512;
++
+         SlotState slots{};
+         std::vector<CapturedIEDObject> objects;
+ 
+diff --git a/src/STRPMAdapter.cpp b/src/STRPMAdapter.cpp
+index f7c8957..136a532 100644
+--- a/src/STRPMAdapter.cpp
++++ b/src/STRPMAdapter.cpp
+@@ -552,6 +552,13 @@ namespace IEDSyncTogether
+         const std::string senderName = message->sender.displayName ? message->sender.displayName : "";
+         {
+             std::scoped_lock lock(self->_remoteMutex);
++            if (!self->_remoteStates.contains(senderID) && self->_remoteStates.size() >= kMaxRemoteStates) {
++                SKSE::log::warn(
++                    "STRPM IED state RX dropped: peer table full size={} sender={}",
++                    self->_remoteStates.size(),
++                    senderID);
++                return;
++            }
+             self->_remoteStates[senderID] = RemoteSnapshot{
+                 std::move(*state),
+                 senderName,
+diff --git a/src/STRPMAdapter.h b/src/STRPMAdapter.h
+index 302646a..bf665cd 100644
+--- a/src/STRPMAdapter.h
++++ b/src/STRPMAdapter.h
+@@ -55,6 +55,10 @@ namespace IEDSyncTogether
+         std::chrono::steady_clock::time_point _lastSuccessfulSend{};
+         std::jthread _retryTimer;
+ 
++        // The key is a field the peer fills in and an entry is erased only when
++        // the resolver reports that peer gone, so the table is bounded here too.
++        // A full table drops the packet instead of growing without limit.
++        static constexpr std::size_t kMaxRemoteStates = 64;
+         mutable std::mutex _remoteMutex;
+         std::unordered_map<STRPM::ConnectionID, RemoteSnapshot> _remoteStates;
+     };
