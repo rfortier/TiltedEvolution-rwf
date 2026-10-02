@@ -9,6 +9,92 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:字符串缓存的起点是对端填的字段,而它被拿去喂 assert —— 判据是「这个断言的实参是谁选的」
+
+**现象**:客户端在游戏线程上收到一条 `StringCacheUpdate` 之后进程直接退出,没有崩溃栈、没有异常、
+没有日志 —— 因为杀掉它的不是崩溃,是 `assert`。触发条件不是「对端发坏包」,而是「对端的字符串缓存
+与本地不同步」,后者在版本混连、存档重载、脚本改过游标之后都可能自然发生。
+
+**根因**:`Code/encoding/StringCache.cpp` 的 `Deserialize` 用两条断言校验连续性,而两条的实参**都不是本地算的**:
+
+```cpp
+// Code/encoding/StringCache.cpp(修复前 :75-87)
+    // We should only receive contiguous updates
+    assert(aMessage.StartId == m_idToString.size());          // :78 实参来自线上
+
+    for (auto& value : aMessage.Values)
+    {
+        const auto expectedId = m_idToString.size();
+        auto id = Add(value);
+
+        assert(id == expectedId);                             // :85 实参受对端内容影响
+    }
+```
+
+`StartId` 是包里的字段(`Code/encoding/Messages/StringCacheUpdate.cpp:23` 的
+`StartId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;`,没有任何本地校验);
+而 `Add` 在值**已经在缓存里**时早退返回旧 id(`Code/encoding/StringCache.cpp:26-36`),
+所以 `:85` 那条在「同一条消息里出现重复值」时也会失败 —— 而重复值是一条完全合法的消息。
+
+**为什么没有任何东西报错**:`assert` 失败不产生日志,它调用 `abort()`。
+更糟的是它**看起来像文档**:`Code/encoding/StringCache.cpp` 写侧的注释当时写着
+「the receiver asserts that the ids are contiguous」,`docs/PITFALLS.md` 的 §49.2 判据表
+与 §73 的排除语也都把它当成「正确的不变量断言」引用过。三处引用一处代码,没有一处问过
+「这个实参是谁选的」。
+
+**为什么 CI 挡不住、本地也看不见**:全仓 `NDEBUG` **零命中**,而 CI 的默认 `build-mode` 是 `releasedbg`
+(`.github/workflows/windows.yml:11-14`)—— 也就是说断言在**发布构建里也是活的**,这条路径不需要 debug 构建。
+本地同样看不见:`StartId` 不匹配要求两端缓存长度不同,而正常流程下服务端从 0 开始推、客户端从 0 开始收,
+只有失步(混版本、重载存档、脚本改游标)才会碰到。
+
+**修法**:两条断言换成「不连续就丢弃这条消息,缓存原样保留」(`Code/encoding/StringCache.cpp:76-104`):
+
+```cpp
+    if (aMessage.StartId != m_idToString.size())
+        return;
+
+    for (auto& value : aMessage.Values)
+    {
+        const auto expectedId = m_idToString.size();
+        const auto id = Add(value);
+
+        if (id != expectedId)
+            return;
+    }
+```
+
+- **为什么是「丢弃」而不是「清空缓存」**:第一版写的是 `Clear()`,测试也按那个方向写好了。改判的理由是代价 ——
+  服务端每 2000 ms 才推一次增量(`Code/server/Services/StringCacheService.cpp:17`),
+  清空会把一次失步放大成两秒的同步空洞,而丢弃只损失这一条。
+- **为什么丢弃是安全的**:`m_idToString` 在任何 `return` 点上都仍是发送侧缓存的**连续前缀**。
+  依据只有两条 —— `StartId` 的判断在任何变更之前;`Add` 在值已存在时早退且不触碰任何容器。
+  所以「下一次发送的切片仍然对得上」是可推导的,不是希望。
+- **重复值那条分支不是回滚**:`{"gamma","gamma"}` 的第一条 `Add` 成功之后才轮到第二条返回旧 id,
+  丢弃之后缓存里有 `gamma` —— 这一点写进了测试的注释。
+- **写侧注释同步改掉**(`Code/encoding/StringCache.cpp:55-59`):那句「the receiver asserts that the ids are contiguous」
+  描述的是一个会把进程杀掉的契约,改实现不改它,下一轮审计还会把它当先例引用。
+- **不打日志**:`Code/encoding` 层没有任何日志设施(全目录 3 个 `#include <iostream>` 一处使用都没有,也没有 spdlog),
+  而唯一的调用点 `Code/client/Services/Generic/StringCacheService.cpp:28-31` 是 `noexcept` 且没有返回值,
+  拿不到失败信息 ⇒ 这次是静默自愈。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 新用例。
+`Code/tests/encoding.cpp:575-647` 新增
+`TEST_CASE("A string cache update that does not line up is dropped", "[encoding.string_cache_selfheal]")`:
+
+- `StartId = 5` 而本地长度是 2 ⇒ 断言 `Size() == 2`、`alpha`/`beta` 都还在、`gamma` 没进去
+  (把「丢弃而不是清空」钉在用例里:改成 `Clear()` 这条断言就红)。
+- 紧接着造一个「id 9 不在缓存里」的 `CachedString` 包,断言名字读成空串 —— 「丢弃之后消费者仍然安全」的证据。
+- 重复值 `{"gamma","gamma"}` ⇒ 断言 `Size() == 3` 且 `gamma` 在,即第一条落了地。
+- 对齐的消息(`StartId = 1`,`{"beta","gamma"}`)照旧生效 ⇒ 断言三条全在,证明正常路径没有被一起关掉。
+
+> **教训**:第一条:**`assert` 不是「文档化的前置条件」,是「谁都能触发的进程退出」。**
+> 判断一条断言该不该留,只问一句:它的实参是**谁**选的?本地算的,留;对端填的,换掉。
+> 第二条:**注释会替错误作证。** 写侧那句「the receiver asserts that the ids are contiguous」
+> 把「对端一跳就终止进程」描述成了一条设计约定,而它读起来完全像文档 ——
+> 改掉实现时必须回头把引用它的注释、判据表、代码块引文一起改掉。
+> 第三条:**「丢弃」和「清空」都叫「失败处理」,但代价差两个数量级。**
+> 失败处理的粒度要跟「重来一次的代价」对齐:这里重来要等 2000 ms,所以粒度是这一条消息,不是整个缓存。
+
 ### 修复:一个 cell 里第 256 个之后的容器与门永远不同步 —— 判据是「写侧夹住了计数,那被夹掉的那些谁负责」
 
 **现象**:一个放着 255 个以上容器与门的 cell,进去之后只有前 255 个会同步。第 256 个开始,门锁不上、

@@ -572,6 +572,79 @@ TEST_CASE("StringCache cursor", "[encoding.string_cache_cursor]")
 
     cache.Clear();
 }
+TEST_CASE("A string cache update that does not line up is dropped", "[encoding.string_cache_selfheal]")
+{
+    // The start id is a field of the packet and the peer picks it, so it cannot be an assert:
+    // this frame is noexcept and the default build keeps asserts live. What must not happen is
+    // that the entries of a shifted message land in the cache, because every id after them would
+    // resolve to the wrong string. The message is dropped and the cache is left exactly as it
+    // was, so the next update the sender slices still lines up.
+    auto& cache = StringCache::Get();
+    cache.Clear();
+
+    TP_UNUSED(cache.Add("alpha"))
+    TP_UNUSED(cache.Add("beta"))
+    REQUIRE(cache.Size() == 2);
+
+    StringCacheUpdate shifted{};
+    shifted.StartId = 5;
+    shifted.Values.push_back("gamma");
+    cache.Deserialize(shifted);
+
+    REQUIRE(cache.Size() == 2);
+    REQUIRE(cache.Contains("alpha"));
+    REQUIRE(cache.Contains("beta"));
+    REQUIRE_FALSE(cache.Contains("gamma"));
+
+    // An id the cache does not hold has to read as empty rather than as the string of whatever
+    // id now happens to sit at that index.
+    Buffer stale(1000);
+    Buffer::Writer staleWriter(&stale);
+    Serialization::WriteBool(staleWriter, true);
+    Serialization::WriteVarInt(staleWriter, 9);
+
+    CachedString name{};
+    name = String("alpha");
+    Buffer::Reader staleReader(&stale);
+    name.Deserialize(staleReader);
+    REQUIRE(name.empty());
+
+    // A duplicate inside one message is the same disagreement: the second copy reuses the id of
+    // the first, so it does not land at the end of the cache either. The first copy of the
+    // message did land, and a drop is not a rollback.
+    cache.Clear();
+    TP_UNUSED(cache.Add("alpha"))
+    TP_UNUSED(cache.Add("beta"))
+    REQUIRE(cache.Size() == 2);
+
+    StringCacheUpdate duplicated{};
+    duplicated.StartId = 2;
+    duplicated.Values.push_back("gamma");
+    duplicated.Values.push_back("gamma");
+    cache.Deserialize(duplicated);
+
+    REQUIRE(cache.Size() == 3);
+    REQUIRE(cache.Contains("alpha"));
+    REQUIRE(cache.Contains("beta"));
+    REQUIRE(cache.Contains("gamma"));
+
+    // A message that does line up is still applied, and its ids follow the ones already there.
+    cache.Clear();
+    TP_UNUSED(cache.Add("alpha"))
+
+    StringCacheUpdate following{};
+    following.StartId = 1;
+    following.Values.push_back("beta");
+    following.Values.push_back("gamma");
+    cache.Deserialize(following);
+
+    REQUIRE(cache.Size() == 3);
+    REQUIRE(cache.Contains("alpha"));
+    REQUIRE(cache.Contains("beta"));
+    REQUIRE(cache.Contains("gamma"));
+
+    cache.Clear();
+}
 
 TEST_CASE("TimeModel wire bounds", "[encoding.time_model]")
 {

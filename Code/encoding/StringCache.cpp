@@ -53,9 +53,10 @@ StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
     if (aStartId < m_idToString.size())
     {
         // One message carries at most kMaxValueCount entries, and the receiver
-        // asserts that the ids are contiguous. Send a slice and advance the cursor
-        // by exactly what was written, so the rest goes out on the next call
-        // instead of being skipped and leaving the two caches out of step.
+        // requires the ids to be contiguous: a message whose start id does not line
+        // up is dropped. Send a slice and advance the cursor by exactly what was
+        // written, so the rest goes out on the next call instead of being skipped
+        // and leaving the two caches out of step.
         const auto count = std::min<size_t>(m_idToString.size() - aStartId, StringCacheUpdate::kMaxValueCount);
 
         auto itor = std::begin(m_idToString);
@@ -74,15 +75,31 @@ StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
 
 void StringCache::Deserialize(const StringCacheUpdate& aMessage) noexcept
 {
-    // We should only receive contiguous updates
-    assert(aMessage.StartId == m_idToString.size());
+    // The sender numbers these entries with its own cursor, and that cursor is a field of
+    // the packet: nothing here chose it and nothing here checks it. It used to be an
+    // assert, which aborts the process - this frame is noexcept, so there is no way to
+    // fail softly, and the default build is releasedbg, where the assert is live. It is
+    // the same defect CachedString.cpp had: an id the peer picked, tested with an assert.
+    //
+    // A message that does not line up is dropped instead. Both checks sit before the
+    // mutation they guard, so returning leaves a cache that is still a contiguous prefix
+    // of the sender's: the entries already applied landed at exactly their own ids, and
+    // Add returns early without touching anything when the value is already known. An id
+    // the cache does not hold still reads as "not one of the names I know" - the consumers
+    // of a cached name already test it against a fixed list and fall through when it
+    // matches nothing.
+    if (aMessage.StartId != m_idToString.size())
+        return;
 
     for (auto& value : aMessage.Values)
     {
         const auto expectedId = m_idToString.size();
-        auto id = Add(value);
+        const auto id = Add(value);
 
-        assert(id == expectedId);
+        // A value that is already in the cache reuses its old id, so a duplicate inside
+        // one message does not land at the end either. That is the same disagreement.
+        if (id != expectedId)
+            return;
     }
 }
 

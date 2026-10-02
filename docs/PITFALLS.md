@@ -5305,14 +5305,15 @@ StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
 | 位置 | 写法 | 判定 |
 | --- | --- | --- |
 | `Code/encoding/StringCache.cpp:59`(修复前) | `aStartId = m_idToString.size();` 而只写出去 16 位能装下的部分 | ❌ 本次缺陷 |
-| `Code/encoding/StringCache.cpp:74-76`(接收侧) | `assert(aMessage.StartId == m_idToString.size());` —— 断言本身就要求**连续性** | 这就是判据 |
+| `Code/encoding/StringCache.cpp:74-76`(接收侧) | `assert(aMessage.StartId == m_idToString.size());` —— 断言本身就要求**连续性** | 这就是判据(2026-10-13 更正:这句断言本身就是同一族的第四个缺陷,见 §83 —— 它的实参来自线上,而 `releasedbg` 下断言是活的;现在改成「不连续就丢弃这条消息」) |
 | `Code/encoding/Structs/Mods.cpp:24`(v1.1.9 已修) | 写侧 `for (size_t i = 0; i < modCount; ++i)` | ✅ 同一条规则的写侧版本 |
 
 **可机械执行的判据**:凡是「按游标/偏移切片发送」的地方,
 **推进量必须等于写出去的条数** ——
 写成 `cursor = container.size();` 的那一刻,就已经把「截断」悄悄变成了「永久丢失」。
-仓库的接收侧 `assert` 正是这条不变量的断言:`StartId` 必须**恰好等于**本地缓存长度,
-一旦发送侧跳过一段,这个断言在 debug 构建下立刻炸,release 下则表现为静默错位。
+仓库的接收侧判据正是这条不变量:`StartId` 必须**恰好等于**本地缓存长度,
+一旦发送侧跳过一段,两边就再也对不上。(2026-10-13 更正:它当初写成 `assert`,
+而 `StartId` 是对端填的字段 —— 对端一跳,终止的是接收方的进程。见 §83。)
 
 ### 49.3 修法:切一片出去,游标只推进这一片
 
@@ -5321,9 +5322,10 @@ StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
     if (aStartId < m_idToString.size())
     {
         // One message carries at most kMaxValueCount entries, and the receiver
-        // asserts that the ids are contiguous. Send a slice and advance the cursor
-        // by exactly what was written, so the rest goes out on the next call
-        // instead of being skipped and leaving the two caches out of step.
+        // requires the ids to be contiguous: a message whose start id does not line
+        // up is dropped. Send a slice and advance the cursor by exactly what was
+        // written, so the rest goes out on the next call instead of being skipped
+        // and leaving the two caches out of step.
         const auto count = std::min<size_t>(m_idToString.size() - aStartId, StringCacheUpdate::kMaxValueCount);
 
         auto itor = std::begin(m_idToString);
@@ -9248,8 +9250,9 @@ git grep -n "kMaxTimeScale" -- Code/
 复核结果:`check_docs.py` → `DOC CHECK OK`;`plugin_patches.py verify` → `PATCH VERIFY OK` /
 `17 patch(es) apply to their pinned commits`;`check` → `PATCH CHECK OK`;`check_transport_compat.py` →
 `TRANSPORT COMPATIBILITY OK`(`client opcodes: 53 in use` / `server opcodes: 56 in use`);
-`assert(false)` 在 `Code/encoding/` 已无命中(`Code/encoding/StringCache.cpp:78`/`:85` 的两处
-是「发送侧与接收侧缓存连续性」的不变量断言,不在本节范围内);
+`assert(false)` 在 `Code/encoding/` 已无命中(2026-10-13 更正:`Code/encoding/StringCache.cpp:78`/`:85`
+那两处当时被判为「发送侧与接收侧缓存连续性」的不变量断言而排除在外,这个判断是错的 ——
+断言的实参 `StartId` 是对端填的字段,见 §83,现已改成丢弃而不是终止);
 `GetAdminSessions()` 只剩定义(`Code/server/GameServer.h:90`)与本节这一处读者;
 `SetTimeResult` 的三个值各只有一处生产者/消费者。
 
@@ -10977,4 +10980,212 @@ git grep -n "response.Objects.push_back" -- Code/server/Services/ObjectService.c
 > 发送侧要按它切片时,它就必须上移到消息头 —— 而「上移」这个动作本身就是「多了一个读者」的证据。
 > 第三条:**修一侧就够的时候,把「为什么另一侧不用改」的关系式写出来。**
 > `response.size() <= request.size()` 这句话就是「不用对称地改两遍」的全部理由;写不出这句话,就该两边都改。
+
+## 83. 2026-10-13 场次:字符串缓存的起点是对端填的字段,而它被拿去喂 assert —— 判据是「这个断言的实参是谁选的」
+
+> **锚点**:一处修复,没有别的文件需要跟着改:
+> `Code/encoding/StringCache.cpp:76-104`(`Deserialize` 的两个 `assert` 换成「不连续就丢弃这条消息」)、
+> `Code/encoding/StringCache.cpp:55-59`(写侧那句「the receiver asserts that the ids are contiguous」同步改掉)、
+> `Code/encoding/Messages/StringCacheUpdate.cpp:23`(实参的来源:`StartId` 是对端填的字段)、
+> `Code/encoding/StringCache.cpp:26-36`(`Add` 在值已存在时早退,这是「丢弃」不破坏不变量的依据)、
+> `Code/client/Services/Generic/StringCacheService.cpp:28-31`(唯一调用点,它无法回报失败)、
+> `Code/client/Services/Generic/TransportService.cpp:110-123`(`handlerGenerator`,决定这段代码在**游戏线程**上跑)、
+> `Code/encoding/Structs/CachedString.cpp:44-52`(同族先例,判据与修法都来自它)。
+> 测试在 `Code/tests/encoding.cpp:575-647`(`[encoding.string_cache_selfheal]`)。
+> 就地更正:`docs/PITFALLS.md` §49.2 的判据表与判据段、§49.3 的代码块引文、§73 的排除语 ——
+> 这三处都曾把同一段代码当「正确的不变量断言」引用。
+
+### 83.1 缺陷:断言校验的是对端填的字段,失败就终止进程
+
+```cpp
+// Code/encoding/StringCache.cpp(修复前 :75-87)
+void StringCache::Deserialize(const StringCacheUpdate& aMessage) noexcept
+{
+    // We should only receive contiguous updates
+    assert(aMessage.StartId == m_idToString.size());          // :78
+
+    for (auto& value : aMessage.Values)
+    {
+        const auto expectedId = m_idToString.size();
+        auto id = Add(value);
+
+        assert(id == expectedId);                             // :85
+    }
+}
+```
+
+两个实参都不是本地选的。`StartId` 是包里的字段:
+
+```cpp
+// Code/encoding/Messages/StringCacheUpdate.cpp:23
+    StartId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+```
+
+而 `Add` 的返回值也不总是「新分配的 id」—— 值已经在缓存里时它**早退**并返回旧 id:
+
+```cpp
+// Code/encoding/StringCache.cpp:26-36
+uint32_t StringCache::Add(const TiltedPhoques::String& acValue) noexcept
+{
+    if (auto id = this->operator[](acValue))
+        return *id;                                          // 早退,不触碰任何容器
+
+    const auto allocatedId = m_idToString.size();
+    m_stringToId[acValue] = allocatedId & 0xFFFFFFFF;
+    m_idToString.push_back(acValue);
+
+    return allocatedId;
+}
+```
+
+于是 `:85` 那条断言在「同一条消息里出现重复值」时也会失败 —— 而重复值是一条**完全合法**的消息。
+
+| 位置 | 修复前 | 后果 |
+| --- | --- | --- |
+| `StringCache.cpp:78` | `assert(aMessage.StartId == m_idToString.size());` | 对端填一个不等于本地长度的 `StartId` ⇒ 接收方进程终止 |
+| `StringCache.cpp:85` | `assert(id == expectedId);` | 一条含重复值的消息 ⇒ 同上 |
+| `StringCache.cpp:55-59` | 写侧注释「the receiver asserts that the ids are contiguous」 | 注释描述的是一个会把进程杀掉的契约,而它看起来像文档 |
+
+### 83.2 判据:断言的实参必须是自己算出来的,否则它不是断言而是攻击面
+
+同族先例已经把判据写死了 —— `Code/encoding/Structs/CachedString.cpp:44-52` 的九行注释:
+
+> A peer only writes an id for a string it believes we already hold, so an id outside our cache
+> means the two caches disagree - not that this code is wrong. It used to assert(false), which
+> aborts the process: this frame is noexcept, so there is no way to fail softly, and the input is
+> a packet any peer can send (the default build is releasedbg, where the assert is live).
+
+把它拆成可机械执行的三条:
+
+- **实参来源**:`assert` 的每一个实参要么由本地计算、要么由本地校验过。`StartId` 两者都不是。
+- **失败路径**:所在函数是 `noexcept` ⇒ 断言失败不是「这条消息丢了」,是 `std::terminate`。
+- **构建配置**:全仓 `NDEBUG` **零命中**,CI 默认 `build-mode: releasedbg` ⇒ 断言在发布构建里也是活的。
+
+这三条同时成立,`assert` 就等价于「任何一个对端都能让本进程退出」。
+
+### 83.3 可达性:从收到包到断言,中间没有任何一道门
+
+- `Code/encoding/Opcodes.h:103 kStringCacheUpdate` 是服务端消息,`Code/encoding/Messages/ServerMessageFactory.h:45`/`:73` 注册了它。
+- `Code/client/Services/Generic/TransportService.cpp:110-123` 的 `handlerGenerator` 对 `ServerMessageFactory::Visit` 的每个类型注册:
+  `m_messageHandlers[T::Opcode] = [this](UniquePtr<ServerMessage>& apMessage){ const auto pRealMessage = TiltedPhoques::CastUnique<T>(std::move(apMessage)); m_dispatcher.trigger(*pRealMessage); };`
+  ⇒ 消息一到就 `trigger`,**在游戏线程上**。
+- `Code/client/World.cpp:19`/`:56` 注册 `StringCacheService`,它订阅 `StringCacheUpdate`。
+- `Code/client/Services/Generic/StringCacheService.cpp:28-31`:
+
+```cpp
+void StringCacheService::HandleStringCacheUpdate(const StringCacheUpdate& acMessage) noexcept
+{
+    StringCache::Get().Deserialize(acMessage);
+}
+```
+
+⇒ 没有长度判断、没有认证门槛(字符串缓存包在认证之后,但**任何已连接的对端**都能发),
+也没有返回值可供上层判断成败 —— 所以「失步」必须在缓存自己内部收敛,不能靠调用方处理。
+
+`Code/client/Services/StringCacheService.h:10` 写着「This service is currently not in use.」,
+但服务**仍然注册、仍然订阅**,所以那句话不能当作「不可达」的理由(§73 已就同类误判更正过一次)。
+
+### 83.4 修法:不连续就丢弃这条消息,缓存原样保留
+
+```cpp
+// Code/encoding/StringCache.cpp(修复后 :76-104)
+void StringCache::Deserialize(const StringCacheUpdate& aMessage) noexcept
+{
+    // The sender numbers these entries with its own cursor, and that cursor is a field of
+    // the packet: nothing here chose it and nothing here checks it. It used to be an
+    // assert, which aborts the process - this frame is noexcept, so there is no way to
+    // fail softly, and the default build is releasedbg, where the assert is live. It is
+    // the same defect CachedString.cpp had: an id the peer picked, tested with an assert.
+    //
+    // A message that does not line up is dropped instead. Both checks sit before the
+    // mutation they guard, so returning leaves a cache that is still a contiguous prefix
+    // of the sender's: the entries already applied landed at exactly their own ids, and
+    // Add returns early without touching anything when the value is already known. An id
+    // the cache does not hold still reads as "not one of the names I know" - the consumers
+    // of a cached name already test it against a fixed list and fall through when it
+    // matches nothing.
+    if (aMessage.StartId != m_idToString.size())
+        return;
+
+    for (auto& value : aMessage.Values)
+    {
+        const auto expectedId = m_idToString.size();
+        const auto id = Add(value);
+
+        // A value that is already in the cache reuses its old id, so a duplicate inside
+        // one message does not land at the end either. That is the same disagreement.
+        if (id != expectedId)
+            return;
+    }
+}
+```
+
+写侧那句注释同步改成描述**现在的**契约(`Code/encoding/StringCache.cpp:55-59`):
+
+```cpp
+        // One message carries at most kMaxValueCount entries, and the receiver
+        // requires the ids to be contiguous: a message whose start id does not line
+        // up is dropped. Send a slice and advance the cursor by exactly what was
+        // written, so the rest goes out on the next call instead of being skipped
+        // and leaving the two caches out of step.
+```
+
+**为什么是「丢弃」而不是「清空缓存」**:第一版写的是 `Clear()`(清空 ⇒ 后续每个 id 都查不到 ⇒
+已修的 `CachedString::Deserialize` 分支把名字置空),测试也按那个方向写好了。改判的理由是代价:
+服务端**每 2000 ms** 才推一次增量(`Code/server/Services/StringCacheService.cpp:17 constexpr auto cDelayBetweenSnapshots = 2000ms;`),
+清空会把一次失步放大成**两秒的同步空洞**;而丢弃只损失这一条。
+
+**为什么丢弃是安全的**:`m_idToString` 在任何 `return` 点上都仍是发送侧缓存的一个**连续前缀**。
+依据只有两条 —— `StartId` 的判断在**任何变更之前**;`Add` 在值已存在时**早退且不触碰任何容器**。
+两条都写在上面那段代码里,所以「下一次发送的切片仍然对得上」不是希望,是可推导的。
+
+注意重复值那条分支**不是回滚**:`{"gamma","gamma"}` 的第一条 `Add` 成功(`Size` 2→3)才轮到第二条返回旧 id,
+所以丢弃之后缓存里有 `gamma`。这一点写进了测试的注释,免得后来者以为 `return` 撤销了什么。
+
+**为什么不打日志**:`Code/encoding` 层没有任何日志设施 —— 全目录 3 个 `#include <iostream>`
+(`StringCache.cpp:3`、`Structs/AnimationGraphDescriptorManager.cpp:2`、`Structs/AnimationVariables.cpp:5`)
+**一处使用都没有**,也没有 spdlog;编码层内的丢弃只能由调用方打,而调用方拿不到这个信息
+(见 §83.3 的签名)。所以这次改动是静默的。
+
+### 83.5 复核命令(照抄)
+
+```powershell
+# 1. 编码层不该再有任何 assert
+git grep -n "assert(" -- Code/encoding/
+
+# 2. StartId 的来源(对端填的字段,不是本地算的)
+git grep -n "StartId" -- Code/encoding/Messages/StringCacheUpdate.cpp Code/encoding/StringCache.cpp
+
+# 3. 唯一调用点与它的签名(它无法回报失败)
+git grep -n "Deserialize(acMessage)" -- Code/client/Services/Generic/StringCacheService.cpp
+
+# 4. Add 的早退分支还在(丢弃不破坏不变量的依据)
+git grep -n "return \*id;" -- Code/encoding/StringCache.cpp
+
+# 5. 改动面与文档门禁
+git diff --stat -- Code
+python Tools\Scripts\check_docs.py
+```
+
+复核结果:`assert(` 在 `Code/encoding/` **零命中**(`Code/encoding/StringCache.cpp` 从 2 处降到 0);
+`StringCacheUpdate.cpp:23` 仍是 `& 0xFFFFFFFF` 的裸读(字段宽度不是本次要改的东西);
+`StringCacheService.cpp:30` 仍是那一行 `StringCache::Get().Deserialize(acMessage);`;
+`StringCache.cpp:29` 的 `return *id;` 仍在 ⇒ 丢弃路径不会留下半个缓存。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),所以证据是逐字命中 + 用例,不是编译产物。
+`Code/tests/encoding.cpp:575-647` 的 `[encoding.string_cache_selfheal]` 有四段:
+
+- `StartId = 5` 而本地长度是 2 ⇒ 断言 `Size() == 2`、`alpha`/`beta` 都还在、`gamma` **没进去**
+  (把「丢弃而不是清空」钉在用例里:改成 `Clear()` 这条断言就红)。
+- 紧接着造一个「id 9 不在缓存里」的 `CachedString` 包,断言名字读成空串 —— 这是「丢弃之后消费者仍然安全」的证据。
+- 重复值 `{"gamma","gamma"}` ⇒ 断言 `Size() == 3` 且 `gamma` 在,即**第一条落了地**,`return` 不是回滚。
+- 对齐的消息(`StartId = 1`,`{"beta","gamma"}`)照旧生效 ⇒ 断言三条全在,证明这次改动没有把正常路径一起关掉。
+
+> **教训**:第一条:**`assert` 不是「文档化的前置条件」,是「谁都能触发的进程退出」。**
+> 判断一条断言该不该留,只问一句:它的实参是**谁**选的?本地算的,留;对端填的,换掉。
+> 第二条:**注释会替错误作证。** 写侧那句「the receiver asserts that the ids are contiguous」
+> 把「对端一跳就终止进程」描述成了一条设计约定,而它读起来完全像文档 ——
+> 改掉实现时必须回头把引用它的注释、判据表、代码块引文一起改掉,否则下一轮审计会再把它当成正确的先例引用一次。
+> 第三条:**「丢弃」和「清空」都叫「失败处理」,但代价差两个数量级。**
+> 失败处理的粒度要跟「重来一次的代价」对齐:这里重来要等 2000 ms,所以粒度必须是这一条消息,不是整个缓存。
 
