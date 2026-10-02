@@ -9867,3 +9867,242 @@ copy matching the pinned commit`;`check_transport_compat.py` → `TRANSPORT COMP
 > `ExtraCharge`/`ExtraHealth` 的下游门是 `> 0.f`,而 `+inf` 比 `0.f` 大 ——
 > 一道「大于零」的门对非有限值等于不存在。
 
+## 77. 2026-10-10 场次:两张键由对端选、长度也由对端选的表 —— 判据是「这个键是谁写的,而它的长度谁管」
+
+> **锚点**:两处修复,都在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
+> `Code/plugins/patches/TradeTogether/0002-bound-the-peer-name-and-request-id-tables.patch`
+> 改 `plugins/TradeTogether/src/StrMessagingTransport.cpp`(新常量 `:14-20`,收包守卫 `:520-538`,
+> 解析缓存 `:261-265`)与 `plugins/TradeTogether/src/Trade.cpp`(新常量 `:21-27`,
+> 满表早退 `:757-763`,请求 id 长度校验 `:1068-1070`)。
+
+### 77.1 缺陷:两张表,键的内容与长度都由对端决定
+
+| 位置 | 作用 |
+| --- | --- |
+| `plugins/TradeTogether/src/StrMessagingTransport.cpp:517`(修复前) | `_namedConnections[*peerName] = a_message->sender.connectionID;` —— 键是包内 `from` 字段 hex 解码后的字符串,长度没有任何上界 |
+| `plugins/TradeTogether/src/StrMessagingTransport.cpp:510`(修复前) | 收包守卫只判 `peerName && !peerName->empty()`,没有键长上界 |
+| `plugins/TradeTogether/src/Trade.cpp:1053`(修复前) | `requestID` 只有 `requestID->empty()` 一道门,没有长度上界 |
+| `plugins/TradeTogether/src/Trade.cpp:749-766`(修复前) | `recentIncoming.emplace(a_requestID, …)` 无条件插入,表本身没有行数上界 |
+
+第一处,键长:
+
+```cpp
+// plugins/TradeTogether/src/StrMessagingTransport.cpp(修复前)
+std::optional<std::string> peerName;
+if (const auto encodedFrom = Protocol::ReadField(packet, "from"))
+{
+    peerName = Protocol::HexDecode(*encodedFrom);       // :514-515
+}
+...
+if (peerName && !peerName->empty() && !Protocol::EqualsInsensitive(*peerName, GetLocalPlayerName()))
+{
+    ...
+    if (a_message->sender.connectionID != 0)
+    {
+        std::scoped_lock lock(_proxyMutex);
+        _namedConnections[*peerName] = a_message->sender.connectionID;   // :517
+    }
+}
+```
+
+`Protocol::HexDecode`(`plugins/TradeTogether/src/Protocol.cpp:37-54`)只判「长度是偶数」与「每个字符是十六进制」,
+**没有任何长度上限**,而它拿到的 `encodedFrom` 来自一个上限为 `STRPM::kMaxPayloadBytes = 24 * 1024`
+的载荷 ⇒ 单个键最长约 12 KiB。
+
+第二处,行数:
+
+```cpp
+// plugins/TradeTogether/src/Trade.cpp(修复前)
+if (state.recentIncoming.contains(a_requestID))
+{
+    return;
+}
+state.recentIncoming.emplace(a_requestID, std::chrono::steady_clock::now());   // :749-751
+```
+
+`a_requestID` 是 `HandleNetworkPacket` 从包里读出来的(`Trade.cpp:1050`,现 `:1065`),
+而同一次解析里 `from`/`to` **是有 256 上限的**(`Trade.cpp:1061`: `from->size() > 256 || to->size() > 256`)——
+同一次解析、同一个包里两个字段,一个有上界一个没有,这个不一致本身就是判据。
+
+### 77.2 判据
+
+- **`_namedConnections` 什么时候变小?** 只有三处清空:`HandleProxyMapping` 的 `kCleared` 分支
+  (`:184`)、`Start()`(`:317`)、`Stop()`(`:402`),其余只有一处
+  `std::erase_if(_namedConnections, … e.second == a_event->connectionID)`(`:194`)——
+  **按连接号删,不按名字删**。所以一个只在载荷里换个 `from` 就能写入新键的对端,
+  在一整局游戏里可以一直加行,而唯一的容量信号是「游戏结束」。
+- **这张表被谁遍历?** `ResolveConnectionIDForPlayerName`(`:233`)先持 `_proxyMutex`
+  线性扫 `_namedConnections` 做大小写不敏感比较(`:241`),而它的唯一调用点是
+  `SendTo`(`:420`)—— **游戏线程上的发送路径**。行数与键长一起决定这条路径有多贵。
+- **`recentIncoming` 什么时候变小?** 只有 `Update()` 里的按龄清扫(`:976-983`,
+  `historyLifetime = std::max(requestTimeout * 2, std::chrono::milliseconds(60000))`),
+  而 `HandleIncomingRequest` 的插入发生在**「本机是否正忙」这道判断之前**(`:754-766` 先插入,
+  `:768` 才判 `state.session || state.pending`)⇒ 被自动拒绝的请求同样占一行,
+  60 秒窗口内的行数完全由对端决定。
+- **同族的修法已经在仓里**:`IEDSyncTogether/0002` 的 `kMaxRemoteSnapshots = 64`、
+  `MorphSyncTogether/0004` 的 `kMaxRemoteSnapshots`/`kMaxRemotePubicSnapshots`/`kMaxRemoteStates = 64`、
+  `OStimTogether/0007` 的 `kMaxResolvedEntries`/`kMaxRemoteNames = 512`、
+  `0008` 的 `kMaxRemotePreps = 32`/`kMaxReadyTokens = 256` —— 全部是「先判 `contains` 再判上限,
+  已有的键永远仍可更新,被拒的只是新键」。这一批缺的只有这两张。
+
+### 77.3 可达性
+
+- 两张表都在**已连接的 STRPM 通道**上:发送方只要能往 `tradetogether.offer.v1` 这个频道发一条
+  以 `TTNET|v1|` 开头的载荷即可(`SameChannel` 只比频道名,`HandleMessage` 只判前缀)。
+  这是普通联机流量,不需要任何权限、不需要成为队友、也不需要本机正在交易。
+- 第一处的写入条件是 `a_message->sender.connectionID != 0`(即发送方已拿到连接号),
+  换一个 `from` 就是一个新键 ⇒ 单条 24 KiB 载荷可以写入约 12 KiB 的键。
+- 第二处只需要包里有 `type=REQUEST`、`from`/`to` 过 256 校验、`to` 等于本机名字、`from` 不等于本机名字
+  (`Trade.cpp:1067-1073`)⇒ 每秒若干条就能在 60 秒窗口里堆到任意行数。
+- 两者的代价都落在**游戏线程**:`ResolveConnectionIDForPlayerName` 的线性扫在发送路径上,
+  `Update()` 的按龄清扫在每帧输入事件与每个网络包上(`Input.cpp:52`、`Trade.cpp:976`/`:998`/`:1047`)。
+
+### 77.4 修法
+
+一、键长与行数在**写入它的那一层**夹住(不是在消费它的 Trade 层 —— Trade 层那道 256 校验
+发生在 transport 已经写入之后):
+
+```cpp
+// plugins/TradeTogether/src/StrMessagingTransport.cpp:14-20(修复后)
+// The peer name is a field the sender fills in, and the only thing that
+// ever removes a row is the proxy mapping event for its connection, so
+// both the key length and the row count are bounded here. A name longer
+// than the Trade layer accepts can never match a lookup, and a full
+// table drops the row instead of growing without limit.
+constexpr std::size_t kMaxPeerNameBytes = 256;
+constexpr std::size_t kMaxNamedConnections = 64;
+```
+
+```cpp
+// plugins/TradeTogether/src/StrMessagingTransport.cpp:520-538(修复后)
+if (peerName && !peerName->empty() && peerName->size() <= kMaxPeerNameBytes &&
+    !Protocol::EqualsInsensitive(*peerName, GetLocalPlayerName()))
+{
+    ...
+    if (a_message->sender.connectionID != 0)
+    {
+        std::scoped_lock lock(_proxyMutex);
+        if (_namedConnections.contains(*peerName) ||
+            _namedConnections.size() < kMaxNamedConnections)
+        {
+            _namedConnections[*peerName] = a_message->sender.connectionID;
+        }
+        else
+        {
+            spdlog::warn(
+                "TradeTogether STRPM peer name table is full: size={} nameBytes={}",
+                _namedConnections.size(),
+                peerName->size());
+        }
+    }
+}
+```
+
+`kMaxPeerNameBytes = 256` 与 Trade 层自己的 `Trade.cpp:1061` 上限**取同一个值**:更长的名字在那边
+必然被丢掉,在这边也永远匹配不上任何一次 `ResolveConnectionIDForPlayerName`,所以拒绝它不丢信息。
+`kMaxNamedConnections = 64` 与同族的 `kMaxRemoteSnapshots = 64` 同宽。
+
+解析缓存那条写入路径同样夹住(`:261-265`),否则一次代理解析就能越界写入两个键:
+
+```cpp
+// plugins/TradeTogether/src/StrMessagingTransport.cpp:261-265(修复后)
+std::scoped_lock lock(_proxyMutex);
+if (_namedConnections.size() < kMaxNamedConnections)
+{
+    _namedConnections[actorName] = connectionID;
+    _namedConnections[std::string(a_playerName)] = connectionID;
+}
+```
+
+二、请求 id 的长度与历史表的行数在同一个文件里夹住:
+
+```cpp
+// plugins/TradeTogether/src/Trade.cpp:21-27(修复后)
+// The request id is a field the sender fills in, and a row of
+// recentIncoming is only removed once it ages out, so both the id
+// length and the row count are bounded here. A local id is always the
+// 32 characters MakeRequestID formats, and a full table drops the id
+// instead of growing without limit.
+constexpr std::size_t kMaxRequestIDBytes = 64;
+constexpr std::size_t kMaxRecentIncoming = 256;
+```
+
+`kMaxRequestIDBytes = 64` 是本地 `MakeRequestID()` 产出的 32 字符(`Trade.cpp:100-108`,
+`fmt::format("{:08X}{:016X}{:08X}", …)`)的两倍,给合法发送方留了余量;
+满表早退放在 `contains` 之后、插入之前:
+
+```cpp
+// plugins/TradeTogether/src/Trade.cpp:754-766(修复后)
+if (state.recentIncoming.contains(a_requestID))
+{
+    return;
+}
+if (state.recentIncoming.size() >= kMaxRecentIncoming)
+{
+    spdlog::warn(
+        "Trade request history is full: size={} request={}",
+        state.recentIncoming.size(),
+        a_requestID);
+    return;
+}
+state.recentIncoming.emplace(a_requestID, std::chrono::steady_clock::now());
+```
+
+```cpp
+// plugins/TradeTogether/src/Trade.cpp:1068-1070(修复后)
+if (!type || !requestID || requestID->empty() ||
+    requestID->size() > kMaxRequestIDBytes ||
+    !encodedFrom || !encodedTo)
+{
+    spdlog::warn("Malformed trade packet ignored");
+    return;
+}
+```
+
+三、交付:两个文件都在 `plugins/TradeTogether` 子模块里,而 CI 的
+`git submodule update --init --force --recursive --depth=1` 会丢弃只改工作树的改动,
+所以修复以 `Code/plugins/patches/TradeTogether/0002-bound-the-peer-name-and-request-id-tables.patch`
+交付(`0001` 只改 `src/main.cpp`,所以这一份的基线就是「`0001` 已应用」)。
+
+### 77.5 复核命令(照抄)
+
+```powershell
+python Tools\Scripts\check_docs.py
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\plugin_snapshot.py verify
+python Code\plugins\tools\check_transport_compat.py
+git grep -n "kMaxPeerNameBytes\|kMaxNamedConnections" -- plugins/TradeTogether/src
+git grep -n "kMaxRequestIDBytes\|kMaxRecentIncoming" -- plugins/TradeTogether/src
+git grep -n "peerName->size()" -- plugins/TradeTogether/src/StrMessagingTransport.cpp
+git -C plugins/TradeTogether apply --check --cached ..\..\Code\plugins\patches\TradeTogether\0002-bound-the-peer-name-and-request-id-tables.patch
+git -C plugins/TradeTogether apply --check --reverse ..\..\Code\plugins\patches\TradeTogether\0002-bound-the-peer-name-and-request-id-tables.patch
+```
+
+复核结果:`check_docs.py` → `DOC CHECK OK` / `coverage 3069/3082 stated consistently in 4 doc(s)`;
+`plugin_patches.py verify` → `PATCH VERIFY OK` / `23 patch(es) apply to their pinned commits`;
+`check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK` / `8 plugin(s) have a durable
+copy matching the pinned commit`;`check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`
+(`client opcodes: 53 in use` / `server opcodes: 56 in use`,**这一批没有动线格式**);
+`kMaxPeerNameBytes` 命中 `StrMessagingTransport.cpp:19`/`:520`,`kMaxNamedConnections` 命中
+`:20`/`:529`/`:262`;`kMaxRequestIDBytes` 命中 `Trade.cpp:26`/`:1069`,`kMaxRecentIncoming` 命中
+`Trade.cpp:27`/`:757`;
+最后两条 `git apply --check`:`--cached`(对 index = pin)exit 0,`--reverse`(对工作树)
+exit 0 ⇒ 补丁既「对 pin 可应用」又「已经在工作树里」,这正是 `verify` 与 `check` 各自的判据;
+不带 `--cached`/`--reverse` 的 `git apply --check` 对工作树**必然失败**
+(`error: patch failed: src/StrMessagingTransport.cpp:11`),因为改动已经在里面。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),所以这一批的证据是逐字命中 + 门禁 + 补丁对 pin 的可应用性,
+不是编译产物。两处修改都不新增 include(`plugins/TradeTogether/src/PCH.h:16-34` 已有
+`<chrono> <cstdint> <string> <unordered_map>`),`Trade.cpp` 里 `std::size_t` 此前零命中,新常量是首次使用。
+
+> **教训**:第一条:**同一次解析里两个字段一个有上界一个没有,这就是判据。**
+> `Trade.cpp` 的 `from`/`to` 早就有 256 上限,而同一个包里的 `request` 只有「非空」;
+> 写代码时先问「这个字段的下游拿它当什么用」,再问「和它并列的字段都限了什么」。
+> 第二条:**上限要加在写入它的那一层,不是消费它的那一层。**
+> Trade 层的 256 校验发生在 transport 已经把键写进 `_namedConnections` 之后,
+> 于是「下游会挡住」是一句空话 —— 挡住的只是下游的使用,不是上游的增长。
+> 第三条:**「有回收路径」不等于「有上界」。**
+> `recentIncoming` 有按龄清扫,看起来是自愈的;但 60 秒的窗口里行数完全由对端决定,
+> 而清扫本身每帧都要遍历整张表 —— 回收路径的**周期**决定了窗口内能堆多高。
+

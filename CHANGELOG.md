@@ -9,6 +9,102 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:两张键由对端选、长度也由对端选的表 —— TradeTogether 的对端名字表与请求 id 历史表
+
+**现象**:TradeTogether 的 `StrMessagingTransport` 把「对端名字 → 连接号」写进
+`_namedConnections`,而那个名字是**包内 `from` 字段** hex 解码后的字符串:
+`Protocol::HexDecode`(`plugins/TradeTogether/src/Protocol.cpp:37-54`)只判长度是偶数、每个字符是十六进制,
+**没有任何长度上限**,它拿到的字段又来自上限为 `24 * 1024` 的载荷 ⇒ 单个键最长约 12 KiB。
+同一插件里 `TradeState::recentIncoming` 的键是包内 `request` 字段,而**同一次解析里 `from`/`to` 是有 256 上限的**
+(`Trade.cpp:1061`),`requestID` 却只判了「非空」。
+
+**根因**:两张表的键都由对端选,而**没有任何一处问过键有多长、表有多少行**:
+
+```cpp
+// plugins/TradeTogether/src/StrMessagingTransport.cpp(修复前)
+std::optional<std::string> peerName;
+if (const auto encodedFrom = Protocol::ReadField(packet, "from"))
+{
+    peerName = Protocol::HexDecode(*encodedFrom);       // :514-515,长度只受 24 KiB 载荷约束
+}
+...
+if (peerName && !peerName->empty() && !Protocol::EqualsInsensitive(*peerName, GetLocalPlayerName()))
+{
+    ...
+    if (a_message->sender.connectionID != 0)
+    {
+        std::scoped_lock lock(_proxyMutex);
+        _namedConnections[*peerName] = a_message->sender.connectionID;   // :517
+    }
+}
+```
+
+```cpp
+// plugins/TradeTogether/src/Trade.cpp(修复前)
+if (state.recentIncoming.contains(a_requestID))
+{
+    return;
+}
+state.recentIncoming.emplace(a_requestID, std::chrono::steady_clock::now());   // :749-751
+```
+
+判据是**回收路径**:`_namedConnections` 只有三处清空(`kCleared` 分支 `:184`、`Start()` `:317`、
+`Stop()` `:402`),其余只有一处 `std::erase_if(… e.second == a_event->connectionID)`(`:194`)——
+**按连接号删,不按名字删**,所以换一个 `from` 就是一个永远删不掉的键;`recentIncoming` 只有
+`Update()` 里的按龄清扫(`:976-983`,`historyLifetime = std::max(requestTimeout * 2, 60000ms)`),
+而 `HandleIncomingRequest` 的插入发生在**「本机是否正忙」这道判断之前**(`:754-766` 先插入、`:768` 才判忙)
+⇒ 被自动拒绝的请求同样占一行,60 秒窗口内的行数完全由对端决定。
+
+这张表的代价落在**游戏线程**:`ResolveConnectionIDForPlayerName`(`:233`)先持 `_proxyMutex`
+线性扫 `_namedConnections` 做大小写不敏感比较(`:241`),而它的唯一调用点是 `SendTo`(`:420`);
+`Update()` 的按龄清扫则挂在每帧输入事件(`Input.cpp:52`)与每个网络包(`Trade.cpp:976`/`:998`/`:1047`)上。
+
+**判据可机械执行**:同族的修法已经在仓里 —— `IEDSyncTogether/0002` 的 `kMaxRemoteSnapshots = 64`、
+`MorphSyncTogether/0004` 的三张 64、`OStimTogether/0007` 的 `kMaxResolvedEntries`/`kMaxRemoteNames = 512`、
+`0008` 的 `kMaxRemotePreps = 32`/`kMaxReadyTokens = 256`,全部是「先判 `contains` 再判上限,
+已有的键永远仍可更新,被拒的只是新键」。这一批缺的只有这两张。
+
+**修法**:
+
+- `plugins/TradeTogether/src/StrMessagingTransport.cpp:14-20` 加两个文件内常量
+  `constexpr std::size_t kMaxPeerNameBytes = 256;` 与 `constexpr std::size_t kMaxNamedConnections = 64;`。
+  256 与 Trade 层自己的 `Trade.cpp:1061` 上限**取同一个值**:更长的名字在那边必然被丢掉,
+  在这边也永远匹配不上任何一次 `ResolveConnectionIDForPlayerName`,所以拒绝它不丢信息。
+- `:520-538` 收包守卫加上 `peerName->size() <= kMaxPeerNameBytes`,写入改成
+  `if (_namedConnections.contains(*peerName) || _namedConnections.size() < kMaxNamedConnections)`
+  才赋值,否则打一条 `spdlog::warn("TradeTogether STRPM peer name table is full: size={} nameBytes={}", …)`。
+- `:261-265` 代理解析那条写入路径同样夹住(`ResolveConnectionIDForPlayerName` 一次会写两个键),
+  否则「表满」只能靠收包路径挡住一半。
+- `plugins/TradeTogether/src/Trade.cpp:21-27` 加 `constexpr std::size_t kMaxRequestIDBytes = 64;`
+  与 `constexpr std::size_t kMaxRecentIncoming = 256;`。64 是本地 `MakeRequestID()` 产出的 32 字符
+  (`:100-108`,`fmt::format("{:08X}{:016X}{:08X}", …)`)的两倍。
+- `:757-763` 在 `contains` 之后、插入之前加满表早退(满表丢弃并打一条 warn);
+  `:1068-1070` 的校验加上 `requestID->size() > kMaxRequestIDBytes`。
+- 交付:`plugins/TradeTogether` 是子模块,而 CI 的
+  `git submodule update --init --force --recursive --depth=1` 会丢弃只改工作树的改动,
+  所以修复以 `Code/plugins/patches/TradeTogether/0002-bound-the-peer-name-and-request-id-tables.patch`
+  交付(`0001` 只改 `src/main.cpp`,所以这一份的基线就是「`0001` 已应用」)。
+
+**验证**:`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / `23 patch(es)`;
+`check` → `PATCH CHECK OK`;`plugin_snapshot.py verify` → `SNAPSHOT OK` / `8 plugin(s) have a durable
+copy matching the pinned commit`;`Tools\Scripts\check_docs.py` → `DOC CHECK OK`;
+`check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`(**这一批没有动线格式**)。
+补丁的两个方向都实测过:`git apply --check --cached`(对 index = pin)exit 0,
+`git apply --check --reverse`(对工作树)exit 0,而不带这两个开关的 `git apply --check` 对工作树
+必然失败(`error: patch failed: src/StrMessagingTransport.cpp:11`)—— 因为改动已经在里面。
+两处修改都不新增 include(`plugins/TradeTogether/src/PCH.h:16-34` 已有
+`<chrono> <cstdint> <string> <unordered_map>`)。本机不编译(仓库约束),所以证据是逐字命中 + 门禁,
+不是编译产物。
+
+**教训**:同一次解析里两个字段一个有上界一个没有,这就是判据 —— `from`/`to` 早就有 256 上限,
+而同一个包里的 `request` 只有「非空」。
+
+**教训**:上限要加在**写入它的那一层**,不是消费它的那一层 —— Trade 层的 256 校验发生在
+transport 已经把键写进 `_namedConnections` 之后,「下游会挡住」挡住的只是下游的使用,不是上游的增长。
+
+**教训**:「有回收路径」不等于「有上界」—— `recentIncoming` 有按龄清扫,看起来是自愈的,
+但 60 秒窗口里的行数完全由对端决定,而清扫本身每帧都要遍历整张表;
+回收路径的**周期**决定了窗口内能堆多高。
 ### 修复:对象实体表只增不减 —— 一张行数由客户端决定、却只由「房间空掉」回收的表
 
 **现象**:服务端 `ObjectService` 的实体数由客户端发来的 `AssignObjectsRequest` 决定:

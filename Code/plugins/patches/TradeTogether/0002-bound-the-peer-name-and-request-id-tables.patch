@@ -1,0 +1,99 @@
+diff --git a/src/StrMessagingTransport.cpp b/src/StrMessagingTransport.cpp
+index 85302c4..39442b6 100644
+--- a/src/StrMessagingTransport.cpp
++++ b/src/StrMessagingTransport.cpp
+@@ -11,6 +11,14 @@ namespace TradeTogether
+         constexpr char kChannel[] = "tradetogether.offer.v1";
+         constexpr std::string_view kGameplayPrefix = "TTNET|v1|";
+ 
++        // The peer name is a field the sender fills in, and the only thing that
++        // ever removes a row is the proxy mapping event for its connection, so
++        // both the key length and the row count are bounded here. A name longer
++        // than the Trade layer accepts can never match a lookup, and a full
++        // table drops the row instead of growing without limit.
++        constexpr std::size_t kMaxPeerNameBytes = 256;
++        constexpr std::size_t kMaxNamedConnections = 64;
++
+         std::string ReadLocalPlayerName()
+         {
+             if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+@@ -251,8 +259,10 @@ namespace TradeTogether
+             const auto actorName = ReadActorName(actor);
+             if (!actorName.empty() && Protocol::EqualsInsensitive(actorName, a_playerName)) {
+                 std::scoped_lock lock(_proxyMutex);
+-                _namedConnections[actorName] = connectionID;
+-                _namedConnections[std::string(a_playerName)] = connectionID;
++                if (_namedConnections.size() < kMaxNamedConnections) {
++                    _namedConnections[actorName] = connectionID;
++                    _namedConnections[std::string(a_playerName)] = connectionID;
++                }
+                 spdlog::info(
+                     "TradeTogether STRPM resolved player proxy: name=\"{}\" connection={} form={:08X}",
+                     actorName,
+@@ -507,14 +517,23 @@ namespace TradeTogether
+         if ((!peerName || peerName->empty()) && a_message->sender.displayName && *a_message->sender.displayName) {
+             peerName = std::string(a_message->sender.displayName);
+         }
+-        if (peerName && !peerName->empty() && !Protocol::EqualsInsensitive(*peerName, GetLocalPlayerName())) {
++        if (peerName && !peerName->empty() && peerName->size() <= kMaxPeerNameBytes &&
++            !Protocol::EqualsInsensitive(*peerName, GetLocalPlayerName())) {
+             {
+                 std::scoped_lock lock(_peerMutex);
+                 _mostRecentPeerName = *peerName;
+             }
+             if (a_message->sender.connectionID != 0) {
+                 std::scoped_lock lock(_proxyMutex);
+-                _namedConnections[*peerName] = a_message->sender.connectionID;
++                if (_namedConnections.contains(*peerName) ||
++                    _namedConnections.size() < kMaxNamedConnections) {
++                    _namedConnections[*peerName] = a_message->sender.connectionID;
++                } else {
++                    spdlog::warn(
++                        "TradeTogether STRPM peer name table is full: size={} nameBytes={}",
++                        _namedConnections.size(),
++                        peerName->size());
++                }
+             }
+         }
+ 
+diff --git a/src/Trade.cpp b/src/Trade.cpp
+index 7bccaf7..e069246 100644
+--- a/src/Trade.cpp
++++ b/src/Trade.cpp
+@@ -18,6 +18,14 @@ namespace TradeTogether::Trade
+         constexpr std::uint32_t kDeleteScanCode = 0xD3;
+         constexpr RE::FormID kGoldFormID = 0x0000000F;
+ 
++        // The request id is a field the sender fills in, and a row of
++        // recentIncoming is only removed once it ages out, so both the id
++        // length and the row count are bounded here. A local id is always the
++        // 32 characters MakeRequestID formats, and a full table drops the id
++        // instead of growing without limit.
++        constexpr std::size_t kMaxRequestIDBytes = 64;
++        constexpr std::size_t kMaxRecentIncoming = 256;
++
+         struct PendingTrade
+         {
+             std::string requestID;
+@@ -746,6 +754,13 @@ namespace TradeTogether::Trade
+             if (state.recentIncoming.contains(a_requestID)) {
+                 return;
+             }
++            if (state.recentIncoming.size() >= kMaxRecentIncoming) {
++                spdlog::warn(
++                    "Trade request history is full: size={} request={}",
++                    state.recentIncoming.size(),
++                    a_requestID);
++                return;
++            }
+             state.recentIncoming.emplace(
+                 a_requestID,
+                 std::chrono::steady_clock::now());
+@@ -1051,6 +1066,7 @@ namespace TradeTogether::Trade
+         const auto encodedFrom = Protocol::ReadField(a_packet, "from");
+         const auto encodedTo = Protocol::ReadField(a_packet, "to");
+         if (!type || !requestID || requestID->empty() ||
++            requestID->size() > kMaxRequestIDBytes ||
+             !encodedFrom || !encodedTo) {
+             spdlog::warn("Malformed trade packet ignored");
+             return;
