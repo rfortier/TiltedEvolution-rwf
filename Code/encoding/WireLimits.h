@@ -22,8 +22,9 @@
 //
 // Note the limit of the fix: the clamp runs after the string has been read, so it bounds
 // what the value is used for, not the transient allocation inside the reader. Bounding
-// the packet itself is a separate change, and the only place for it is the receive entry
-// point (GameServer::OnConsume and Client::OnConsume), which see the packet size.
+// the packet itself is what kMaxPacketBytes below does, and the only place for it is the
+// receive entry point (GameServer::OnConsume and Client::OnConsume), which see the
+// packet size.
 namespace WireLimits
 {
 
@@ -62,6 +63,20 @@ inline constexpr uint32_t kMaxAppearanceBytes = 1 << 15;
 
 // A string cached for later reference by id. These are editor ids and file names.
 inline constexpr uint32_t kMaxCachedStringBytes = 512;
+
+// The largest packet this framework can produce. Every sender serialises into a fixed
+// buffer before handing the bytes to the transport - the server into 1 << 20, the client
+// into 1 << 16 - so a packet larger than the larger of those is one no peer of ours wrote.
+// The receive entry points check this before they build a reader over the bytes, which is
+// the one place a bound can run before the allocation instead of after it.
+inline constexpr uint32_t kMaxPacketBytes = 1 << 20;
+
+// Whether a packet of this size can have come from a peer. Split out from the constant so
+// the boundary itself is testable: Code/tests/xmake.lua only sees this library.
+[[nodiscard]] inline bool WithinPacketLimit(const uint64_t aSize) noexcept
+{
+    return aSize <= kMaxPacketBytes;
+}
 
 // Clamps a string that has just been read. Resizing down cannot throw, and every field
 // this is used on is display text, a file name or an opaque buffer whose consumer

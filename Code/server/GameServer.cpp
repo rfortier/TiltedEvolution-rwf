@@ -21,6 +21,7 @@
 #include <Messages/NotifySettingsChange.h>
 #include <console/ConsoleRegistry.h>
 #include <resources/ResourceCollection.h>
+#include <WireLimits.h>
 
 constexpr size_t kMaxServerNameLength = 128u;
 
@@ -571,6 +572,21 @@ void GameServer::OnUpdate()
 
 void GameServer::OnConsume(const void* apData, const uint32_t aSize, const ConnectionId_t aConnectionId)
 {
+    // Checked before a reader is built over the bytes and before anything is parsed out of
+    // them. Every length field inside a packet is a claim about how much of it is there, so
+    // the size of the packet is the only thing that bounds what such a claim can make this
+    // side allocate - and the bounds in WireLimits.h all run after the read, which is too
+    // late for the allocation inside the reader.
+    //
+    // A peer of ours cannot produce more than kMaxPacketBytes: both senders serialise into a
+    // fixed buffer before handing the bytes to the transport. A larger packet is not one
+    // this framework wrote, and dropping it here keeps the cost of handling it bounded.
+    if (!WireLimits::WithinPacketLimit(aSize))
+    {
+        spdlog::warn("Dropping a {} byte packet from {:x}: larger than any packet this framework can produce", aSize, aConnectionId);
+        return;
+    }
+
     ViewBuffer buf((uint8_t*)apData, aSize);
     Buffer::Reader reader(&buf);
 

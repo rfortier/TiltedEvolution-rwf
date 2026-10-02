@@ -22,6 +22,7 @@
 #include <Messages/NotifySettingsChange.h>
 #include <JsonEscape.h>
 #include <Packet.hpp>
+#include <WireLimits.h>
 
 #include <ScriptExtender.h>
 #include <Services/DiscordService.h>
@@ -179,7 +180,20 @@ bool TransportService::Send(const ClientMessage& acMessage) const noexcept
 
 void TransportService::OnConsume(const void* apData, uint32_t aSize)
 {
+    // Checked before a reader is built over the bytes and before anything is parsed out of
+    // them. Every length field inside a packet is a claim about how much of it is there, so
+    // the size of the packet is the only thing that bounds what such a claim can make this
+    // side allocate - and the bounds in WireLimits.h all run after the read, which is too
+    // late for the allocation inside the reader. This runs on the pump thread too, so a
+    // packet that never gets parsed also never reaches the queue the game thread drains.
+    if (!WireLimits::WithinPacketLimit(aSize))
+    {
+        spdlog::warn("Dropping a {} byte packet from the server: larger than any packet this framework can produce", aSize);
+        return;
+    }
+
     ServerMessageFactory factory;
+
     TiltedPhoques::ViewBuffer buf((uint8_t*)apData, aSize);
     Buffer::Reader reader(&buf);
 

@@ -9,6 +9,103 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:整包尺寸没有任何上限,而包内每一个长度字段都被当成真的 —— 判据是「谁在分配之前知道这个包有多大」
+
+**现象**:没有任何现象。这是本仓库里唯一一类「修掉它不会让任何一局游戏变好」的缺陷 —— 它只在对手存在时才有意义,
+而对手存在的假设下,它是**未认证连接**就能触发的那一类。
+
+**根因**:两个接收入口都先把字节包成 `ViewBuffer`、再交给工厂解析,**中间没有任何尺寸判断**:
+
+```cpp
+// Code/server/GameServer.cpp(修复前 :572-602)
+void GameServer::OnConsume(const void* apData, const uint32_t aSize, const ConnectionId_t aConnectionId)
+{
+    ViewBuffer buf((uint8_t*)apData, aSize);          // :574 aSize 唯一一次被使用
+    Buffer::Reader reader(&buf);
+
+    const ClientMessageFactory factory;
+    auto pMessage = factory.Extract(reader);          // :593 从这里开始相信包内的一切
+}
+```
+
+客户端 `Code/client/Services/Generic/TransportService.cpp:180-206` 是同一个形状。
+
+包内每一个长度字段都是「这个包里有这么多字节」的**声明**,而解析器按声明分配(`Mods::Deserialize` 的 8191 计数、
+`Inventory` 的 4096 条、每条字符串的 `ReadString`)。`Code/encoding/WireLimits.h` 里的那些字符串上限全都
+**在读完之后**才夹取 —— 它们约束的是「值怎么用」,不是 reader 内部的瞬时分配。这个缺口在 `WireLimits.h` 的
+头注释 `:23-26` 里被明确写下来了,写的是「Bounding the packet itself is a separate change, and the only place for it
+is the receive entry point」—— 文档把判据写死了,实现一直不存在。
+
+**为什么没有任何东西报错**:因为报错的前提是有人发大包,而合法客户端永远发不出大包 —— 两个发送侧都在固定缓冲区里
+序列化(服务端 `Code/server/GameServer.cpp:676` 的 `Buffer buffer(1 << 20)`,客户端
+`Code/client/Services/Generic/TransportService.cpp:165` 的 `Buffer buffer(1 << 16)`)。于是这条路径在正常对局里
+**不可达**,在 CI 里也不可达,只有在对手存在的假设下才可达 —— 而那时它是未认证连接可达。
+
+**为什么 CI 挡不住、本地也看不见**:没有任何测试构造过「一个比发送侧缓冲区更大的包」,因为没有哪一处代码在问这个问题。
+`Code/**` 全仓搜 `aSize >` / `packetSize` / `kMaxPacket` **零命中** —— 这不是「门禁太松」,是「门禁不存在」。
+
+**修法**:上限放进 `Code/encoding/WireLimits.h`,与其它上限放在一起;判断在两个接收入口的最前面:
+
+```cpp
+// Code/encoding/WireLimits.h
+inline constexpr uint32_t kMaxPacketBytes = 1 << 20;
+
+[[nodiscard]] inline bool WithinPacketLimit(const uint64_t aSize) noexcept
+{
+    return aSize <= kMaxPacketBytes;
+}
+```
+
+```cpp
+// Code/server/GameServer.cpp:584-588(客户端同形,TransportService.cpp:189-193)
+    if (!WireLimits::WithinPacketLimit(aSize))
+    {
+        spdlog::warn("Dropping a {} byte packet from {:x}: larger than any packet this framework can produce", aSize, aConnectionId);
+        return;
+    }
+```
+
+- **为什么上限是 `1 << 20` 而不是更小**:这个值必须**大于等于**发送侧能产出的一切,否则它会开始丢弃合法流量,
+  而丢包的后果看起来像失同步、不像丢包。服务端序列化进 `1 << 20`,客户端进 `1 << 16`,取两者的大者 —— 这就是
+  「我们自己的对端能发出的最大包」这个量的定义。写得再小需要先证明「没有任何一条合法报文能超过 X」,
+  而 `AssignObjectsRequest` 一条就能带 255 个 `ObjectData`、每个含一个完整 `Inventory`(4096 条 × 每条 ≤64 个
+  `EffectItem`,每项含最长 260 字节的附魔串),这个证明本地做不出来。
+- **为什么放在 `Code/encoding` 而不是放在两个调用者旁边**:`Code/tests/xmake.lua` 只 `add_deps("SkyrimEncoding")`,
+  那是测试目标唯一能看到的库 —— 门禁放服务端就永远没有用例(`docs/PITFALLS.md:7446-7465` 的 §62.4 已立过同一条判据)。
+- **为什么拆出一个 `WithinPacketLimit` 而不是直接写 `aSize > kMaxPacketBytes`**:边界本身要可测。
+  把判断留成常量比较,测试只能测常量;留成函数,测试能测「等于上限通过、上限加一不通过」。
+- **为什么是「丢弃 + 一行 warn」而不是「夹取」**:夹取在这里没有意义 —— 包被截断之后剩下的字节不再是一个包。
+  这一条与字符串那些上限的取舍**相反**,理由是两者处理的对象不同:字符串截短之后仍然是那个字符串的近似,
+  包截短之后不是。
+- **不改管理端**(`Code/admin/Transport.cpp:12-25`):它是独立桌面二进制、没有日志设施、失败分支是裸 `return;`,
+  不在「游戏本体/插件层」的判据范围内。
+- **同时加一条门禁**:`Code/plugins/tools/check_transport_compat.py` 现在会读 `WireLimits.h` 里的 `kMaxPacketBytes`,
+  断言它不低于服务端的 `1 << 20`,并断言两个接收入口真的调用了 `WithinPacketLimit`。
+  理由是这条上限有一个**静默失败方向**:把值改小不会让任何测试变红,只会让大包在对手不存在的对局里消失。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 新用例 + 门禁。
+`Code/tests/encoding.cpp:1612-1638` 新增
+`TEST_CASE("A packet larger than any sender can produce is rejected before it is read", "[encoding.packet_limit]")`:
+
+- `WithinPacketLimit(0)` / `(1)` / `(kMaxPacketBytes)` 通过,`(kMaxPacketBytes + 1)` 不通过 —— 边界钉在用例里。
+- `WithinPacketLimit(std::numeric_limits<uint64_t>::max())` 不通过 ⇒ 64 位尺寸不会回绕进接受区间。
+- `kMaxPacketBytes >= (1u << 20)` ⇒ 这条上限永远不会低于服务端自己的出包能力。
+- `kMaxPacketBytes` 大于三个字符串上限 ⇒ 两层门禁独立,改一层不会把另一层关掉。
+
+`python Code\plugins\tools\check_transport_compat.py` 通过,且**反向验证过**:把客户端那处调用临时换成
+`aSize > (1u << 20)` 之后,门禁输出
+`TRANSPORT COMPATIBILITY FAILED (1) - Code/client/Services/Generic/TransportService.cpp TransportService::OnConsume does not call WireLimits::WithinPacketLimit; the size of the packet is known only there, so without it the bound does nothing`。
+
+> **教训**:第一条:**「上限写在文档里」和「上限存在」是两件事。**
+> `WireLimits.h` 的头注释逐字写了「整包上限只能在接收入口加」,写了很久,而两个入口一次都没判过尺寸 ——
+> 一段把缺口描述得非常准确的注释,读起来和一段修好的代码一样让人放心。
+> 第二条:**安全上限的失败方向是「静默丢包」,不是「崩溃」。**
+> 把 `1 << 20` 改成 `1 << 10` 不会让任何测试变红,只会让某些报文在正常对局里凭空消失,
+> 而消失的后果看起来像失同步 —— 所以这条常量需要一个门禁去盯它的**下界**,光有用例盯上界不够。
+> 第三条:**同一个「太大」,在字符串层和包层的正确取舍是相反的。**
+> 字符串截短之后仍然是那个字符串的近似(所以夹取);包截短之后不是包(所以丢弃)。
+> 判据不是「夹取更温和」,而是「截断之后剩下的东西还有没有意义」。
+
 ### 修复:字符串缓存的起点是对端填的字段,而它被拿去喂 assert —— 判据是「这个断言的实参是谁选的」
 
 **现象**:客户端在游戏线程上收到一条 `StringCacheUpdate` 之后进程直接退出,没有崩溃栈、没有异常、

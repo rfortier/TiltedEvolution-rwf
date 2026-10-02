@@ -1608,3 +1608,31 @@ TEST_CASE("An object list longer than the 8 bit count is sent in slices", "[enco
     REQUIRE(recvClamped.Objects.back().Id == objects[AssignObjectsRequest::kMaxObjectCount - 1].Id);
     REQUIRE(AssignObjectsResponse::kMaxObjectCount == AssignObjectsRequest::kMaxObjectCount);
 }
+
+TEST_CASE("A packet larger than any sender can produce is rejected before it is read", "[encoding.packet_limit]")
+{
+    // Both senders serialise into a fixed buffer - the server into 1 << 20, the client into
+    // 1 << 16 - so the larger of the two is the largest packet a peer of ours can hand over.
+    // The bound exists because every length field inside a packet is a claim about how much
+    // of it is there, and those claims are what the reader allocates from; WireLimits' string
+    // bounds all run after the read and so cannot bound that allocation. The entry points
+    // (GameServer::OnConsume, TransportService::OnConsume) check this before building a
+    // reader, and this is the boundary itself.
+    REQUIRE(WireLimits::WithinPacketLimit(0));
+    REQUIRE(WireLimits::WithinPacketLimit(1));
+    REQUIRE(WireLimits::WithinPacketLimit(WireLimits::kMaxPacketBytes));
+    REQUIRE_FALSE(WireLimits::WithinPacketLimit(WireLimits::kMaxPacketBytes + 1));
+
+    // The server's own send buffer, so the bound cannot drift below what this side produces.
+    REQUIRE(WireLimits::kMaxPacketBytes >= (1u << 20));
+
+    // A size that arrived as a 64 bit value cannot wrap into the accepted range.
+    REQUIRE_FALSE(WireLimits::WithinPacketLimit(static_cast<uint64_t>(WireLimits::kMaxPacketBytes) + 1));
+    REQUIRE_FALSE(WireLimits::WithinPacketLimit(std::numeric_limits<uint64_t>::max()));
+
+    // The bound is the same one the string bounds sit under: a packet that passes it still
+    // gets its strings clamped, so the two layers are independent.
+    REQUIRE(WireLimits::kMaxPacketBytes > WireLimits::kMaxCachedStringBytes);
+    REQUIRE(WireLimits::kMaxPacketBytes > WireLimits::kMaxAppearanceBytes);
+    REQUIRE(WireLimits::kMaxPacketBytes > WireLimits::kMaxChatMessageBytes);
+}

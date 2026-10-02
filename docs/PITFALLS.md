@@ -7464,6 +7464,10 @@ void sendPlayerMessage(const ChatMessageType acType, const String acContent, Pla
 `Client::OnConsume`),只有它们知道包的真实大小。这句话写在 `Code/encoding/WireLimits.h`
 的头注释里,免得下一个人以为这条线上已经没有任何无界分配了。
 
+(**2026-10-13 更正**:上面这句判据写对了,但实现**一直到 §84 才存在** —— 两个接收入口在那之前
+一次都没有判过 `aSize`,而 `WireLimits.h` 的头注释又逐字写着「这句话写在头注释里」,
+于是缺口看起来像已经补上了。见 §84。)
+
 新代码放 `Code/encoding` 而不是放在两个服务端调用者旁边,是因为 `Code/tests/xmake.lua`
 只 `add_deps("SkyrimEncoding")` —— 那是测试目标唯一能看到的库。
 
@@ -11188,4 +11192,147 @@ python Tools\Scripts\check_docs.py
 > 改掉实现时必须回头把引用它的注释、判据表、代码块引文一起改掉,否则下一轮审计会再把它当成正确的先例引用一次。
 > 第三条:**「丢弃」和「清空」都叫「失败处理」,但代价差两个数量级。**
 > 失败处理的粒度要跟「重来一次的代价」对齐:这里重来要等 2000 ms,所以粒度必须是这一条消息,不是整个缓存。
+
+## 84. 2026-10-13 场次:整包尺寸没有任何上限,而包内每一个长度字段都被当成真的 —— 判据是「谁在分配之前知道这个包有多大」
+
+> **锚点**:一处上限,两个调用点,一条门禁:
+> `Code/encoding/WireLimits.h:67-79`(`kMaxPacketBytes = 1 << 20` 与 `WithinPacketLimit`)、
+> `Code/server/GameServer.cpp:575-588`(`OnConsume` 在 `ViewBuffer buf(...)` 之前判尺寸)、
+> `Code/client/Services/Generic/TransportService.cpp:183-193`(同一个形状,在 `ViewBuffer buf(...)` 之前)、
+> `Code/server/GameServer.cpp:676` 与 `Code/client/Services/Generic/TransportService.cpp:165`(上限的依据:两个发送侧各自的固定缓冲区)、
+> `Code/plugins/tools/check_transport_compat.py:202-245`(新门禁:常量下界 + 两个入口真的调用了它)。
+> 测试在 `Code/tests/encoding.cpp:1612-1638`(`[encoding.packet_limit]`)。
+> 就地更正:`docs/PITFALLS.md` §62.4 —— 那段判据本身是对的,但它在「实现是否存在」这件事上把人骗了(见 §84.2)。
+
+### 84.1 缺陷:接收入口从不问这个包有多大
+
+```cpp
+// Code/server/GameServer.cpp(修复前 :572-602)
+void GameServer::OnConsume(const void* apData, const uint32_t aSize, const ConnectionId_t aConnectionId)
+{
+    ViewBuffer buf((uint8_t*)apData, aSize);          // :574 aSize 唯一一次被使用
+    Buffer::Reader reader(&buf);
+
+    const ClientMessageFactory factory;
+    auto pMessage = factory.Extract(reader);          // :593 从这里开始相信包内的一切
+    if (!pMessage)
+    {
+        spdlog::error("Couldn't parse packet from {:x}", aConnectionId);
+        return;
+    }
+
+    m_messageHandlers[pMessage->GetOpcode()](pMessage, aConnectionId);
+}
+```
+
+客户端 `Code/client/Services/Generic/TransportService.cpp:180-206` 是同一个形状(`:183` 建 `ViewBuffer`、
+`:186` 解析、`:204-205` 塞进 `m_pendingMessages`),管理端 `Code/admin/Transport.cpp:12-25` 是第三处。
+
+| 位置 | 修复前 | 后果 |
+| --- | --- | --- |
+| `GameServer::OnConsume` | `:574` 之后直接 `:593` 解析 | 未认证连接可让服务端按包内声明分配 |
+| `TransportService::OnConsume` | `:183` 之后直接 `:186` 解析 | 服务端(或被冒充的服务端)可让客户端按声明分配 |
+| `WireLimits.h:23-26` | 逐字写着「整包上限只能在接收入口加」 | 读起来像已经加过了 |
+
+### 84.2 判据:上限必须加在「知道尺寸」和「开始分配」之间的那一步
+
+包内每一个长度字段都是「这个包里有这么多字节」的**声明**,而解析器按声明分配:
+`Mods::Deserialize` 的 8191 计数(§66.3)、`Inventory::Deserialize` 的 4096 条、每条 `ReadString` 的长度前缀。
+`Code/encoding/WireLimits.h` 的那些字符串上限全部**在读完之后**才夹取 —— 头注释 `:18-21` 自己写明了理由
+(「discarding the whole packet over one bad field turns a cosmetic problem into a disconnect」),
+也写明了它的边界 `:23-26`:「the clamp runs after the string has been read, so it bounds what the value is used for,
+not the transient allocation inside the reader.」
+
+- **判据一:谁在分配之前知道尺寸?** 只有接收入口 —— 它拿到的是 `aSize`,而编码层拿到的是一个已经包好的 `ViewBuffer`。
+  所以这条上限只能加在那里,加在任何更靠下的地方都太晚。
+- **判据二:上限的值由谁决定?** 由**我们自己的发送侧**决定,不是由「合法流量看起来多大」决定。
+  两个发送侧都在固定缓冲区里序列化(服务端 `1 << 20`、客户端 `1 << 16`),所以「我们自己的对端能发出的最大包」
+  有一个可写下来的定义,取两者的大者。写得比它小,门禁会开始丢弃**合法**流量,而丢包的后果看起来像失同步。
+- **判据三:这个上限的失败方向是什么?** 是静默丢包。把 `1 << 20` 改成 `1 << 10` 不会让任何测试变红,
+  只会让某些报文在正常对局里凭空消失 —— 所以这条常量需要门禁盯它的**下界**,光有用例盯上界不够。
+
+### 84.3 可达性:未认证连接就能到达
+
+`GameServer::OnConsume` 是先解析、再按 opcode 分派,而认证发生在 `HandleAuthenticationRequest` 里
+(`Code/server/GameServer.cpp:849-880`)—— 也就是说 `factory.Extract(reader)` 与它后面按包内声明做的分配,
+**全部发生在认证之前**。§66.3 已经把这一条写下来了(`docs/PITFALLS.md:7977-7982`):
+「第一条在**认证包解析路径**上,即未认证连接可达」。
+
+客户端侧的对应事实是 `OnConsume` 跑在握手泵线程上(`Code/client/Services/Generic/TransportService.cpp:498` 起),
+`m_pendingMessages` 本身没有条数上限、只有握手超时兜底 ⇒ 一个不发大包但发很多包的对手,与一个大包是两条不同的路径,
+本条只堵后者。
+
+### 84.4 修法:上限放进编码层,判断放在两个入口的最前面
+
+```cpp
+// Code/encoding/WireLimits.h
+// The largest packet this framework can produce. Every sender serialises into a fixed
+// buffer before handing the bytes to the transport - the server into 1 << 20, the client
+// into 1 << 16 - so a packet larger than the larger of those is one no peer of ours wrote.
+// The receive entry points check this before they build a reader over the bytes, which is
+// the one place a bound can run before the allocation instead of after it.
+inline constexpr uint32_t kMaxPacketBytes = 1 << 20;
+
+// Whether a packet of this size can have come from a peer. Split out from the constant so
+// the boundary itself is testable: Code/tests/xmake.lua only sees this library.
+[[nodiscard]] inline bool WithinPacketLimit(const uint64_t aSize) noexcept
+{
+    return aSize <= kMaxPacketBytes;
+}
+```
+
+```cpp
+// Code/server/GameServer.cpp:584-588(客户端同形,TransportService.cpp:189-193)
+    if (!WireLimits::WithinPacketLimit(aSize))
+    {
+        spdlog::warn("Dropping a {} byte packet from {:x}: larger than any packet this framework can produce", aSize, aConnectionId);
+        return;
+    }
+
+    ViewBuffer buf((uint8_t*)apData, aSize);
+```
+
+**为什么上限放在 `Code/encoding` 而不是放在两个调用者旁边**:`Code/tests/xmake.lua` 只 `add_deps("SkyrimEncoding")`,
+那是测试目标唯一能看到的库 —— 放服务端就永远没有用例。§62.4 已为 `WireLimits.h` 立过同一条判据。
+
+**为什么拆出一个 `WithinPacketLimit`**:边界本身要可测。留成常量比较,测试只能测常量;留成函数,
+测试能测「等于上限通过、上限加一不通过」。这也是本仓库里第一次给「尺寸判断」本身写用例。
+
+**为什么是丢弃而不是夹取**:与字符串那些上限的取舍**相反**,理由是处理的对象不同 ——
+字符串截短之后仍然是那个字符串的近似,包截短之后不是包。
+
+**为什么不改管理端**(`Code/admin/Transport.cpp:12-25`):它是独立桌面二进制、全文零 spdlog、失败分支是裸 `return;`,
+不在「游戏本体/插件层」的判据范围内。
+
+**为什么顺手加一条门禁**:这条上限有一个静默失败方向(见判据三)。`check_transport_compat.py` 现在读
+`WireLimits.h` 里的 `kMaxPacketBytes`,断言它不低于 `1 << 20`,并断言两个接收入口真的调用了 `WithinPacketLimit`。
+只断言「常量存在」是不够的:常量可以存在而没有任何调用点,那正是这条缺陷原本的样子。
+
+### 84.5 复核命令(照抄)
+
+```powershell
+git grep -n "kMaxPacketBytes" -- Code
+git grep -n "WithinPacketLimit" -- Code
+git grep -n "ViewBuffer buf" -- Code/server/GameServer.cpp Code/client/Services/Generic/TransportService.cpp
+git grep -n "Buffer buffer(1 << " -- Code/server Code/client
+python Code\plugins\tools\check_transport_compat.py
+python Tools\Scripts\check_docs.py
+```
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 新用例 + 门禁的反向验证。
+`Code/tests/encoding.cpp:1612-1638` 的 `[encoding.packet_limit]` 断言 `WithinPacketLimit(0)` / `(1)` /
+`(kMaxPacketBytes)` 通过、`(kMaxPacketBytes + 1)` 与 `uint64_t` 最大值不通过、`kMaxPacketBytes >= (1u << 20)`、
+以及它大于三个字符串上限。`check_transport_compat.py` 的**反向验证**是把客户端那处调用临时换成
+`aSize > (1u << 20)`,门禁随即输出
+`TRANSPORT COMPATIBILITY FAILED (1) - Code/client/Services/Generic/TransportService.cpp TransportService::OnConsume does not call WireLimits::WithinPacketLimit; the size of the packet is known only there, so without it the bound does nothing`,
+恢复后回到 `TRANSPORT COMPATIBILITY OK`。
+
+> **教训**:第一条:**「上限写在文档里」和「上限存在」是两件事。**
+> `WireLimits.h` 的头注释逐字写了「整包上限只能在接收入口加,这句话写在头注释里」,写了很久,
+> 而两个入口一次都没判过尺寸 —— 一段把缺口描述得非常准确的注释,读起来和一段修好的代码一样让人放心。
+> 第二条:**安全上限的失败方向是「静默丢包」,不是「崩溃」。**
+> 所以它需要一个盯**下界**的门禁,而用例只能盯上界:把 `1 << 20` 改成 `1 << 10`,
+> 所有用例都还是绿的,只是某些报文在正常对局里开始凭空消失。
+> 第三条:**同一个「太大」,在字符串层和包层的正确取舍是相反的。**
+> 判据不是「夹取更温和」,而是「截断之后剩下的东西还有没有意义」:字符串还有,包没有。
 

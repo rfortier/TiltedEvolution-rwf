@@ -199,6 +199,51 @@ else:
                 f'hex, so the receiver decodes a shorter buffer instead of dropping the message'
             )
 
+# Every length field inside a packet is a claim about how much of it is there, and the
+# reader allocates from those claims. The string bounds in WireLimits.h run after the read,
+# so they cannot bound that allocation; the packet size can, and it is the one thing the
+# receive entry points know and the encoding layer does not. A bound below what the senders
+# produce would silently drop legitimate traffic instead - the server serialises into
+# 1 << 20, the client into 1 << 16 - and the failure would look like a desync rather than
+# like a dropped packet, so both halves are checked here.
+PACKET_LIMIT_REL = 'Code/encoding/WireLimits.h'
+PACKET_GATE_SITES = (
+    ('Code/server/GameServer.cpp', 'GameServer::OnConsume'),
+    ('Code/client/Services/Generic/TransportService.cpp', 'TransportService::OnConsume'),
+)
+
+packet_text = (ROOT / PACKET_LIMIT_REL).read_text(encoding='utf-8')
+packet_limit = re.search(r'kMaxPacketBytes\s*=\s*(1\s*<<\s*(\d+))', packet_text)
+if packet_limit is None:
+    failures.append(
+        f'{PACKET_LIMIT_REL} no longer declares kMaxPacketBytes; a packet of any size is'
+        f' handed to the parser again, and every length field inside it is believed'
+    )
+else:
+    packet_bytes = 1 << int(packet_limit.group(2))
+    # The server's own send buffer. Anything below it rejects packets this framework wrote.
+    if packet_bytes < (1 << 20):
+        failures.append(
+            f'{PACKET_LIMIT_REL} bounds kMaxPacketBytes to {packet_bytes}, but the server'
+            f' serialises into a 1 << 20 buffer before handing the bytes to the transport, so'
+            f' this drops packets the framework itself produces'
+        )
+    for rel, entry in PACKET_GATE_SITES:
+        path = ROOT / rel
+        if not path.is_file():
+            failures.append(f'{rel} is missing, but it is a receive entry point')
+            continue
+        source = path.read_text(encoding='utf-8')
+        # The definition, not a mention: bound the body at the closing brace.
+        start = source.find(f'{entry}(')
+        end = source.find('\n}\n', start) if start >= 0 else -1
+        body = source[start:end] if start >= 0 and end > start else ''
+        if 'WireLimits::WithinPacketLimit' not in body:
+            failures.append(
+                f'{rel} {entry} does not call WireLimits::WithinPacketLimit; the size of the'
+                f' packet is known only there, so without it the bound does nothing'
+            )
+
 # The relay appends its own sender metadata to the tail of every envelope it forwards,
 # and the bridge reads that tail back. The envelope in front of it is written by a peer,
 # and both sides split fields by scanning for '|': the relay's own parser keeps the last
