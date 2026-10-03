@@ -22,9 +22,9 @@
 //
 // Note the limit of the fix: the clamp runs after the string has been read, so it bounds
 // what the value is used for, not the transient allocation inside the reader. Bounding
-// the packet itself is what kMaxPacketBytes below does, and the only place for it is the
-// receive entry point (GameServer::OnConsume and Client::OnConsume), which see the
-// packet size.
+// the packet itself is what kMaxPacketBytes below does, and the only place for it is a
+// receive entry point (GameServer::OnConsume, TransportService::OnConsume and
+// AdminApp::OnConsume), which see the packet size.
 namespace WireLimits
 {
 

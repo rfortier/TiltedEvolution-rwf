@@ -9,8 +9,24 @@
 #include <TiltedCore/ScratchAllocator.hpp>
 #include <TiltedCore/ViewBuffer.hpp>
 
+#include <WireLimits.h>
+
+#include <spdlog/spdlog.h>
+
 void AdminApp::OnConsume(const void* apData, uint32_t aSize)
 {
+    // Checked before a reader is built over the bytes and before anything is parsed out of
+    // them, for the same reason the game's two receive entry points do it: every length
+    // field inside a packet is a claim about how much of it is there, and the bounds in
+    // WireLimits.h all run after the read, which is too late for the allocation inside the
+    // reader. The peer on the other end serialises into a fixed buffer before handing the
+    // bytes to the transport, so a larger packet is not one it wrote.
+    if (!WireLimits::WithinPacketLimit(aSize))
+    {
+        spdlog::warn("Dropping a {} byte admin packet: larger than any packet this framework can produce", aSize);
+        return;
+    }
+
     ServerAdminMessageFactory factory;
     TiltedPhoques::ViewBuffer buf((uint8_t*)apData, aSize);
     TiltedPhoques::Buffer::Reader reader(&buf);

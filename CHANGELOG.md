@@ -9,6 +9,86 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:整包尺寸这条上限有两个接收入口在用、第三个没用,而注释里写的就是「只有两个」 —— 判据是「这条上限的入口数,和入口的总数对得上吗」
+
+**现象**:没有任何现象,而且这一条比 §84 更远:管理端(`TiltedAdmin`)当前**根本收不到**服务端的消息 ——
+`Code/server/GameServer.cpp:593-607` 的 admin 分派整段被注释掉(`// TODO: ClientAdminMessageFactory`)。
+所以这不是活缺陷,是**纵深修复**:§84 把判据限定在「游戏本体/插件层」,明确写下了「不改管理端」;
+这一条推翻的正是那个限定 —— 不是因为管理端现在可打,而是因为**同一条上限的作用域应该等于接收入口的个数**。
+
+**根因**:`Code/encoding/WireLimits.h:23-27` 的注释自己给出了那个错误的范围:
+
+```cpp
+// Code/encoding/WireLimits.h(修复前 :23-27)
+// Note the limit of the fix: the clamp runs after the string has been read, so it bounds
+// what the value is used for, not the transient allocation inside the reader. Bounding
+// the packet itself is what kMaxPacketBytes below does, and the only place for it is the
+// receive entry point (GameServer::OnConsume and Client::OnConsume), which see the
+// packet size.
+```
+
+全仓的接收入口是**三个**,不是两个:
+
+| 入口 | §84 之前 | §84 | 本条之后 |
+| --- | --- | --- | --- |
+| `Code/server/GameServer.cpp:573 GameServer::OnConsume` | 无判断 | `WireLimits::WithinPacketLimit` | 不变 |
+| `Code/client/Services/Generic/TransportService.cpp:181 TransportService::OnConsume` | 无判断 | `WireLimits::WithinPacketLimit` | 不变 |
+| `Code/admin/Transport.cpp:16 AdminApp::OnConsume` | 无判断 | **漏了** | `WireLimits::WithinPacketLimit` |
+
+漏掉的那一处把 `aSize` 直接交给 `ViewBuffer`,再交给 `ServerAdminMessageFactory::Extract`:
+
+```cpp
+// Code/admin/Transport.cpp(修复前 :12-25)
+void AdminApp::OnConsume(const void* apData, uint32_t aSize)
+{
+    ServerAdminMessageFactory factory;
+    TiltedPhoques::ViewBuffer buf((uint8_t*)apData, aSize);   // 对端说的尺寸,没有任何上界
+    TiltedPhoques::Buffer::Reader reader(&buf);
+
+    auto pMessage = factory.Extract(reader);
+    if (!pMessage)
+    {
+        return;
+    }
+
+    m_messageHandlers[pMessage->GetOpcode()](pMessage);
+}
+```
+
+- **为什么 `kMaxPacketBytes` 对管理端也是对的**:管理端自己的出包上界是 `1 << 16`(`Code/admin/Transport.cpp:75`、`:103`
+  两个 `Send` 重载都建 `TiltedPhoques::Buffer buffer(1 << 16)`),服务端给它发消息走的是 `Code/server/GameServer.cpp:708`
+  那个 `1 << 20` 的缓冲。取大者 ⇒ `1 << 20` 对两端都成立,不需要为管理端单独定义一个常量。
+  这也是 §84 已经立过的判据:「这个值必须**大于等于**发送侧能产出的一切」。
+- **为什么不按「反正现在接不到消息」放过**:门禁查的是**入口数**,不是「今天有没有流量」。
+  管理端的分派被注释掉是一行 `TODO`,而不是一个架构约束;`Code/server/Services/AdminService.cpp:22-31`
+  的 sink 至今仍在把**每一条服务端日志**打包成 `ServerLogs` 发给所有 admin(`:30`),消费端
+  `Code/admin/Transport.cpp:128-131` 的 `HandleMessage(const ServerLogs&)` 也还在。把 `//` 去掉的那一刻,
+  这个入口就是活的,而那时没人会想起来补一个尺寸判断。
+- **为什么顺带给管理端加 `#include <spdlog/spdlog.h>`**:管理端此前没有任何日志设施 ——
+  `Code/admin` 与 `Code/admin_protocol` 两个目录里 `spdlog` 出现 0 次(唯一命中是 `Code/admin/xmake.lua:26` 的包名)。
+  §84 的「不改管理端」正是拿这一点当理由之一(「没有日志设施、失败分支是裸 `return;`」)。
+  这次反过来:一个丢弃分支如果什么都不说,门禁就成了唯一的证据,而门禁只证明调用存在、不证明它被走到。
+  `Code/admin/xmake.lua:24-31` 的 `add_packages(... "spdlog" ...)` 已经在依赖里,构建脚本不需要改。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 门禁 + 反向验证。
+
+- `python Code\plugins\tools\check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`。
+- **反向验证过**:把 `AdminApp::OnConsume` 里的 `if (!WireLimits::WithinPacketLimit(aSize))` 临时换成
+  `if (aSize > (1u << 20))`,门禁输出
+  `TRANSPORT COMPATIBILITY FAILED (1) - Code/admin/Transport.cpp AdminApp::OnConsume does not call WireLimits::WithinPacketLimit;
+  the size of the packet is known only there, so without it the bound does nothing`,exit 1;还原后重新 `OK`。
+- 门禁的 `PACKET_GATE_SITES` 从 2 项加到 3 项(`Code/plugins/tools/check_transport_compat.py:211-215`),
+  那条 rationale 注释里原本写的「the receive entry points」也改成了「三个」。
+
+> **教训**:第一条:**「只有两个入口」这句话本身没有被门禁检查过。**
+> §84 的注释、门禁的 `PACKET_GATE_SITES`、和真实入口数是三份互相独立的记录,当时只有前两份互相对齐。
+> 判据是「这条上限的入口数,和入口的总数对得上吗」—— 一份手工维护的名单,它的价值等于它被核对过的次数。
+> 第二条:**「现在不可达」和「不该有这道门」是两回事。**
+> 这一处离活缺陷的距离是一行 `//`,而它旁边就写着 `// TODO`。
+> 把范围排除写进文档(§84 的「不改管理端」)比写进代码更危险:文档不会被编译器或门禁提醒。
+> 第三条:**同一条上限在两个进程里的正确值可能相同,但理由不同。**
+> 这里 `1 << 20` 同时覆盖管理端的 `1 << 16` 出包与服务端的 `1 << 20` 出包 ——
+> 是「取大者」这条既有判据让它一次成立,而不是因为管理端「碰巧」和客户端一样大。
 ### 修复:插件层的浮点图变量只有发送侧判了有限,接收侧把线上的数直接喂给动画图 —— 判据是「这个值两端都判过吗」
 
 **现象**:没有任何现象。这是 §70 那二十处「对端说了算的浮点」在插件层的同一条:正常流量下永远不会分岔,

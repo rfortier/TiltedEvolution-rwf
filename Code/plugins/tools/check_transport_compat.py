@@ -202,14 +202,16 @@ else:
 # Every length field inside a packet is a claim about how much of it is there, and the
 # reader allocates from those claims. The string bounds in WireLimits.h run after the read,
 # so they cannot bound that allocation; the packet size can, and it is the one thing the
-# receive entry points know and the encoding layer does not. A bound below what the senders
-# produce would silently drop legitimate traffic instead - the server serialises into
-# 1 << 20, the client into 1 << 16 - and the failure would look like a desync rather than
-# like a dropped packet, so both halves are checked here.
+# receive entry points know and the encoding layer does not. There are three of them: the
+# game's two, plus the admin client, which reads its own transport. A bound below what the
+# senders produce would silently drop legitimate traffic instead - the server serialises
+# into 1 << 20, the client and the admin client into 1 << 16 - and the failure would look
+# like a desync rather than like a dropped packet, so both halves are checked here.
 PACKET_LIMIT_REL = 'Code/encoding/WireLimits.h'
 PACKET_GATE_SITES = (
     ('Code/server/GameServer.cpp', 'GameServer::OnConsume'),
     ('Code/client/Services/Generic/TransportService.cpp', 'TransportService::OnConsume'),
+    ('Code/admin/Transport.cpp', 'AdminApp::OnConsume'),
 )
 
 packet_text = (ROOT / PACKET_LIMIT_REL).read_text(encoding='utf-8')

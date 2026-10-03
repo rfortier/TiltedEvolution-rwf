@@ -11655,3 +11655,153 @@ python Tools\Scripts\check_docs.py
 > 第三条:**「引擎会兜住」在这个仓库里已经被推翻过很多次,这次也一样。**
 > `SetGraphVariableFloat` 之后没有第二道门,它写进去的东西会被选剪辑与 OAR 条件读走;
 > 而这一处比 §70 那些更难发现,因为它长在一个只由规则文件开关的分支上。
+
+## 87. 2026-10-17 场次:整包尺寸这条上限有两个接收入口在用、第三个没用,而注释里写的就是「只有两个」 —— 判据是「这条上限的入口数,和入口的总数对得上吗」
+
+> **锚点**:三处改动,都在本仓(不是插件层,所以不涉及补丁交付):
+> `Code/admin/Transport.cpp:12-28`(新增门禁 + `#include <WireLimits.h>` / `#include <spdlog/spdlog.h>`)、
+> `Code/plugins/tools/check_transport_compat.py:211-215`(`PACKET_GATE_SITES` 2 项 → 3 项)、
+> `Code/encoding/WireLimits.h:23-27`(注释从「两个入口」改成「三个」)。
+> 上游是 §84(`68811616`),它给前两个入口加了同一道门,并在文档里写下了「不改管理端」。
+
+### 87.1 缺陷:同一道上限,三个接收入口,两个有门
+
+`Code/encoding/WireLimits.h` 的 `kMaxPacketBytes` 存在的理由是「每个长度字段都是对端对『包里有多少字节』的主张,
+而 `WireLimits` 里那些字符串上界全部**跑在读取之后**,挡不住读取时的分配」。所以它只能放在**知道整包尺寸的地方**,
+也就是接收入口。§84 的注释把这件事写成了:
+
+```cpp
+// Code/encoding/WireLimits.h(修复前 :23-27)
+// Note the limit of the fix: the clamp runs after the string has been read, so it bounds
+// what the value is used for, not the transient allocation inside the reader. Bounding
+// the packet itself is what kMaxPacketBytes below does, and the only place for it is the
+// receive entry point (GameServer::OnConsume and Client::OnConsume), which see the
+// packet size.
+```
+
+「the receive entry point」是单数,括号里点了两个。全仓的接收入口是**三个**:
+
+| 入口 | §84 之前 | §84(`68811616`) | 本条(`41f2f8a0` 之后) |
+| --- | --- | --- | --- |
+| `Code/server/GameServer.cpp:573 GameServer::OnConsume` | 无判断 | `WireLimits::WithinPacketLimit` | 不变 |
+| `Code/client/Services/Generic/TransportService.cpp:181 TransportService::OnConsume` | 无判断 | `WireLimits::WithinPacketLimit` | 不变 |
+| `Code/admin/Transport.cpp:16 AdminApp::OnConsume` | 无判断 | **漏了** | `WireLimits::WithinPacketLimit` |
+
+漏掉的那一处把对端说的 `aSize` 直接交给 `ViewBuffer`,再交给 `ServerAdminMessageFactory::Extract`,
+中间没有任何上界:
+
+```cpp
+// Code/admin/Transport.cpp(修复前 :12-25)
+void AdminApp::OnConsume(const void* apData, uint32_t aSize)
+{
+    ServerAdminMessageFactory factory;
+    TiltedPhoques::ViewBuffer buf((uint8_t*)apData, aSize);   // 对端说的尺寸,没有任何上界
+    TiltedPhoques::Buffer::Reader reader(&buf);
+
+    auto pMessage = factory.Extract(reader);
+    if (!pMessage)
+    {
+        return;
+    }
+
+    m_messageHandlers[pMessage->GetOpcode()](pMessage);
+}
+```
+
+而门禁当时也只看两个 —— `Code/plugins/tools/check_transport_compat.py:210-213` 的 `PACKET_GATE_SITES` 是两份记录
+(注释、门禁名单),它们互相对齐,但都**没有被和真实入口数核对过**。
+
+### 87.2 判据
+
+- **一条上限的作用域 = 接收入口的个数。** 不是「我们今天关心的进程个数」。
+  §84 的取舍(把范围限定在游戏本体/插件层)写进了文档而不是代码,而文档不会被编译器或门禁提醒 ——
+  这是它比写错代码更危险的地方。
+- **「现在不可达」不是「不该有这道门」。** 管理端离活缺陷的距离是一行 `//`:`Code/server/GameServer.cpp:593-607`
+  的 admin 分派整段被注释掉(`// TODO: ClientAdminMessageFactory`)。而生产侧还活着 ——
+  `Code/server/Services/AdminService.cpp:22-31 sink_it_` 至今把**每一条服务端日志**打包成 `ServerLogs`
+  发给所有 admin(`:30` 的 `ForEachAdmin`),消费侧 `Code/admin/Transport.cpp:128-131`
+  的 `HandleMessage(const ServerLogs&)` 也还在。把 `//` 去掉的那一刻这个入口就是活的。
+- **同一个常量对三个入口都成立,靠的是「取大者」这条既有判据,不是巧合。**
+  管理端自己的出包上界是 `1 << 16`(`Code/admin/Transport.cpp:75`、`:103` 两个 `Send` 重载都建
+  `TiltedPhoques::Buffer buffer(1 << 16)`),服务端给 admin 发消息走 `Code/server/GameServer.cpp:708` 的 `1 << 20`。
+  两者取大 ⇒ `kMaxPacketBytes = 1 << 20` 覆盖两端,不需要为管理端另立一个常量。
+- **丢弃分支要有话说。** 管理端此前**没有任何日志设施**:`Code/admin` 与 `Code/admin_protocol` 两个目录里
+  `spdlog` 出现 0 次(唯一命中是 `Code/admin/xmake.lua:26` 那个包名)。§84 的「不改管理端」正是拿这一点当理由之一
+  (「没有日志设施、失败分支是裸 `return;`」)。这一条反过来:一个静默丢弃的分支如果什么都不说,
+  门禁就成了唯一的证据,而门禁只证明调用**存在**,不证明它被**走到**。
+
+### 87.3 可达性
+
+- **不是活缺陷**:`.github/workflows/windows.yml` 只构建 `:578 xmake build SkyrimTogetherClientDllLegacy`
+  与 `:643 xmake install -o distrib` ⇒ `Admin` 目标 CI 从不构建;`Code/server/GameServer.cpp:593-607`
+  的 admin 分派被注释 ⇒ 管理端当前接不到服务端消息。
+- **但两条通道都还在**:生产侧 `AdminService::sink_it_` 挂在服务端 spdlog sink 上(`Code/server/World.cpp:24-25`),
+  消费侧 `Code/admin/Transport.cpp:128-131` 的 handler 仍在表里。
+- **`<WireLimits.h>` 在管理端可包含**:`Code/encoding/xmake.lua:5 add_includedirs(".", "../", {public = true})`
+  + `Code/admin/xmake.lua:18 add_deps("SkyrimEncoding")`;`spdlog` 也已在
+  `Code/admin/xmake.lua:24-31 add_packages(...)` 里 ⇒ **构建脚本不需要改**。
+
+### 87.4 修法
+
+`Code/admin/Transport.cpp` 的接收入口改成先判尺寸再建 reader(现在 `:24-28`):
+
+```cpp
+// Code/admin/Transport.cpp(修复后 :18-28)
+    // Checked before a reader is built over the bytes and before anything is parsed out of
+    // them, for the same reason the game's two receive entry points do it: every length
+    // field inside a packet is a claim about how much of it is there, and the bounds in
+    // WireLimits.h all run after the read, which is too late for the allocation inside the
+    // reader. The peer on the other end serialises into a fixed buffer before handing the
+    // bytes to the transport, so a larger packet is not one it wrote.
+    if (!WireLimits::WithinPacketLimit(aSize))
+    {
+        spdlog::warn("Dropping a {} byte admin packet: larger than any packet this framework can produce", aSize);
+        return;
+    }
+```
+
+门禁从两份名单变成三份(`Code/plugins/tools/check_transport_compat.py:211-215`):
+
+```python
+PACKET_GATE_SITES = (
+    ('Code/server/GameServer.cpp', 'GameServer::OnConsume'),
+    ('Code/client/Services/Generic/TransportService.cpp', 'TransportService::OnConsume'),
+    ('Code/admin/Transport.cpp', 'AdminApp::OnConsume'),
+)
+```
+
+`Code/encoding/WireLimits.h:25-27` 的注释同步改成「a receive entry point (GameServer::OnConsume,
+TransportService::OnConsume and AdminApp::OnConsume)」—— 注释和门禁名单从此指的是同一组人。
+
+### 87.5 复核命令(照抄)
+
+```powershell
+cd D:\sktest\SkyrimTogetherNext
+python Code\plugins\tools\check_transport_compat.py
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\strpm_contract.py check
+python Tools\Scripts\check_docs.py
+```
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 门禁 + 反向验证。
+
+- `python Code\plugins\tools\check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`。
+- **反向验证过**(关键,与 §84 同法):把 `AdminApp::OnConsume` 里的 `if (!WireLimits::WithinPacketLimit(aSize))`
+  临时换成 `if (aSize > (1u << 20))`,门禁输出
+  `TRANSPORT COMPATIBILITY FAILED (1) - Code/admin/Transport.cpp AdminApp::OnConsume does not call WireLimits::WithinPacketLimit;
+  the size of the packet is known only there, so without it the bound does nothing`,exit 1;还原后重新 `OK`。
+  这条证据同时证明了两件事:门禁真的读到了新加的第三项,且它查的是**函数体里有没有这个调用**、不是「文件里有没有这个名字」。
+- 门禁取函数体用的是 `source.find(f'{entry}(')` … `source.find('\n}\n', start)`
+  (`Code/plugins/tools/check_transport_compat.py:240-242`)⇒ 被检查函数的最后一个 `}` 必须独占一行。
+  `Code/admin/Transport.cpp` 满足(函数体 `:16-41`,第 `:41` 行是独占一行的 `}`)。
+
+> **教训**:第一条:**「只有两个入口」这句话本身没有被门禁检查过。**
+> 注释、门禁名单、真实入口数是三份互相独立的记录。§84 当时让前两份对齐了,但两份都是手写的 ——
+> 判据是「这条上限的入口数,和入口的总数对得上吗」,而一份手工维护的名单,它的价值等于它被核对过的次数。
+> 第二条:**「现在不可达」和「不该有这道门」是两回事。**
+> 这一处离活缺陷的距离是一行 `//`,而它旁边就写着 `// TODO`;
+> 把范围排除写进文档(§84 的「不改管理端」)比写进代码更危险,因为文档不会被编译器或门禁提醒。
+> 第三条:**同一个值在两个进程里都对,理由可以不同。**
+> 管理端自己只发 `1 << 16`,服务端给它发 `1 << 20`;`kMaxPacketBytes` 同时覆盖两者,
+> 是「取大者」这条既有判据让它一次成立 —— 换成一个「管理端看起来应该更小」的直觉值就会开始静默丢包。
