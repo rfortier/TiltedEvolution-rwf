@@ -9,6 +9,72 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:服务端的日志 sink 把 admin 协议的帧发给游戏连接 —— 判据是「收件人集合里的成员,是不是这个协议的端点」
+
+**现象**:没有任何现象,而且是**纵深修复** —— 这一条和上一条同源,今天连触发条件都凑不齐:
+管理端根本连不上服务端。`Code/admin/Transport.cpp:43-51` 的 `AdminApp::OnConnected` 建的
+`AuthenticationRequest` **只填了 `Token`**,`Version` 留空;而 `Code/server/GameServer.cpp:885`
+的版本判断发生在 `:918` 看令牌**之前**,于是管理端永远拿不到 `m_adminSessions` 的席位。
+
+**根因**:`Code/server/Services/AdminService.cpp:22-31`(修复前)把**每一条服务端日志**
+格式化成一个 admin 协议的 `ServerLogs`,交给 `Code/server/GameServer.h:73-78` 的 `ForEachAdmin`
+广播出去 —— 而那个集合的语义是「**管理员凭据**」,不是「管理端连接」:
+
+```cpp
+// Code/server/Services/AdminService.cpp(修复前 :22-31)
+void AdminService::sink_it_(const spdlog::details::log_msg& msg)
+{
+    spdlog::memory_buf_t formatted;
+    formatter_->format(msg, formatted);
+
+    ServerLogs logs;
+    logs.Logs = fmt::to_string(formatted);
+
+    GameServer::Get()->ForEachAdmin([&logs](ConnectionId_t aId) { GameServer::Get()->Send(aId, logs); });
+}
+```
+
+`m_adminSessions` 的**两个**写入点都在游戏握手路径上,成员必然是普通游戏连接:
+
+| 写入点 | 语义 |
+| --- | --- |
+| `Code/server/GameServer.cpp:925` | 游戏客户端用管理员密码登录(`:918` 的 `adminPasswordUsed`),在 `HandleAuthenticationRequest` 里插入 |
+| `Code/server/GameServer.cpp:430`/`:441` | `addadmin` 控制台命令按用户名解析出 `Player*` 再取其 connection id |
+
+而两套协议的**编号是重叠的**:`Code/admin_protocol/Opcodes.h:13` 的 `kServerLogs = 1`,
+`Code/encoding/Opcodes.h:11` 的 `kAssignCharacterResponse = 1`。于是这一帧落在游戏客户端上时,
+`Code/encoding/Messages/ServerMessageFactory.cpp:32-42` 会**合法地**解出 `AssignCharacterResponse`,
+接着 `Code/client/Services/Generic/CharacterService.cpp:358-430` 拿这串字节去当
+`Cookie`、`AllActorValues`、`CurrentInventory`、动作列表——即「一条日志行被当成一次角色指派」。
+
+**修法**:这一帧**没有收件人**,所以不构造它。`sink_it_` 只留一行 `(void)msg;`,sink 本身
+继续挂在服务端 logger 上(`Code/server/World.cpp:24-25`),把这条流留给下一个读者。
+
+- **为什么不是「删掉这个 sink」**:它被 `World` 持有(`Code/server/World.h:55`),删掉要动
+  `World.cpp:24-25` 与头文件;`docs/PITFALLS.md:873-874` 已经就同一处下过结论:
+  「删掉会改日志行为。保留。」
+- **为什么不是「给 `ForEachAdmin` 加过滤」**:过滤器要回答的是「这个连接是不是管理端」,
+  而**这个问题今天没有答案** —— 服务端根本没有「管理端连接」这个概念,只有「知道管理员密码的
+  游戏连接」。等 `Code/server/GameServer.cpp:593-607` 的 admin 分派从注释里出来,
+  判据才有对象。
+- **顺带**:`sink_it_` 是**每一条 spdlog 调用**都会走的路径,原实现在这里把同一条日志
+  **第二次格式化**(`formatter_->format`)并做一次 `fmt::to_string`。日志量越大,这笔
+  开销越稳定地落在服务端线程上(满足「不拖慢」那条要求)。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 门禁 + 双向反向验证。
+
+- `python Code\plugins\tools\check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`。
+- 门禁新增两半(`Code/plugins/tools/check_transport_compat.py:249-315`):
+  **①** 解析 `ServerAdminOpcode.kServerLogs` 与 `ServerOpcode.kAssignCharacterResponse` 的**数值**,
+  两者必须仍然相等(注释里的那句话必须成立);
+  **②** 读 `Code/server/Services/AdminService.cpp` 的**代码行**(先剥掉 `//` 之后的内容),
+  不允许出现 `ServerLogs` 或 `ForEachAdmin`。
+- **反向验证过两次**:把 `ServerLogs logs;` 放回 `sink_it_` 的函数体 → 门禁
+  `TRANSPORT COMPATIBILITY FAILED (1)` + 上面那条失败说明,exit 1;把
+  `kServerLogs` 改成 `= 9` → 同样 `FAILED (1)`,exit 1。两次还原后都回到 `OK`。
+  这条证据同时说明第二半查的是**定义**而不是**提及** —— 新写的注释里就有 `ServerLogs` 与
+  `ForEachAdmin` 两个词,注释被剥掉后门禁不误报。
+
 ### 修复:整包尺寸这条上限有两个接收入口在用、第三个没用,而注释里写的就是「只有两个」 —— 判据是「这条上限的入口数,和入口的总数对得上吗」
 
 **现象**:没有任何现象,而且这一条比 §84 更远:管理端(`TiltedAdmin`)当前**根本收不到**服务端的消息 ——
@@ -60,10 +126,12 @@ void AdminApp::OnConsume(const void* apData, uint32_t aSize)
   那个 `1 << 20` 的缓冲。取大者 ⇒ `1 << 20` 对两端都成立,不需要为管理端单独定义一个常量。
   这也是 §84 已经立过的判据:「这个值必须**大于等于**发送侧能产出的一切」。
 - **为什么不按「反正现在接不到消息」放过**:门禁查的是**入口数**,不是「今天有没有流量」。
-  管理端的分派被注释掉是一行 `TODO`,而不是一个架构约束;`Code/server/Services/AdminService.cpp:22-31`
-  的 sink 至今仍在把**每一条服务端日志**打包成 `ServerLogs` 发给所有 admin(`:30`),消费端
+  管理端的分派被注释掉是一行 `TODO`,而不是一个架构约束;消费端
   `Code/admin/Transport.cpp:128-131` 的 `HandleMessage(const ServerLogs&)` 也还在。把 `//` 去掉的那一刻,
   这个入口就是活的,而那时没人会想起来补一个尺寸判断。
+  (生产侧那半 —— `AdminService::sink_it_` 把每条服务端日志打包成 `ServerLogs` 广播出去 ——
+  已在**上一条**里关掉:它的收件人集合是游戏连接,而 `kServerLogs` 与 `kAssignCharacterResponse`
+  同为 `1`。这里只留接收入口这一半。)
 - **为什么顺带给管理端加 `#include <spdlog/spdlog.h>`**:管理端此前没有任何日志设施 ——
   `Code/admin` 与 `Code/admin_protocol` 两个目录里 `spdlog` 出现 0 次(唯一命中是 `Code/admin/xmake.lua:26` 的包名)。
   §84 的「不改管理端」正是拿这一点当理由之一(「没有日志设施、失败分支是裸 `return;`」)。

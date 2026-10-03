@@ -11805,3 +11805,127 @@ python Tools\Scripts\check_docs.py
 > 第三条:**同一个值在两个进程里都对,理由可以不同。**
 > 管理端自己只发 `1 << 16`,服务端给它发 `1 << 20`;`kMaxPacketBytes` 同时覆盖两者,
 > 是「取大者」这条既有判据让它一次成立 —— 换成一个「管理端看起来应该更小」的直觉值就会开始静默丢包。
+
+## 88. 2026-10-18 场次:服务端的日志 sink 把 admin 协议的帧发给游戏连接 —— 判据是「收件人集合里的成员,是不是这个协议的端点」
+
+> **锚点**:两处改动,都在本仓(不涉及补丁交付):
+> `Code/server/Services/AdminService.cpp:21-44`(`sink_it_` 不再构造 `ServerLogs`,并删掉
+> `#include <AdminMessages/ServerLogs.h>`)、
+> `Code/plugins/tools/check_transport_compat.py:249-315`(两半新门禁:编号必须仍然重叠 + sink 里不许出现这两个名字)。
+> 上游是 §87(`662b8044`),它给管理端的**接收入口**补了尺寸门,并把生产侧的这半写成了「还活着」——
+> 本节关掉的就是那半。
+
+### 88.1 缺陷:生产侧一直在造一帧,而它没有合法收件人
+
+`Code/server/Services/AdminService.cpp`(修复前 `:22-31`)把**每一条**服务端日志格式化成一个
+admin 协议的 `ServerLogs`,再交给 `Code/server/GameServer.h:73-78` 的 `ForEachAdmin` 广播:
+
+```cpp
+// Code/server/Services/AdminService.cpp(修复前 :22-31)
+void AdminService::sink_it_(const spdlog::details::log_msg& msg)
+{
+    spdlog::memory_buf_t formatted;
+    formatter_->format(msg, formatted);
+
+    ServerLogs logs;
+    logs.Logs = fmt::to_string(formatted);
+
+    GameServer::Get()->ForEachAdmin([&logs](ConnectionId_t aId) { GameServer::Get()->Send(aId, logs); });
+}
+```
+
+它挂在**默认 logger 的 sink 列表**上(`Code/server/World.cpp:24-25`),而默认 logger 是服务端自己的
+(`Code/server_runner/main.cpp:71-78` 建的 `globalOut`,`Code/server/main.cpp:114 set_default_logger`)⇒
+**每一条 spdlog 调用都会走到这里**,包括 `spdlog::warn`/`spdlog::info` 那些热路径。
+
+### 88.2 判据:「收件人集合」的语义,和这个协议端点的定义,是同一件事吗
+
+1. **`m_adminSessions` 的语义是「管理员凭据」,不是「管理端连接」。** 它有两个写入点,都在**游戏**握手路径上:
+   `Code/server/GameServer.cpp:925`(`adminPasswordUsed` ⇒ 游戏客户端用管理员密码登录)、
+   `Code/server/GameServer.cpp:430`/`:441`(`addadmin` 控制台命令按用户名解析出 `Player*`,再取
+   `pPlayer->GetConnectionId()`)。两个写入点的输入都是**游戏连接**。
+2. **管理端连不进来。** `Code/admin/Transport.cpp:43-51 AdminApp::OnConnected` 建的
+   `AuthenticationRequest` **只填了 `Token`**;`Version` 留空,而 `Code/server/GameServer.cpp:885`
+   的 `acRequest->Version != BUILD_COMMIT` 发生在 `:918` 看令牌**之前** ⇒ 管理端永远拿不到席位。
+   **所以这个集合里没有管理端**,而它是这帧唯一的收件人集合。
+3. **两套协议的编号重叠。** `Code/admin_protocol/Opcodes.h:13 kServerLogs = 1`,
+   `Code/encoding/Opcodes.h:11 kAssignCharacterResponse = 1`。协议不靠端口或首字节区分 ——
+   `Code/server/GameServer.cpp:608-616` 用 `ClientMessageFactory`,`Code/client/Services/Generic/TransportService.cpp:115`
+   用 `ServerMessageFactory`,**两端都只按编号查表**,所以编号就是协议身份。
+4. **这一帧落在游戏客户端上是「合法解析」。** `Code/encoding/Messages/ServerMessageFactory.cpp:32-42`
+   的 `Extract` 先判 `data >= kServerOpcodeMax`(57)再查表,而 `1 < 57` ⇒ 它会解出
+   `AssignCharacterResponse`。解出来的字段被 `Code/client/Services/Generic/CharacterService.cpp:358-430`
+   直接消费:`Cookie` 用来在 `WaitingForAssignmentComponent` 里找实体、`AllActorValues`、
+   `CurrentInventory`、动作列表全部来自这串字节。
+5. **失败模式是静默的,不是崩溃。** `Code/client/Services/Generic/CharacterService.cpp:365-369`
+   找不到 cookie 时只打一条 `"Never found requested cookie"` 然后 `return;`。也就是说,
+   错帧的可见证据**只有一条日志**,而那条日志自己就是被灌进去的帧的产物。
+6. **修法的判据是「谁该收这一帧」,不是「谁不该收」。** 今天答不出「管理端连接」这个集合
+   (`Code/server/GameServer.cpp:593-607` 的 admin 分派整段被注释),所以正确动作是**不构造**,
+   而不是挑一个过滤条件。等那条分派从注释里出来,判据才有对象。
+
+### 88.3 可达性
+
+- **今天不可达,且有两个独立的理由**:管理端进不来(第 2 条),而且服务端也把 admin 的接收分派注释掉了。
+- **但生产侧是活的**:`Code/server/World.cpp:24-25` 的 `sinks().push_back` 每次启动都会执行;
+  `Code/server/Services/AdminService.h:13` 自己写着「This service is currently not in use.」——
+  这句话描述的是**收包**那一半,不是这一半。
+- **sink 不能删**:它被 `World` 持有(`Code/server/World.h:55 TiltedPhoques::SharedPtr<AdminService> m_spAdminService;`),
+  删掉要动 `World.cpp:24-25` 与头文件;`docs/PITFALLS.md:873-874` 已就同一处下过结论:
+  「删掉会改日志行为。保留。」
+
+### 88.4 修法
+
+`sink_it_` 只留一行 `(void)msg;` —— 帧不构造,日志流不动:
+
+```cpp
+// Code/server/Services/AdminService.cpp(修复后 :21-44,注释略)
+void AdminService::sink_it_(const spdlog::details::log_msg& msg)
+{
+    // ... 11 行注释:收件人集合是游戏连接、管理端进不来、编号重叠、这帧没有收件人 ...
+    (void)msg;
+}
+```
+
+- **为什么不是「给 `ForEachAdmin` 加过滤」**:过滤条件要回答「这个连接是不是管理端」,而这个问题今天没有答案
+  (见 88.2 第 6 条)。
+- **为什么不是「删掉 sink」**:见 88.3 第三条。
+- **顺带修掉一笔每日志开销**:原实现在**每一条 spdlog 调用**上做一次 `formatter_->format` +
+  `fmt::to_string`,而同一条日志在控制台/文件 sink 里**已经格式化过一次**。这一笔开销的规模与日志量成正比,
+  且落在服务端线程上 —— 与「不拖慢」那条要求同向。
+- **`#include <AdminMessages/ServerLogs.h>` 一并删掉**:它现在是本文件唯一不再需要的头。
+
+### 88.5 复核命令(照抄)
+
+```powershell
+# 1. sink 里不许再出现这两个名字(注释先被门禁剥掉,所以注释不算)
+Select-String -Path Code\server\Services\AdminService.cpp -Pattern 'ServerLogs|ForEachAdmin'
+# 期望:0 命中(唯一允许的命中是注释,门禁按代码行判)
+
+# 2. 编号必须仍然重叠
+Select-String -Path Code\admin_protocol\Opcodes.h -Pattern 'kServerLogs'
+Select-String -Path Code\encoding\Opcodes.h -Pattern 'kAssignCharacterResponse'
+
+python Code\plugins\tools\check_transport_compat.py
+```
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 门禁 + 双向反向验证。
+
+- `python Code\plugins\tools\check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`。
+- 门禁两半各自反向验证过:把 `ServerLogs logs;` 放回 `sink_it_` 的函数体 → 
+  `TRANSPORT COMPATIBILITY FAILED (1)` + `Code/server/Services/AdminService.cpp builds or broadcasts an admin frame again...`,
+  exit 1;把 `kServerLogs` 改成 `= 9` → `FAILED (1)` + `Code/admin_protocol/Opcodes.h kServerLogs is 9 and
+  Code/encoding/Opcodes.h kAssignCharacterResponse is 1...`,exit 1。两次还原后都回到 `OK`。
+- 第二半查的是**定义**而不是**提及**:新写的 11 行注释里 `ServerLogs` 与 `ForEachAdmin` 各出现一次,
+  门禁先剥掉 `//` 之后的内容,因此不误报 —— 这条也被上面那次反向验证证实(反向验证注入的是代码行)。
+
+> **教训**:第一条:**一个集合的名字描述的是它怎么被填满的,不是它将被用来做什么。**
+> `m_adminSessions` 的每个成员都是「用管理员密码登录的游戏连接」,而它被当成「管理端连接的集合」用。
+> 判据是「收件人集合里的成员,是不是这个协议的端点」,不是「这个集合的名字听起来对不对」。
+> 第二条:**两套协议只靠编号区分时,编号重叠就是一种耦合。**
+> `kServerLogs = 1` 与 `kAssignCharacterResponse = 1` 在各自的头文件里都对,合起来却意味着
+> 「这条帧能被另一端合法解析」。门禁因此同时钉住两边:谁改编号,谁就被告知这条注释不再成立。
+> 第三条:**「注释掉的分派」不等于「那半条链路是死的」。**
+> 收包那半确实被注释了,发包这半还挂在 logger 的 sink 列表上、每次启动都注册。
+> §87 把这一处写成「生产侧还活着」当作**不放过管理端的理由**,这一节则把它当**缺陷本身**处理 ——
+> 两者并不矛盾:一条链路的两端要分别判活。

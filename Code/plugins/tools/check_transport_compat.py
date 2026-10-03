@@ -246,6 +246,76 @@ else:
                 f' packet is known only there, so without it the bound does nothing'
             )
 
+# The admin log stream and the game protocol share a numbering but not a layout. A
+# ServerLogs frame delivered to a game connection is read as an AssignCharacterResponse -
+# Cookie, the actor value map, the inventory, the action list - because both opcodes are 1.
+# The broadcast that built those frames addressed the admin *credential* set, and every
+# member of that set is an ordinary game connection: one is inserted while the game
+# handshake is still running, the other writer resolves a player by username, and the admin
+# client is rejected by the version check before its token is read. There is therefore no
+# connection the frame could be meant for, and the sink formats nothing again until the
+# server-side admin dispatch it would answer to exists. Both halves are checked, because
+# either one alone reopens the hole: the sink rebuilding the frame, or the two numbering
+# spaces ceasing to collide while the comment above still claims they do.
+ADMIN_OPCODES_REL = 'Code/admin_protocol/Opcodes.h'
+GAME_OPCODES_REL = 'Code/encoding/Opcodes.h'
+ADMIN_SINK_REL = 'Code/server/Services/AdminService.cpp'
+
+
+def enum_values(text: str, enum_name: str) -> dict[str, int]:
+    body = re.search(r'enum ' + enum_name + r'[^{]*\{(.*?)\n\};', text, re.S)
+    if body is None:
+        return {}
+    out: dict[str, int] = {}
+    next_value = 0
+    for line in body.group(1).splitlines():
+        line = line.split('//')[0].strip().rstrip(',')
+        if not line:
+            continue
+        name, _, explicit = line.partition('=')
+        name = name.strip()
+        if explicit.strip():
+            next_value = int(explicit.strip(), 0)
+        out[name] = next_value
+        next_value += 1
+    return out
+
+
+admin_opcode_values = enum_values((ROOT / ADMIN_OPCODES_REL).read_text(encoding='utf-8'), 'ServerAdminOpcode')
+game_opcode_values = enum_values((ROOT / GAME_OPCODES_REL).read_text(encoding='utf-8'), 'ServerOpcode')
+if 'kServerLogs' not in admin_opcode_values or 'kAssignCharacterResponse' not in game_opcode_values:
+    failures.append(
+        f'{ADMIN_OPCODES_REL} and {GAME_OPCODES_REL} no longer both declare the opcode the log '
+        f'sink has to keep away from the game connections; the collision cannot be checked'
+    )
+elif admin_opcode_values['kServerLogs'] != game_opcode_values['kAssignCharacterResponse']:
+    failures.append(
+        f'{ADMIN_OPCODES_REL} kServerLogs is {admin_opcode_values["kServerLogs"]} and '
+        f'{GAME_OPCODES_REL} kAssignCharacterResponse is '
+        f'{game_opcode_values["kAssignCharacterResponse"]}; the sink documents them as the same '
+        f'number, so either the renumbering or that comment is wrong'
+    )
+
+sink_path = ROOT / ADMIN_SINK_REL
+if not sink_path.is_file():
+    failures.append(
+        f'{ADMIN_SINK_REL} is missing, but it is the sink that decides whether an admin frame '
+        f'is addressed to a game connection'
+    )
+else:
+    # The definition, not a mention: the comment above the sink names both of these, and it
+    # is the code that would build the frame.
+    sink_code = '\n'.join(line.split('//')[0] for line in sink_path.read_text(encoding='utf-8').splitlines())
+    if 'ServerLogs' in sink_code or 'ForEachAdmin' in sink_code:
+        failures.append(
+            f'{ADMIN_SINK_REL} builds or broadcasts an admin frame again. The admin credential '
+            f'set is made of game connections, and kServerLogs is the same number as '
+            f'kAssignCharacterResponse, so such a frame is parsed as a character assignment by '
+            f'the client that receives it. The server-side admin receive path that would make '
+            f'the addressing meaningful is the commented-out dispatch in '
+            f'Code/server/GameServer.cpp, not this sink'
+        )
+
 # The relay appends its own sender metadata to the tail of every envelope it forwards,
 # and the bridge reads that tail back. The envelope in front of it is written by a peer,
 # and both sides split fields by scanning for '|': the relay's own parser keeps the last
