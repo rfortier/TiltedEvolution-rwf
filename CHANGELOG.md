@@ -9,6 +9,69 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:插件层的浮点图变量只有发送侧判了有限,接收侧把线上的数直接喂给动画图 —— 判据是「这个值两端都判过吗」
+
+**现象**:没有任何现象。这是 §70 那二十处「对端说了算的浮点」在插件层的同一条:正常流量下永远不会分岔,
+只有在对手存在时才成立,而对手存在时它是**未认证的对端**就能触发的那一类。
+
+**根因**:同一条通道的两端,一侧判、一侧不判。发送侧 (`plugins/AnimSyncTogether/src/GraphVariableSync.cpp:68`) 是:
+
+```cpp
+// plugins/AnimSyncTogether/src/GraphVariableSync.cpp:68
+if (!holder->GetGraphVariableFloat(variableName, value) || !std::isfinite(value) || !HasChanged(rule, value)) {
+    break;
+}
+```
+
+接收侧 (`plugins/AnimSyncTogether/src/STRPMClient.cpp:459-546`) 从头到尾没有任何有限性判断:
+
+```cpp
+// plugins/AnimSyncTogether/src/STRPMClient.cpp(修复前 :459-546)
+void STRPMClient::ApplyGraphVariableMessage(..., float floatValue)   // :459 线上来的 float
+{
+    const auto type = static_cast<GraphVariableType>(variableType);  // :471
+    if (!SyncRules::GetSingleton()->ShouldSyncGraphVariable(name, type)) { ... }
+
+    switch (type) {
+    case GraphVariableType::kFloat:
+        applied = actor->SetGraphVariableFloat(variableName, floatValue);   // :531 直接进引擎
+```
+
+`floatValue` 来自 `packet->graphVariableFloat`(`:291`),而那个结构体是**逐字节从 STRPM 载荷强转**出来的
+(`:260` 只判了 `message->size == sizeof(SyncPacket)`,即长度,不判内容)⇒ `NaN` / `±inf` 一路畅通。
+
+- **为什么不是「反正动画图会夹住」**:动画图不会。这个变量喂的是 `SetGraphVariableFloat`,它写进行为图之后被
+  选剪辑的逻辑与 OAR 的替换条件读走(`:543-544` 之后紧跟 `OARClient::ClearConditionStateData`);
+  同族已经修过 6 处(`WireLimits::ClampFinite`,见 §70),判据是同一条:引擎 setter 之前是最后一道门。
+- **为什么判在 `ShouldSyncGraphVariable` 之后而不是之前**:`type` 只有在规则里存在时才可信 ——
+  规则表要求 `it->second == type`(`plugins/AnimSyncTogether/src/SyncRules.cpp:126-132`),
+  所以 `type == GraphVariableType::kFloat` 成立时,这条规则真的是 `float`,而不是对端自称的。
+  把判断放在前面就等于相信对端填的 `variableType`。
+- **为什么整包丢弃而不是夹成 0**:一个不是有限数的图变量没有「接近的值」,它是发送侧自己都会拒绝发送的东西
+  (`GraphVariableSync.cpp:68`)⇒ 收下它就等于承认这一包是数据。与 §70 里那些有量纲的量不同,
+  这里没有可以夹取的目标值。
+- **交付形式是补丁**:`plugins/AnimSyncTogether` 是本仓不拥有、也不能 push 的子模块,
+  而 CI 会 `git submodule update --init --force --recursive` 丢掉工作树里的改动。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 补丁可打在 pin 上 + 门禁全绿。
+
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / `26 patch(es) apply to their pinned commits`。
+- `git apply --check --cached` 对该补丁 exit 0(打在 pin `a432ec34` 上),`--reverse` 对当前工作树 exit 0。
+- 同族对照:整个插件层的 `SetGraphVariableFloat` 只有 4 处,另外 3 处(`plugins/OStimNG/skse/src/GameAPI/GameActor.cpp:74`、
+  `:102`、`plugins/OStimTogether/src/FreeScenePhaseSync.cpp:953`)写的是本地算出来的常量或本地状态,不是线上的字节。
+- 插件层 `std::isfinite` 的既有用法共 26 处(MorphSyncTogether / OStimTogether 为主),本条补上的是唯一漏掉的一处接收侧。
+
+> **教训**:第一条:**「发送侧判过」不是「这个值安全」。**
+> 发送侧的判断保护的是发送侧自己;一个值从线上回来时,它只经过了长度检查。
+> 判据是「这个值两端都判过吗」,而不是「有没有人判过」。
+> 第二条:**判定的位置比判定本身更重要。**
+> 同一个 `isfinite`,放在 `ShouldSyncGraphVariable` 之前是错的 —— 那时 `type` 还是对端自称的;
+> 放在之后,`type` 才由本地规则表担保。**先证明「这个字段是什么」,再判「这个值合不合法」。**
+> 第三条:**「引擎会兜住」在这个仓库里已经被推翻过很多次,这次也一样。**
+> `SetGraphVariableFloat` 之后没有第二道门,它写进去的东西会被选剪辑与 OAR 条件读走 ——
+> 而这一处比 §70 那些更难发现,因为它长在一个**只由规则文件开关**的路径上:
+> 默认的 `HelmetToggle2.rules` 只声明了两个 `int`,所以即使实机跑起来也看不到它。
+
 ### 修复:任务日志的条数上限写侧在用、读侧被忽略,而读侧拿它 resize —— 判据是「同一份常量有没有被两边都读到」
 
 **现象**:没有任何现象。这一条同样属于「修掉它不会让任何一局游戏变好」的那一类:它只在对手存在时才有意义。

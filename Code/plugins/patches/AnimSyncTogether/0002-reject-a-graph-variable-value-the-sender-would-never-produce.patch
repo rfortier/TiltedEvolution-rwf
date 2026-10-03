@@ -1,0 +1,31 @@
+diff --git a/src/STRPMClient.cpp b/src/STRPMClient.cpp
+index acaec7f..325b111 100644
+--- a/src/STRPMClient.cpp
++++ b/src/STRPMClient.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <cmath>
+ #include <cstring>
+ #include <span>
+ #include <string>
+@@ -478,6 +479,18 @@ namespace AnimSyncTogether
+             return;
+         }
+ 
++        // The sender refuses to transmit a value that is not finite, so a peer sending one
++        // is not sending data. The animation graph would carry it into clip selection and
++        // into the OAR conditions that read the variable, and nothing downstream rejects it.
++        if (type == GraphVariableType::kFloat && !std::isfinite(floatValue)) {
++            SKSE::log::warn(
++                "GraphVarRx rejected sender={} name='{}' type=float value={:.6f} reason='not a finite number'",
++                senderConnectionID,
++                name,
++                floatValue);
++            return;
++        }
++
+         STRPM::ProxyFormID formID{};
+         const auto result = resolver_->resolve(senderConnectionID, &formID);
+         if (result != STRPM::Result::kOk || formID == STRPM::kInvalidProxyFormID) {

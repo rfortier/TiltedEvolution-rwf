@@ -11517,3 +11517,141 @@ python Code\plugins\tools\plugin_patches.py check
 > 第三条:**上限的「值」和上限的「位置」是两个决定。**
 > 写侧夹的是「线上能不能表示」,所以用位宽;读侧夹的是「该不该按这个数分配」,所以用量级。
 > 两者可以不同,但必须都写出来;而常量放哪一层,决定了它能不能被用例盯住。
+
+## 86. 2026-10-16 场次:插件层的浮点图变量只有发送侧判了有限,接收侧把线上的数直接喂给动画图 —— 判据是「这个值两端都判过吗」
+
+> **锚点**:一处修复,在插件层,交付方式是补丁(插件是子模块,本仓不拥有、也不能 push):
+> `Code/plugins/patches/AnimSyncTogether/0002-reject-a-graph-variable-value-the-sender-would-never-produce.patch`
+> 改 `plugins/AnimSyncTogether/src/STRPMClient.cpp`(新守卫 `:482-492`,`#include <cmath>` `:10`)。
+> 同一条判据的仓库级先例是 §70(`Code/encoding/WireLimits.h` 的 `ClampFinite`)。
+
+### 86.1 缺陷:同一条通道,发送侧判 `isfinite`,接收侧不判
+
+`plugins/AnimSyncTogether` 的图变量同步是一条 STRPM 通道的两端。发送侧判了:
+
+```cpp
+// plugins/AnimSyncTogether/src/GraphVariableSync.cpp:68
+if (!holder->GetGraphVariableFloat(variableName, value) || !std::isfinite(value) || !HasChanged(rule, value)) {
+    break;
+}
+```
+
+接收侧没有任何有限性判断,线上的 `float` 直接进引擎 setter:
+
+```cpp
+// plugins/AnimSyncTogether/src/STRPMClient.cpp(修复前 :459-546)
+void STRPMClient::ApplyGraphVariableMessage(
+    STRPM::ConnectionID senderConnectionID,
+    const std::string& name,
+    std::uint32_t variableType,
+    bool boolValue,
+    std::int32_t intValue,
+    float floatValue)                       // :459 线上来的 float
+{
+    const auto type = static_cast<GraphVariableType>(variableType);   // :471
+    if (!SyncRules::GetSingleton()->ShouldSyncGraphVariable(name, type)) { ... }
+
+    switch (type) {
+    case GraphVariableType::kFloat:
+        applied = actor->SetGraphVariableFloat(variableName, floatValue);   // :531 直接进引擎
+        break;
+    }
+```
+
+`floatValue` 的来路是 `packet->graphVariableFloat`(`:291`),而 `packet` 是 STRPM 载荷**逐字节强转**出来的:
+
+```cpp
+// plugins/AnimSyncTogether/src/STRPMClient.cpp(修复前 :256-292)
+if (!message || !userData || !message->data || message->size != sizeof(SyncPacket)) {   // :260 只判长度
+    return;
+}
+const auto* packet = static_cast<const SyncPacket*>(message->data);                     // :264 内容不判
+```
+
+也就是:长度对、版本对,载荷里的任意 4 字节就会被当成一个 `float` 交给 `SetGraphVariableFloat`。
+`NaN` 与 `±inf` 全部合法通过 —— 它们只是浮点数的取值,不是畸形字节。
+
+| 位置 | 作用 |
+| --- | --- |
+| `src/STRPMClient.cpp:68`(修复前) | 发送侧:`!std::isfinite(value)` 直接 `break`,不发 |
+| `src/STRPMClient.cpp:471`(修复前) | 接收侧:`variableType` 被强转成枚举,只用来选分支 |
+| `src/STRPMClient.cpp:531`(修复前) | 接收侧:`floatValue` 进 `SetGraphVariableFloat` |
+| `src/STRPMClient.cpp:544`(修复前) | 紧随其后的 `OARClient::ClearConditionStateData(actor)` —— 值已经被行为图读走 |
+
+### 86.2 判据
+
+- **这个值两端都判过吗?** 发送侧判了,接收侧没判。发送侧的判断保护的是发送侧自己 ——
+  一个值从线上回来时,它只经过了长度检查(`:260`)。判据不是「有没有人判过」,而是「两端都判过吗」。
+- **判断放在哪一行?** 必须放在 `ShouldSyncGraphVariable` **之后**。
+  `plugins/AnimSyncTogether/src/SyncRules.cpp:126-132` 要求 `it->second == type`,
+  也就是规则表里这条变量真的是 `float` 才算命中;放在它之前,`type` 就只是对端填的 `variableType`,
+  一个自称 `float` 的包就能走到 `isfinite` 判断里。**先证明「这个字段是什么」,再判「这个值合不合法」。**
+- **丢弃还是夹取?** 丢弃。一个不是有限数的图变量没有「接近的值」可以夹 ——
+  与 §70 那些有量纲的量(血量、附魔强度)不同,这里的发送侧自己都会拒绝发送它,
+  收下它就等于承认这一包是数据。
+- **谁能触发?** 任何能往这条通道发一包的玩家。通道是 `caelvanost.animsynctogether.anim.v1`,
+  没有身份门槛;接收侧对发送者的唯一检查是 `resolver_->resolve(senderConnectionID, …)`,
+  那一步在 `:494-500`,**在本判断之后** —— 也就是说判断不依赖能否解析出 proxy。
+
+### 86.3 可达性
+
+- **默认配置下不可达**:`plugins/AnimSyncTogether/config/Rules/HelmetToggle2.rules:9-10` 只声明了两个 `int`
+  (`iGPMAAnimationType` / `iGPMAOffsetType`),`kFloat` 分支走不到。
+- **但它是一个文档化的功能**:`plugins/AnimSyncTogether/README.md:60` 的规则语法里就写着 `float fCustomVariable`,
+  `src/SyncRules.cpp:293-294` 的 `float` 指令就是给它用的 ⇒ 任何写了 `float` 规则的用户都在这条路径上。
+- **这就是它比 §70 更难发现的原因**:§70 那些浮点长在默认就启用的收包路径上,这一处长在一个**只由规则文件开关**的分支上,
+  实机跑默认配置永远看不到它。
+- **同族的既有做法**:整个插件层的 `std::isfinite` 有 26 处(MorphSyncTogether / OStimTogether 为主),
+  本条补上的是唯一一处**接收侧**漏判。
+
+### 86.4 修法
+
+在规则表确认过 `type` 之后、解析 proxy 之前插入守卫:
+
+```cpp
+// plugins/AnimSyncTogether/src/STRPMClient.cpp(修复后 :482-492)
+// The sender refuses to transmit a value that is not finite, so a peer sending one
+// is not sending data. The animation graph would carry it into clip selection and
+// into the OAR conditions that read the variable, and nothing downstream rejects it.
+if (type == GraphVariableType::kFloat && !std::isfinite(floatValue)) {
+    SKSE::log::warn(
+        "GraphVarRx rejected sender={} name='{}' type=float value={:.6f} reason='not a finite number'",
+        senderConnectionID,
+        name,
+        floatValue);
+    return;
+}
+```
+
+- 只对 `kFloat` 判:`kBool` / `kInt` 走的是 `bool` 与 `std::int32_t`,线上没有非有限值这一说,
+  对它们调 `isfinite` 只会让 `type` 判断失去意义。
+- `#include <cmath>` 加在 `src/STRPMClient.cpp:10`(插件的 `src/PCH.h` 只有 `<array> <filesystem> <memory> <span> <string> <string_view>`,
+  没有 `<cmath>`,而 `GraphVariableSync.cpp:5` 自己就 `#include <cmath>` ⇒ 同族做法)。
+- 补丁只改一个文件、两个 hunk(`+13/-0`),打在 pin `a432ec34` 上。
+
+### 86.5 复核命令(照抄)
+
+```
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+python Code\plugins\tools\check_transport_compat.py
+python Tools\Scripts\check_docs.py
+```
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 补丁打在 pin 上 + 门禁全绿。
+
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / `26 patch(es) apply to their pinned commits`。
+- `git apply --check --cached` 对该补丁 exit 0(打在 pin `a432ec34` 的索引上),`--reverse` 对当前工作树 exit 0。
+- 同族对照:整个插件层的 `SetGraphVariableFloat` 只有 4 处,另外 3 处
+  (`plugins/OStimNG/skse/src/GameAPI/GameActor.cpp:74`、`:102`、`plugins/OStimTogether/src/FreeScenePhaseSync.cpp:953`)
+  写的是本地算出来的常量或本地状态,不是线上的字节 ⇒ 接收侧只有这一处。
+
+> **教训**:第一条:**「发送侧判过」不是「这个值安全」。**
+> 发送侧的判断保护的是发送侧自己;一个值从线上回来时,它只经过了长度检查。
+> 判据是「这个值两端都判过吗」,而不是「有没有人判过」。
+> 第二条:**判定的位置比判定本身更重要。**
+> 同一个 `isfinite`,放在 `ShouldSyncGraphVariable` 之前是错的 —— 那时 `type` 还是对端自称的;
+> 放在之后,`type` 才由本地规则表担保。**先证明「这个字段是什么」,再判「这个值合不合法」。**
+> 第三条:**「引擎会兜住」在这个仓库里已经被推翻过很多次,这次也一样。**
+> `SetGraphVariableFloat` 之后没有第二道门,它写进去的东西会被选剪辑与 OAR 条件读走;
+> 而这一处比 §70 那些更难发现,因为它长在一个只由规则文件开关的分支上。
