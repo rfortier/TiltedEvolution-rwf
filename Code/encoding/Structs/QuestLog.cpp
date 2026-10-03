@@ -7,11 +7,6 @@
 
 using TiltedPhoques::Serialization;
 
-// The count field is 16 bits wide, so a longer log could not be received anyway:
-// clamp it, or the reader consumes only the low 16 bits worth of entries and then
-// misparses the rest of the packet.
-static constexpr size_t kMaxEntryCount = 0xFFFF;
-
 bool QuestLog::operator==(const QuestLog& acRhs) const noexcept
 {
     return Entries == acRhs.Entries;
@@ -41,14 +36,20 @@ void QuestLog::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     uint64_t temp;
     aReader.ReadBits(temp, 16);
 
-    const size_t count = temp & 0xFFFF;
-    Entries.resize(count);
+    // Never trust the wire length, and never throw: this runs inside a noexcept frame.
+    const auto count = std::min<size_t>(temp & 0xFFFF, kMaxEntryCount);
 
-    for (auto& e : Entries)
+    // The message is not guaranteed to arrive into a fresh object: append semantics
+    // would silently grow the list on every reuse.
+    Entries.clear();
+
+    for (size_t i = 0; i < count; ++i)
     {
-        e.Id.Deserialize(aReader);
+        Entry entry;
+        entry.Id.Deserialize(aReader);
         aReader.ReadBits(temp, 16);
 
-        e.Stage = temp & 0xFFFF;
+        entry.Stage = temp & 0xFFFF;
+        Entries.push_back(entry);
     }
 }

@@ -11336,3 +11336,184 @@ python Tools\Scripts\check_docs.py
 > 第三条:**同一个「太大」,在字符串层和包层的正确取舍是相反的。**
 > 判据不是「夹取更温和」,而是「截断之后剩下的东西还有没有意义」:字符串还有,包没有。
 
+## 85. 2026-10-15 场次:任务日志的条数上限写侧在用、读侧被忽略,而读侧拿它 resize —— 判据是「同一份常量有没有被两边都读到」
+
+> **锚点**:一个常量,两处改动:
+> `Code/encoding/Structs/QuestLog.h:20-25`(`kMaxEntryCount` 从文件作用域挪进结构体,读侧从此看得见)、
+> `Code/encoding/Structs/QuestLog.cpp:35-56`(`Deserialize` 先夹取再逐条 `push_back`)、
+> `Code/server/Services/QuestService.h:27-32`(服务端任务日志表的 `kMaxQuestLogEntries = 4096`)、
+> `Code/server/Services/QuestService.cpp:71-87`(满了只拒绝新增那一条)。
+> 测试在 `Code/tests/encoding.cpp:1641-1704`(`[encoding.quest_log]`)。
+> 就地更正:本节补上 §84 没有覆盖的那一半 —— §84 是「上限不存在」,这一节是「上限存在但只被一边读到」。
+
+### 85.1 缺陷:同一个常量,写侧读它,读侧不读它
+
+```cpp
+// Code/encoding/Structs/QuestLog.cpp(修复前)
+// The count field is 16 bits wide, so a longer log could not be received anyway:
+// clamp it, or the reader consumes only the low 16 bits worth of entries and then
+// misparses the rest of the packet.
+static constexpr size_t kMaxEntryCount = 0xFFFF;          // :13 文件作用域
+
+void QuestLog::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
+{
+    const auto count = std::min<size_t>(Entries.size(), kMaxEntryCount);   // :27 写侧引用了它
+    aWriter.WriteBits(count, 16);
+}
+
+void QuestLog::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
+{
+    uint64_t temp;
+    aReader.ReadBits(temp, 16);
+
+    const size_t count = temp & 0xFFFF;
+    Entries.resize(count);                                // :45 读侧照着线上的数分配
+
+    for (auto& e : Entries)                               // :47 才开始读条目字节
+    {
+        e.Id.Deserialize(aReader);
+        aReader.ReadBits(temp, 16);
+        e.Stage = temp & 0xFFFF;
+    }
+}
+```
+
+注释本身是对的(`:10-12` 说的就是「夹取它」),常量本身是对的(值就是位宽),写侧也确实夹了。
+缺的只有一行 —— 读侧那一行没引用这个常量。两字节的包就能让接收侧按 65535 条去 `resize`,
+在任何一条条目字节被读到之前。一条 `Entry` 是一个 `GameId`(两个 `uint32_t`)加一个 `uint16_t`,
+而 `GameId` 的两个字段在线上各是一个 VarInt ⇒ 声明 65535 条时实际需要的字节远少于 65535 × 12。
+
+### 85.2 判据:检查「常量有没有被两边都读到」,不是「有没有这个常量」
+
+普查办法:把 `Code/encoding/**` 每个 `.cpp` 里 `::Serialize*` 与 `::Deserialize*` 的函数体切出来,
+看每个 `kMax*` 出现在哪一侧。172 个文件里 19 个只在单侧出现,其中 16 个是「只在写侧、读侧用位宽天然夹住」
+(`AssignObjectsRequest`/`AssignObjectsResponse`/`NotifyObjectInventoryChanges`/`RequestObjectInventoryChanges`/
+`RequestFactionsChanges`/`NotifyPartyInfo`/`NotifyPartyJoined`/`NotifyPlayerList`/`NotifyPluginMessaging`/
+`PluginMessagingRequest`/`ShiftGridCellRequest`/`StringCacheUpdate`/`StringCache`/`ActionReplayChain`/`Tints`),
+3 个是「只在读侧、标量范围夹取」(`NotifyHealthChangeBroadcast`/`RequestHealthChangeBroadcast`/`TimeModel`)。
+**只有 `QuestLog.cpp` 是写侧夹了、读侧不夹而读侧还要 `resize` 的。**
+
+- **判据一:两侧夹的不是同一件事,所以可以取不同的值。** 写侧夹的是「线上能不能表示」,所以用位宽 `0xFFFF`;
+  读侧夹的是「该不该按这个数分配」,所以用量级 `0x1000`。两个决定都要写出来,不能让一个常量同时承担。
+  量级取 `0x1000` 的依据是日志行数的来源 —— `Code/client/Services/Generic/CharacterService.cpp:1439` 遍历的
+  `PlayerCharacter::objectives` 是游戏自己维护的数组(`Code/client/Games/Skyrim/PlayerCharacter.h:156`),
+  真实存档在几百以内;`Inventory` 对 VarInt 计数取的也是 `0x1000`(`Code/encoding/Structs/Inventory.h:80-85`)。
+- **判据二:读侧的分配必须跟着「真正读到的条目」走,不能跟着「声明的条数」走。**
+  夹取只回答了「这一包最多分配多少」,没回答「包短于声明时那些没被读到的条目是什么」——
+  `resize` 出来的条目是默认值,会被下游当成真的日志内容。`clear()` + 逐条 `push_back` 是
+  `Inventory.cpp:124-136` 与 `Tints.cpp:43-71` 已经在用的形状。
+- **判据三:`Deserialize` 不保证被调进一个全新的对象。** 追加语义会让复用的对象每收一包长一截,
+  所以 `clear()` 与夹取是同一个修复的两半,不是顺手加的(`Tints.cpp:50-51` 上写过同一条注释)。
+- **判据四:常量放在哪里也是修复的一部分。** 文件作用域的 `static constexpr` 在 `Code/tests` 里看不见,
+  而这条上限唯一的回归手段就是「断言常量 + 断言夹取后的 `size()`」。所以它必须挪进结构体。
+
+### 85.3 可达性:两字节的包,以及服务端那张只增不减的表
+
+`QuestLog::Deserialize` 全仓只有一个活调用点:`Code/encoding/Messages/AssignCharacterRequest.cpp:51`
+(`QuestContent.Deserialize(aReader)`),而 `AssignCharacterRequest` 是客户端在**进入一局游戏时**发的东西。
+另一处 `Code/encoding/Structs/CharacterData.cpp:51` 在死结构里(无实例化点)。
+
+服务端那一半是另一条路径:`Code/server/Services/QuestService.cpp:73` 的 `entries.emplace_back(message.Id, message.Stage)`
+是这张表**唯一的增长点**,而唯一的删除点是 `:102-107` 的 `Stopped` 分支(`if (questIt != entries.end()) entries.erase(questIt);`)。
+键是客户端挑的 `GameId`,客户端一直造新 id 就一直涨;整张表没有读者 ——
+`AssignCharacterResponse.h:29-42` 的成员里没有 `QuestLog` 字段,`GetQuestLogComponent()` 除了两个写者之外零调用
+(`Code/server/Scripting/Player_Bindings.cpp:23-24` 里那两行是注释掉的)。这和 `ObjectService` 那张表是同一类,
+修法照抄 `Code/server/Services/ObjectService.h:31-37` 立下的四条规则:
+类作用域 `static constexpr` 上限、先数已有行数、已存在的键照常服务(上限判断只挂在「新增」那个分支上)、
+满表时一行 `spdlog::warn` 而正常回复照发。
+
+### 85.4 修法
+
+```cpp
+// Code/encoding/Structs/QuestLog.h
+    // The count travels in 16 bits, so a peer can name up to 65535 entries while the
+    // writer never sends more than this. Clamp the read side to the same bound: the
+    // count drives the resize there, and Deserialize runs inside noexcept frames, so
+    // throwing is not an option either. A log stays in the hundreds at the very most,
+    // so the bound costs a legitimate sender nothing.
+    static constexpr size_t kMaxEntryCount = 0x1000;
+    Vector<Entry> Entries{};
+```
+
+```cpp
+// Code/encoding/Structs/QuestLog.cpp
+void QuestLog::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
+{
+    uint64_t temp;
+    aReader.ReadBits(temp, 16);
+
+    // Never trust the wire length, and never throw: this runs inside a noexcept frame.
+    const auto count = std::min<size_t>(temp & 0xFFFF, kMaxEntryCount);
+
+    // The message is not guaranteed to arrive into a fresh object: append semantics
+    // would silently grow the list on every reuse.
+    Entries.clear();
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        Entry entry;
+        entry.Id.Deserialize(aReader);
+        aReader.ReadBits(temp, 16);
+
+        entry.Stage = temp & 0xFFFF;
+        Entries.push_back(entry);
+    }
+}
+```
+
+```cpp
+// Code/server/Services/QuestService.h
+    // A quest log row is keyed by a GameId the client picks, and the only thing that ever
+    // retires one is a Stopped update for that same id: a client that keeps inventing ids
+    // grows this table for as long as it stays connected. Bounded here like every other
+    // table whose key the peer picks. A full log refuses the new id instead of growing
+    // without limit; updates for ids already in it still go through.
+    static constexpr std::uint32_t kMaxQuestLogEntries = 4096;
+```
+
+```cpp
+// Code/server/Services/QuestService.cpp:71-87
+    else if (entries.size() >= kMaxQuestLogEntries)
+    {
+        spdlog::warn("{}: quest log is full ({} entries), refusing to track quest {:X} from {} {:X}", __FUNCTION__, entries.size(), message.Id.LogFormat(),
+                     playerTypeString, pPlayer->GetId());
+    }
+
+    else
+    {
+        entries.emplace_back(message.Id, message.Stage);
+        questIt = std::prev(entries.end());
+        spdlog::debug("{}: started/discovered quest: {:X}, stage: {}, by {} {:X}", __FUNCTION__, message.Id.LogFormat(), notify.Stage, playerTypeString, pPlayer->GetId());
+    }
+```
+
+**为什么服务端拒绝的是「新增」而不是「整包」**:下面那段 switch 与转发逻辑对一条没被记录过的 quest id
+本来就是合法输入(注释 `:61-64` 说的就是「发现一条进行中的任务」),而 `:102-107` 的 `Stopped` 分支对
+`questIt == entries.end()` 已经有处理 ⇒ 拒绝新增不会让任何后续分支走到没走过的路径。
+
+### 85.5 复核命令(照抄)
+
+```
+python Tools\Scripts\check_docs.py
+python Code\plugins\tools\check_transport_compat.py
+python Code\plugins\tools\plugin_patches.py verify
+python Code\plugins\tools\plugin_patches.py check
+```
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 新用例 + 常量两侧同源。
+`Code/tests/encoding.cpp:1641-1704` 新增
+`TEST_CASE("A quest log cannot make the reader allocate what it never sent", "[encoding.quest_log]")`:
+
+- 写侧喂 `kMaxEntryCount + 7` 条,读回来正好 `kMaxEntryCount` 条,首尾内容对得上。
+- 手写一个声明 `0xFFFF` 条、实际只写 `kMaxEntryCount` 条的包,读侧停在 `kMaxEntryCount` ⇒ 夹取生效且流被消费干净。
+- 一个已经装了两条旧条目的对象收到只声明一条的包之后只剩一条 ⇒ 替换语义,不是追加。
+
+> **教训**:第一条:**「常量存在」不等于「常量在生效」。**
+> §84 是上限根本不存在;这一节是上限存在、名字对、值对、注释也对,只是**读侧那一行没引用它**。
+> 一段准确的注释加一个正确的常量,读起来和一段修好的代码一样让人放心 —— 所以检查的对象不是常量,
+> 而是「用到它的地方是不是两边都有」。
+> 第二条:**`resize(线上的数)` 与 `push_back(读到的条目)` 在正常流量下完全一样。**
+> 两者只在包短于声明时分岔,而那正是对手能造出来的唯一形状 —— 用正常流量做回归永远测不出区别。
+> 第三条:**上限的「值」和上限的「位置」是两个决定。**
+> 写侧夹的是「线上能不能表示」,所以用位宽;读侧夹的是「该不该按这个数分配」,所以用量级。
+> 两者可以不同,但必须都写出来;而常量放哪一层,决定了它能不能被用例盯住。

@@ -68,6 +68,17 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         questIt->Stage = message.Stage;
     }
 
+    else if (entries.size() >= kMaxQuestLogEntries)
+    {
+        // The log is keyed by an id the client picks, and only a Stopped update for that
+        // same id ever retires a row, so a client that keeps inventing ids would grow it
+        // for as long as it stays connected. Refuse the new id instead of the packet: the
+        // update below is still forwarded, and an id this side never stored is already a
+        // case the Stopped branch handles.
+        spdlog::warn("{}: quest log is full ({} entries), refusing to track quest {:X} from {} {:X}", __FUNCTION__, entries.size(), message.Id.LogFormat(),
+                     playerTypeString, pPlayer->GetId());
+    }
+
     else
     {
         entries.emplace_back(message.Id, message.Stage);

@@ -9,6 +9,67 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:任务日志的条数上限写侧在用、读侧被忽略,而读侧拿它 resize —— 判据是「同一份常量有没有被两边都读到」
+
+**现象**:没有任何现象。这一条同样属于「修掉它不会让任何一局游戏变好」的那一类:它只在对手存在时才有意义。
+
+**根因**:`QuestLog` 的条数常量一直在,而且一直在写侧被使用,读侧却绕过了它:
+
+```cpp
+// Code/encoding/Structs/QuestLog.cpp(修复前 :13 / :25-28 / :39-54)
+static constexpr size_t kMaxEntryCount = 0xFFFF;   // 文件作用域,只有写侧读它
+
+void QuestLog::Serialize(...) const noexcept
+{
+    const auto count = std::min<size_t>(Entries.size(), kMaxEntryCount);   // :27 写侧夹了
+    aWriter.WriteBits(count, 16);
+
+void QuestLog::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
+{
+    aReader.ReadBits(temp, 16);
+    const size_t count = temp & 0xFFFF;
+    Entries.resize(count);                          // :45 读侧照抄线上的数
+```
+
+`count` 最大 65535,一条 `Entry` 是一个 `GameId` 加一个 `uint16_t`,而 `GameId` 的两个字段各自是一个
+VarInt —— 也就是**只要两个字节**就能让接收侧按 65535 条去 `resize`,在任何一条条目字节被读到之前。
+`WireLimits::kMaxPacketBytes`(1 MiB)挡不住这一步:它在 `GameServer::OnConsume` 里判,而这里要分配的是
+「条数 × 单条大小」,与包有多大无关;`WireLimits` 里那些逐字段的上限也全都跑在读取之后。
+
+- **为什么上界取 `0x1000` 而不是继续用 `0xFFFF`**:`0xFFFF` 是线上计数的位宽,不是数据的量级。
+  任务日志的行数由客户端 `PlayerCharacter::objectives` 决定(`Code/client/Services/Generic/CharacterService.cpp:1439`
+  遍历的就是那个数组),真实存档在几百以内;`Inventory` 的同类上限(也是 VarInt 计数)取的就是 `0x1000`。
+  写侧仍然按位宽夹到 `0xFFFF`,因为那是「线上能不能表示」的问题,不是「该不该分配」的问题。
+- **为什么读侧是 `clear()` + 逐条 `push_back`,而不是「夹取后 `resize`」**:夹取只解决了这一包要分配多少,
+  没解决「包短于声明时那些没被读到的条目」—— `resize` 出来的条目是默认值,会被当成真的日志内容。
+  逐条 `push_back` 让分配跟着真正读到的条目走。这也是 `Inventory`(`Code/encoding/Structs/Inventory.cpp:124-136`)
+  与 `Tints`(`Code/encoding/Structs/Tints.cpp:52-70`)已经用的形状。
+- **`clear()` 是必须的,不是顺手加的**:`Deserialize` 不保证被调进一个全新的对象,
+  追加语义会让复用的对象每收一包就长一截 —— `Tints.cpp:50-51` 上已经写过同一条注释。
+- **为什么常量从文件作用域挪进结构体**:门禁要能在 `Code/tests` 里断言它,而测试只能看到公开成员。
+  服务端同类上限的既有位置是类内 `static constexpr`(`Code/server/Services/ObjectService.h:31-37`)。
+- **为什么同时给服务端的任务日志表加上限**:`Code/server/Services/QuestService.cpp:73` 的 `entries.emplace_back`
+  是这张表唯一的增长点,而唯一的删除点是 `:91-101` 那条 `Stopped` 分支 —— 键是客户端挑的 `GameId`,
+  客户端一直造新 id 就一直涨,和 `ObjectService` 那张表是同一类。上限取 4096,已存在的 id 照常更新,
+  满了只拒绝新增的那一条(`ObjectService` 的四条规则逐条照搬)。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 新用例。
+`Code/tests/encoding.cpp:1642-1704` 新增
+`TEST_CASE("A quest log cannot make the reader allocate what it never sent", "[encoding.quest_log]")`:`
+
+- 写侧喂 `kMaxEntryCount + 7` 条,读回来正好是 `kMaxEntryCount` 条,且首尾两条的内容对得上。
+- 手写一个声明 `0xFFFF` 条、实际也只写了 `kMaxEntryCount` 条的包,读侧停在 `kMaxEntryCount` —— 夹取生效且流被消费干净。
+- 一个已经装了两条旧条目的对象收到只声明一条的包之后只剩一条 ⇒ 替换语义,不是追加。
+
+> **教训**:第一条:**「常量存在」不等于「常量在生效」。**
+> 这一处比 §84 那处更隐蔽 —— §84 是上限根本不存在,这里是上限存在、名字对、值对、注释也对,
+> 只是**读侧那一行没引用它**。检查的办法不是「有没有这个常量」,而是「用到它的地方是不是两边都有」。
+> 第二条:**`resize(线上的数)` 和 `push_back(读到的条目)` 在正常流量下完全一样。**
+> 两者只在包短于声明时分岔,而那正是对手能造出来的唯一形状 —— 用正常流量做回归测试永远测不出区别。
+> 第三条:**上限的「值」和上限的「位置」是两个决定。**
+> 写侧夹的是「线上能不能表示」,所以用位宽;读侧夹的是「该不该按这个数分配」,所以用量级。
+> 两者可以不同,但必须是**两个都写出来**的决定,不能靠一个常量同时承担。
+
 ### 修复:整包尺寸没有任何上限,而包内每一个长度字段都被当成真的 —— 判据是「谁在分配之前知道这个包有多大」
 
 **现象**:没有任何现象。这是本仓库里唯一一类「修掉它不会让任何一局游戏变好」的缺陷 —— 它只在对手存在时才有意义,

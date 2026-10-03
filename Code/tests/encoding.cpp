@@ -44,6 +44,7 @@
 #include <Structs/CachedString.h>
 #include <Structs/Inventory.h>
 #include <Structs/Mods.h>
+#include <Structs/QuestLog.h>
 #include <Structs/TimeModel.h>
 #include <Structs/Vector2_NetQuantize.h>
 
@@ -1635,4 +1636,69 @@ TEST_CASE("A packet larger than any sender can produce is rejected before it is 
     REQUIRE(WireLimits::kMaxPacketBytes > WireLimits::kMaxCachedStringBytes);
     REQUIRE(WireLimits::kMaxPacketBytes > WireLimits::kMaxAppearanceBytes);
     REQUIRE(WireLimits::kMaxPacketBytes > WireLimits::kMaxChatMessageBytes);
+}
+
+TEST_CASE("A quest log cannot make the reader allocate what it never sent", "[encoding.quest_log]")
+{
+    // The count travels in 16 bits, so a peer can name 65535 entries while the writer
+    // never sends more than kMaxEntryCount. The read side used to resize to whatever the
+    // count said, which allocated room for the whole log before a single entry byte was
+    // read - a two byte packet was enough to ask for it.
+    REQUIRE(QuestLog::kMaxEntryCount == 0x1000);
+
+    QuestLog sendLog;
+    for (size_t index = 0; index < QuestLog::kMaxEntryCount + 7; ++index)
+    {
+        QuestLog::Entry entry{};
+        entry.Id = GameId(1, static_cast<uint32_t>(index));
+        entry.Stage = static_cast<uint16_t>(index);
+        sendLog.Entries.push_back(entry);
+    }
+
+    Buffer buff(1 << 17);
+    Buffer::Writer writer(&buff);
+    sendLog.Serialize(writer);
+
+    QuestLog recvLog;
+    Buffer::Reader reader(&buff);
+    recvLog.Deserialize(reader);
+
+    REQUIRE(recvLog.Entries.size() == QuestLog::kMaxEntryCount);
+    REQUIRE(recvLog.Entries.front().Id == GameId(1, 0));
+    REQUIRE(recvLog.Entries.back().Stage == static_cast<uint16_t>(QuestLog::kMaxEntryCount - 1));
+
+    // A peer that claims the full 16 bit count is clamped to the same bound. The entries
+    // below are exactly the ones the writer would have sent for that count, so the
+    // clamped reader consumes the stream and stops.
+    Buffer hostile(1 << 17);
+    Buffer::Writer hostileWriter(&hostile);
+    hostileWriter.WriteBits(0xFFFFu, 16);
+    for (size_t index = 0; index < QuestLog::kMaxEntryCount; ++index)
+    {
+        GameId(1, static_cast<uint32_t>(index)).Serialize(hostileWriter);
+        hostileWriter.WriteBits(static_cast<uint16_t>(index), 16);
+    }
+
+    QuestLog hostileRecv;
+    Buffer::Reader hostileReader(&hostile);
+    hostileRecv.Deserialize(hostileReader);
+
+    REQUIRE(hostileRecv.Entries.size() == QuestLog::kMaxEntryCount);
+    REQUIRE(hostileRecv.Entries.back().Stage == static_cast<uint16_t>(QuestLog::kMaxEntryCount - 1));
+
+    // The log is replaced, not appended to: the message arrives into a reused object.
+    Buffer small(64);
+    Buffer::Writer smallWriter(&small);
+    smallWriter.WriteBits(1u, 16);
+    GameId(1, 0).Serialize(smallWriter);
+    smallWriter.WriteBits(7u, 16);
+
+    QuestLog reused;
+    reused.Entries.push_back(QuestLog::Entry{});
+    reused.Entries.push_back(QuestLog::Entry{});
+    Buffer::Reader smallReader(&small);
+    reused.Deserialize(smallReader);
+
+    REQUIRE(reused.Entries.size() == 1);
+    REQUIRE(reused.Entries.front().Stage == 7);
 }

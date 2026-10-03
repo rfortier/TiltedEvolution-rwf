@@ -17,6 +17,12 @@ struct QuestLog
         bool operator!=(const Entry& acRhs) const noexcept { return !this->operator==(acRhs); }
     };
 
+    // The count travels in 16 bits, so a peer can name up to 65535 entries while the
+    // writer never sends more than this. Clamp the read side to the same bound: the
+    // count drives the resize there, and Deserialize runs inside noexcept frames, so
+    // throwing is not an option either. A log stays in the hundreds at the very most,
+    // so the bound costs a legitimate sender nothing.
+    static constexpr size_t kMaxEntryCount = 0x1000;
     Vector<Entry> Entries{};
 
     QuestLog() = default;
