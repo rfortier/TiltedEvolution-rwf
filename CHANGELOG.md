@@ -9,6 +9,86 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:IED 的远端变换把对端的 `nan` 原样写进引擎节点,而它唯一的调用点恰恰在 NaN 时不会被调用 —— 判据是「拒绝一个状态」和「夹住一个字段」在这里不是同一个修复
+
+**现象**:没有任何现象。这是 §89 那条判据(「这个字段的下游有没有第二道门」)在插件层的第一处落地,
+也是**同一族里唯一一条「下游的守卫反而让缺陷更难触发」的**:`plugins/IEDSyncTogether/src/RemoteIEDRenderer.cpp:392`
+的 `WatchdogTick()` 用 `needsCorrection = rotationDelta > kRotationEpsilon || positionDelta > kPositionEpsilon || scaleDelta > kScaleEpsilon`
+决定要不要调 `:444 ApplyRawTransform(remoteObject, tracked.object);`,而三个 delta 由 `:207-219 MaxMatrixDelta` /
+`:221-230 MaxPositionDelta` / `:417 std::abs(...)` 算出 —— 全是 `std::max`/`std::abs` 链。**NaN 参与比较恒为假,
+所以整条 delta 链在 NaN 上得 0,`needsCorrection` 得 `false`,修正根本不会发生。** 这是降低可达性,不是消除:
+同一个对象里只要**还有一项是有限的超阈值值**,`ApplyRawTransform` 就会被调用,于是 NaN 那一项跟着一起写进节点。
+
+**根因**:`nan` 与 `inf` 在这条链上是**合法输入**,而且**合法发送侧自己就会产生它们**。
+
+| 环节 | 位置 | 逐字 |
+| --- | --- | --- |
+| 捕获 | `plugins/IEDSyncTogether/src/LocalCaptureProbe.cpp:15-18` | `float Q(float value) { return std::round(value * 1000.0f) / 1000.0f; }` —— 量化不剥非有限值(`round(NaN)` 仍是 `NaN`) |
+| 编码 | `plugins/IEDSyncTogether/src/LocalIEDState.cpp:56-67` | `fmt::format("…\|{:.6f}\|{:.6f}\|{:.6f}\|{:.6f}", …, object.position[0], object.position[1], object.position[2], object.scale)` —— **fmt 对 NaN 输出文本 `nan`、对 inf 输出 `inf`** |
+| 解码 | `plugins/IEDSyncTogether/src/LocalIEDState.cpp:33`(修复前) | `out = static_cast<T>(std::stof(std::string(text)));` —— `std::stof` 把 `"nan"`/`"inf"`/`"infinity"` 当**合法输入接受,不抛** |
+| 落点 | `plugins/IEDSyncTogether/src/RemoteIEDRenderer.cpp:238-246` | `object->local.translate.x = captured.position[0];` … `object->local.rotate.entry[row][col] = captured.rotationMatrix[index++];` —— 无守卫;紧邻的 `:241 object->local.scale = std::clamp(captured.scale, 0.01f, 100.0f);` 是**唯一**有守卫的一行 |
+
+`:32-37` 那个 `try { … } catch (...) { return false; }` 只拦 `std::invalid_argument`/`std::out_of_range`,
+对非有限值一次也不拦。而 `std::clamp` 同样挡不住 NaN —— NaN 与任何值比较都为假,`clamp` 原样返回。
+
+**判据**:这里**不是**「夹住一个字段」的场合,是「拒绝一个状态」的场合,三条理由:
+
+1. **没有替代值。** 位置、九个旋转项、缩放各是一个独立语义的浮点;`0.f` 对一个位置来说是「原点」、
+   对一个缩放来说是「零尺寸」,都不是「这个字段没有值」。§70/§89 用 `0.f` 替代是因为那些字段的下游
+   拿到 `0.f` 只是「不生效」;这里写进的是节点的局部变换,`0.f` 是一个**合法但错误**的变换。
+2. **失败形态已经存在,而且已经打过日志。** `plugins/IEDSyncTogether/src/STRPMAdapter.cpp:527-535` 本来就有
+   `auto state = DecodeLocalIEDState(payload); if (!state) { SKSE::log::warn("STRPM IED state RX decode failed: sender={} name=\"{}\" bytes={}", …); return; }`
+   —— 在解码层拒掉,上层走的就是这条既有路径:整份 state 作废、一条 warn、不新增日志点、不改函数签名、不改线格式。
+3. **一个 state 是一份快照,不是一串独立字段。** 21 个字段描述同一个对象集合;其中一项是 `nan` 时,
+   「其余项照写」并不比「整份丢掉」更接近对端真实的外观 —— 发送侧的 NaN 来自引擎自己给出的坏变换,
+   这种情况下对端看到的本来就不是一个可用的姿态。
+
+**修法**:只改 `plugins/IEDSyncTogether/src/LocalIEDState.cpp` 一个文件、两个 hunk:
+
+```cpp
+// Code/plugins/patches/IEDSyncTogether/0003-reject-a-transform-value-the-sender-would-never-produce.patch
+ // src/LocalIEDState.cpp(修复后 :4-5)
+ #include <charconv>
++#include <cmath>
+
+ // src/LocalIEDState.cpp(修复后 :33-39)
+                 try {
+                     out = static_cast<T>(std::stof(std::string(text)));
++                    // std::stof accepts "nan" and "inf", and the sender's own
++                    // encoding writes them for a transform the engine produced.
++                    // There is no finite value that stands in for either one, so
++                    // the object is rejected rather than clamped.
++                    return std::isfinite(out);
+                 } catch (...) {
+                     return false;
+                 }
+```
+
+把 `return true;` 换成 `return std::isfinite(out);` 之后,`ParseNumber` 的**整型分支一字未动**
+(`std::from_chars` + `result.ptr == last` 本来就拒掉一切非数字),浮点分支对非有限值返回 `false`,
+于是 `:134-144` 的 `if (!ParseNumber(fields[8], object.position[0]) || …) { return std::nullopt; }`
+与九个旋转项那一段照原样生效 —— **不需要新增任何一个判断点**。
+
+**交付**:`Code/plugins/patches/IEDSyncTogether/0003-reject-a-transform-value-the-sender-would-never-produce.patch`
+(943 B / 25 行 / `index 26d1461..0e0879d`)。子模块不归本项目所有,而 CI 的
+`git submodule update --init --force --recursive --depth=1` 会丢弃只改工作树的改动,所以以补丁交付。
+补丁的两个 hunk 都在 0002 的 hunk(`@@ -93,6 +93,9 @@`)**之前**,所以按 `patch_files()` 的排序累积应用时行号不漂移。
+
+- 补丁的 pre-image 是 **pin 内容**(`git rev-parse :src/LocalIEDState.cpp` = `26d146145ce40693fa2634e605008b385a3ff384`,
+  与 0002 补丁头的 `index 26d1461..` 一致),因为 `plugin_patches.py:439-442` 的 `verify` 是**对索引**跑的:
+  「The index holds the pinned content even when the patch is already applied to the working tree, so "already applied"
+  cannot hide a patch that has stopped matching the pin.」
+- 三重校验实跑:`git apply --check --cached` 退 **0**(能打到 pin)、`git apply --check --reverse` 退 **0**(与工作区一致)、
+  前向 `git apply --check` 退 **1** 报 `error: patch failed: src/LocalIEDState.cpp:2`(已应用时的预期)。
+- **累积验证(这条是本轮新增的复核手法)**:把 `0001`+`0002`+`0003` 依次 `git apply --cached` 打到 pristine 索引上,
+  三个都退 0;随后 `git diff --stat`(**工作树 vs 累积索引**)输出**空** —— 即「pin + 三个补丁」逐字节等于工作树,
+  补丁集没有漏改也没有多改;`git diff --cached --stat`(**累积索引 vs pin**)= 5 files changed, 31 insertions(+), 2 deletions(-)。
+  验证完 `git reset -q` 还原索引(否则 `verify` 会因 `--cached` 读到已打补丁的索引而报 4 条
+  `does not apply to the pinned commit - the submodule was re-pinned without rewriting the patch`)。
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **27** patch(es) apply to their pinned commits;
+  `… check` → `PATCH CHECK OK`;`python Code\plugins\tools\plugin_snapshot.py verify` → `SNAPSHOT OK`。
+- **本机不编译**(`docs/PITFALLS.md` §0/§1),所以「谁在真正发 NaN」不可判定;判据不是「有没有人这么发」,
+  而是「发了以后有没有人挡」—— 修复前一个都没有,修复后解码层整份拒绝。
 ### 修复:线上浮点还剩下两处裸读,一处直接写进引擎的转向、一处进 TintMask 的 alpha —— 判据是「这个字段的下游有没有第二道门」
 
 **现象**:没有任何现象。这是 §70 那条判据(「引擎 setter 之前是最后一道门」)的收尾:全仓

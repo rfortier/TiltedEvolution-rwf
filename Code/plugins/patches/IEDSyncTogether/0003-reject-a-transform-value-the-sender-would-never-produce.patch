@@ -1,0 +1,25 @@
+diff --git a/src/LocalIEDState.cpp b/src/LocalIEDState.cpp
+index 26d1461..0e0879d 100644
+--- a/src/LocalIEDState.cpp
++++ b/src/LocalIEDState.cpp
+@@ -2,6 +2,7 @@
+ #include "LocalIEDState.h"
+ 
+ #include <charconv>
++#include <cmath>
+ 
+ namespace IEDSyncTogether
+ {
+@@ -31,7 +32,11 @@ namespace IEDSyncTogether
+             if constexpr (std::is_floating_point_v<T>) {
+                 try {
+                     out = static_cast<T>(std::stof(std::string(text)));
+-                    return true;
++                    // std::stof accepts "nan" and "inf", and the sender's own
++                    // encoding writes them for a transform the engine produced.
++                    // There is no finite value that stands in for either one, so
++                    // the object is rejected rather than clamped.
++                    return std::isfinite(out);
+                 } catch (...) {
+                     return false;
+                 }
