@@ -1,4 +1,5 @@
 #include <Structs/Movement.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 
 using TiltedPhoques::Serialization;
@@ -35,5 +36,9 @@ void Movement::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     uint64_t tmp = 0;
     aReader.ReadBits(tmp, 32);
     uint32_t tmp32 = tmp & 0xFFFFFFFF;
-    Direction = *reinterpret_cast<float*>(&tmp32);
+
+    // A NaN or an infinity survives every arithmetic operation it takes part in, and this
+    // value is assigned to the middle process of an actor on the receiving client without
+    // being read again. The sender cannot express either one.
+    Direction = WireLimits::ClampFinite(*reinterpret_cast<float*>(&tmp32));
 }

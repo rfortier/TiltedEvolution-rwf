@@ -1,4 +1,5 @@
 #include <Structs/Tints.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 #include <algorithm>
 
@@ -64,7 +65,11 @@ void Tints::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 
         aReader.ReadBits(buffer, 32);
         tmp = buffer & 0xFFFFFFFF;
-        entry.Alpha = *reinterpret_cast<float*>(&tmp);
+
+        // The alpha reaches TintMask::alpha on the receiving client, which the engine then
+        // blends with. A NaN or an infinity is not a large number but the absence of one,
+        // and no legitimate sender produces either.
+        entry.Alpha = WireLimits::ClampFinite(*reinterpret_cast<float*>(&tmp));
 
         Entries.push_back(entry);
     }

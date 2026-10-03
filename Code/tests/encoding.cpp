@@ -44,7 +44,9 @@
 #include <Structs/CachedString.h>
 #include <Structs/Inventory.h>
 #include <Structs/Mods.h>
+#include <Structs/Movement.h>
 #include <Structs/QuestLog.h>
+#include <Structs/Tints.h>
 #include <Structs/TimeModel.h>
 #include <Structs/Vector2_NetQuantize.h>
 
@@ -1424,6 +1426,80 @@ TEST_CASE("A non finite wire float is replaced where it is read", "[encoding.fin
         REQUIRE(received.Floats[1] == 0.f);
         REQUIRE(received.Floats[2] == 0.f);
         REQUIRE(received.Floats[3] == 2.5f);
+    }
+
+    // A movement direction is written straight into the middle process of the actor on the
+    // receiving client, where nothing compares it against a range first.
+    {
+        Movement sent{};
+        sent.Direction = cNotANumber;
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.Serialize(writer);
+
+        Movement received{};
+        received.Direction = 1.f;
+        Buffer::Reader reader(&buff);
+        received.Deserialize(reader);
+
+        REQUIRE(received.Direction == 0.f);
+    }
+
+    // An ordinary direction survives: a reader that pulled every value into a range would
+    // turn the actors of everyone who is not standing still.
+    {
+        Movement sent{};
+        sent.Direction = -2.75f;
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.Serialize(writer);
+
+        Movement received{};
+        Buffer::Reader reader(&buff);
+        received.Deserialize(reader);
+
+        REQUIRE(received.Direction == -2.75f);
+        REQUIRE(received == sent);
+    }
+
+    // An alpha goes to TintMask::alpha, which the engine blends with afterwards.
+    {
+        Tints sent{};
+        Tints::Entry hostile{};
+        hostile.Alpha = cInfinity;
+        sent.Entries.push_back(hostile);
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.Serialize(writer);
+
+        Tints received{};
+        Buffer::Reader reader(&buff);
+        received.Deserialize(reader);
+
+        REQUIRE(received.Entries.size() == 1);
+        REQUIRE(received.Entries[0].Alpha == 0.f);
+    }
+
+    {
+        Tints sent{};
+        Tints::Entry normal{};
+        normal.Alpha = 0.375f;
+        normal.Color = 0x11223344;
+        normal.Type = 7;
+        sent.Entries.push_back(normal);
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sent.Serialize(writer);
+
+        Tints received{};
+        Buffer::Reader reader(&buff);
+        received.Deserialize(reader);
+
+        REQUIRE(received == sent);
     }
 }
 

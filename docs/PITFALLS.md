@@ -11929,3 +11929,140 @@ python Code\plugins\tools\check_transport_compat.py
 > 收包那半确实被注释了,发包这半还挂在 logger 的 sink 列表上、每次启动都注册。
 > §87 把这一处写成「生产侧还活着」当作**不放过管理端的理由**,这一节则把它当**缺陷本身**处理 ——
 > 两者并不矛盾:一条链路的两端要分别判活。
+
+## 89. 2026-10-19 场次:线上浮点还剩下两处裸读,一处直接写进引擎的转向、一处进 TintMask 的 alpha —— 判据是「这个字段的下游有没有第二道门」
+
+> **锚点**:三处改动,都在本仓(不涉及补丁交付):
+> `Code/encoding/Structs/Movement.cpp:38`(`Direction` 的读取)、
+> `Code/encoding/Structs/Tints.cpp:67`(`Entry::Alpha` 的读取)、
+> `Code/tests/encoding.cpp:1431-1503`(四个新断言块)+ `:47`/`:49`(两条新 include)。
+> 上游是同一条判据的 §70(`Code/encoding/WireLimits.h` 的 `ClampFinite`),本节是它的收尾。
+> 测试在 `Code/tests/encoding.cpp` 的 `TEST_CASE("A non finite wire float is replaced where it is read", "[encoding.finite_floats]")`。
+
+### 89.1 缺陷:两个字段用 `ReadBits` + `reinterpret_cast` 读,于是 §70 的夹取一处也没覆盖到
+
+§70 给 `Code/encoding` 里二十多处「对端说了算的浮点」补了 `WireLimits::ClampFinite`,判据是
+**「引擎 setter 之前是最后一道门」**。但那条清扫是按 `Serialization::ReadFloat` 找读点的,
+而线上浮点有**两条**读法 —— 另一条是 `aReader.ReadBits(tmp, 32)` 取 32 位再重解释:
+
+```cpp
+// Code/encoding/Structs/Movement.cpp(修复前 :36-39)
+    uint64_t tmp = 0;
+    aReader.ReadBits(tmp, 32);
+    uint32_t tmp32 = tmp & 0xFFFFFFFF;
+    Direction = *reinterpret_cast<float*>(&tmp32);
+```
+
+```cpp
+// Code/encoding/Structs/Tints.cpp(修复前 :66-67)
+        aReader.ReadBits(buffer, 32);
+        tmp = buffer & 0xFFFFFFFF;
+        entry.Alpha = *reinterpret_cast<float*>(&tmp);
+```
+
+全仓 `reinterpret_cast<float*>` 共 6 处,其中 4 处读的是引擎自己的内存
+(`Code/client/Games/Skyrim/TESObjectREFR.cpp:243`/`:314` 的图变量表、
+`Code/client/Services/Debug/Views/AnimDebugView.cpp:164` 的调试视图、
+`Code/client/Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:12` 的引擎调用参数),
+剩下这 2 处读的才是线上字节。
+
+### 89.2 判据:「这个字段的下游有没有第二道门」—— 两处都没有
+
+| 字段 | 读点(修复前) | 下游 | 第二道门 |
+| --- | --- | --- | --- |
+| `Movement::Direction` | `Code/encoding/Structs/Movement.cpp:38` | `Code/client/Services/Generic/CharacterService.cpp:683 point.Direction = movement.Direction;` → `Code/client/Systems/InterpolationSystem.cpp:112 apActor->currentProcess->middleProcess->direction = second.Direction;` | **无**:`:110` 只判了 `currentProcess`/`middleProcess` 是否为空 |
+| `Tints::Entry::Alpha` | `Code/encoding/Structs/Tints.cpp:67` | `Code/client/Systems/FaceGenSystem.cpp:119 tints[i]->alpha = tintsEntries[i].Alpha;` | **无**:`FaceGenSystem` 唯一的门是 `:153 if (acTints.Entries.empty()) return;` |
+
+1. **两处都是「直写引擎」而不是「参与判断」。** `Direction` 落在引擎 middle process 的朝向字段上,
+   `Alpha` 落在引擎 `TintMask::alpha` 上,接着被 `CreateTints`(`Code/client/Systems/FaceGenSystem.cpp:107-141`)
+   交给引擎混合。中间没有任何一处做比较或夹取。
+2. **§70 的「替换而不是夹进区间」在这里同样成立。** 没有任何区间能让 `NaN` 变得有意义;
+   这两个字段也都不带符号相关的判断(不像血量增量那样需要一个下界),所以不需要为它们单独定范围。
+3. **判据不是「这个值合法吗」,而是「谁在这个值之后还看它一眼」。** `InterpolationSystem` 拿 `Direction`
+   算的是朝向、`FaceGenSystem` 拿 `Alpha` 交给引擎混合 —— 两个消费者都是**终点**,不是门。
+
+### 89.3 可达性
+
+- **两处都可达,且都在普通流量上。** `Movement` 是 `ReferenceUpdate::UpdatedMovement` 的成员
+  (`Code/encoding/Structs/ReferenceUpdate.h:25`),由 `ClientReferencesMoveRequest` 每 20 ms 一批
+  (`Code/server/Services/CharacterService.cpp:960-1042` 的 50 Hz 快照)搬运;`Tints` 在
+  `AssignCharacterRequest`/`CharacterSpawnRequest`/`CharacterData` 三条路径上
+  (`Code/encoding/Messages/AssignCharacterRequest.h:9`、`CharacterSpawnRequest.h:7`、
+  `Code/encoding/Structs/CharacterData.h:9`)。
+- **本机不编译,所以「谁在真正发 NaN」不可判定。** 与 §70 的六处同一条:这条修复的判据不是
+  「有没有人这么发」,而是「发了以后有没有人挡」—— 而两处都没有人挡。
+- **两个结构体此前没有任何往返测试**:`Code/tests/encoding.cpp` 全文零 `Movement`/`Tints` 字样
+  (只有 `Mods`/`QuestLog`/`Inventory`/`AnimationVariables`/`TimeModel` 等有),
+  所以「读侧会不会替换」这件事此前连一个断言都没有。
+
+### 89.4 修法
+
+两处统一走既有的 `WireLimits::ClampFinite`(`Code/encoding/WireLimits.h:99`),两个文件各补
+`#include <WireLimits.h>`(写在第 2 行,与 `Code/encoding/Messages/AddTargetRequest.cpp:1-2` 同形):
+
+```cpp
+// Code/encoding/Structs/Movement.cpp(修复后 :36-43)
+    uint64_t tmp = 0;
+    aReader.ReadBits(tmp, 32);
+    uint32_t tmp32 = tmp & 0xFFFFFFFF;
+
+    // A NaN or an infinity survives every arithmetic operation it takes part in, and this
+    // value is assigned to the middle process of an actor on the receiving client without
+    // being read again. The sender cannot express either one.
+    Direction = WireLimits::ClampFinite(*reinterpret_cast<float*>(&tmp32));
+```
+
+```cpp
+// Code/encoding/Structs/Tints.cpp(修复后 :66-72)
+        aReader.ReadBits(buffer, 32);
+        tmp = buffer & 0xFFFFFFFF;
+
+        // The alpha reaches TintMask::alpha on the receiving client, which the engine then
+        // blends with. A NaN or an infinity is not a large number but the absence of one,
+        // and no legitimate sender produces either.
+        entry.Alpha = WireLimits::ClampFinite(*reinterpret_cast<float*>(&tmp));
+```
+
+测试在 `Code/tests/encoding.cpp` 的 `[encoding.finite_floats]` 里新增四个块(`:1431-1503`),
+接收对象一律先写有限哨兵(`Direction = 1.f`),让「读的时候替换了」成为断言成立的唯一原因:
+
+- `Movement` 的 `Direction = NaN` 读回 `0.f`;`Direction = -2.75f` 读回 `-2.75f` 且 `received == sent`
+  —— 后一条证明**有限的合法值原样通过**。
+- `Tints` 的 `Alpha = +inf` 读回 `0.f`;`Alpha = 0.375f` / `Color = 0x11223344` / `Type = 7` 整包 `==`
+  —— 后一条同时钉住字段顺序没被改动。
+
+### 89.5 复核命令(照抄)
+
+```powershell
+cd D:\sktest\SkyrimTogetherNext
+# 1. 两处读取都在 ClampFinite 里
+Select-String -Path Code\encoding\Structs\Movement.cpp, Code\encoding\Structs\Tints.cpp -Pattern 'ClampFinite'
+# 期望:各 1 命中(Movement.cpp:43 / Tints.cpp:72)
+
+# 2. 全仓「读了浮点但没有夹取」应只剩引擎自己的内存
+Select-String -Path Code\encoding\Structs\*.cpp -Pattern 'reinterpret_cast<float' | Select-String -NotMatch 'ClampFinite'
+# 期望:0 命中
+
+python Tools\Scripts\check_docs.py
+```
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 门禁 + 往返测试。
+
+- `git grep -rn "ClampFinite" -- Code/encoding` 现在 **30 处**命中(含定义 `WireLimits.h:99`);
+  修改前是 28 处,新增的正是这两处。
+- `python Tools\Scripts\check_docs.py` → `DOC CHECK OK` / `coverage 3069/3082 stated consistently in 4 doc(s)` /
+  `3698 map entries; id manifest agrees with the real gap` / `10 changelog version(s), all present in both READMEs`。
+- `Code/encoding` 的线格式**不变**:`Direction`/`Alpha` 都是定宽 32 位字段,写侧一个字节都没动,
+  所以没有新 opcode、没有新字段,`check_transport_compat.py` 的输入不变。
+- 新增两条 include(`:47 <Structs/Movement.h>`、`:49 <Structs/Tints.h>`);`Code/tests/xmake.lua`
+  只 `add_files("*.cpp")` + `add_deps("SkyrimEncoding")`,不需要改。
+
+> **教训**:第一条:**一条判据的覆盖面,等于它被用来找读点的那种写法。**
+> §70 是按 `Serialization::ReadFloat` 找的,于是「用 `ReadBits` + `reinterpret_cast` 读浮点」这条
+> 第二条读法整条漏网。判据是「这个字段的下游有没有第二道门」,而扫读点时用的是「它长什么样」。
+> 第二条:**同一个类型在同一个文件里可以有两种读法,而它们的危险程度一样。**
+> `Movement.cpp` 里 `Position`/`Rotation` 走 `NetQuantize`(定点,对端选不出 NaN),
+> 紧接着的 `Direction` 走裸 32 位 —— 前者安全不代表后者安全,安全性属于字段而不是文件。
+> 第三条:**「谁在这个值之后还看它一眼」比「这个值合不合法」更能定位终点。**
+> `InterpolationSystem` 与 `FaceGenSystem` 都不是门,是终点:它们拿到什么就交给引擎什么,
+> 所以判据要问的是「从读到用之间有没有人比较过」,而不是「这个数看起来正不正常」。

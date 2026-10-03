@@ -9,6 +9,68 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:线上浮点还剩下两处裸读,一处直接写进引擎的转向、一处进 TintMask 的 alpha —— 判据是「这个字段的下游有没有第二道门」
+
+**现象**:没有任何现象。这是 §70 那条判据(「引擎 setter 之前是最后一道门」)的收尾:全仓
+`reinterpret_cast<float*>` 只剩 6 处,其中 4 处读的是引擎自己的内存,剩下两处读的是线上字节 ——
+`Code/encoding/Structs/Movement.cpp:38` 的 `Direction` 与 `Code/encoding/Structs/Tints.cpp:67` 的 `Alpha`。
+
+**根因**:两个字段都用 `aReader.ReadBits(tmp, 32)` 取位再 `reinterpret_cast<float*>` 重解释,
+这条路绕开了 `Serialization::ReadFloat` —— 于是 §70 给 `Code/encoding` 里二十多处读点补的
+`WireLimits::ClampFinite` 一处也没覆盖到它们。两个字段的下游都没有第二道门:
+
+| 字段 | 读点(修复前) | 下游 |
+| --- | --- | --- |
+| `Movement::Direction` | `Code/encoding/Structs/Movement.cpp:38` | `Code/client/Services/Generic/CharacterService.cpp:683 point.Direction = movement.Direction;` → `Code/client/Systems/InterpolationSystem.cpp:112 apActor->currentProcess->middleProcess->direction = second.Direction;`(**直写引擎 middle process**,`:110` 只判了空) |
+| `Tints::Entry::Alpha` | `Code/encoding/Structs/Tints.cpp:67` | `Code/client/Systems/FaceGenSystem.cpp:119 tints[i]->alpha = tintsEntries[i].Alpha;`(**写进引擎 `TintMask`**,该函数唯一的门是 `:153 if (acTints.Entries.empty()) return;`) |
+
+两个字段都属于「`+inf` 过得去」那一类:`InterpolationSystem` 拿 `Direction` 算的是朝向,`FaceGenSystem` 拿
+`Alpha` 交给引擎混合;`NaN` 参与算术后还是 `NaN`,而这两个下游都不做比较,所以没有一道门能替它挡住。
+
+**修法**:两处统一走既有的 `WireLimits::ClampFinite`(`Code/encoding/WireLimits.h:99`),两个文件各补
+`#include <WireLimits.h>`(写在第 2 行,与 `Code/encoding/Messages/AddTargetRequest.cpp:1-2` 同形):
+
+```cpp
+// Code/encoding/Structs/Movement.cpp(修复后 :36-43)
+    uint64_t tmp = 0;
+    aReader.ReadBits(tmp, 32);
+    uint32_t tmp32 = tmp & 0xFFFFFFFF;
+
+    // A NaN or an infinity survives every arithmetic operation it takes part in, and this
+    // value is assigned to the middle process of an actor on the receiving client without
+    // being read again. The sender cannot express either one.
+    Direction = WireLimits::ClampFinite(*reinterpret_cast<float*>(&tmp32));
+```
+
+```cpp
+// Code/encoding/Structs/Tints.cpp(修复后 :66-72)
+        aReader.ReadBits(buffer, 32);
+        tmp = buffer & 0xFFFFFFFF;
+
+        // The alpha reaches TintMask::alpha on the receiving client, which the engine then
+        // blends with. A NaN or an infinity is not a large number but the absence of one,
+        // and no legitimate sender produces either.
+        entry.Alpha = WireLimits::ClampFinite(*reinterpret_cast<float*>(&tmp));
+```
+
+**为什么是「替换为 0」而不是「夹进一个区间」**:与 §70 同一条 —— 没有任何区间能让 `NaN` 变得有意义,
+而这两个字段都不带符号相关的判断(不像血量增量那样需要一个下界),所以不需要给它们单独定范围。
+**为什么不动那 4 处引擎内存的 `reinterpret_cast<float*>`**:它们读的不是线上字节
+(`Code/client/Games/Skyrim/TESObjectREFR.cpp:243`/`:314` 是引擎的图变量表、
+`Code/client/Services/Debug/Views/AnimDebugView.cpp:164` 是调试视图、
+`Code/client/Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:12` 是引擎调用参数)。
+
+**验证**:本机不编译(`docs/PITFALLS.md` §0/§1),证据是逐字命中 + 门禁 + 往返测试。
+
+`Code/tests/encoding.cpp` 的 `[encoding.finite_floats]` 新增四个块(`:1431-1503`),新增两条
+`#include`(`:47 <Structs/Movement.h>`、`:49 <Structs/Tints.h>` —— 这两个结构体此前**没有任何往返测试**):
+
+- `Movement` 的 `Direction = NaN` 读回 `0.f`;`Direction = -2.75f` 读回 `-2.75f` 且 `received == sent`
+  —— 后一条证明**有限的合法值原样通过**,也就是「读的时候替换了」是前一条断言成立的唯一原因。
+- `Tints` 的 `Alpha = +inf` 读回 `0.f`;`Alpha = 0.375f` / `Color = 0x11223344` / `Type = 7` 整包 `==`
+  —— 后一条同时钉住字段顺序没被改动。
+- 全仓 `git grep -rn "ClampFinite" -- Code/encoding` 现在 **30 处**命中(含定义 `WireLimits.h:99`)。
+- `python Tools\Scripts\check_docs.py` → `DOC CHECK OK`。
 ### 修复:服务端的日志 sink 把 admin 协议的帧发给游戏连接 —— 判据是「收件人集合里的成员,是不是这个协议的端点」
 
 **现象**:没有任何现象,而且是**纵深修复** —— 这一条和上一条同源,今天连触发条件都凑不齐:
