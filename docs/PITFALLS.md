@@ -12200,3 +12200,143 @@ python Tools\Scripts\check_docs.py                    # 期望:DOC CHECK OK
 > §70/§89 的字段(法术强度、alpha、朝向)拿 `0.f` 只是不生效;位置与旋转拿 `0.f` 是一个合法但错误的变换。
 > 所以同一族缺陷在插件层的第一处落地用的**不是**同一个修法,而这不是不一致 —— 是判据在问一个更早的问题:
 > 「这个字段有没有替身」。
+## 91. 2026-10-19 场次:Morph 的快照只夹了块数,没夹单块大小也没夹总条数 —— 判据是「上界要绑到自己的发送侧能产出什么,而不是绑到传输层允许什么」
+> **锚点**:`Code/plugins/patches/MorphSyncTogether/0006-bound-a-single-morph-chunk-and-the-values-a-snapshot-may-carry.patch`
+> (4486 B / 98 行,三个文件、五个 hunk)。测试在 `plugins/MorphSyncTogether/src/MorphSyncServiceBodyHair.cpp:60`(活实现)
+> 与 `plugins/MorphSyncTogether/src/MorphSyncService.cpp:585`(被 `#include` 进来的副本),两份必须同形改。
+> 就地更正:上一版把上界写进 token 循环内部(`if (values.size() >= kMaxMorphValues) { break; }`),
+> 那样「拒绝」仍然要先付出整段的解析代价;改成解析**之前**的预扫描(`std::count(chunk.begin(), chunk.end(), ';') + 1` 累加),
+> 代价降到与块大小同阶。
+
+### 91.1 缺陷
+
+`plugins/MorphSyncTogether/src/MorphSyncServiceBodyHair.cpp:50-63` 的入口门逐字:
+
+```cpp
+        if (hash == 0 || !sequence || !count || !props || *count == 0 || *count > 128 || *sequence >= *count) {
+            SKSE::log::warn("MST MORPH RX invalid packet sender=\"{}\"", sender);
+            return;
+        }
+```
+
+它夹住了**块数**(`*count > 128`),但没有夹:
+
+| 没夹住的东西 | 一个对端能把它撑到多大 | 后果 |
+| --- | --- | --- |
+| 单块字节数(`props->size()`) | 传输层的 `STRPM::kMaxPayloadBytes` = 24 KiB(而合法发送侧只有 2200) | 128 × 24 KiB ≈ 3 MB 文本进入 `_assemblies` |
+| 整份快照的 value 条数 | 每条最短约 4 字符 ⇒ 约 9 万条 | 每条 `Split` + `HexDecode` + `std::stof`,每个被接受的 value **两次** `std::string` 分配 |
+| 上述解析发生在哪个线程 | —— | `plugins/MorphSyncTogether/src/UdpTransport.cpp:277-285` 的 `tasks->AddTask([packet = std::move(packet)]() { … HandleUdpPacket(…) })` ⇒ **游戏线程** |
+
+### 91.2 判据
+
+上界的参照物是**本插件自己的发送侧能产出什么**,不是**传输层允许什么**。
+
+- `plugins/MorphSyncTogether/src/MorphSyncService.cpp:441` 的 `constexpr std::size_t kChunkLimit = 2200;` 是发送侧自己写的切块常量;
+  `:443-460` 逐 value 造 `fmt::format("{},{},{:.9g}", HexEncode(name), HexEncode(key), value)` 并在
+  `:451 if (!current.empty() && current.size() + extra > kChunkLimit)` 处切块 ⇒ **合法的 `props` 永远不超过 2200 字符**。
+- 一份快照就是一个 actor 自己的 morph 列表,条数由本地 RaceMenu 决定,不由对端决定。
+- `docs/PITFALLS.md:10164-10167`(§79)已经写下过这个数字:「一次形变快照被切成 2200 字符的块 …… **单个信封常态就在 512 与 4096 之间**」。
+
+⇒ 24 KiB 这个数字是**传输层**的,任何合法流量都用不到它;拿它当上界等于把上界交给对端。
+
+### 91.3 可达性
+
+- 入口链:`plugins/MorphSyncTogether/src/UdpTransport.cpp:211 OnMessage` → `:222 HandleMessage`(`:233` 键长门 256、`:242-251` `_senderConnections` 行数门 64)
+  → `:254-263 auto packet = fmt::format("{}from={}|{}", kGameplayPrefix, sender, payload);` → `:275 QueueMessage`
+  → `:277-285 SKSE::GetTaskInterface()->AddTask(…)` ⇒ 游戏线程。
+- 活 handler 是 `plugins/MorphSyncTogether/src/MorphSyncServiceBodyHair.cpp:50` 那份;**死副本**在 `plugins/MorphSyncTogether/src/MorphSyncService.cpp:575`
+  (`MorphSyncServiceBodyHair.cpp:5-15` 用四个 `#define` 把 `#include "MorphSyncService.cpp"`(`:11`)里的四个符号改名成 `…Legacy`,
+  而 `HandleUdpPacketLegacy`(`MorphSyncService.cpp:550`)全仓零调用点)。两份是同一段源码的两个副本 ⇒ 补丁必须同时覆盖。
+- 解析出来的 value 随后走 `TryApplyRemote`(`MorphSyncServiceBodyHair.cpp:277-397`),`:359-365` 逐条 `_bodyMorph->SetMorph(actor, value.morphName.c_str(), value.morphKey.c_str(), value.value);`。
+- 既有的两条表上界(`kMaxRemoteSnapshots` / `kMaxRemotePubicSnapshots` = 64,由 0004 落)只限**行数**,不限每行的工作量。
+
+### 91.4 修法
+
+```cpp
+        // The chunk count is bounded above, but neither the size of a single
+        // chunk nor the number of morph values a snapshot may carry is: a peer
+        // that ignores the chunker can send 128 chunks of the largest packet the
+        // transport allows, and the apply path then walks every value it holds.
+        // Both are bounded by what this plugin's own sender can produce -
+        // BroadcastSnapshot chunks at kChunkLimit (2200 characters), so a chunk
+        // twice that size cannot come from it, and a snapshot is one actor's own
+        // morph list. A packet over the first cap and a snapshot over the second
+        // are refused instead of being applied in part.
+        static constexpr std::size_t kMaxMorphChunkBytes = 4096;
+        static constexpr std::size_t kMaxMorphValues = 4096;
+```
+
+单块超限并入**已有的**入口拒绝分支(与 `*count > 128` 同形):
+
+```cpp
+        if (hash == 0 || !sequence || !count || !props || *count == 0 || *count > 128 || *sequence >= *count ||
+            props->size() > kMaxMorphChunkBytes) {
+```
+
+总条数超限在解析**之前**预扫描,并把这一份 assembly 从 `_assemblies` 里删掉(它已经被判定为不可能来自本插件的发送侧):
+
+```cpp
+            std::size_t totalValues = 0;
+            for (const auto& chunk : it->second.chunks) {
+                if (!chunk.empty()) {
+                    totalValues += static_cast<std::size_t>(std::count(chunk.begin(), chunk.end(), ';')) + 1;
+                }
+            }
+
+            if (totalValues > kMaxMorphValues) {
+                _assemblies.erase(it);
+                SKSE::log::warn(
+                    "MST MORPH RX snapshot dropped: more than {} values sender=\"{}\"",
+                    kMaxMorphValues,
+                    sender);
+                return;
+            }
+```
+
+五条要点:
+
+1. `plugins/MorphSyncTogether/src/PCH.h` 已经含 `<cmath>`/`<algorithm>`/`<string>` 等 ⇒ 新代码不需要新增 include(与 §90 那条 IED 补丁不同)。
+2. `MorphSyncService.h` 的常量块刻意放在 `static std::optional<std::string> ReadField(…)` 声明之后(pin `:111`),
+   **不**贴着 0004 加的那两行表上界(pin `:128`)—— 因为 `plugin_patches.py:439-442` 要求每个补丁都能独立打到 pristine 索引上,
+   两个 hunk 落在同一段上下文里会互相破坏。
+3. pre-image 一律是 pin 内容,不是「pin + 已有补丁」。生成方式:`git show :<path>` 取 pin 文本 → 文本替换 → `git diff --no-index` 两个临时目录。
+4. 日志字符串里的 `\"{}\"` 必须转义(照抄 0004 的 `sender=\"{}\"`),否则 `plugin_patches.py:241-258` 的 `FORMAT_FIELD` 检查会把它当格式串问题。
+5. `*count > 128` 这道旧门**不删**:它挡的是「块数」,新加的两道门挡的是「单块大小」与「总条数」,三者正交。
+
+### 91.5 复核命令(照抄)
+
+```powershell
+# 三重校验(cwd = plugins/MorphSyncTogether)
+git apply --check --cached Code/plugins/patches/MorphSyncTogether/0006-bound-a-single-morph-chunk-and-the-values-a-snapshot-may-carry.patch   # 退 0
+git apply --check --reverse <同一个补丁>   # 退 0
+git apply --check <同一个补丁>             # 退 1,报 error: patch failed: src/MorphSyncService.h:110
+
+# 累积验证:六个补丁依次打到 pristine 索引,再比工作树
+Get-ChildItem Code/plugins/patches/MorphSyncTogether/*.patch | Sort-Object Name | ForEach-Object { git -C plugins/MorphSyncTogether apply --cached $_.FullName }
+git -C plugins/MorphSyncTogether diff --stat          # 必须为空
+git -C plugins/MorphSyncTogether diff --cached --stat # 13 files changed, 242 insertions(+), 12 deletions(-)
+git -C plugins/MorphSyncTogether reset -q             # 还原索引
+
+# 门禁
+python Code\plugins\tools\plugin_patches.py verify    # PATCH VERIFY OK / 28 patch(es)
+python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
+python Code\plugins\tools\plugin_snapshot.py verify   # SNAPSHOT OK
+python Tools\Scripts\check_docs.py                     # DOC CHECK OK
+```
+
+**验证**:`git apply --check --cached` 退 **0**、`--check --reverse` 退 **0**、前向 `--check` 退 **1** 且报
+`error: patch failed: src/MorphSyncService.h:110` / `… BodyHair.cpp:57` / `… MorphSyncService.cpp:572`;
+累积应用六个补丁后 `git diff --stat`(工作树 vs 累积索引)输出**空**;`git diff --cached --stat`(累积索引 vs pin)
+= `13 files changed, 242 insertions(+), 12 deletions(-)`;四条门禁全绿(`PATCH VERIFY OK` / 28 patch(es)、`PATCH CHECK OK`、
+`SNAPSHOT OK`、`DOC CHECK OK`)。**本机不编译**,所以「一个对端会不会这么发」不可判定。
+
+> **教训**:第一条:**上界的参照物选错,比没有上界更危险 —— 因为它看起来已经守住了。**
+> `*count > 128` 是一道真的门,它把「块数」这一维夹死了,于是这段代码读起来是有防线的;
+> 但它参照的是**传输层**允许什么,而传输层的 24 KiB 是给整条通道用的,不是给一个 chunk 用的。
+> 判据要问的是「这个数字是谁定的」:发送侧自己写的 `kChunkLimit = 2200` 才是「一个 chunk 能有多大」的权威。
+> 第二条:**「先解析再判断」和「先判断再解析」是两种不同的修复,代价差一个数量级。**
+> 第一版把条数门写进 token 循环内部,读到第 4097 条才 break —— 拒绝的代价仍然是 O(整份快照)。
+> 改成对 `chunks` 做一次 `std::count` 预扫描之后,拒绝的代价降到 O(块大小),而语义完全相同。
+> 第三条:**同一个符号在一份源码里出现两次时,补丁必须同时覆盖两份,哪怕其中一份不可达。**
+> `MorphSyncService.cpp` 的那份 `HandleMorphPacket` 被 `#define` 改名后只由同样零调用点的 `HandleUdpPacketLegacy` 使用;
+> 只改 `MorphSyncServiceBodyHair.cpp` 会让「两份副本」在下一次有人恢复 legacy 路径时分叉。

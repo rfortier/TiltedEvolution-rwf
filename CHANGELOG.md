@@ -9,6 +9,50 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:Morph 的快照只夹了块数,没夹单块大小也没夹总条数 —— 判据是「上界要绑到自己的发送侧能产出什么,而不是绑到传输层允许什么」
+
+**现象**:没有任何现象。这是 §90 那条判据(「拒绝一个状态」vs「夹住一个字段」)在同一个插件里的第二处落地,
+也是同族里第一处**上界本身选错了参照物**的:`plugins/MorphSyncTogether/src/MorphSyncServiceBodyHair.cpp:60`
+(与它那份被 `#include` 进来的副本 `plugins/MorphSyncTogether/src/MorphSyncService.cpp:585`)只写了 `*count > 128`,
+夹的是**块数**;而一块能有多大、整份快照能有多少条 morph,一个门也没有。
+
+**根因**:发送侧(`plugins/MorphSyncTogether/src/MorphSyncService.cpp:441` 的 `constexpr std::size_t kChunkLimit = 2200;`)
+把一次快照切成 2200 字符的块,所以**合法**的 `props` 永远不超过 2200 字符、一份快照的值也就那么多;
+而接收侧的门只数了块数。一个忽略分块器的对端可以把 128 块每块都塞到传输上限(`STRPM::kMaxPayloadBytes` = 24 KiB),
+于是 `values` 可达数十万条,每条都要 `Split` + `HexDecode` + `std::stof`(每个被接受的 value 两次 `std::string` 分配),
+全部跑在游戏线程的 `AddTask` 任务里,随后还要逐条 `_bodyMorph->SetMorph` —— 这正是需求 (4)「不得拖慢交互」的那一类。
+
+**修法**:两个上界,都绑到本插件自己的发送侧能产出什么,而不是绑到传输层允许什么 ——
+`static constexpr std::size_t kMaxMorphChunkBytes = 4096;`(发送侧切块常量的两倍)与
+`static constexpr std::size_t kMaxMorphValues = 4096;`(一份快照就是一个 actor 自己的 morph 列表)。
+单块超限走**已有的**入口拒绝分支(与 `*count > 128` 同形,`MST MORPH RX invalid packet`);
+总条数超限在解析**之前**用一个预扫描判定(`std::count(chunk.begin(), chunk.end(), ';') + 1` 累加),
+这样「拒绝」不需要先付出解析代价,并把这一份 assembly 从 `_assemblies` 里删掉。
+
+**双份实现**:`MorphSyncServiceBodyHair.cpp` 与 `MorphSyncService.cpp` 是同一段源码的两个副本
+(`MorphSyncServiceBodyHair.cpp:11` 用 `#define` 改名后 `#include "MorphSyncService.cpp"`,把那份的 `HandleMorphPacket`
+变成无调用点的 `HandleMorphPacketLegacy`),两处必须同形改,否则补丁只覆盖一半。
+
+**交付**:`Code/plugins/patches/MorphSyncTogether/0006-bound-a-single-morph-chunk-and-the-values-a-snapshot-may-carry.patch`
+(4486 B / 98 行,改三个文件:`src/MorphSyncService.h` 的 `@@ -110,6 +110,18 @@`、`src/MorphSyncServiceBodyHair.cpp` 的
+`@@ -57,7 +57,8 @@` 与 `@@ -106,6 +107,22 @@`、`src/MorphSyncService.cpp` 的 `@@ -572,7 +572,8 @@` 与 `@@ -620,6 +621,22 @@`)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+pre-image 一律是 **pin 内容**(`plugin_patches.py:439-442`:每个补丁都要能独立打到 pristine 索引上),
+所以 `MorphSyncService.h` 的常量块刻意放在 `ReadField` 声明之后(`:110`),与 0004 加表上界的那处(`:126`)分开 —— 两个 hunk 不重叠。
+
+- 三重校验实跑:`git apply --check --cached` 退 **0**(能打到 pin)、`git apply --check --reverse` 退 **0**(与工作区一致)、
+  前向 `git apply --check` 退 **1** 报 `error: patch failed: src/MorphSyncService.h:110`(已应用时的预期)。
+- **累积验证**:`0001`…`0006` 依次 `git apply --cached` 打到 pristine 索引,六个都退 0;随后
+  `git diff --stat`(工作树 vs 累积索引)输出**空** ⇒「pin + 六个补丁」逐字节等于工作树;
+  `git diff --cached --stat`(累积索引 vs pin)= 13 files changed, 242 insertions(+), 12 deletions(-)。验证完 `git reset -q`。
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **28** patch(es) apply to their pinned commits;
+  `… check` → `PATCH CHECK OK`;`python Code\plugins\tools\plugin_snapshot.py verify` → `SNAPSHOT OK`;
+  `python Tools\Scripts\check_docs.py` → `DOC CHECK OK`;`python Code\plugins\tools\check_transport_compat.py` → `TRANSPORT COMPATIBILITY OK`;
+  `python Code\plugins\tools\strpm_contract.py check` → `CONTRACT OK`。
+- **本机不编译**(`docs/PITFALLS.md` §0/§1),所以「一个对端到底会不会这么发」不可判定;判据不是「有没有人这么发」,
+  而是「发了以后解析代价由谁决定」—— 修复前由对端决定,修复后由本插件自己的发送侧常量决定。
 ### 修复:IED 的远端变换把对端的 `nan` 原样写进引擎节点,而它唯一的调用点恰恰在 NaN 时不会被调用 —— 判据是「拒绝一个状态」和「夹住一个字段」在这里不是同一个修复
 
 **现象**:没有任何现象。这是 §89 那条判据(「这个字段的下游有没有第二道门」)在插件层的第一处落地,
