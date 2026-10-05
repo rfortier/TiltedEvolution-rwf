@@ -1,0 +1,81 @@
+diff --git a/src/STRPMChatUiSuppressBootstrap.h b/src/STRPMChatUiSuppressBootstrap.h
+index f60d258..3e26774 100644
+--- a/src/STRPMChatUiSuppressBootstrap.h
++++ b/src/STRPMChatUiSuppressBootstrap.h
+@@ -6,7 +6,7 @@ namespace STRPMChatUiSuppressBootstrap
+ {
+     namespace detail
+     {
+-        inline void* ResolveExternalStrAllocationBase() noexcept
++        inline void* ResolveExternalStrAllocationBase()
+         {
+             HMODULE selfModule = nullptr;
+             if (!GetModuleHandleExW(
+@@ -52,6 +52,14 @@ namespace STRPMChatUiSuppressBootstrap
+             return externalAllocations.size() == 1 ? externalAllocations.front() : nullptr;
+         }
+ 
++        // EnumerateMemory, FindBytes and ResolveExecuteAsync all grow STL
++        // containers, and this is a thread entry point: an allocation failure that
++        // escapes it terminates the game process with no crash dump. That is also
++        // why ResolveExternalStrAllocationBase above is not noexcept - a noexcept
++        // callee would terminate inside itself, where this handler cannot reach it.
++        // The loop below waits for the runtime to unpack, so an allocation failure
++        // is not retried as another attempt: it is reported and the observer stays
++        // unarmed.
+         inline DWORD WINAPI Worker(void*) noexcept
+         {
+             std::optional<std::uintptr_t> executeAsyncAddress;
+@@ -60,28 +68,37 @@ namespace STRPMChatUiSuppressBootstrap
+                  attempt < 120 && !STRPMChatUiSuppress::detail::g_stopRequested.load();
+                  ++attempt)
+             {
+-                if (!executeAsyncAddress)
++                try
+                 {
+-                    if (auto* allocationBase = ResolveExternalStrAllocationBase();
+-                        allocationBase != nullptr)
++                    if (!executeAsyncAddress)
+                     {
+-                        executeAsyncAddress =
+-                            STRPMChatUiSuppressV3::ResolveExecuteAsync(allocationBase);
++                        if (auto* allocationBase = ResolveExternalStrAllocationBase();
++                            allocationBase != nullptr)
++                        {
++                            executeAsyncAddress =
++                                STRPMChatUiSuppressV3::ResolveExecuteAsync(allocationBase);
++                        }
+                     }
+-                }
+ 
+-                // The UI observer must be registered after the receive VEH so it
+-                // is inserted ahead of it and can observe DeserializeRaw without
+-                // changing the validated receiver implementation.
+-                if (executeAsyncAddress && STRPMBridgeReceive::IsResolved())
+-                {
+-                    if (STRPMChatUiSuppressV3::Arm(*executeAsyncAddress))
++                    // The UI observer must be registered after the receive VEH so it
++                    // is inserted ahead of it and can observe DeserializeRaw without
++                    // changing the validated receiver implementation.
++                    if (executeAsyncAddress && STRPMBridgeReceive::IsResolved())
+                     {
+-                        STRPMChatUiSuppress::detail::Log(
+-                            "STRPM chat UI suppression armed at OverlayApp::ExecuteAsync");
+-                        return 0;
++                        if (STRPMChatUiSuppressV3::Arm(*executeAsyncAddress))
++                        {
++                            STRPMChatUiSuppress::detail::Log(
++                                "STRPM chat UI suppression armed at OverlayApp::ExecuteAsync");
++                            return 0;
++                        }
+                     }
+                 }
++                catch (...)
++                {
++                    STRPMChatUiSuppress::detail::Log(
++                        "STRPM chat UI suppression resolver ran out of memory");
++                    return 0;
++                }
+ 
+                 Sleep(1000);
+             }

@@ -9,6 +9,49 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:插件层有一个线程入口声明了 noexcept,而它调用的每一步都在分配 —— 判据是「noexcept 是一条承诺,不是装饰」
+
+**现象**:没有任何现象。`plugins/STRPluginMessagingAPI/src/STRPMChatUiSuppressBootstrap.h:55`(pin 120 行)的
+`inline DWORD WINAPI Worker(void*) noexcept` 由 `:95 Start()` 经 `CreateThread` 起,而 `Start()` 由
+`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeSKSE.cpp:299`(在 `:289 SKSEPlugin_Load` 内)调用 ——
+每次加载这个 SKSE 插件都会起这条线程,没有配置能关掉它。
+
+**根因**:`Worker` 的等待循环里每一步都在分配 —— `ResolveExternalStrAllocationBase()`(`:9`,体内 `EnumerateMemory()`
+与 `FindBytes()` 各自增长一个 `std::vector`,`std::sort`/`erase(unique)` 之外还有一个 `std::vector<void*>`)、
+`STRPMChatUiSuppressV3::ResolveExecuteAsync()`(`plugins/STRPluginMessagingAPI/src/STRPMChatUiSuppressV3.h:461`,
+非 noexcept:两处 `EnumerateMemory`/`FindBytes`、`std::sort`、`std::unordered_map<std::uintptr_t, std::size_t> votes`)、
+`STRPMChatUiSuppressV3::Arm()`(`:514`,非 noexcept)。分配失败逃出一个 `noexcept` 入口就是 `std::terminate`,
+**没有崩溃转储**(`docs/PITFALLS.md` §45)。更隐蔽的是 `ResolveExternalStrAllocationBase()` 自己也写着 `noexcept`,
+却去调两个非 noexcept 且都会 `push_back` 的函数 —— terminate 会发生在**被调者内部**,外层即使有 handler 也够不着。
+
+**修法**:两处,都不动 `noexcept` 本身(这个入口是 `CreateThread` 的回调,`noexcept` 是这里唯一诚实的声明)。
+① `ResolveExternalStrAllocationBase()` 去掉 `noexcept` —— 它本来就是会分配的那一层;
+② `Worker` 的循环体包一层 `try { … } catch (...) { Log("… ran out of memory"); return 0; }`,
+日志走已有的 `STRPMChatUiSuppress::detail::Log`(`:75`,只 `fopen_s`/`fprintf`/`fclose`,不分配)。
+失败**不重试**:这个循环等的是运行时解包(最多 120 次 × 1 秒),内存耗尽时重试只是再走一遍同样的分配。
+
+**同族先例(判据载重)**:`plugins/STRPluginMessagingAPI/src/STRPMProxyResolverBootstrapV2.h:248` 与
+`plugins/STRPluginMessagingAPI/src/STRPMProxyResolverTrace.h:301` 的 `Worker` 都**没有** `noexcept`,且各自的 `Start()`
+都用 try/catch 兜住线程创建(`:325-334` / `:329`)。`STRPMChatUiSuppressBootstrap` 是全项目唯一偏离这个形状的线程入口。
+
+**不可达的同形副本不修**:`plugins/STRPluginMessagingAPI/src/STRPMChatUiSuppress.h:508` 的 `Worker` 有同一个形状
+(`:516` 的 `ResolveStrAllocationBase()` 同样写着 `noexcept` 却调非 noexcept 的 `EnumerateMemory`/`FindBytes`),
+但 `STRPMChatUiSuppress::Start()`(`:542`)**没有任何调用点** —— 全仓 1758 个源文件扫描,`&detail::Worker` 只出现在
+`:550`,即 `Start()` 自身内;`STRPMChatUiSuppressV2.h` 也无人 include。与 Morph 那份「同一段源码的两个副本」不同,
+这里是两份独立实现,其中一份死 ⇒ 只修活的那一份。
+
+**交付**:`Code/plugins/patches/STRPluginMessagingAPI/0004-keep-an-allocation-failure-out-of-the-chat-ui-observers-thread-entry.patch`
+(3999 B / 81 行,改一个文件:`src/STRPMChatUiSuppressBootstrap.h` 的 `@@ -6,7 +6,7 @@`、`@@ -52,6 +52,14 @@`、`@@ -60,28 +68,37 @@`)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+
+- 三重校验实跑(cwd = `plugins/STRPluginMessagingAPI`):`git apply --check --cached` 退 **0**(能打到 pin)、
+  前向 `git apply --check` 退 **0**(未应用时干净)、应用后 `git apply --check --reverse` 退 **0**(与工作区一致)。
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **29** patch(es) apply to their pinned commits;
+  `… check` → `PATCH CHECK OK`。
+- **本机不编译**(`docs/PITFALLS.md` §0/§1),所以「这条线程会不会真的耗尽内存」不可判定;判据不是「会不会发生」,
+  而是「发生之后进程还剩不剩得下一条记录」—— 修复前是 `std::terminate` 且无转储,修复后是一行日志加一个未武装的观察者。
 ### 修复:Morph 的快照只夹了块数,没夹单块大小也没夹总条数 —— 判据是「上界要绑到自己的发送侧能产出什么,而不是绑到传输层允许什么」
 
 **现象**:没有任何现象。这是 §90 那条判据(「拒绝一个状态」vs「夹住一个字段」)在同一个插件里的第二处落地,

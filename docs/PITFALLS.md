@@ -12340,3 +12340,132 @@ python Tools\Scripts\check_docs.py                     # DOC CHECK OK
 > 第三条:**同一个符号在一份源码里出现两次时,补丁必须同时覆盖两份,哪怕其中一份不可达。**
 > `MorphSyncService.cpp` 的那份 `HandleMorphPacket` 被 `#define` 改名后只由同样零调用点的 `HandleUdpPacketLegacy` 使用;
 > 只改 `MorphSyncServiceBodyHair.cpp` 会让「两份副本」在下一次有人恢复 legacy 路径时分叉。
+## 92. 2026-10-20 场次:插件层有一个线程入口声明了 noexcept,而它调用的每一步都在分配 —— 判据是「noexcept 是一条承诺,不是装饰」
+> **锚点**:`Code/plugins/patches/STRPluginMessagingAPI/0004-keep-an-allocation-failure-out-of-the-chat-ui-observers-thread-entry.patch`
+> (3999 B / 81 行,一个文件、三个 hunk)。就地更正:§62 已经写过「`noexcept` 里构造可抛的 STL 类型」,
+> 那一节的落点是 `Code/server/Services/ChatService.cpp` 的 `std::regex`;**这一节是同一个判据在插件层的第一次落地**,
+> 而且形状更隐蔽 —— 分配不在 `noexcept` 函数体内,而在它调的**下一层**,并且那一层自己也写着 `noexcept`。
+
+### 92.1 缺陷
+
+`plugins/STRPluginMessagingAPI/src/STRPMChatUiSuppressBootstrap.h`(pin 120 行)的线程入口逐字:
+
+```cpp
+        inline DWORD WINAPI Worker(void*) noexcept
+        {
+            std::optional<std::uintptr_t> executeAsyncAddress;
+
+            for (std::uint32_t attempt = 0;
+                 attempt < 120 && !STRPMChatUiSuppress::detail::g_stopRequested.load();
+                 ++attempt)
+            {
+                if (!executeAsyncAddress)
+                {
+                    if (auto* allocationBase = ResolveExternalStrAllocationBase();
+                        allocationBase != nullptr)
+                    {
+                        executeAsyncAddress =
+                            STRPMChatUiSuppressV3::ResolveExecuteAsync(allocationBase);
+                    }
+                }
+```
+
+这个循环里**每一步都在分配**:
+
+| 调用 | 分配在哪 | 声明 |
+| --- | --- | --- |
+| `ResolveExternalStrAllocationBase()`(`:9`) | `EnumerateMemory()` 的 `result.push_back`(`STRPMChatUiSuppress.h:167`)、`FindBytes()` 的 `result.push_back`(`:211`)、`std::vector<void*> externalAllocations`(`:28`)、`std::sort`/`erase(unique)`(`:37-38`) | 自己写着 `noexcept` |
+| `STRPMChatUiSuppressV3::ResolveExecuteAsync()`(`STRPMChatUiSuppressV3.h:461`) | 又一遍 `EnumerateMemory`/`FindBytes`/`FindRipXrefs`、`std::unordered_map<std::uintptr_t, std::size_t> votes`(`:482`) | **非** noexcept |
+| `STRPMChatUiSuppressV3::Arm()`(`:514`) | `AddVectoredExceptionHandler` 的注册表节点 | **非** noexcept |
+
+三处全在 `noexcept Worker` 的调用链上 ⇒ `std::bad_alloc` 逃出线程入口就是 `std::terminate`,
+**没有崩溃转储**(`docs/PITFALLS.md:4629-4697` §45)。
+
+### 92.2 判据
+
+**`noexcept` 是一条承诺,不是装饰** —— 它承诺「这个函数不会让异常穿过它的边界」,
+而兑现这个承诺的方式只有两种:自己不抛,或者自己接住。
+
+这条缺陷的判据不是「`Worker` 有没有分配」,而是**「`Worker` 的调用链上有没有人分配」**:
+
+- 第一层检查(「`Worker` 体内没有 `push_back`/`resize`」)会**漏掉**它 —— 分配都在被调者体内。
+- 第二层检查(「被调者是不是 `noexcept`」)也会漏掉它 —— `ResolveExternalStrAllocationBase()` 恰恰写着 `noexcept`,
+  而它调的是两个非 noexcept 且都会 `push_back` 的函数。此时 terminate 发生在**被调者内部**,
+  `Worker` 的 catch(如果有)够不着 ⇒ 「加一层 try/catch」和「去掉错误的那层 `noexcept`」是两件事,都要做。
+- 第三层(「这条路径可达吗」)才是修不修的分界 —— 见 §92.3。
+
+### 92.3 可达性
+
+- `STRPMChatUiSuppressBootstrap.h:95 inline void Start() noexcept` 用 `:98-104 CreateThread(nullptr, 0, &detail::Worker, nullptr, 0, nullptr)` 起线程;
+- `Start()` 的唯一调用点是 `plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeSKSE.cpp:299`,
+  就在 `:289 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSEInterface*)` 内(紧随 `:300` 的 `STRPMProxyResolverBootstrapV2::Start()`、`:301` 的 `STRPMProxyResolverTrace::Start()`)
+  ⇒ **每次加载这个 SKSE 插件都会起这条线程,没有任何配置能关掉它**。
+- 该文件**全文件零 try/catch**;整个 `plugins/STRPluginMessagingAPI` 里只有 `STRPMChatUiSuppress::detail::Snapshot`(`STRPMChatUiSuppress.h:113-143`)、
+  `STRPMChatUiSuppressV3::detail::ReadString`(`:213-235`)、`ProbeDeserializeEnvelope`(`:237`)三处有 try/catch,且都只包 `resize`。
+- **同族先例证明这是偏离,不是风格**:`STRPMProxyResolverBootstrapV2.h:248` 与 `STRPMProxyResolverTrace.h:301` 的 `Worker` 都**没有** `noexcept`,
+  且各自的 `Start()`(`:319` / `:329`)都用 try/catch 兜住线程创建(`:325-334` / `:336`);`STRPluginMessagingBridge.cpp:142 ReceiveDispatchLoop`、
+  `:946 BootstrapLoop`、`STRPluginMessagingBridgeSKSE.cpp:193 IdentityWorker`、`STRPluginMessagingDiagnosticSKSE.cpp:387 DiagnosticWorker`、
+  `STRPluginMessagingBridgeReceive.cpp:984 CaptureDispatchLoop` 全部非 noexcept。全项目只有两个 `DWORD WINAPI Worker(void*) noexcept`,见下。
+- **不可达的同形副本不修**:`STRPMChatUiSuppress.h:508` 的 `Worker` 有同一个形状(`:516` 调 `ResolveStrAllocationBase()`,
+  而后者在 `:218` 也写着 `noexcept` 却调非 noexcept 的 `EnumerateMemory`/`FindBytes`),但 `STRPMChatUiSuppress::Start()`(`:542`)**零调用点** ——
+  全仓 1758 个源文件扫描,`&detail::Worker` 只出现在 `:550`(即 `Start()` 自身内);`STRPMChatUiSuppressV2.h` 也无人 include(只有它自己 `:3`)。
+  与 §91 那份「同一段源码的两个副本」不同:这里是**两份独立实现**,其中一份死 ⇒ 只修活的那一份。
+
+### 92.4 修法
+
+两处改动,都不动 `noexcept` 本身(`Worker` 是 `CreateThread` 的回调,`noexcept` 是这里唯一诚实的声明):
+
+```cpp
+-        inline void* ResolveExternalStrAllocationBase() noexcept
++        inline void* ResolveExternalStrAllocationBase()
+```
+
+```cpp
+             for (std::uint32_t attempt = 0;
+                  attempt < 120 && !STRPMChatUiSuppress::detail::g_stopRequested.load();
+                  ++attempt)
+             {
+-                if (!executeAsyncAddress)
++                try
+                 {
+```
+
+接住之后打一行日志并退出(`STRPMChatUiSuppress::detail::Log` 只 `fopen_s`/`fprintf`/`fclose`,不分配),
+**不重试**:这个循环等的是运行时解包(最多 120 次 × 1 秒),内存耗尽时重试只是再走一遍同样的分配。
+
+三条要点:
+
+1. `CODE_GUIDELINES.md:47` 写着「Don't use exceptions」,所以这里的 try/catch 要按**已有先例**解释 ——
+   `Snapshot`(`STRPMChatUiSuppress.h:121-128`)、`ReadString`(`STRPMChatUiSuppressV3.h:221-228`)、
+   `ProbeDeserializeEnvelope`(`:254-262`)都用同一形状,目的都是「不让异常穿过一个 `noexcept` 边界」。
+2. 只去掉 `ResolveExternalStrAllocationBase` 的 `noexcept`,**不**顺手给 `EnumerateMemory`/`FindBytes` 加 try/catch ——
+   它们本来就不是 `noexcept`,加在 `Worker` 那一层才能一次覆盖三个分配点。
+3. 新注释里点名「`ResolveExternalStrAllocationBase` above is not noexcept」是刻意的:下一个人看到「有人把 `noexcept` 删了」时,
+   需要知道这是为了让 `Worker` 的 handler 够得着,而不是漏写。
+
+### 92.5 复核命令(照抄)
+
+```powershell
+# 三重校验(cwd = plugins/STRPluginMessagingAPI)
+git apply --check --cached Code/plugins/patches/STRPluginMessagingAPI/0004-keep-an-allocation-failure-out-of-the-chat-ui-observers-thread-entry.patch  # 退 0
+git apply --check <同一个补丁>          # 退 0(尚未应用到工作区时)
+git apply <同一个补丁> && git apply --check --reverse <同一个补丁>   # 应用后退 0
+
+# 门禁
+python Code\plugins\tools\plugin_patches.py verify    # PATCH VERIFY OK / 29 patch(es)
+python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
+```
+
+**验证**:`git apply --check --cached` 退 **0**(能打到 pin);前向 `git apply --check` 退 **0**(未应用时干净);
+应用后工作区从 120 行变 **137 行**(CRLF,5345 B),`git apply --check --reverse` 退 **0**(与工作区一致);
+`PATCH VERIFY OK` / **29** patch(es)、`PATCH CHECK OK`。**本机不编译**(`docs/PITFALLS.md` §0/§1),
+所以「这条线程会不会真的耗尽内存」不可判定;判据不是「会不会发生」,而是「发生之后进程还剩不剩得下一条记录」。
+
+> **教训**:第一条:**`noexcept` 的检查要顺着调用链走,不是看函数体。**
+> 这一处的分配一个都不在 `Worker` 体内,全在被调者体内;只看函数体会得出「这个入口很干净」的结论。
+> 第二条:**被调者也写着 `noexcept` 时,问题不是「有没有 promise」,而是「谁先 terminate」。**
+> `ResolveExternalStrAllocationBase()` 的 `noexcept` 把 terminate 关在了**它自己内部**,
+> 于是 `Worker` 那一层后来加的 handler 永远收不到 —— 去掉那层 `noexcept` 和加 catch 是两件必须一起做的事。
+> 第三条:**「同族的其它实现都长什么样」是判断偏离最快的尺子。**
+> 这个目录里另外五个线程入口、两个 bootstrap 的 `Worker` 全部非 noexcept,只有这一处例外;
+> 找到例外之后,「这是风格还是失误」就不再需要争论 —— 惯例本身已经写在代码里了。
