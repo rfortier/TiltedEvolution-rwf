@@ -1,0 +1,32 @@
+diff --git a/src/NetworkProtocol.cpp b/src/NetworkProtocol.cpp
+index 6d0b2bf..a9bc4fe 100644
+--- a/src/NetworkProtocol.cpp
++++ b/src/NetworkProtocol.cpp
+@@ -170,6 +170,9 @@ namespace DAVSyncTogether
+             const auto comma = active.find(',');
+             const auto token = active.substr(0, comma);
+             if (!token.empty()) {
++                if (result.activeArmorAddons.size() >= RemoteArmorState::kMaxActiveArmorAddons) {
++                    return std::nullopt;
++                }
+                 const auto identity = DecodeIdentity(token);
+                 if (!identity) {
+                     return std::nullopt;
+diff --git a/src/NetworkProtocol.h b/src/NetworkProtocol.h
+index ff1e445..c6ce500 100644
+--- a/src/NetworkProtocol.h
++++ b/src/NetworkProtocol.h
+@@ -14,6 +14,13 @@ namespace DAVSyncTogether
+ 
+     struct RemoteArmorState
+     {
++        // The payload is one comma separated token per active armor addon and
++        // the peer chooses how many it sends, so the count is bounded here. A
++        // payload over the cap is refused whole rather than truncated: a state
++        // silently missing the addons past the cap would be applied as if it
++        // were complete.
++        static constexpr std::size_t kMaxActiveArmorAddons = 64;
++
+         FormIdentity armor;
+         NetworkArmorState state{ NetworkArmorState::Visible };
+         std::string variant;

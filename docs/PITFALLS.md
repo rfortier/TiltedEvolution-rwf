@@ -13029,4 +13029,165 @@ python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
 > `EventListener.cpp:165-166`、`Core/Thread.cpp:624-640`、`Core/Thread/ThreadFurniture.cpp:15-26` 都是「取局部 + 判空」,只有这 5 处例外 —— 例外本身就是证据。
 > 第三条:**算了不用的上限,比没有上限更容易骗过审阅。**
 > `int max = std::min(...)` 摆在那里,看上去已经封顶;而唯一的消费者读的是 `furniture.size()`。查「这个值有没有读者」比查「这个值算得对不对」更快。
+## 97. 2026-10-20 场次:DAV 解码一件盔甲的激活 addon 列表时,长度由对端决定而每个元素都要过一次引擎查找 —— 判据是「上限要绑到自己的发送侧能产出什么」
+
+> **锚点**:`Code/plugins/patches/DAVSyncTogether/0003-bound-the-active-armor-addon-list-a-single-payload-may-carry.patch`
+> (1405 B / 33 行,2 个文件各 1 个 hunk;`src/NetworkProtocol.cpp` `6d0b2bf`→`a9bc4fe`、`src/NetworkProtocol.h` `ff1e445`→`c6ce500`)。
+
+### 97.1 缺陷
+
+**列表长度由对端决定,而解码器不设上限,并且每个元素都要过一次引擎查找。**
+`plugins/DAVSyncTogether/src/NetworkProtocol.cpp:142-186 DecodeArmorState` 解
+`DAVSTATE|armo=…|state=…|variant=…|active=…` 的 `active=` 字段,`:168-183` 逐字
+
+```cpp
+        std::string_view active = *activeToken;
+        while (!active.empty()) {
+            const auto comma = active.find(',');
+            const auto token = active.substr(0, comma);
+            if (!token.empty()) {
+                const auto identity = DecodeIdentity(token);
+                if (!identity) {
+                    return std::nullopt;
+                }
+                result.activeArmorAddons.push_back(*identity);
+            }
+            if (comma == std::string_view::npos) {
+                break;
+            }
+            active.remove_prefix(comma + 1);
+        }
+```
+
+循环次数只由 `active=` 有多长决定。每个 token 走 `:84-104 DecodeIdentity`,其中 `:100-102` 逐字
+
+```cpp
+            if (auto* resolved = identity.Resolve()) {
+                identity.runtimeFormID = resolved->GetFormID();
+            }
+```
+
+而 `FormIdentity::Resolve()`(`plugins/DAVSyncTogether/src/FormIdentity.cpp:18-29`)在 `plugin` 非空时逐字
+`return dataHandler->LookupForm(localFormID, plugin);` ⇒ **一个 token 一次按「插件名 + 局部 ID」的引擎查找**,两个入参都是对端给的。
+
+全 DAV 只有两个 `kMax*` 常量,都来自 STRPM 头:
+`plugins/DAVSyncTogether/include/STRPluginMessagingAPI/STRPluginMessagingAPI.h:21 kMaxPayloadBytes = 24 * 1024` 与同文件的 `kMaxChannelLength`;
+`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp:901` 逐字
+`if (totalHex > static_cast<std::size_t>(STRPM::kMaxPayloadBytes) * 2)`、`:920` 逐字
+`if (!decoded || decoded->size() > STRPM::kMaxPayloadBytes)` —— 那两道闸门盯的是**载荷字节数**,不是**列表条数**。
+
+### 97.2 判据
+
+**第一条:上限要绑到自己的发送侧能产出什么,而不是绑到传输层允许什么。** 发送侧就在同一个文件:
+`NetworkProtocol.cpp:116-140 EncodeArmorState` 的 `:126-131` 逐字
+
+```cpp
+            for (std::size_t i = 0; i < armor.activeArmorAddons.size(); ++i) {
+                if (i != 0) {
+                    active += ',';
+                }
+                active += EncodeIdentity(armor.activeArmorAddons[i]);
+            }
+```
+
+而这个 vector 由 `plugins/DAVSyncTogether/src/DAVProbe.cpp:175-182` 填:
+
+```cpp
+            std::vector<RE::FormID> activeRuntimeAddons;
+            if (const auto it = activeAddons.find(armor->GetFormID()); it != activeAddons.end()) {
+                activeRuntimeAddons = it->second;
+                for (const auto runtimeID : it->second) {
+                    state.activeArmorAddons.push_back(MakeFormIdentity(runtimeID));
+                }
+            }
+            SortAndUniqueIdentities(state.activeArmorAddons);
+```
+
+`activeAddons` 来自 `DAVProbe::VisitArmorNodes`(`:391-412`):递归走 `player->Get3D()` 的节点树,按节点名里解析出的 `(ARMA)/(ARMO)` 归到该件盔甲名下。
+⇒ 一件盔甲的 addon 数 = **这件盔甲当前挂了多少个 ARMA 节点**,原版与常见 mod 都在个位到十几个的数量级;64 已是它的数倍。
+传输层那个 24 KiB 换算下来约一万两千个 token,只能用来判「包大不大」,判不了「一件盔甲该有几个 addon」。
+
+**第二条:同族的修法已经写好了三遍。** `Code/plugins/patches/IEDSyncTogether/0002-bound-the-live-peer-table-and-the-decoded-object-list.patch` 的
+`static constexpr std::size_t kMaxObjects = 512;` 与 `kMaxRemoteStates = 64;`、
+`Code/plugins/patches/MorphSyncTogether/0006-bound-a-single-morph-chunk-and-the-values-a-snapshot-may-carry.patch` 的 `kMaxMorphValues`、
+`Code/plugins/patches/TradeTogether/0002-bound-the-peer-name-and-request-id-tables.patch` —— 四处同一句话:**列表长度由对端给,解码器必须自己封顶。**
+
+**第三条:拒收还是截断,取决于短一截的那个东西下游当不当它完整。** `plugins/DAVSyncTogether/src/DAVNetworkService.cpp:164-174` 逐字
+
+```cpp
+        bool activeValid = true;
+        for (auto& identity : message->activeArmorAddons) {
+            auto* resolved = identity.Resolve();
+            auto* addon = resolved ? resolved->As<RE::TESObjectARMA>() : nullptr;
+            if (!addon) {
+                activeValid = false;
+                identity.runtimeFormID = 0;
+            } else {
+                identity.runtimeFormID = addon->GetFormID();
+            }
+        }
+```
+
+`activeValid` 只问「列表里每个元素解没解开」,**不问「列表全不全」**;短一截照样让 `:185 const bool valid = resolvedArmor != nullptr && activeValid;` 为真。
+⇒ 与 IED 的 `kMaxObjects` 同类:整包拒收。
+
+**第四条:拒收路径本来就存在,不需要新增分支。** `DAVNetworkService.cpp:154-158` 逐字
+
+```cpp
+        auto message = DecodeArmorState(received.payload);
+        if (!message) {
+            SKSE::log::warn("DAVST STRPM RX malformed payload connection={} sequence={}", received.connectionID, received.sequence);
+            return;
+        }
+```
+
+### 97.3 可达性
+
+- 需要 `active=` 字段极长且逗号密集,并且其中每个 token 都能被 `DecodeIdentity` 解出来(`:93` 逐字 `if (!plugin || plugin->empty() || !local)` 会把解不出的 token 变成整包拒收)。
+  单包 24 KiB 上限把规模限制在约一万两千个 token 量级 ⇒ **是「有界但仍可观」的放大,不是无限增长**;这也正是它必须按「自己发送侧的数量级」而不是「传输层的字节数」封顶的原因。
+- 落点不需要异常输入:`DAVNetworkService.cpp:165-174` 会对解码结果**再逐元素 `Resolve()` 一遍** ⇒ 同一份列表过一次引擎查找两次(解码时一次、应用前一次)。
+
+### 97.4 修法
+
+不改任何公开签名、不动编码侧:
+
+1. `plugins/DAVSyncTogether/src/NetworkProtocol.h:15` 的 `RemoteArmorState` 里加
+   `static constexpr std::size_t kMaxActiveArmorAddons = 64;`(带四行理由注释);
+2. `src/NetworkProtocol.cpp:172` 的 `if (!token.empty()) {` 之后加
+   `if (result.activeArmorAddons.size() >= RemoteArmorState::kMaxActiveArmorAddons) { return std::nullopt; }`。
+
+### 97.5 复核命令(照抄)
+
+```powershell
+# 三重校验(cwd = plugins/DAVSyncTogether)
+git apply --check --cached Code/plugins/patches/DAVSyncTogether/0003-*.patch   # 退 0
+git apply --check        Code/plugins/patches/DAVSyncTogether/0003-*.patch   # 退 0(尚未应用到工作区时)
+git apply                Code/plugins/patches/DAVSyncTogether/0003-*.patch && git apply --check --reverse Code/plugins/patches/DAVSyncTogether/0003-*.patch   # 应用后退 0
+git apply --check        Code/plugins/patches/DAVSyncTogether/0003-*.patch   # 已应用时退 1:error: patch failed: src/NetworkProtocol.cpp:170
+
+# 累积校验(三个补丁依次打到 pristine 索引上)
+foreach ($p in Get-ChildItem Code/plugins/patches/DAVSyncTogether/*.patch) { git apply --cached $p.FullName }   # 逐个退 0
+git diff --stat          # 空
+git diff --cached --stat # 4 files changed, 49 insertions(+), 3 deletions(-)
+git reset -q
+
+# 门禁
+python Code\plugins\tools\plugin_patches.py verify    # PATCH VERIFY OK / 35 patch(es)
+python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
+```
+
+**验证**:`0003` 的 `git apply --check --cached` 退 **0**、前向 `git apply --check` 退 **0**;
+应用后 `git apply --check --reverse` 退 **0**,再次前向 `--check` 退 **1** 并报
+`error: patch failed: src/NetworkProtocol.cpp:170` 与 `error: patch failed: src/NetworkProtocol.h:14`;
+补丁里的两个 pin blob 哈希与 `git rev-parse :<path>` 相等(`src/NetworkProtocol.cpp` `6d0b2bf`、`src/NetworkProtocol.h` `ff1e445`);
+累积校验 `0001`…`0003` 依次退 **0**,`git diff --stat` 空、`git diff --cached --stat` = **4 files changed, 49 insertions(+), 3 deletions(-)**。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以「对端到底能不能构造出这么长的 `active=`」不可判定;
+判据不是「会不会发生」,而是「发生之后每一件盔甲会不会多出一万次引擎查找」。
+
+> **教训**:第一条:**上限要绑到自己的发送侧能产出什么,而不是绑到传输层允许什么。**
+> 同一个文件里 `EncodeArmorState` 写着这个列表是怎么来的,`VisitArmorNodes` 写着它有多少个元素;24 KiB 只说明包能多大。
+> 第二条:**「下游有守卫」要问守卫盯的是什么量。**
+> `STRPluginMessagingBridgeReceive.cpp:901`/`:920` 盯的是载荷字节数,它对「列表里有几个元素」一言不发 —— 守卫盯着长度,不等于拦得住条数。
+> 第三条:**拒收还是截断,取决于短一截的那个东西下游当不当它完整。**
+> `activeValid` 只问每个元素解没解开;列表短一截它照样为真,所以这里只能整包拒收。
 

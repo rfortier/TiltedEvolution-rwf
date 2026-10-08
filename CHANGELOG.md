@@ -9,6 +9,76 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:DAV 解码一件盔甲的激活 addon 列表时长度由对端决定,而每个元素都要过一次引擎查找 —— 判据是「上限要绑到自己的发送侧能产出什么,而不是绑到传输层允许什么」
+
+**现象**:`plugins/DAVSyncTogether/src/NetworkProtocol.cpp:142-186 DecodeArmorState` 解 `DAVSTATE|armo=…|state=…|variant=…|active=…` 时,`:168-183` 按逗号逐个切分 `active=` 字段并把每个 token 追加进结果:
+
+```cpp
+        std::string_view active = *activeToken;
+        while (!active.empty()) {
+            const auto comma = active.find(',');
+            const auto token = active.substr(0, comma);
+            if (!token.empty()) {
+                const auto identity = DecodeIdentity(token);
+                if (!identity) {
+                    return std::nullopt;
+                }
+                result.activeArmorAddons.push_back(*identity);
+            }
+            if (comma == std::string_view::npos) {
+                break;
+            }
+            active.remove_prefix(comma + 1);
+        }
+```
+
+循环次数只由对端给的 `active=` 有多长决定,**没有任何计数上限**。而每个 token 都要走一次 `DecodeIdentity`(`:84-104`),那里 `:100-102` 逐字
+`if (auto* resolved = identity.Resolve()) { identity.runtimeFormID = resolved->GetFormID(); }` ——
+`FormIdentity::Resolve()`(`plugins/DAVSyncTogether/src/FormIdentity.cpp:18-29`)在 `plugin` 非空时走
+`RE::TESDataHandler::GetSingleton()->LookupForm(localFormID, plugin)` ⇒ **一个 token 一次按「插件名 + 局部 ID」的引擎查找**,而插件名也是对端给的。
+
+**根因**:这个字段的长度是对端填的,而解码器把它当成真的。全 DAV 只有两个 `kMax*` 常量,都来自 STRPM 头
+(`plugins/DAVSyncTogether/include/STRPluginMessagingAPI/STRPluginMessagingAPI.h:21 kMaxPayloadBytes = 24 * 1024`),**插件自己一处上限都没有**。
+
+**判据(同族对照,载重)**:这不是「要不要防」的问题,是「防到哪个数」的问题 —— 上限必须绑到**我们自己的发送侧能产出什么**。
+发送侧就在同一个文件:`EncodeArmorState`(`NetworkProtocol.cpp:116-140`)`:126-131` 逐字
+`for (std::size_t i = 0; i < armor.activeArmorAddons.size(); ++i) {`,而这个 vector 由
+`plugins/DAVSyncTogether/src/DAVProbe.cpp:175-182` 填 —— 从 `VisitArmorNodes`(`:391-412`,递归走 3D 节点树、按节点名里的 `(ARMA)/(ARMO)` 归到该件盔甲名下)取那一份,
+`:182 SortAndUniqueIdentities(state.activeArmorAddons);` 去重。
+⇒ 一件盔甲的 addon 数 = 这件盔甲当前挂了多少个 ARMA 节点,原版与常见 mod 都在个位到十几个的数量级;**64 已是它的数倍**。
+传输层那个 24 KiB 换算下来约一万两千个 token,只能用来判「包大不大」,不能用来判「一件盔甲该有几个 addon」。
+同族的既定修法是 `Code/plugins/patches/IEDSyncTogether/0002-bound-the-live-peer-table-and-the-decoded-object-list.patch` 的 `kMaxRemoteStates = 64` / `kMaxObjects = 512`、
+`Code/plugins/patches/MorphSyncTogether/0006-bound-a-single-morph-chunk-and-the-values-a-snapshot-may-carry.patch` 的 `kMaxMorphValues`、
+`Code/plugins/patches/TradeTogether/0002-bound-the-peer-name-and-request-id-tables.patch` —— 四处都是同一句话:**列表长度由对端给,解码器必须自己封顶**。
+
+**修法**:整包拒收而不是截断。`plugins/DAVSyncTogether/src/NetworkProtocol.h:15` 的 `RemoteArmorState` 里加
+
+```cpp
+        static constexpr std::size_t kMaxActiveArmorAddons = 64;
+```
+
+`src/NetworkProtocol.cpp:172` 的 `if (!token.empty()) {` 之后加
+
+```cpp
+                if (result.activeArmorAddons.size() >= RemoteArmorState::kMaxActiveArmorAddons) {
+                    return std::nullopt;
+                }
+```
+
+**为什么是拒收而不是截断**:截断后的列表会被下游当成一份完整状态。`plugins/DAVSyncTogether/src/DAVNetworkService.cpp:164-174` 逐字
+`bool activeValid = true; for (auto& identity : message->activeArmorAddons) { … if (!addon) { activeValid = false; … } }` ——
+`activeValid` 只问「列表里每个元素解没解开」,**不问「列表全不全」**;列表短一截照样 `:185 const bool valid = resolvedArmor != nullptr && activeValid;` 为真。
+而拒收路径本来就有:`DAVNetworkService.cpp:154-158` 逐字
+`auto message = DecodeArmorState(received.payload); if (!message) { SKSE::log::warn("DAVST STRPM RX malformed payload connection={} sequence={}", received.connectionID, received.sequence); return; }`
+⇒ 返回 `std::nullopt` 不需要新增任何分支、日志或调用点改动。
+
+**交付**:`Code/plugins/patches/DAVSyncTogether/0003-bound-the-active-armor-addon-list-a-single-payload-may-carry.patch`
+(1405 B / 33 行,2 个文件各 1 个 hunk;`src/NetworkProtocol.cpp` `6d0b2bf`→`a9bc4fe`、`src/NetworkProtocol.h` `ff1e445`→`c6ce500`)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+
+
 ### 修复:OStimNG 的输入回调先查一次「玩家线程在跑」、再去取指针,两次查询之间线程会被删掉 —— 判据是「判空和用指针之间不能再隔一次查询」
 
 **现象**:按场景快捷键时崩溃,前提是那一帧恰好有线程被停。`plugins/OStimNG/skse/src/Events/EventListener.cpp:81` 逐字
