@@ -9,6 +9,64 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:OStimNG 的输入回调先查一次「玩家线程在跑」、再去取指针,两次查询之间线程会被删掉 —— 判据是「判空和用指针之间不能再隔一次查询」
+
+**现象**:按场景快捷键时崩溃,前提是那一帧恰好有线程被停。`plugins/OStimNG/skse/src/Events/EventListener.cpp:81` 逐字
+`if (Threading::ThreadManager::GetSingleton()->playerThreadRunning()) {`,`:83` 再逐字 `Threading::Thread* playerThread = Threading::ThreadManager::GetSingleton()->getPlayerThread();` ——
+这是对同一把 `m_threadMapMtx` 的**两次独立查询**,`playerThreadRunning()` 返回 `true` 不保证紧接着的 `getPlayerThread()` 还拿到同一个指针。
+
+**根因**:两次查询之间线程可以被删掉。`ThreadManager::stopThreadNoLock`(`plugins/OStimNG/skse/src/Core/ThreadManager.cpp:204-219`)在后台线程里执行
+`:209 UI::UIState::GetSingleton()->HandleThreadRemoved(thread);` → `:210 m_threadMap.erase(threadID);` → `:211 thread->close();` → `:212 delete thread;`,
+而输入回调在游戏线程(`plugins/OStimNG/skse/src/Main.cpp:66 RE::BSInputDeviceManager::GetSingleton()->AddEventSink(Events::EventListener::GetSingleton());`)⇒ **写指针的线程不是读指针的线程**。
+`:83` 拿到的指针在 `:84` 立刻被 `playerThread->getActorCount()`/`getCenter()` 解引用;而 `ThreadManager::getPlayerThread()` 本身**从不判空**(它在 `m_threadMap` 里找不到 `playerThread` 时返回 `nullptr`)。
+同族里另外四处(`:149`/`:151`/`:155`/`:160`)连 `playerThreadRunning()` 这道门都没有,直接 `getPlayerThread()->…`。
+其中 `:84` 那条更重:`Furniture::selectFurniture(..., true, [playerThread](GameAPI::GameObject furniture) { playerThread->changeFurniture(furniture, nullptr); })` ——
+`plugins/OStimNG/skse/src/Furniture/Furniture.cpp:146 if (alwaysAsk || MCM::MCMTable::selectFurniture())` 恒真,而 `:155` 走 `GameAPI::Game::showMessageBox(..., callback)`;
+`plugins/OStimNG/skse/src/GameAPI/Game.cpp:31-58` 的两条出口(UIExtensions 的 `DispatchStaticCall` 与 `MessageBoxMenu::QueueMessage`)**都是异步** ⇒
+按值捕获的 `playerThread` 在**后续帧**才被解引用,那时 `delete thread` 早已执行。
+
+**判据(同族对照,载重)**:只隔 16 行就是正确写法 ——
+`EventListener.cpp:165` 逐字 `Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->getPlayerThread();`、`:166 if (thread) {`;
+`plugins/OStimNG/skse/src/Core/Thread.cpp:624-640 Thread::stopFaded()`(行号是 **pin 的**;工作区里该函数在 `:687-703`,因为 0001–0004 先给这个文件加了 63 行)里那条 detached 线程逐字 `Thread* thread = ThreadManager::GetSingleton()->getPlayerThread(); if (thread) { thread->stop(); }`;
+`plugins/OStimNG/skse/src/Core/Thread/ThreadFurniture.cpp:15-26` 同形。⇒「取一次局部、就地判空」是这个文件与这个族的既定写法,`:83`/`:149`/`:151`/`:155`/`:160` 是 5 处例外。
+
+**修法**:不改任何公开签名,五处一律「取局部 → 判空 → 用局部」;`:84` 那条额外**去掉按值捕获** ——
+lambda 改为在触发时重新 `getPlayerThread()` 并判空,而不是把一个可能已经析构的指针搬进后续帧。
+
+**交付**:`Code/plugins/patches/OStimNG/0005-keep-a-deleted-player-thread-out-of-the-input-handler.patch`
+(3465 B / 54 行,单文件 2 个 hunk;`skse/src/Events/EventListener.cpp` `796ffd3`→`1952eec`,212 行)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+
+### 修复:OStimNG 的家具搜索把选项上限算出来却不用,把半径内的家具全部塞进消息框 —— 判据是「算出来的上限必须出现在唯一的消费者身上」
+
+**现象**:家具搜索半径内超过 8 件家具时,消息框收到的按钮数超过游戏上限。`plugins/OStimNG/skse/src/GameAPI/Game.h:17` 逐字 `inline static int getMessageBoxOptionLimit() { return 9; }`(含 `$ostim_message_none` 那一项)。
+上限是**游戏本体**的:`plugins/OStimNG/skse/src/GameAPI/Game.cpp:56 messagebox->buttonText.push_back(text.c_str());` 往 `RE::MessageBoxData` 里逐条塞按钮,而这里传进去的 `options` 长度就是按钮数。
+
+**根因**:`plugins/OStimNG/skse/src/Furniture/Furniture.cpp:149` 逐字
+`int max = std::min(static_cast<int>(furniture.size()), GameAPI::Game::getMessageBoxOptionLimit() - 1);`,
+而 `:150` 逐字 `for (int i = 0; i < furniture.size(); i++) {` —— `max` 算出来之后**一次都没被读过**;`:151`/`:152` 把 `furniture[i].first->name` 与 `furniture[i].second` 成对塞进 `options`/`objects`,于是按钮数与 `objects` 长度都等于 `furniture.size()`。
+全树 `std::min(static_cast<int>` 只有这一处命中 ⇒ 不是「抄错了参数顺序」,是「压根没用」。
+两个兄弟用了:`Core/ThreadStarter/DebugNPCThreadStarter.cpp:33` 与 `Core/ThreadStarter/PlayerThreadStarter.cpp:108` 都逐字
+`int max = std::min<int>(GameAPI::Game::getMessageBoxOptionLimit() - 1, actors.size());`,并在 `while (i < max)` 里读它。
+
+**修法**:`:150` 改为 `for (int i = 0; i < max; i++) {` —— `options` 与 `objects` 同步截断,`:156 if (result == 0 || result > objects.size())` 的边界判断因此保持成立(两者长度始终一致)。
+
+**交付**:`Code/plugins/patches/OStimNG/0006-honour-the-message-box-option-limit-when-listing-furniture.patch`
+(712 B / 14 行,单文件 1 个 hunk;`skse/src/Furniture/Furniture.cpp` `223b6bf`→`ba08674`,198 行)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+
+- 三重校验实跑(cwd = `plugins/OStimNG`):两个补丁 `git apply --check --cached` 各退 **0**(能打到 pin)、前向 `git apply --check` 各退 **0**(未应用时干净);
+  合并应用后 `git apply --check --reverse` 退 **0**(与工作区一致);再次前向 `--check` 退 **1** 并报 `error: patch failed: skse/src/Events/EventListener.cpp:81` 与 `error: patch failed: skse/src/Furniture/Furniture.cpp:147`(已应用,符合预期)。
+- 累积校验:`0001`…`0006` 依次 `git apply --cached` 全部退 **0**,`git diff --cached --stat` = **18 files changed, 408 insertions(+), 151 deletions(-)**,
+  `git diff --stat` 在补丁全部应用到索引后无输出,随后 `git reset -q` 复原。
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **34** patch(es);`… check` → `PATCH CHECK OK`。
+- **本机不编译**(`docs/PITFALLS.md` §0/§1,`plugins/OStimNG/skse/AGENTS.md` 逐字「do not attempt to build c++ or cmake」),所以「两次查询之间线程会不会真的被删掉」不可判定;
+  判据不是「会不会发生」,而是「发生之后 `:84` 读的是空指针还是已析构对象」—— 修复前两条都有。
+
 ### 修复:OStimNG 的菜单在后台线程删掉线程对象之后仍然解引用它 —— 判据是「判空要判在解引用那一刻,不是判在函数入口」
 
 **现象**:没有任何现象,直到停线程与菜单读取撞在同一帧。UI 层持有两个 `public` 裸指针 ——
@@ -24,7 +82,11 @@
 于是「帧 N 入队、后台线程在 N 与 N+1 之间停线程、帧 N+1 执行」这三步就构成一次空指针解引用:
 `UI/Scene/SceneMenu.cpp:193 ChangeAnimation`、`:206`/`:209 ChangeSpeed`、`UI/Search/SearchMenu.cpp:165 SelectOption`,以及经 `UI/Scene/SceneMenu.cpp:106-124 UpdateMenuData` 的 `QueueUITask` 落到 `:130`/`:131`/`:134`/`:138 BuildMenuData`。
 同步路径 10 处:`UI/Align/AlignMenu.cpp:66 LoadCurrentAlignment`、`:210 ToggleActor`、`:252 Increment`、`UI/Scene/SceneOptions.cpp:78 BuildSubPages`、`:105 BuildOptions`、
-`UI/Search/SearchMenu.cpp:153`/`:154 Search`、`ModAPI/OstimNG-API-Thread.cpp:439 SearchScenes`。
+`UI/Search/SearchMenu.cpp:153`/`:154 Search`。
+第 15 处 `ModAPI/OstimNG-API-Thread.cpp:439 SearchScenes` **没有修**:该文件的 pin blob 是 CRLF(26928 B / CR=685),
+而 `.gitattributes:38` 对 `Code/plugins/patches/**/*.patch` 强制 `text eol=lf` —— 实测按同样手法生成的补丁对索引 `git apply --check --cached` 退 **1**
+(`error: patch failed: skse/src/ModAPI/OstimNG-API-Thread.cpp:437` / `error: skse/src/ModAPI/OstimNG-API-Thread.cpp: patch does not apply`),
+只有对工作树的前向 `--check` 才退 0 ⇒ 这个文件**不可打补丁**;而且 `SearchScenes` 在本仓**零调用点**(7 处命中里 5 处是声明/快照,另 2 处是同一份 `OStimAPI/ModThreadControl.h` 的逐字副本),按既有判据(候选 3 不可达未修)记为**不修**。
 `Core/ThreadManager.cpp:144-146 AnySceneRunning()` 是 `m_threadMap.size() > 0`,**不是**「`currentThread` 非空」,所以 `UIState::HandleControl` 首行那道门拦不住这一族。
 同一条族里还有一条比 nullptr 更糟的路径:`ThreadManager::UntrackAllThreads`(`plugins/OStimNG/skse/src/Core/ThreadManager.cpp:133-142`)逐字 `for (auto& entry : m_threadMap) { delete entry.second; } m_threadMap.clear();`,
 **完全不通知 UI**;它的唯一调用者 `plugins/OStimNG/skse/src/Serial/Manager.cpp:290-299 Revert(...)` 是读档/回滚 —— 那条路径留下的是非空悬垂指针。

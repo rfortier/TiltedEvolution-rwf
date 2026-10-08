@@ -1,0 +1,13 @@
+diff --git a/skse/src/Furniture/Furniture.cpp b/skse/src/Furniture/Furniture.cpp
+index 223b6bf..ba08674 100644
+--- a/skse/src/Furniture/Furniture.cpp
++++ b/skse/src/Furniture/Furniture.cpp
+@@ -147,7 +147,7 @@ namespace Furniture {
+             std::vector<std::string> options = {"$ostim_message_none"};
+             std::vector<GameAPI::GameObject> objects;
+             int max = std::min(static_cast<int>(furniture.size()), GameAPI::Game::getMessageBoxOptionLimit() - 1);
+-            for (int i = 0; i < furniture.size(); i++) {
++            for (int i = 0; i < max; i++) {
+                 options.push_back(furniture[i].first->name);
+                 objects.push_back(furniture[i].second);
+             }

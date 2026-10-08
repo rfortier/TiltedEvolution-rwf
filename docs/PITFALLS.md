@@ -12856,6 +12856,8 @@ UI 层持有两个 `public` 裸指针,`plugins/OStimNG/skse/src/UI/UIState.h:49-
 `:63-67 QueueUITask` 只入队,`UI/OStimMenu.cpp:69-74 AdvanceMovie` 才调 `Update()` ⇒ **队列里的 lambda 在下一帧执行**;`SKSE::GetTaskInterface()->AddTask(...)` 同理。
 「帧 N 入队 → 后台线程在 N 与 N+1 之间停线程 → 帧 N+1 执行」这三步就是一次空指针解引用。
 
+(**2026-10-20 更正**:上面记的「全树 15 处」里已修 14 处,第 15 处 `plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Thread.cpp:439 SearchScenes` **没有修** —— 该文件在 pin 里的 blob 是 CRLF(26928 B / 685 个 CR),而 `.gitattributes:38 Code/plugins/patches/**/*.patch text eol=lf` 要求补丁本身纯 LF,同法生成的补丁对索引 `git apply --check --cached` 退 **1** 并报 `error: patch failed: skse/src/ModAPI/OstimNG-API-Thread.cpp:437`,只有对工作树的前向 `--check` 才退 0 ⇒ **不可打补丁**;且该入口全仓**零调用点**,按「不可达不修」记为不修。)
+
 **第二条:同族里谁判了、谁没判,比任何风格争论都快。** 同一个 `plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Thread.cpp` 里 24 处 `GetThread(threadID)` **每一处都紧跟判空**;
 `UI/Scene/SceneMenu.cpp:152-159` 的 `UpdateSpeed` 逐字先 `auto thread = UI::UIState::GetSingleton()->currentThread; if (!thread) { return; }`,再取 `currentNode` 并同样判空;
 `UI/Align/AlignMenu.cpp:83-85`、`UI/UIState.cpp:15-18`、`UI/UIState.cpp:85-97 NodeChanged` 也都是先判后用。⇒ 这 15 处是 **24:1** 的惯例差。
@@ -12920,4 +12922,111 @@ python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
 > `auto& thread = …currentThread;` 之后再 `if (thread == nullptr)` 是无效的:引用一旦绑定就不可改;`state->currentThread->…` 连判空的机会都没有。
 > 第三条:**同一个缺陷往往有两条销毁路径,只修看得见的那条等于没修。**
 > `stopThreadNoLock` 通知了 UI,`UntrackAllThreads` 没有 —— 后者是读档,更常见;修法是让三条路径都经过同一个出口,而不是在每处读取点各判一次。
+## 96. 2026-10-20 场次:OStimNG 的输入回调在两次查询之间丢掉线程,而家具搜索把选项上限算出来却不用 —— 判据是「判空和用指针之间不能再隔一次查询」
+
+> **锚点**:两处修复,同一份插件、两种形状:
+> `Code/plugins/patches/OStimNG/0005-keep-a-deleted-player-thread-out-of-the-input-handler.patch`
+> (3465 B / 54 行,单文件 `skse/src/Events/EventListener.cpp`、2 个 hunk;`796ffd3`→`1952eec`,pin 199 行 → 应用后 212 行)、
+> `Code/plugins/patches/OStimNG/0006-honour-the-message-box-option-limit-when-listing-furniture.patch`
+> (712 B / 14 行,单文件 `skse/src/Furniture/Furniture.cpp`、1 个 hunk;`223b6bf`→`ba08674`)。
+
+### 96.1 缺陷
+
+**第一处:同一个问题被问了两遍,而两个答案之间隔着一次删除。** `plugins/OStimNG/skse/src/Events/EventListener.cpp:81` 逐字
+
+```cpp
+            if (Threading::ThreadManager::GetSingleton()->playerThreadRunning()) {
+```
+
+`:83` 再逐字
+
+```cpp
+                Threading::Thread* playerThread = Threading::ThreadManager::GetSingleton()->getPlayerThread();
+```
+
+两次调用各自持一次 `m_threadMapMtx` 的 `shared_lock`(`plugins/OStimNG/skse/src/Core/ThreadManager.cpp:148-156 playerThreadRunning` 与 `:117-125 getPlayerThread`),**两次之间不持有任何锁**;
+而 `getPlayerThread()` 在表里找不到 `isPlayerThread()` 的条目时返回 `nullptr` —— 它自己不判空。`:84` 立刻解引用这个指针:
+
+```cpp
+                Furniture::selectFurniture(playerThread->getActorCount(), playerThread->getCenter(), MCM::MCMTable::furnitureSearchDistance(), 96.0f, true, [playerThread](GameAPI::GameObject furniture) {
+                    playerThread->changeFurniture(furniture, nullptr);
+                });
+```
+
+同族里另外四处连这道门都没有:`:149 Threading::ThreadManager::GetSingleton()->getPlayerThread()->stopFaded();`、
+`:151 …->increaseSpeed()`、`:155 …->decreaseSpeed()`、`:160 …->pullOut()`。
+
+**第二处:算出来的上限没有读者。** `plugins/OStimNG/skse/src/Furniture/Furniture.cpp:149` 逐字
+
+```cpp
+        int max = std::min(static_cast<int>(furniture.size()), GameAPI::Game::getMessageBoxOptionLimit() - 1);
+```
+
+而 `:150` 逐字 `for (int i = 0; i < furniture.size(); i++) {` —— `max` 算完之后一次都没被读过。
+`:151`/`:152` 把 `furniture[i].first->name` 与 `furniture[i].second` 成对塞进 `options`/`objects`,于是按钮数与 `objects` 长度都等于 `furniture.size()`。
+上限本身属于游戏本体:`plugins/OStimNG/skse/src/GameAPI/Game.h:17` 逐字 `inline static int getMessageBoxOptionLimit() { return 9; }`,
+而 `plugins/OStimNG/skse/src/GameAPI/Game.cpp:56 messagebox->buttonText.push_back(text.c_str());` 往 `RE::MessageBoxData` 里逐条塞按钮。
+
+### 96.2 判据
+
+**第一条:判空和用指针之间不能再隔一次查询。** 「线程在跑」是一句关于某一刻的话,而指针必须与这句话取自同一刻。只隔 16 行就是正确写法 ——
+`EventListener.cpp:165` 逐字 `Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->getPlayerThread();`、`:166 if (thread) {`;
+`plugins/OStimNG/skse/src/Core/Thread.cpp:624-640 Thread::stopFaded()`(pin 行号;工作区在 `:687-703`,因为 0001–0004 先给该文件加了 63 行)里那条 detached 线程逐字 `Thread* thread = ThreadManager::GetSingleton()->getPlayerThread(); if (thread) { thread->stop(); }`;
+`plugins/OStimNG/skse/src/Core/Thread/ThreadFurniture.cpp:15-26` 同形。⇒「取一次局部、就地判空」是这个文件的既定写法,上面 5 处是例外。
+
+**第二条:异步出口会把按值捕获的指针搬进后续帧。** `Furniture.cpp:146 if (alwaysAsk || MCM::MCMTable::selectFurniture()) {` 在调用点传 `alwaysAsk = true` 时恒真,于是 `:155` 走 `GameAPI::Game::showMessageBox(..., callback)`;
+`plugins/OStimNG/skse/src/GameAPI/Game.cpp:31-58` 的两条出口**都是异步**(UIExtensions 路径 `:45 vm->DispatchStaticCall("OSKSE", "UIExtMessageBox", args, scriptCallback);` 之后 `:47 return;`;否则 `:58 RE::MessageBoxMenu::QueueMessage(messagebox);`)⇒ `:84` 捕获的指针在后续帧才被解引用。
+而它捕获之后真的会解引用:`plugins/OStimNG/skse/src/Core/Thread/ThreadFurniture.cpp:10-11` 逐字 `void Thread::changeFurniture(GameAPI::GameObject furniture, Graph::Node* node) {` / `if (!furniture || this->furniture == furniture) return;` —— 第一件事就是读 `this->furniture`。
+
+**第三条:算出来的上限必须出现在唯一的消费者身上。** 全树 `std::min(static_cast<int>` 只有 `Furniture.cpp:149` 一处命中 ⇒ 这不是「参数顺序抄错」,是「压根没用」。
+两个兄弟用了:`plugins/OStimNG/skse/src/Core/ThreadStarter/DebugNPCThreadStarter.cpp:33` 与 `plugins/OStimNG/skse/src/Core/ThreadStarter/PlayerThreadStarter.cpp:108` 都逐字 `int max = std::min<int>(GameAPI::Game::getMessageBoxOptionLimit() - 1, actors.size());`,并在 `while (i < max)` 里读它。
+
+**第四条:上限的归属决定它能不能被绕过。** `Game.cpp:56` 逐条 `push_back` 进 `RE::MessageBoxData::buttonText` ⇒ 按钮数是游戏本体画的,插件这一侧多塞一条就是多一个按钮。
+
+### 96.3 可达性
+
+- 0005:不需要任何异常输入。`Thread::stop()`(`plugins/OStimNG/skse/src/Core/Thread.cpp:620-622`)只做一件事 —— `ThreadManager::GetSingleton()->queueThreadStop(m_threadId);`;
+  真正删除在后台线程 `m_excitementThread`(`Core/ThreadManager.cpp:38-56`)的循环里,那里 `:51 for (ThreadId& threadID : threadStopQueue) stopThreadNoLock(threadID);`;
+  而输入回调在游戏线程(`plugins/OStimNG/skse/src/Main.cpp:66 RE::BSInputDeviceManager::GetSingleton()->AddEventSink(Events::EventListener::GetSingleton());`)⇒ 按下「结束场景」键的那一刻,就是这条窗口。
+- 0006:只需要搜索半径(`MCM::MCMTable::furnitureSearchDistance()`)内、同一层上超过 8 件可用家具 —— `Furniture::findFurniture`(`Furniture.cpp:15-`)用 `util::iterate_attached_cells` 扫整个 cell。
+
+### 96.4 修法
+
+不改任何公开签名:
+
+1. 0005 五处一律「取局部 → 判空 → 用局部」;`:84` 那条额外**去掉按值捕获**,改成回调触发时重新 `getPlayerThread()` 再判空 —— 一个可能已经析构的指针不该被搬进后续帧。
+2. 0006 `:150` 改为 `for (int i = 0; i < max; i++) {`。`options` 与 `objects` 同步截断,`:156 if (result == 0 || result > objects.size())` 的边界判断因此保持成立(两者长度始终一致)。
+
+### 96.5 复核命令(照抄)
+
+```powershell
+# 三重校验(cwd = plugins/OStimNG)
+git apply --check --cached Code/plugins/patches/OStimNG/0005-*.patch   # 退 0
+git apply --check        Code/plugins/patches/OStimNG/0005-*.patch   # 退 0(尚未应用到工作区时)
+git apply                Code/plugins/patches/OStimNG/0005-*.patch && git apply --check --reverse Code/plugins/patches/OStimNG/0005-*.patch   # 应用后退 0
+git apply --check        Code/plugins/patches/OStimNG/0005-*.patch   # 已应用时退 1:error: patch failed: skse/src/Events/EventListener.cpp:81
+
+# 累积校验(六个补丁依次打到 pristine 索引上)
+foreach ($p in Get-ChildItem Code/plugins/patches/OStimNG/*.patch) { git apply --cached $p.FullName }   # 逐个退 0
+git diff --cached --stat # 18 files changed, 408 insertions(+), 151 deletions(-)
+git reset -q
+
+# 门禁
+python Code\plugins\tools\plugin_patches.py verify    # PATCH VERIFY OK / 34 patch(es)
+python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
+```
+
+**验证**:`0005`/`0006` 各自 `git apply --check --cached` 退 **0**、前向 `git apply --check` 退 **0**;
+合并应用后 `git apply --check --reverse` 退 **0**,再次前向 `--check` 退 **1** 并报 `error: patch failed: skse/src/Events/EventListener.cpp:81` 与 `error: patch failed: skse/src/Furniture/Furniture.cpp:147`;
+两个补丁里的 pin blob 哈希与 `git rev-parse :<path>` 逐个相等(`skse/src/Events/EventListener.cpp` `796ffd3`、`skse/src/Furniture/Furniture.cpp` `223b6bf`);
+累积校验 `0001`…`0006` 依次退 **0**,`git diff --cached --stat` = **18 files changed, 408 insertions(+), 151 deletions(-)**。
+**本机不编译**(`docs/PITFALLS.md` §0/§1,`plugins/OStimNG/skse/AGENTS.md` 逐字「do not attempt to build c++ or cmake」),
+所以「两次查询之间线程会不会真的被删掉」不可判定;判据不是「会不会发生」,而是「发生之后 `:84` 读的是空指针还是已析构对象」—— 修复前两条都有。
+
+> **教训**:第一条:**「它在跑」是一句关于某一刻的话,指针必须取自同一刻。**
+> `playerThreadRunning()` 与 `getPlayerThread()` 之间不持有锁,等于把两句不同时刻的话拼成一句用;`stopThreadNoLock` 的 `delete` 正好落在这条缝里。
+> 第二条:**同一个族里正确写法常常就在十几行之外,找到它就是找到了判据。**
+> `EventListener.cpp:165-166`、`Core/Thread.cpp:624-640`、`Core/Thread/ThreadFurniture.cpp:15-26` 都是「取局部 + 判空」,只有这 5 处例外 —— 例外本身就是证据。
+> 第三条:**算了不用的上限,比没有上限更容易骗过审阅。**
+> `int max = std::min(...)` 摆在那里,看上去已经封顶;而唯一的消费者读的是 `furniture.size()`。查「这个值有没有读者」比查「这个值算得对不对」更快。
 

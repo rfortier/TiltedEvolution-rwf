@@ -1,0 +1,53 @@
+diff --git a/skse/src/Events/EventListener.cpp b/skse/src/Events/EventListener.cpp
+index 796ffd3..1952eec 100644
+--- a/skse/src/Events/EventListener.cpp
++++ b/skse/src/Events/EventListener.cpp
+@@ -81,9 +81,14 @@ namespace Events {
+                 if (Threading::ThreadManager::GetSingleton()->playerThreadRunning()) {
+                     if (bEvent->IsDown()) {
+                         Threading::Thread* playerThread = Threading::ThreadManager::GetSingleton()->getPlayerThread();
+-                        Furniture::selectFurniture(playerThread->getActorCount(), playerThread->getCenter(), MCM::MCMTable::furnitureSearchDistance(), 96.0f, true, [playerThread](GameAPI::GameObject furniture) {
+-                            playerThread->changeFurniture(furniture, nullptr);
+-                        });
++                        if (playerThread) {
++                            Furniture::selectFurniture(playerThread->getActorCount(), playerThread->getCenter(), MCM::MCMTable::furnitureSearchDistance(), 96.0f, true, [](GameAPI::GameObject furniture) {
++                                Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->getPlayerThread();
++                                if (thread) {
++                                    thread->changeFurniture(furniture, nullptr);
++                                }
++                            });
++                        }
+                     }
+                 } else {
+                     if (bEvent->IsDown()) {
+@@ -146,18 +151,26 @@ namespace Events {
+             } else if (keyCode == MCM::MCMTable::keyToggle()) {
+                 UI::UIState::GetSingleton()->HandleControl(UI::Controls::Toggle);
+             } else if (keyCode == MCM::MCMTable::keyEnd()) {
+-                Threading::ThreadManager::GetSingleton()->getPlayerThread()->stopFaded();
++                Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->getPlayerThread();
++                if (thread) {
++                    thread->stopFaded();
++                }
+             } else if (keyCode == MCM::MCMTable::keySpeedUp()) {
+-                if (Threading::ThreadManager::GetSingleton()->getPlayerThread()->increaseSpeed()) {
++                Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->getPlayerThread();
++                if (thread && thread->increaseSpeed()) {
+                     UI::Scene::SceneMenu::GetMenu()->SpeedUp();
+                 }
+             } else if (keyCode == MCM::MCMTable::keySpeedDown()) {
+-                if (Threading::ThreadManager::GetSingleton()->getPlayerThread()->decreaseSpeed()) {
++                Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->getPlayerThread();
++                if (thread && thread->decreaseSpeed()) {
+                     UI::Scene::SceneMenu::GetMenu()->SpeedDown();
+                 }
+             } else if (keyCode == MCM::MCMTable::keyPullOut()){
+                 if (UI::UIState::GetSingleton()->GetActiveMenu() == UI::MenuType::kSceneMenu) {
+-                    Threading::ThreadManager::GetSingleton()->getPlayerThread()->pullOut();
++                    Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->getPlayerThread();
++                    if (thread) {
++                        thread->pullOut();
++                    }
+                 } else {
+                     UI::UIState::GetSingleton()->HandleControl(UI::Controls::No);
+                 }
