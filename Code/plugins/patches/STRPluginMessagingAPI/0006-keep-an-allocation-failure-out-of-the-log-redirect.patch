@@ -1,0 +1,168 @@
+diff --git a/src/STRPMLogRedirect.h b/src/STRPMLogRedirect.h
+index 3e63576..bf44fb5 100644
+--- a/src/STRPMLogRedirect.h
++++ b/src/STRPMLogRedirect.h
+@@ -36,35 +36,54 @@ inline errno_t STRPMRedirectFopen(
+                 &documents)) &&
+             documents != nullptr)
+         {
+-            std::filesystem::path logDirectory(documents);
+-            CoTaskMemFree(documents);
++            // This function stands in for fopen_s through the macro at the bottom of
++            // this file, so a caller reads it as a C runtime call and cannot handle a
++            // throw. It is also declared noexcept, and the filesystem operations below
++            // are the only allocating steps in it, so an allocation failure would
++            // terminate the game process here with no crash dump. The log helpers that
++            // reach it are noexcept as well and they run on every single log line, so
++            // none of them could report the failure either. Falling through to the
++            // plain lookup below is what the code already does when the log directory
++            // cannot be built at all.
++            try
++            {
++                std::filesystem::path logDirectory(documents);
++                CoTaskMemFree(documents);
++                documents = nullptr;
+ 
+-            logDirectory /= L"My Games";
+-            logDirectory /= L"Skyrim Special Edition";
+-            logDirectory /= L"SKSE";
++                logDirectory /= L"My Games";
++                logDirectory /= L"Skyrim Special Edition";
++                logDirectory /= L"SKSE";
+ 
+-            std::error_code error;
+-            std::filesystem::create_directories(logDirectory, error);
+-            if (!error)
+-            {
+-                const auto logPath = logDirectory / L"STRPluginMessagingBridge.log";
++                std::error_code error;
++                std::filesystem::create_directories(logDirectory, error);
++                if (!error)
++                {
++                    const auto logPath = logDirectory / L"STRPluginMessagingBridge.log";
+ 
+-                wchar_t wideMode[8]{};
+-                if (mode != nullptr) {
+-                    std::size_t index = 0;
+-                    for (; mode[index] != '\0' && index + 1 < std::size(wideMode); ++index)
+-                        wideMode[index] = static_cast<wchar_t>(static_cast<unsigned char>(mode[index]));
+-                    wideMode[index] = L'\0';
+-                }
+-                if (wideMode[0] == L'\0') {
+-                    wideMode[0] = L'a';
+-                    wideMode[1] = L'\0';
+-                }
++                    wchar_t wideMode[8]{};
++                    if (mode != nullptr) {
++                        std::size_t index = 0;
++                        for (; mode[index] != '\0' && index + 1 < std::size(wideMode); ++index)
++                            wideMode[index] = static_cast<wchar_t>(static_cast<unsigned char>(mode[index]));
++                        wideMode[index] = L'\0';
++                    }
++                    if (wideMode[0] == L'\0') {
++                        wideMode[0] = L'a';
++                        wideMode[1] = L'\0';
++                    }
+ 
+-                const auto result = _wfopen_s(file, logPath.c_str(), wideMode);
+-                if (result == 0)
+-                    return 0;
++                    const auto result = _wfopen_s(file, logPath.c_str(), wideMode);
++                    if (result == 0)
++                        return 0;
++                }
++            }
++            catch (...)
++            {
+             }
++
++            if (documents != nullptr)
++                CoTaskMemFree(documents);
+         }
+     }
+ 
+diff --git a/src/STRPMDiagnosticLogRedirect.h b/src/STRPMDiagnosticLogRedirect.h
+index 48d002c..bec2293 100644
+--- a/src/STRPMDiagnosticLogRedirect.h
++++ b/src/STRPMDiagnosticLogRedirect.h
+@@ -36,37 +36,54 @@ inline errno_t STRPMDiagnosticRedirectFopen(
+                 &documents)) &&
+             documents != nullptr)
+         {
+-            std::filesystem::path logDirectory(documents);
+-            CoTaskMemFree(documents);
+-
+-            logDirectory /= L"My Games";
+-            logDirectory /= L"Skyrim Special Edition";
+-            logDirectory /= L"SKSE";
+-
+-            std::error_code error;
+-            std::filesystem::create_directories(logDirectory, error);
+-            if (!error)
++            // This function stands in for fopen_s through the macro at the bottom of
++            // this file, so a caller reads it as a C runtime call and cannot handle a
++            // throw. It is declared noexcept, and the filesystem operations below are
++            // the only allocating steps in it, so an allocation failure would
++            // terminate the game process here with no crash dump. Falling through to
++            // the plain lookup below is what the code already does when the log
++            // directory cannot be built at all.
++            try
+             {
+-                const auto logPath = logDirectory / L"STRPluginMessagingDiagnostic.log";
++                std::filesystem::path logDirectory(documents);
++                CoTaskMemFree(documents);
++                documents = nullptr;
+ 
+-                wchar_t wideMode[8]{};
+-                if (mode != nullptr)
+-                {
+-                    std::size_t index = 0;
+-                    for (; mode[index] != '\0' && index + 1 < std::size(wideMode); ++index)
+-                        wideMode[index] = static_cast<wchar_t>(static_cast<unsigned char>(mode[index]));
+-                    wideMode[index] = L'\0';
+-                }
+-                if (wideMode[0] == L'\0')
++                logDirectory /= L"My Games";
++                logDirectory /= L"Skyrim Special Edition";
++                logDirectory /= L"SKSE";
++
++                std::error_code error;
++                std::filesystem::create_directories(logDirectory, error);
++                if (!error)
+                 {
+-                    wideMode[0] = L'a';
+-                    wideMode[1] = L'\0';
+-                }
++                    const auto logPath = logDirectory / L"STRPluginMessagingDiagnostic.log";
+ 
+-                const auto result = _wfopen_s(file, logPath.c_str(), wideMode);
+-                if (result == 0)
+-                    return 0;
++                    wchar_t wideMode[8]{};
++                    if (mode != nullptr)
++                    {
++                        std::size_t index = 0;
++                        for (; mode[index] != '\0' && index + 1 < std::size(wideMode); ++index)
++                            wideMode[index] = static_cast<wchar_t>(static_cast<unsigned char>(mode[index]));
++                        wideMode[index] = L'\0';
++                    }
++                    if (wideMode[0] == L'\0')
++                    {
++                        wideMode[0] = L'a';
++                        wideMode[1] = L'\0';
++                    }
++
++                    const auto result = _wfopen_s(file, logPath.c_str(), wideMode);
++                    if (result == 0)
++                        return 0;
++                }
+             }
++            catch (...)
++            {
++            }
++
++            if (documents != nullptr)
++                CoTaskMemFree(documents);
+         }
+     }
+ 

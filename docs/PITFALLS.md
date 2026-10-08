@@ -13190,4 +13190,115 @@ python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
 > `STRPluginMessagingBridgeReceive.cpp:901`/`:920` 盯的是载荷字节数,它对「列表里有几个元素」一言不发 —— 守卫盯着长度,不等于拦得住条数。
 > 第三条:**拒收还是截断,取决于短一截的那个东西下游当不当它完整。**
 > `activeValid` 只问每个元素解没解开;列表短一截它照样为真,所以这里只能整包拒收。
+## 98. 2026-10-20 场次:STRPM 的两份日志重定向冒充 fopen_s 却继承它的 noexcept,而它们改用的 std::filesystem 每写一行都要分配 —— 判据是「替换一个 C 函数时,noexcept 要按替换后的实现重判」
+
+> **锚点**:`Code/plugins/patches/STRPluginMessagingAPI/0006-keep-an-allocation-failure-out-of-the-log-redirect.patch`
+> (7300 B / 169 行,2 个文件各 1 个 hunk;`src/STRPMLogRedirect.h` `3e63576`→`bf44fb5`、`src/STRPMDiagnosticLogRedirect.h` `48d002c`→`bec2293`)。
+
+### 98.1 缺陷
+
+**一个函数把自己写成 `noexcept`,而它替换掉的那个函数本来不抛、它自己会抛。**
+`plugins/STRPluginMessagingAPI/src/STRPMLogRedirect.h:19-22` 逐字
+
+```cpp
+inline errno_t STRPMRedirectFopen(
+    FILE** file,
+    const char* filename,
+    const char* mode) noexcept
+```
+
+`:76` 逐字 `#define fopen_s STRPMRedirectFopen` —— 从这一行往下,这个文件里的 `fopen_s` 不再是 C 运行时的那个。
+`plugins/STRPluginMessagingAPI/CMakeLists.txt:423` 逐字
+`/FI${CMAKE_CURRENT_SOURCE_DIR}/src/STRPMLogRedirect.h` 把它强制包含进 `STRPluginMessagingBridge` 的每一个 TU;
+`:415` 用同样的 `/FI` 把 `src/STRPMDiagnosticLogRedirect.h` 注入 `STRPluginMessagingDiagnostic`。
+`git grep -n "LogRedirect" -- *.cpp *.h CMakeLists.txt` 只命中 `CMakeLists.txt` 的那三行(408/415/423)
+⇒ **没有任何源文件 `#include` 它们,改这两份头文件等于改两个目标的全部日志出口。**
+
+### 98.2 判据
+
+**判据一(载重):`noexcept` 是对实现写的,不是对签名继承的。**
+被替换的 `fopen_s` 不抛;替换它的这个函数在 `:39` 逐字
+
+```cpp
+            std::filesystem::path logDirectory(documents);
+```
+
+之后还有 `:42-44` 的三次 `logDirectory /= L"My Games" / L"Skyrim Special Edition" / L"SKSE"`、
+`:47 std::filesystem::create_directories(logDirectory, error);`、`:50 const auto logPath = logDirectory / L"STRPluginMessagingBridge.log";` ——
+**四次分配,全部发生在一次 `fopen_s` 调用之内**,而它把原签名的 `noexcept` 一起继承了下来。
+
+**判据二:删 `noexcept` 不构成修法,因为上一层也是 `noexcept`。**
+经这一个宏走到那四次分配的九个函数全是 `noexcept`:
+
+| 文件:行 | 函数 |
+| --- | --- |
+| `src/STRPluginMessagingBridgeReceive.cpp:124` | `void Log(const char* text) noexcept`(`:129` 即那次 `fopen_s`) |
+| `src/STRPluginMessagingBridgeReceive.cpp:134` | `void LogAddress(const char* label, std::uintptr_t value) noexcept` |
+| `src/STRPluginMessagingBridgeSKSE.cpp:43` | `void LogIdentity(const char* format, ...) noexcept` |
+| `src/STRPMProxyResolverBridge.h:126` | `void Log(const char* format, ...) noexcept` |
+| `src/STRPMChatUiSuppress.h:73` / `:83` | `inline void Log(const char* text) noexcept` / `LogAddress(…) noexcept` |
+| `src/STRPMChatUiSuppress.h:508` | `inline DWORD WINAPI Worker(void*) noexcept` |
+| `src/STRPMChatUiSuppressV3.h:282` / `:361` | `inline void MarkPendingEnvelope() noexcept` / `LogExecuteAsyncResolution(…) noexcept` |
+
+异常只是从被调者挪到调用者,`std::terminate` 与「没有崩溃转储」两件事一件不少。
+同族先例就在隔壁:`src/STRPMRuntimeLoadRedirect.h` 用同样的宏替换 `LoadLibraryW`,既有补丁 `0005` 给它选的也是
+`try { … } catch (...) { }` 加落到本来就有的兜底,而不是删 `noexcept`。
+
+**判据三:换掉的如果是「谁都不会去 catch」的位置,就只能就地收口。**
+日志是最后一站 —— 没有调用者会为一行日志处理 `std::bad_alloc`。这九个函数又都跑在**每一行日志**上,
+不是启动一次、也不是每个包一次。
+
+### 98.3 可达性
+
+- 落点不需要异常输入:每一次日志写入都会经过这四次分配,包括 `Worker` 的候选扫描(`src/STRPMChatUiSuppress.h:516-531`)与
+  `src/STRPMProxyResolverBridge.h` 的 `Log`(`:741`/`:803`/`:831`/`:972`/`:1024`/`:1028`/`:1103`/`:1114`/`:1129`/`:1151`)。
+- 诊断侧更窄:唯一 TU `src/STRPluginMessagingDiagnosticSKSE.cpp` 全文件 24 个函数**一个 `noexcept` 都没有**,
+  危险只来自 `STRPMDiagnosticRedirectFopen` 自己;但它同样必须包,否则终止点落在函数体内。
+- 桥侧 `src/STRPMChatUiSuppressV2.h` 是死文件(`git ls-files` 全树只有 `:5 namespace STRPMChatUiSuppressV2` 一处提及,无 `#include`),
+  它的 `:125` 站点不构成可达路径。
+
+### 98.4 修法
+
+两份头文件各把 `SHGetKnownFolderPath` 守卫块里的那一段包进 `try { … } catch (...) { }`,
+失败时落到函数本来就有的 `:71 return ::fopen_s(file, filename, mode);` —— **不改去向,只让失败不再终止**。
+
+1. `CoTaskMemFree(documents)` 原来紧跟在 `std::filesystem::path logDirectory(documents);` 之后,那行一旦抛出 `documents` 就泄漏;
+   所以释放移进 `try` 并紧跟 `documents = nullptr;`,`try` 之后再补 `if (documents != nullptr) CoTaskMemFree(documents);` —— 既不泄漏也不双重释放。
+2. 两份文件的缩进风格不同(`src/STRPMLogRedirect.h:53`/`:59` 是同行花括号,`src/STRPMDiagnosticLogRedirect.h:53-54`/`:60-61` 是另起一行),
+   补丁按原文各自保留。
+
+### 98.5 复核命令(照抄)
+
+```powershell
+# 三重校验(cwd = plugins/STRPluginMessagingAPI)
+git apply --check --cached Code/plugins/patches/STRPluginMessagingAPI/0006-*.patch   # 退 0
+git apply --check        Code/plugins/patches/STRPluginMessagingAPI/0006-*.patch   # 退 0(尚未应用到工作区时)
+git apply                Code/plugins/patches/STRPluginMessagingAPI/0006-*.patch && git apply --check --reverse Code/plugins/patches/STRPluginMessagingAPI/0006-*.patch   # 应用后退 0
+git apply --check        Code/plugins/patches/STRPluginMessagingAPI/0006-*.patch   # 已应用时退 1:error: patch failed: src/STRPMLogRedirect.h:36
+
+# 累积校验(六个补丁依次打到 pristine 索引上)
+foreach ($p in Get-ChildItem Code/plugins/patches/STRPluginMessagingAPI/*.patch) { git apply --cached $p.FullName }   # 逐个退 0
+git diff --stat          # 空
+git diff --cached --stat # 13 files changed, 386 insertions(+), 141 deletions(-)
+git reset -q
+
+# 门禁
+python Code\plugins\tools\plugin_patches.py verify    # PATCH VERIFY OK / 36 patch(es)
+python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
+```
+
+**验证**:`0006` 的 `git apply --check --cached` 退 **0**、前向 `git apply --check` 退 **0**;
+应用后 `git apply --check --reverse` 退 **0**,再次前向 `--check` 退 **1** 并报
+`error: patch failed: src/STRPMLogRedirect.h:36` 与 `error: patch failed: src/STRPMDiagnosticLogRedirect.h:36`;
+补丁里两个 pin blob 哈希与 `git rev-parse :<path>` 相等(`src/STRPMLogRedirect.h` `3e63576`、`src/STRPMDiagnosticLogRedirect.h` `48d002c`);
+累积校验 `0001`…`0006` 依次退 **0**,`git diff --stat` 空、`git diff --cached --stat` = **13 files changed, 386 insertions(+), 141 deletions(-)**。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以「这条路径到底会不会耗尽内存」不可判定;
+判据不是「会不会发生」,而是「发生之后这行日志还剩不剩得下一条记录」。
+
+> **教训**:第一条:**替换一个 C 函数时,`noexcept` 要按替换后的实现重判,不能按被替换的签名继承。**
+> `fopen_s` 不抛,`STRPMRedirectFopen` 会抛,而 `:22` 的 `noexcept` 是从前者那里抄来的 —— 签名相同不等于承诺相同。
+> 第二条:**删 `noexcept` 之前先看上一层有没有。**
+> 这九个调用者全是 `noexcept`,删掉被调者的那个只是把终止点往上挪一层,`std::terminate` 与「没有崩溃转储」一件不少。
+> 第三条:**`#define` 顶替标准函数的地方,判据要落在「它现在到底做了什么」上。**
+> `:76` 那一行之后 `fopen_s` 已经不是 C 运行时的 `fopen_s`;`git grep` 只命中 `CMakeLists.txt` 的 `/FI` 三行,说明没有任何源文件能提示你这一点。
 

@@ -9,6 +9,67 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:STRPM 的两份日志重定向冒充 `fopen_s` 却继续写着 noexcept,而它们改用的 std::filesystem 每写一行日志都要分配 —— 判据是「替换一个 C 函数时,noexcept 要按替换后的实现重判,不能按被替换的签名继承」
+
+**现象**:没有任何现象。`plugins/STRPluginMessagingAPI/src/STRPMLogRedirect.h:19-22` 逐字
+
+```cpp
+inline errno_t STRPMRedirectFopen(
+    FILE** file,
+    const char* filename,
+    const char* mode) noexcept
+```
+
+该文件在 `:76` 用 `#define fopen_s STRPMRedirectFopen` 把自己顶替掉 `fopen_s`,而
+`plugins/STRPluginMessagingAPI/CMakeLists.txt:423` 逐字
+`/FI${CMAKE_CURRENT_SOURCE_DIR}/src/STRPMLogRedirect.h` 把它强制包含进 `STRPluginMessagingBridge` 的每一个 TU;
+`:415` 用同样的 `/FI` 把 `src/STRPMDiagnosticLogRedirect.h` 注入 `STRPluginMessagingDiagnostic`。
+两份头文件没有任何源文件 `#include`(`git grep -n "LogRedirect" -- *.cpp *.h CMakeLists.txt` 只命中 `CMakeLists.txt` 的那三行),
+也就是说 **改这两份头文件就等于改两个目标的全部日志出口**,而它们此前从未被任何补丁触及。
+
+**根因**:`src/STRPMLogRedirect.h:39` 逐字 `std::filesystem::path logDirectory(documents);`,
+后面是 `:42-44` 的三次 `logDirectory /= …`、`:47` `std::filesystem::create_directories(logDirectory, error);`、
+`:50` `const auto logPath = logDirectory / L"STRPluginMessagingBridge.log";` —— **四次分配**,全部发生在 `fopen_s` 被调用的那一刻。
+被替换的 `fopen_s` 是 C 运行时函数,它不抛;替换它的这个函数会抛,却把原签名的 `noexcept` 一起继承了下来。
+
+**判据(同族对照,载重)**:不是「要不要加 try/catch」,而是「**谁在 `noexcept` 后面调用它**」。
+经这一个宏走到那四次分配的调用者有九个,九个全是 `noexcept`:
+`src/STRPluginMessagingBridgeReceive.cpp:124` 的 `void Log(const char* text) noexcept`(`:129` 就是那次 `fopen_s`)与
+`:134` 的 `void LogAddress(const char* label, std::uintptr_t value) noexcept`;
+`src/STRPluginMessagingBridgeSKSE.cpp:43` 的 `void LogIdentity(const char* format, ...) noexcept`;
+`src/STRPMProxyResolverBridge.h:126` 的 `void Log(const char* format, ...) noexcept`;
+`src/STRPMChatUiSuppress.h:73` 的 `inline void Log(const char* text) noexcept`、`:83` 的 `inline void LogAddress(…) noexcept`、
+`:508` 的 `inline DWORD WINAPI Worker(void*) noexcept`;
+`src/STRPMChatUiSuppressV3.h:282` 的 `inline void MarkPendingEnvelope() noexcept` 与 `:361` 的 `inline void LogExecuteAsyncResolution(…) noexcept`。
+所以「把 `noexcept` 删掉」不是修法:异常会立刻撞进上一层 `noexcept` 的边界,终止只是从被调者挪到调用者,
+`std::terminate` 与「没有崩溃转储」两件事一件不少。同族先例就在隔壁 —— `src/STRPMRuntimeLoadRedirect.h` 用同样的宏替换,
+既有补丁 `0005` 给它的选择也是 `try { … } catch (...) { }` 加落到本来就有的兜底,而不是删 `noexcept`。
+
+**修法**:两份头文件各把 `SHGetKnownFolderPath` 守卫块里的那一段包进 `try { … } catch (...) { }`,
+失败时落到函数本来就有的 `:71 return ::fopen_s(file, filename, mode);` —— **不改去向,只让失败不再终止**。两处细节:
+
+1. `CoTaskMemFree(documents)` 原来紧跟在 `std::filesystem::path logDirectory(documents);` 之后;那行一旦抛出,`documents` 就泄漏。
+   所以释放被移进 `try` 并紧跟一句 `documents = nullptr;`,`try` 之后再补 `if (documents != nullptr) CoTaskMemFree(documents);` —— 既不泄漏也不双重释放。
+2. 两份文件的缩进风格不同(`src/STRPMLogRedirect.h:53`/`:59` 是同行花括号,`src/STRPMDiagnosticLogRedirect.h:53-54`/`:60-61` 是另起一行),
+   补丁按原文各自保留,没有顺手统一。
+
+诊断侧更窄:它的唯一 TU `src/STRPluginMessagingDiagnosticSKSE.cpp` 全文件 24 个函数**一个 `noexcept` 都没有**,
+所以那里的危险只来自 `STRPMDiagnosticRedirectFopen` 自己;但这一份同样必须包,否则终止点就落在函数体内。
+
+**验证**:`0006` 的 `git apply --check --cached` 退 **0**、前向 `git apply --check` 退 **0**;
+应用后 `git apply --check --reverse` 退 **0**,再次前向 `--check` 退 **1** 并报
+`error: patch failed: src/STRPMLogRedirect.h:36` 与 `error: patch failed: src/STRPMDiagnosticLogRedirect.h:36`;
+补丁里两个 pin blob 哈希与 `git rev-parse :<path>` 相等(`src/STRPMLogRedirect.h` `3e63576`、`src/STRPMDiagnosticLogRedirect.h` `48d002c`);
+累积校验 `0001`…`0006` 依次退 **0**,`git diff --stat` 空、`git diff --cached --stat` = **13 files changed, 386 insertions(+), 141 deletions(-)**。
+`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **36** patch(es);`… check` → `PATCH CHECK OK`。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以「这条路径到底会不会耗尽内存」不可判定;
+判据不是「会不会发生」,而是「发生之后这行日志还剩不剩得下一条记录」。
+
+**交付**:`Code/plugins/patches/STRPluginMessagingAPI/0006-keep-an-allocation-failure-out-of-the-log-redirect.patch`
+(7300 B / 169 行,两个文件:`src/STRPMLogRedirect.h` 的 `@@ -36,35 +36,54 @@`、`src/STRPMDiagnosticLogRedirect.h` 的 `@@ -36,37 +36,54 @@`)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
 ### 修复:DAV 解码一件盔甲的激活 addon 列表时长度由对端决定,而每个元素都要过一次引擎查找 —— 判据是「上限要绑到自己的发送侧能产出什么,而不是绑到传输层允许什么」
 
 **现象**:`plugins/DAVSyncTogether/src/NetworkProtocol.cpp:142-186 DecodeArmorState` 解 `DAVSTATE|armo=…|state=…|variant=…|active=…` 时,`:168-183` 按逗号逐个切分 `active=` 字段并把每个 token 追加进结果:
