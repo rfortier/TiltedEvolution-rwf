@@ -12469,3 +12469,166 @@ python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
 > 第三条:**「同族的其它实现都长什么样」是判断偏离最快的尺子。**
 > 这个目录里另外五个线程入口、两个 bootstrap 的 `Worker` 全部非 noexcept,只有这一处例外;
 > 找到例外之后,「这是风格还是失误」就不再需要争论 —— 惯例本身已经写在代码里了。
+## 93. 2026-10-20 场次:STRPM 桥的接收解析器写着 noexcept,而它调用的四个查找函数全都在建 vector —— 判据是「noexcept 的检查要顺着调用链走」
+> **锚点**:`Code/plugins/patches/STRPluginMessagingAPI/0005-keep-an-allocation-failure-out-of-the-receive-resolver-and-the-load-path.patch`
+> (8360 B / 174 行,两个文件、两个 hunk)。§92 是同一个判据的第一次落地,那一处的分配在被调者体内、**被调者也写着 `noexcept`**;
+> 这一节的两处形状都不同:第一处的四个被调者**都不写** `noexcept`(承诺只在调用者身上),
+> 第二处干脆不叫 `noexcept` 这个名字的问题 —— 它顶着 Win32 的名字,调用点以为自己在调 `LoadLibraryW`。
+
+### 93.1 缺陷
+
+第一处,`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp`(pin 1222 行)的接收解析器逐字:
+
+```cpp
+        bool ResolveOnConsumeAddress() noexcept
+        {
+            const auto module = GetModuleHandleW(nullptr);
+            if (!module)
+                return false;
+
+            const auto spans = EnumerateRuntimeMemory(module);
+            const auto typeDescriptor = FindTransportTypeDescriptor(spans);
+```
+
+它自己 `noexcept`,**体内零 try/catch**,而它调的四次查找全都在建容器:
+
+| 调用 | 分配在哪 | 声明 |
+| --- | --- | --- |
+| `EnumerateRuntimeMemory()`(`:240`) | `std::vector<MemorySpan> result;`(`:242`)、`result.push_back({ base, size, readable, executable })`(`:264`) | 非 noexcept |
+| `FindTransportTypeDescriptor()`(`:311`) | 底下的 `FindBytes()` 建 `std::vector<std::uintptr_t> result;`(`:279`)、`result.push_back(...)`(`:304`)、`std::sort`/`erase(std::unique(...))`(`:318-319`) | 非 noexcept |
+| `FindCompleteObjectLocator()`(`:325`) | `std::vector<std::uintptr_t> matches;`(`:331`)、每个 1 MiB 块一个 `std::vector<std::uint8_t> snapshot;`(`:345`)、`matches.push_back(address)`(`:362`) | 非 noexcept |
+| `FindTransportVftable()`(`:374`) | `matches`(`:379`)、每块一个 `snapshot`(`:393`)、`matches.push_back(vftable)`(`:419`) | 非 noexcept |
+
+⇒ `std::bad_alloc` 从 `ResolveOnConsumeAddress` 里逃出去就是 `std::terminate`,**没有崩溃转储**(§45,`docs/PITFALLS.md:4629-4697`)。
+pin 侧的对照读数:同一个文件里五个被调者逐条都是 `noexcept=no try=0 catch=0`,只有 `ResolveOnConsumeAddress` 是 `noexcept=YES try=0 catch=0`
+——「分配在被调者、承诺在调用者」这一句在 pin 上可以直接数出来。
+
+第二处,`plugins/STRPluginMessagingAPI/src/STRPMRuntimeLoadRedirect.h`(pin 56 行)的末尾逐字:
+
+```cpp
+#define LoadLibraryW STRPMRuntimeLoad::LoadLibraryAdjacentToBroker
+```
+
+`LoadLibraryAdjacentToBroker`(`:15`)写着 `noexcept`,而它体内三步都在分配:
+`std::wstring adjacentPath(brokerPath, length);`(`:34`)、`adjacentPath.resize(separator + 1);`(`:37`)、`adjacentPath += modulePath;`(`:38`)
+⇒ 同一个形状。判据不在它自己身上,而在**它替的是谁**:这个头以 `/FI`(强制包含)挂在 `STRPluginMessagingAPIRuntime` 上
+(`plugins/STRPluginMessagingAPI/CMakeLists.txt:401-409`),于是 `plugins/STRPluginMessagingAPI/src/STRPluginMessagingAPIRuntime.cpp:876`/`:882`/`:892`
+三处**看起来在调 Win32 `LoadLibraryW`**,实际调的是这个替身;调用点没有任何一处能处理 throw。
+
+### 93.2 判据
+
+**`noexcept` 的检查要顺着调用链走,而不是看函数体。** 第一层检查(「函数体内有没有 `push_back`/`resize`」)会**漏掉**第一处:
+分配一个都不在 `ResolveOnConsumeAddress` 体内。第二层检查(「被调者是不是 `noexcept`」)在这一处**不会**漏,但它回答的是另一个问题:
+四个被调者都不写 `noexcept` ⇒ 它们自己就会 `terminate`,所以能救的只有**调用者这一层的一个 catch**。
+
+与 §92 的分界值得写清楚,因为两处的修法相反:
+
+- §92 那处,被调者 `ResolveExternalStrAllocationBase()` **写着 `noexcept`** ⇒ terminate 被关在**被调者内部**,调用者那一层后加的 handler 永远收不到,
+  所以「去掉那层 `noexcept`」和「加 catch」是两件必须一起做的事。
+- 这一处,被调者**不写** `noexcept` ⇒ 一个函数级 catch 就够,`noexcept` 本身**不动**。
+- 分界线是**承诺写在哪一层**,不是「有没有分配」。
+
+第二处的判据与第一处无关,单独一条:**一个被 `#define` 顶替掉的函数,它的契约由调用点对那个名字的期待决定,不由它自己的声明决定。**
+`LoadLibraryW` 的每一个调用点都在写「这个调用不会抛」,替身既然占了这个名字,就得自己接住。
+这条也只有顺着调用链才看得出来 —— `#include` 图上根本没有这条边(`/FI` 是编译选项,不是源码里的依赖)。
+
+### 93.3 可达性
+
+- 第一处的链:`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridge.cpp:946 void BootstrapLoop()`(非 noexcept)
+  → `:979 if (!g_receiveResolverReady.load())` → `:991 if (STRPMBridgeReceive::Start(&DeferredReceiveThunk, nullptr))`
+  → `STRPluginMessagingBridgeReceive.cpp`(pin)`:1143 bool Start(STRPM::ReceiveCallback, void* userData) noexcept`
+  → (pin)`:1161 if (!ResolveOnConsumeAddress())`(工作树 `:1199`)。
+  线程由 `:1015 bool StartBootstrap()` 用 `:1024 g_bootstrapThread = std::thread(&BootstrapLoop);` 起(`:1022-1030` 有 try/catch),
+  调用点在 `:1076 if (!StartBootstrap())`(在 `STRPM::Start()` 内)⇒ **每次 SKSE 插件加载都会走这条链**。
+  并且失败不是终点:`BootstrapLoop` 每 `:36 constexpr auto kBootstrapRetryDelay = std::chrono::milliseconds(750);` 重试一次,**无上限、无退避**
+  ⇒ 内存吃紧时这条分配路径会被反复走。
+- 第二处的链:`plugins/STRPluginMessagingAPI/src/STRPluginMessagingAPIRuntime.cpp:854 static HMODULE LoadStrBridgeModule(const std::wstring& modulePath)`
+  的三处调用(`:876`/`:882`/`:892`),都在 `STRPluginMessagingAPIRuntime` 的加载路径上,一次加载走一次。
+  **严重性低于第一处**:调用频率是「每次插件加载一次」,而且参数是硬编码的模块名
+  ⇒ 这里修的是「同一形状的第二处落点」,不是「高频路径上的必然缺陷」。
+- 编译闭包:`plugins/STRPluginMessagingAPI/CMakeLists.txt:15-19 option(STRPM_BUILD_STR180_BRIDGE_PROBE … ON)`、
+  `:352-356 add_library(STRPluginMessagingBridge SHARED ${STRPM_BRIDGE_SOURCE} src/STRPluginMessagingBridgeReceive.cpp src/STRPluginMessagingBridgeSKSE.cpp)`;
+  `.github/workflows/windows.yml:189` 逐字 `cmake -S plugins/STRPluginMessagingAPI -B plugins/STRPluginMessagingAPI/build -A x64 -DSTRPM_ENABLE_UDP_BACKEND=OFF -DSTRPM_BUILD_STR180_BRIDGE_PROBE=ON`
+  ⇒ 两个文件都真的进二进制(第二个靠 `/FI` 而不是 `#include`)。
+- 同族先例:这个目录里 try/catch 只出现在四处,且都只包**一个会分配的步骤** ——
+  `STRPluginMessagingBridgeReceive.cpp:165-197 SnapshotProcessMemory`(`:174-182` 逐字 `try { snapshot.resize(size); } catch (...) { snapshot.clear(); return false; }`)、
+  `STRPMChatUiSuppress.h:113-143 Snapshot`、`STRPMChatUiSuppressV3.h:221-228`/`:254-262`、`STRPMChatUiSuppressBootstrap.h:55`(§92 刚加的)。
+  这一节把同一形状用在**函数级**,理由见 93.4 第 2 条。
+
+### 93.4 修法
+
+两处改动:
+
+```cpp
+         bool ResolveOnConsumeAddress() noexcept
+         {
+-            const auto module = GetModuleHandleW(nullptr);
++            try
+             {
++                const auto module = GetModuleHandleW(nullptr);
+                 ...
++            }
++            catch (...)
++            {
++                Log("receive resolver: ran out of memory while resolving TransportService::OnConsume");
++                return false;
++            }
+```
+
+```cpp
+             if (length > 0 && length < std::size(brokerPath)) {
++                try {
+                 std::wstring adjacentPath(brokerPath, length);
+                 ...
++                } catch (...) {
+                 }
+             }
+```
+
+四条要点:
+
+1. **`noexcept` 本身不动**,两处都不动。第一处的调用者 `Start` 也是 `noexcept`,并且把 `false` 读作「还没解析出来」;
+   去掉 `ResolveOnConsumeAddress` 的 `noexcept` 只会把 terminate 挪到调用方 —— 这与 §92 正好相反,那里的 `noexcept` 挡在了 handler 前面,必须去掉。
+2. **包的是函数体,不是单个 `resize`**:分配点分散在四个被调者里,只有函数级 catch 能一次覆盖;
+   步骤级写法在这里要写四遍,而拒绝的代价完全相同(失败即 `return false`,调用方下一轮再试)。
+3. 第二处失败后**落到本来就存在的** `:46 return ::LoadLibraryW(modulePath);` —— 不新增分支、不新增返回值:
+   替身做不到「就近加载」时,行为与它没被替换时完全一致。
+4. 日志走文件本地的 `Log(...)`(`STRPluginMessagingBridgeReceive.cpp:126-134`,只 `fopen_s`/`fprintf`/`fclose`),**不分配**;
+   接住之后**不重试** —— 内存耗尽时重试只是再走一遍同样的分配,重试由 750 ms 的 `BootstrapLoop` 自然完成。
+
+### 93.5 复核命令(照抄)
+
+```powershell
+# 三重校验(cwd = plugins/STRPluginMessagingAPI)
+git apply --check --cached Code/plugins/patches/STRPluginMessagingAPI/0005-keep-an-allocation-failure-out-of-the-receive-resolver-and-the-load-path.patch  # 退 0
+git apply --check <同一个补丁>          # 退 0(尚未应用到工作区时)
+git apply <同一个补丁> && git apply --check --reverse <同一个补丁>   # 应用后退 0
+
+# 累积校验(五个补丁依次打到 pristine 索引上)
+foreach ($p in Get-ChildItem Code/plugins/patches/STRPluginMessagingAPI/*.patch) { git apply --cached $p.FullName }   # 逐个退 0
+git diff --stat          # 无输出(工作区与累积索引一致)
+git diff --cached --stat # 11 files changed, 300 insertions(+), 91 deletions(-)
+git reset -q
+
+# 门禁
+python Code\plugins\tools\plugin_patches.py verify    # PATCH VERIFY OK / 30 patch(es)
+python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
+```
+
+**验证**:`git apply --check --cached` 退 **0**(能打到 pin);前向 `git apply --check` 退 **0**(未应用时干净);
+`git apply` 退 **0**,`git apply --check --reverse` 退 **0**(与工作区一致);
+打到 pristine 索引后 `git show :<path>` 与手写新文本**逐字节相等**(两个文件都比对过);
+累积校验 `0001`…`0005` 依次退 **0**,`git diff --stat` 无输出,`git diff --cached --stat` = **11 files changed, 300 insertions(+), 91 deletions(-)**;
+`STRPluginMessagingBridgeReceive.cpp` pin 1222 行 → 应用后 **1260 行**(工作区此前 1245 行,因为 `0003` 已在),`STRPMRuntimeLoadRedirect.h` pin 56 行 → 应用后 **65 行**;
+`PATCH VERIFY OK` / **30** patch(es)。**本机不编译**(`docs/PITFALLS.md` §0/§1),
+所以「这条路径会不会真的耗尽内存」不可判定;判据不是「会不会发生」,而是「发生之后 terminate 发生在哪一层、还能不能留下一条记录」。
+
+> **教训**:第一条:**`noexcept` 的检查要顺着调用链走 —— 但「顺着走」之后要看承诺写在哪一层,修法正好相反。**
+> §92 的被调者写着 `noexcept`,terminate 关在被调者内部,所以要去掉那层 `noexcept` 再加 catch;
+> 这一处的被调者不写 `noexcept`,一个函数级 catch 就够,`noexcept` 一个都不动。
+> 第二条:**被 `#define` 顶替掉的函数,契约由调用点对那个名字的期待决定。**
+> `LoadLibraryAdjacentToBroker` 自己写着 `noexcept`,但它占的是 `LoadLibraryW` 的名字,而 `LoadLibraryW` 的每一个调用点都在假设「不会抛」;
+> 这条边在 `#include` 图上不存在(`/FI` 是编译选项),所以「谁在调我」这件事必须查 CMake,不能查源码。
+> 第三条:**同族的先例既是判据也是修法模板,但要看清先例包的是「步骤」还是「函数」。**
+> 这个目录里四处 try/catch 都只包一个 `resize`,因为它们各自只有一个分配点;
+> 这里四个被调者、至少四个容器构造点,所以包函数体,而拒绝的语义与步骤级完全相同 —— 都只是 `return false`。

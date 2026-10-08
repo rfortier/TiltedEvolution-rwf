@@ -1,0 +1,173 @@
+diff --git a/src/STRPluginMessagingBridgeReceive.cpp b/src/STRPluginMessagingBridgeReceive.cpp
+index 5ab0014..e44b24f 100644
+--- a/src/STRPluginMessagingBridgeReceive.cpp
++++ b/src/STRPluginMessagingBridgeReceive.cpp
+@@ -428,69 +428,84 @@ namespace STRPMBridgeReceive
+             return matches.front();
+         }
+ 
++        // EnumerateRuntimeMemory, FindTransportTypeDescriptor,
++        // FindCompleteObjectLocator and FindTransportVftable all grow STL
++        // containers, and this frame runs on the bridge bootstrap thread: an
++        // allocation failure that escapes it terminates the process with no crash
++        // dump. The caller is Start, which is noexcept too and reads false as
++        // "not resolved yet", so the failure is logged and the bootstrap loop
++        // retries instead of the process dying.
+         bool ResolveOnConsumeAddress() noexcept
+         {
+-            const auto module = GetModuleHandleW(nullptr);
+-            if (!module)
+-                return false;
+-
+-            const auto spans = EnumerateRuntimeMemory(module);
+-            const auto typeDescriptor = FindTransportTypeDescriptor(spans);
+-            if (!typeDescriptor)
++            try
+             {
+-                Log("receive resolver: TransportService RTTI type descriptor not uniquely resolved");
+-                return false;
+-            }
++                const auto module = GetModuleHandleW(nullptr);
++                if (!module)
++                    return false;
+ 
+-            const auto locator = FindCompleteObjectLocator(spans, module, *typeDescriptor);
+-            if (!locator)
+-            {
+-                Log("receive resolver: TransportService complete object locator not uniquely resolved");
+-                return false;
+-            }
++                const auto spans = EnumerateRuntimeMemory(module);
++                const auto typeDescriptor = FindTransportTypeDescriptor(spans);
++                if (!typeDescriptor)
++                {
++                    Log("receive resolver: TransportService RTTI type descriptor not uniquely resolved");
++                    return false;
++                }
+ 
+-            const auto vftable = FindTransportVftable(spans, module, *locator);
+-            if (!vftable)
+-            {
+-                Log("receive resolver: TransportService vftable not uniquely resolved");
+-                return false;
+-            }
++                const auto locator = FindCompleteObjectLocator(spans, module, *typeDescriptor);
++                if (!locator)
++                {
++                    Log("receive resolver: TransportService complete object locator not uniquely resolved");
++                    return false;
++                }
+ 
+-            FILE* file = nullptr;
+-            fopen_s(&file, "Data\\SKSE\\Plugins\\STRPluginMessagingBridge.log", "a");
+-            if (file)
+-            {
+-                std::fprintf(file, "TransportService vftable = 0x%llX\n",
+-                    static_cast<unsigned long long>(*vftable));
+-                for (std::size_t index = 0; index < 5; ++index)
++                const auto vftable = FindTransportVftable(spans, module, *locator);
++                if (!vftable)
+                 {
+-                    std::uintptr_t entry = 0;
+-                    if (ReadProcessValue(*vftable + index * sizeof(std::uintptr_t), entry))
++                    Log("receive resolver: TransportService vftable not uniquely resolved");
++                    return false;
++                }
++
++                FILE* file = nullptr;
++                fopen_s(&file, "Data\\SKSE\\Plugins\\STRPluginMessagingBridge.log", "a");
++                if (file)
++                {
++                    std::fprintf(file, "TransportService vftable = 0x%llX\n",
++                        static_cast<unsigned long long>(*vftable));
++                    for (std::size_t index = 0; index < 5; ++index)
+                     {
+-                        std::fprintf(file, "  vftable[%zu] = 0x%llX%s\n",
+-                            index,
+-                            static_cast<unsigned long long>(entry),
+-                            index == 1 ? " [OnConsume]" : "");
++                        std::uintptr_t entry = 0;
++                        if (ReadProcessValue(*vftable + index * sizeof(std::uintptr_t), entry))
++                        {
++                            std::fprintf(file, "  vftable[%zu] = 0x%llX%s\n",
++                                index,
++                                static_cast<unsigned long long>(entry),
++                                index == 1 ? " [OnConsume]" : "");
++                        }
+                     }
++                    std::fclose(file);
++                }
++
++                // TiltedConnect Client.hpp at the exact STR 1.8.0 submodule commit:
++                // virtual ~Client(); OnConsume; OnConnected; OnDisconnected; OnUpdate.
++                std::uintptr_t onConsume = 0;
++                if (!ReadProcessValue(
++                        *vftable + sizeof(std::uintptr_t),
++                        onConsume) ||
++                    !IsExecutableAddress(onConsume, module))
++                {
++                    Log("receive resolver: TransportService::OnConsume vftable entry is not executable");
++                    return false;
+                 }
+-                std::fclose(file);
+-            }
+ 
+-            // TiltedConnect Client.hpp at the exact STR 1.8.0 submodule commit:
+-            // virtual ~Client(); OnConsume; OnConnected; OnDisconnected; OnUpdate.
+-            std::uintptr_t onConsume = 0;
+-            if (!ReadProcessValue(
+-                    *vftable + sizeof(std::uintptr_t),
+-                    onConsume) ||
+-                !IsExecutableAddress(onConsume, module))
++                g_onConsumeAddress = onConsume;
++                LogAddress("TransportService::OnConsume = ", g_onConsumeAddress);
++                return true;
++            }
++            catch (...)
+             {
+-                Log("receive resolver: TransportService::OnConsume vftable entry is not executable");
++                Log("receive resolver: ran out of memory while resolving TransportService::OnConsume");
+                 return false;
+             }
+-
+-            g_onConsumeAddress = onConsume;
+-            LogAddress("TransportService::OnConsume = ", g_onConsumeAddress);
+-            return true;
+         }
+ 
+         bool PatchByte(std::uintptr_t address, std::uint8_t value) noexcept
+diff --git a/src/STRPMRuntimeLoadRedirect.h b/src/STRPMRuntimeLoadRedirect.h
+index d8c5ab1..15e704c 100644
+--- a/src/STRPMRuntimeLoadRedirect.h
++++ b/src/STRPMRuntimeLoadRedirect.h
+@@ -31,14 +31,23 @@ namespace STRPMRuntimeLoad
+                 static_cast<DWORD>(std::size(brokerPath)));
+ 
+             if (length > 0 && length < std::size(brokerPath)) {
+-                std::wstring adjacentPath(brokerPath, length);
+-                const auto separator = adjacentPath.find_last_of(L"\\/");
+-                if (separator != std::wstring::npos) {
+-                    adjacentPath.resize(separator + 1);
+-                    adjacentPath += modulePath;
+-                    if (auto module = ::LoadLibraryW(adjacentPath.c_str()); module != nullptr) {
+-                        return module;
++                // This function stands in for LoadLibraryW through the macro at the
++                // bottom of this file, so a caller reads it as a Win32 loader and
++                // cannot handle a throw. The two string operations below are the
++                // only allocating steps here, and falling through to the plain
++                // lookup is what the code already does when the broker directory
++                // cannot be built at all.
++                try {
++                    std::wstring adjacentPath(brokerPath, length);
++                    const auto separator = adjacentPath.find_last_of(L"\\/");
++                    if (separator != std::wstring::npos) {
++                        adjacentPath.resize(separator + 1);
++                        adjacentPath += modulePath;
++                        if (auto module = ::LoadLibraryW(adjacentPath.c_str()); module != nullptr) {
++                            return module;
++                        }
+                     }
++                } catch (...) {
+                 }
+             }
+         }

@@ -9,6 +9,53 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:STRPM 桥的接收解析器写着 noexcept,而它调用的四个查找函数全都在建 vector —— 判据是「noexcept 的检查要顺着调用链走」
+
+**现象**:没有任何现象。`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp:431`(pin 1221 行)的
+`bool ResolveOnConsumeAddress() noexcept` 由 `:1143 bool Start(STRPM::ReceiveCallback, void*) noexcept`(pin;工作树 `:1181`)调用,
+而 `Start` 由 `plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridge.cpp:991`(在 `:946 BootstrapLoop` 内)调用 ——
+`BootstrapLoop` 每 750 ms 重试一次(`:36 kBootstrapRetryDelay`),**没有上限也没有退避**。
+
+**根因**:`ResolveOnConsumeAddress` 体内一行分配都没有,但它的调用链上每一步都在建容器:
+`EnumerateRuntimeMemory()`(`:240`,非 noexcept,`:242 std::vector<MemorySpan> result` + `:264 result.push_back`)、
+`FindTransportTypeDescriptor()`(`:311`,非 noexcept,转调 `FindBytes` + `:318 std::sort` + `:319 erase(unique)`)、
+`FindCompleteObjectLocator()`(`:325`,非 noexcept,`:331 std::vector<std::uintptr_t> matches` + `:362 push_back`)、
+`FindTransportVftable()`(`:374`,非 noexcept,同形);而 `FindBytes()`(`:274`)每扫 1 MiB 还额外建一个
+`std::vector<std::uint8_t> snapshot`(`:295`)。五个被调者**没有一个**写着 `noexcept`,也没有一个有 try/catch。
+分配失败逃出 `ResolveOnConsumeAddress` 的 `noexcept` 边界就是 `std::terminate`,**没有崩溃转储**(`docs/PITFALLS.md` §45)。
+
+**修法**:不动 `noexcept` 本身(`Start` 的返回值就是「解析成功了没有」,失败是它的正常语义),
+把 `ResolveOnConsumeAddress` 的整个函数体包进 `try { … } catch (...) { Log("receive resolver: ran out of memory while resolving TransportService::OnConsume"); return false; }`。
+日志走已有的 `Log(...)`(`:126`,只 `fopen_s`/`fprintf`/`fclose`,不分配);**不重试** ——
+`BootstrapLoop` 本来就会在 750 ms 后重来一次,这里再退避只是把同一段分配走两遍。
+同一补丁的第二处:`plugins/STRPluginMessagingAPI/src/STRPMRuntimeLoadRedirect.h:15` 的
+`inline HMODULE LoadLibraryAdjacentToBroker(LPCWSTR) noexcept` 在 `:34`/`:37`/`:38` 建 `std::wstring` 并 `resize`/`+=`;
+它经该文件末尾的 `:55 #define LoadLibraryW STRPMRuntimeLoad::LoadLibraryAdjacentToBroker` 冒充 Win32 加载器
+(唯一调用方 `LoadStrBridgeModule` 在 `plugins/STRPluginMessagingAPI/src/STRPluginMessagingAPIRuntime.cpp:854`,而该文件**全文件零 noexcept、零 try/catch**),
+所以把这三步分配包进 `try { … } catch (...) {}`,失败时落到函数本来就有的兜底 `return ::LoadLibraryW(modulePath);`(`:46`)。
+
+**同族先例(判据载重)**:`SnapshotProcessMemory()`(`:165`)在同一份文件里早就写着这个形状 ——
+`:174-182 try { snapshot.resize(size); } catch (...) { snapshot.clear(); return false; }`;
+`STRPMChatUiSuppress.h:113-143`、`STRPMChatUiSuppressV3.h:221-228`/`:254-262` 是另外三处。
+判据不是「要不要用异常」,而是「**不让异常穿过一个 `noexcept` 边界**」(`CODE_GUIDELINES.md:47` 的「Don't use exceptions」约束的是控制流,不是这个)。
+
+**交付**:`Code/plugins/patches/STRPluginMessagingAPI/0005-keep-an-allocation-failure-out-of-the-receive-resolver-and-the-load-path.patch`
+(8360 B / 174 行,两个文件:`src/STRPluginMessagingBridgeReceive.cpp` 的 `@@ -428,69 +428,84 @@`、`src/STRPMRuntimeLoadRedirect.h` 的 `@@ -31,14 +31,23 @@`)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+
+- 三重校验实跑(cwd = `plugins/STRPluginMessagingAPI`):`git apply --check --cached` 退 **0**(能打到 pin)、
+  前向 `git apply --check` 退 **0**(未应用时干净)、应用后 `git apply --check --reverse` 退 **0**(与工作区一致);
+  再次前向 `--check` 退 **1** 并报 `error: patch failed: src/STRPluginMessagingBridgeReceive.cpp:428`(已应用,符合预期)。
+- 打到 pristine 索引后 `git show :<path>` 的结果与手写的新文本**逐字节相等**(两个文件都比对过),随后 `git reset -q` 复原。
+- 累积校验:`0001`…`0005` 依次 `git apply --cached` 全部退 **0**,`git diff --stat`(工作区 vs 累积索引)**无输出**,
+  `git diff --cached --stat` = 11 files changed, 300 insertions(+), 91 deletions(-)。
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **30** patch(es) apply to their pinned commits;
+  `… check` → `PATCH CHECK OK`。
+- **本机不编译**(`docs/PITFALLS.md` §0/§1),所以「这条链会不会真的耗尽内存」不可判定;判据不是「会不会发生」,
+  而是「发生之后进程还剩不剩得下一条记录」—— 修复前是 `std::terminate` 且无转储,修复后是一行日志加一次「尚未解析」的重试。
+
 ### 修复:插件层有一个线程入口声明了 noexcept,而它调用的每一步都在分配 —— 判据是「noexcept 是一条承诺,不是装饰」
 
 **现象**:没有任何现象。`plugins/STRPluginMessagingAPI/src/STRPMChatUiSuppressBootstrap.h:55`(pin 120 行)的
