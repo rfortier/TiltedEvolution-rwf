@@ -12632,3 +12632,180 @@ python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
 > 第三条:**同族的先例既是判据也是修法模板,但要看清先例包的是「步骤」还是「函数」。**
 > 这个目录里四处 try/catch 都只包一个 `resize`,因为它们各自只有一个分配点;
 > 这里四个被调者、至少四个容器构造点,所以包函数体,而拒绝的语义与步骤级完全相同 —— 都只是 `return false`。
+## 94. 2026-10-20 场次:OStimNG 的 Scene API 七个入口都写着 noexcept,而每个函数体都在分配、指针参数又从不判空 —— 判据是「声明在别人手里的 noexcept 撤不掉,只能自己接住」
+> **锚点**:`Code/plugins/patches/OStimNG/0003-keep-an-allocation-failure-out-of-the-scene-api-entries.patch`
+> (11507 B / 225 行,一个文件 `skse/src/ModAPI/OstimNG-API-Main.cpp`、一个 hunk `@@ -6,106 +6,149 @@`)。
+> §92 和 §93 是同一个判据的前两次落地,那两次的 `noexcept` 都写在本仓(或本插件)自己的函数上,撤掉只是本地决定;
+> 这一节的 `noexcept` 写在**一份公共头里的虚函数声明**上,而消费方持有一份逐字副本 —— 承诺不在自己手里,修法就只剩「自己接住」。
+
+### 94.1 缺陷
+
+`plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Main.cpp`(pin 132 行)里七个入口逐个写着 `noexcept`,其中六个的整个函数体都在分配。
+第一个逐字:
+
+```cpp
+        APIResult SceneInterface::StartScene(const char* pluginName, RE::TESObjectREFR* furniture,
+                                             const char* startingAnimation, Actor* actors[256],
+                                             uint32_t* threadID) noexcept {
+            std::vector<Actor*> actorList; 
+            for (int i = 0; i < 256; i++)
+            {
+                if (!actors[i]) break; 
+                actorList.emplace_back(actors[i]); 
+            }
+
+            if (actorList.size() < 1) return Result::Invalid; 
+```
+
+`noexcept` 不是写在这里的 —— 它写在 `plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Scene.h:30-46` 的虚函数声明上:
+
+```cpp
+    class ISceneInterface
+    {
+    public:
+        [[nodiscard]] virtual APIResult StartScene(const char* pluginName, RE::TESObjectREFR* furniture, const char* startingAnimation, Actor* actors[256], uint32_t* threadID) noexcept = 0;
+```
+
+而消费方 `plugins/OStimTogether/src/OStimAPI/ModSceneControl.h:19` 持有一份逐字副本(`:22` 注释逐字「Exact OStim Scene ModAPI V1 vtable prefix through StopScene. No virtual destructor.」),
+`:24-29`/`:31`/`:39`/`:48`/`:58-60` 是同一批 `noexcept = 0;` ⇒ **这一侧的 `noexcept` 撤不掉**。
+
+六个入口的分配点:
+
+| 入口(pin 行号) | 分配在哪 | 被调者声明 |
+| --- | --- | --- |
+| `StartScene`(`:9`) | `std::vector<Actor*> actorList;`(`:12`)、`actorList.emplace_back`(`:16`)、`convertVector`(`:22`)、`params.startingNodes.push_back`(`:25`)、`startThread`(`:29`)、`SKSE::log::info`(`:32`) | 全非 noexcept |
+| `StartCoupleScene`(`:35`) | `convertVector({ dom, sub})`(`:41`)、`getNodeById`(`:42`)、`push_back`(`:44`)、`startThread`(`:48`) | 全非 noexcept |
+| `StartThreesomeScene`(`:54`) | `convertVector`(`:60`)、`getNodeById`(`:61`)、`push_back`(`:63`)、`startThread`(`:67`) | 全非 noexcept |
+| `StartFoursomeScene`(`:73`) | `convertVector`(`:79`)、`getNodeById`(`:80`)、`push_back`(`:82`)、`startThread`(`:86`) | 全非 noexcept |
+| `StopScene`(`:92`) | `thread->stopFaded()`(`:96`) → `Thread.cpp:694 std::thread fadeThread = std::thread([&] { … });` | 非 noexcept |
+| `SetAutoMode`(`:99`) | `thread->startAutoMode()`(`:103`) → `ThreadAutoControl.cpp:162 std::string action = …;`、`:163 getRandomNode(...)` | 非 noexcept |
+| `TryGetAutoMode`(`:106`) | **无** —— `ThreadManager::GetThread()`(`Core/ThreadManager.cpp:108`)只取 `std::shared_lock`,`Thread::isInAutoMode()`(`Core/Thread.h:163`)inline 返回 `bool` | 非 noexcept,但体内零分配 |
+
+被调者的分配点逐条:
+
+```cpp
+    std::vector<GameActor> GameActor::convertVector(std::vector<RE::Actor*> actors) {   // GameAPI/GameActor.cpp:10,形参按值
+        std::vector<GameActor> ret;                                                     // :11
+        for (RE::Actor* actor : actors) ret.push_back(actor);                            // :13
+```
+
+```cpp
+    int startThread(ThreadStartParams& params) {                                        // Core/ThreadStarter/ThreadStarter.cpp:13
+        std::vector<GameAPI::GameActor> actorSet;                                        // :20
+        GameAPI::Game::notification("actor " + actor.getName() + " is not eligible for OStim");  // :24(字符串拼接)
+        std::vector<Trait::ActorCondition> conditions = Trait::ActorCondition::create(params.actors);  // :42
+```
+
+`ThreadStartParams` 在 `plugins/OStimNG/skse/src/Core/ThreadManager.h:17 int startThread(ThreadStartParams params);` 与 `:50 int startThreadNoLock(ThreadStartParams params);` 都是**按值** ⇒ 一次 `startThread` 还要多拷一整包。
+
+同一批入口的第二个缺陷:**指针参数从不判空**。`StartScene` 的 `:15 if (!actors[i]) break;` 在 `actors` 本身为 null 时直接解引用 null;
+`*threadID = Threading::startThread(params);`(`:29`/`:48`/`:67`/`:86`)与 `*autoMode = thread->isInAutoMode();`(`:110`)同理;
+`startingAnimation` 更绕一层:`Graph::GraphTable::getNodeById(std::string id)`(`plugins/OStimNG/skse/src/Graph/GraphTable/GraphTableNodes.cpp:144`)**按值**吃 `std::string`,传 null 就是从 null 构造 `std::string`(UB)。
+
+### 94.2 判据
+
+**`noexcept` 写在声明上还是定义上,决定了修法能不能从这一侧做。**
+§92 的 `noexcept` 在一个 handler 上,去掉它 terminate 就消失,所以那一节去掉;§93 的 `noexcept` 在一个内部函数上,去掉只会把 terminate 挪给调用方,所以那一节保留、加 catch;
+这一节的 `noexcept` 在**一份本仓不拥有的公共头的虚函数声明**上,消费方 `ModSceneControl.h` 还持有一份逐字副本 ——
+去掉它会让定义与声明的异常规格不一致(定义写 `noexcept`、声明不写,或反过来,都是 ODR 层面的不一致),
+而**保留声明、任由异常逃出去**,terminate 就落在调用方 `plugins/OStimTogether/src/CoopSessionManager.cpp:655` 那一帧上(该文件 1275 行的四处 try/catch 在 `:85-87`/`:99-101`/`:877-919`/`:990-1009`,与 `:607`/`:693` 两个入口都不相干)。
+⇒ 承诺撤不掉,那就**自己接住**。
+
+**第二个判据:同族里谁判了指针、谁没判,是最快的一把尺子。**
+兄弟 API `plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Thread.cpp`(685 行,39 个 `noexcept` 函数)每一个指针参数都先判:
+`:297 if (!outData) return;`、`:374 if (!outData) return false;`、`:394 if (!data) return APIResult::Invalid;`、`:426 if (!query || !buffer || bufferSize == 0) return 0;`、`:567 if (!actorFormIDs || actorCount == 0) return false;`。
+Scene 侧是这唯一一处两者都缺的。
+
+### 94.3 可达性
+
+- 唯一调用点 `plugins/OStimTogether/src/CoopSessionManager.cpp:655 const auto result = _sceneControl->StartScene(kPluginName, furniture, snapshot.nodeID.c_str(), actors.data(), &newThreadID);`,
+  在 `:611 void CoopSessionManager::StartApprovedOwnerSession(std::uint64_t sessionID)`(非 noexcept,体内无 try)内;
+  `:631 std::array<RE::Actor*, 256> actors{};`、`:654 std::uint32_t newThreadID = 0;` ⇒ 三个指针参数都非 null,但 `snapshot.nodeID` 可能为空串(空串**不是** UB,只是查不到节点)。
+  重试路径 `:687-697 void CoopSessionManager::RetryStartApprovedOwnerSession(std::uint64_t)` 用 `std::thread([this, sessionID]() { sleep_for(kRestartRetryDelay); … tasks->AddTask([this, sessionID]() { StartApprovedOwnerSession(sessionID); }); }).detach();`
+  ⇒ 失败会被重试,与 §93 的 750 ms 循环同形。
+- `StopScene` 三个调用点 `plugins/OStimTogether/src/CoopSessionManager.cpp:456`、`:927`、`plugins/OStimTogether/src/ProxyOnlyThreadCleanup.cpp:160`;`plugins/OStimTogether/src/OStimBridge.cpp:2863 StopScene(`;
+  **三个 `StartXScene` 与 `SetAutoMode`/`TryGetAutoMode` 全仓零调用点** —— 它们是给别的插件用的公开 ABI,所以这一节修的是「公开入口自己该守住的东西」,不是「本仓某条路径必然触发」。
+- 接口获取:`plugins/OStimTogether/src/CoopSessionManager.cpp:154 reinterpret_cast<void*>(GetProcAddress(module, "RequestPluginAPI_Scene"))`、`OStimBridge.cpp:1185`、`ProxyOnlyThreadCleanup.cpp:36`;
+  持有者 `CoopSessionManager.h:202 OStimModAPI::Scene::ISceneInterface* _sceneControl{ nullptr };`、`OStimBridge.h:347`、`ProxyOnlyThreadCleanup.h:29`。
+- 编译闭包:`plugins/OStimNG/skse/CMakeLists.txt:15 include(cmake/lib/autoCollectSources.cmake)`、`:18 add_src_folder(src)`、`:71-83 file(GLOB_RECURSE sources …)`、`:96 SOURCES ${headers} ${sources}`,
+  `plugins/OStimNG/skse/cmake/lib/autoCollectSources.cmake:1-14 add_src_folder(path)` 用 `file(GLOB_RECURSE src_files "${path}/*.cpp")` ⇒ `ModAPI/OstimNG-API-Main.cpp` 确实被编译;
+  但 OStimNG 是 GLOB 源列表,`plugin_patches.py:191-211 uncompiled_patch_targets` 对它返回 `[]`(跳过闭包检查)⇒ 这一节的闭包结论只能靠读 CMake 得到,门禁不替我们看。
+- 异常开关:OStimNG 全部 7 个 CMakeLists/.cmake 文件里 `EHsc`/`fno-exceptions`/`_HAS_EXCEPTIONS`/`target_compile_options`/`CMAKE_CXX_FLAGS` 命中数 **0** ⇒ 异常没被关掉,`catch (...)` 可用;
+  本仓的 `CODE_GUIDELINES.md:47`「Don't use exceptions」约束的是控制流,不是「不让异常穿过一个 `noexcept` 边界」。
+- 同族先例:`plugins/OStimNG/skse/src/Util/VectorUtil.cpp:11`/`:22` 是 OStimNG 自己的 `try { … } catch (const std::exception& ex) {}`;全目录 `plugins/OStimNG/skse/src` 普查 try=3 catch=2;
+  本仓另一侧四处先例见 §93.3。
+
+### 94.4 修法
+
+```cpp
+         APIResult SceneInterface::StartScene(const char* pluginName, RE::TESObjectREFR* furniture,
+                                              const char* startingAnimation, Actor* actors[256],
+                                              uint32_t* threadID) noexcept {
++            if (!pluginName || !actors || !threadID) return Result::Invalid;
++            try {
+             std::vector<Actor*> actorList; 
+                 ...
++            }
++            catch (...) {
++                SKSE::log::error("Scene API: StartScene failed with an exception");
++                return Result::Failed;
++            }
+```
+
+```cpp
+-            Graph::Node* node = Graph::GraphTable::getNodeById(startingAnimation);
++            Graph::Node* node = startingAnimation ? Graph::GraphTable::getNodeById(startingAnimation) : nullptr;
+```
+
+```cpp
+            if (!thread) return Result::Invalid;
++            if (!thread || !autoMode) return Result::Invalid;   // TryGetAutoMode 只改这一行,不加 try
+```
+
+四条要点:
+
+1. **`noexcept` 一个都不动**。声明在本仓不拥有的头里、消费方还持逐字副本,单边撤销只会造成「声明与定义的异常规格不一致」;
+   而 `noexcept` 不进 vtable 布局,所以保留它对 ABI 是零成本,代价只是必须自己接住。
+2. **六个入口加 try、第七个不加**,理由是实读的:`TryGetAutoMode` 只取一次 `std::shared_lock` 再 inline 读一个 `bool`,体内零分配;
+   给零分配的函数套 try/catch 会让读者以为那里有分配点。
+3. **接住之后返回 `Result::Failed`,不重试**:调用方 `CoopSessionManager.cpp:687-697` 本来就有 `RetryStartApprovedOwnerSession`,
+   这里再退避只是把同一段分配走两遍(与 §93 第 4 条同一条理由)。
+4. **`startingAnimation` 不改 `getNodeById` 的签名**,只在四个调用点加三目守卫:改签名会动到 `GraphTable.h:47` 这一层公开接口,
+   而三目之后本来就落进已有的 `if (node)` 分支 —— 改的是「不制造 UB」,不是「换一个语义」。
+
+### 94.5 复核命令(照抄)
+
+```powershell
+# 三重校验(cwd = plugins/OStimNG)
+git apply --check --cached Code/plugins/patches/OStimNG/0003-keep-an-allocation-failure-out-of-the-scene-api-entries.patch  # 退 0
+git apply --check <同一个补丁>          # 退 0(尚未应用到工作区时)
+git apply <同一个补丁> && git apply --check --reverse <同一个补丁>   # 应用后退 0
+git apply --check <同一个补丁>          # 已应用时退 1:error: patch failed: skse/src/ModAPI/OstimNG-API-Main.cpp:6
+
+# 累积校验(三个补丁依次打到 pristine 索引上)
+foreach ($p in Get-ChildItem Code/plugins/patches/OStimNG/*.patch) { git apply --cached $p.FullName }   # 逐个退 0
+git diff --stat          # 无输出(工作区与累积索引一致)
+git diff --cached --stat # 10 files changed, 339 insertions(+), 121 deletions(-)
+git reset -q
+
+# 门禁
+python Code\plugins\tools\plugin_patches.py verify    # PATCH VERIFY OK / 31 patch(es)
+python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
+```
+
+**验证**:`git apply --check --cached` 退 **0**(能打到 pin);前向 `git apply --check` 退 **0**(未应用时干净);
+`git apply` 退 **0**,`git apply --check --reverse` 退 **0**(与工作区一致);再次前向 `--check` 退 **1** 并报 `error: patch failed: skse/src/ModAPI/OstimNG-API-Main.cpp:6`;
+打到 pristine 索引后 `git show :skse/src/ModAPI/OstimNG-API-Main.cpp` 与手写新文本**逐字节相等**(`git hash-object pin/a.cpp` = `git rev-parse :<path>` = `75bc52c4ef4fbabc8d4bffdd2cf32d65c938a76b`);
+累积校验 `0001`/`0002`/`0003` 依次退 **0**,`git diff --stat` 无输出,`git diff --cached --stat` = **10 files changed, 339 insertions(+), 121 deletions(-)**;
+`OstimNG-API-Main.cpp` pin 132 行 → 应用后 **175 行**。**本机不编译**(`docs/PITFALLS.md` §0/§1,`plugins/OStimNG/skse/AGENTS.md` 逐字「do not attempt to build c++ or cmake」),
+所以「这条路径会不会真的耗尽内存」不可判定;判据不是「会不会发生」,而是「发生之后 terminate 落在哪一层、还能不能留下一条记录」。
+
+> **教训**:第一条:**`noexcept` 写在谁手里,决定了修法能不能从这一侧做。**
+> §92 的写在 handler 上 ⇒ 去掉;§93 的写在内部函数上 ⇒ 保留 + catch;这一节的写在一份公共头的虚声明上、消费方还持逐字副本 ⇒ 只能自己接住。
+> 同一条判据(「检查要顺着调用链走」)在三次落地里给出了三种修法,差别全在「承诺属于谁」。
+> 第二条:**同族里谁判了指针、谁没判,比任何风格争论都快。**
+> `OstimNG-API-Thread.cpp` 39 个 `noexcept` 函数每一个指针参数都先判,而 Scene 侧七个入口一个都不判 —— 找到这个例外之后,「这是失误」就不再需要论证。
+> 第三条:**判空要看参数被拿去做了什么,不是看它是不是指针。**
+> `startingAnimation` 的危险不在于「可能为 null」,而在于 `getNodeById` **按值**吃 `std::string` —— 从 null 构造 `std::string` 是 UB;
+> 所以修法落在调用点(三目),而不是去改一个公开接口的签名。
+

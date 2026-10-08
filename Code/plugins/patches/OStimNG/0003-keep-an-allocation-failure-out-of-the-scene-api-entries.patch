@@ -1,0 +1,224 @@
+diff --git a/skse/src/ModAPI/OstimNG-API-Main.cpp b/skse/src/ModAPI/OstimNG-API-Main.cpp
+index 75bc52c..f7f4067 100644
+--- a/skse/src/ModAPI/OstimNG-API-Main.cpp
++++ b/skse/src/ModAPI/OstimNG-API-Main.cpp
+@@ -6,106 +6,149 @@ namespace OstimNG_API
+     namespace Scene
+     {
+ 
++        // The ISceneInterface methods are declared noexcept in OstimNG-API-Scene.h, and
++        // OStimTogether keeps a verbatim copy of that vtable in ModSceneControl.h, so the
++        // promise cannot be withdrawn from this side alone. Every allocating body below -
++        // a std::vector of actors, a std::string built from the caller's node id, the
++        // thread the scene starter creates - therefore catches its own allocation
++        // failure: an exception escaping a noexcept frame terminates the process with no
++        // crash dump, while returning Failed lets the caller report the scene as failed.
+         APIResult SceneInterface::StartScene(const char* pluginName, RE::TESObjectREFR* furniture,
+                                              const char* startingAnimation, Actor* actors[256],
+                                              uint32_t* threadID) noexcept {
+-            std::vector<Actor*> actorList; 
+-            for (int i = 0; i < 256; i++)
+-            {
+-                if (!actors[i]) break; 
+-                actorList.emplace_back(actors[i]); 
++            if (!pluginName || !actors || !threadID) return Result::Invalid;
++            try {
++                std::vector<Actor*> actorList;
++                for (int i = 0; i < 256; i++)
++                {
++                    if (!actors[i]) break;
++                    actorList.emplace_back(actors[i]);
++                }
++
++                if (actorList.size() < 1) return Result::Invalid;
++                 Threading::ThreadStartParams params;
++
++                 params.actors = GameAPI::GameActor::convertVector(actorList);
++                 Graph::Node* node = startingAnimation ? Graph::GraphTable::getNodeById(startingAnimation) : nullptr;
++                 if (node) {
++                    params.startingNodes.push_back({node->animationLengthMs, node});
++                 }
++                 params.furniture = furniture;
++
++                  *threadID = Threading::startThread(params);
++
++                 if (*threadID == -1) return APIResult::Failed;
++                 SKSE::log::info("Scene API: Scene started by plugin {}", pluginName);
++                 return APIResult::OK;
++            }
++            catch (...) {
++                SKSE::log::error("Scene API: StartScene failed with an exception");
++                return Result::Failed;
+             }
+-
+-            if (actorList.size() < 1) return Result::Invalid; 
+-             Threading::ThreadStartParams params;
+-
+-             params.actors = GameAPI::GameActor::convertVector(actorList);
+-             Graph::Node* node = Graph::GraphTable::getNodeById(startingAnimation);
+-             if (node) {
+-                params.startingNodes.push_back({node->animationLengthMs, node});
+-             }
+-             params.furniture = furniture;
+-             
+-              *threadID = Threading::startThread(params); 
+-
+-             if (*threadID == -1) return APIResult::Failed; 
+-             SKSE::log::info("Scene API: Scene started by plugin {}", pluginName);
+-             return APIResult::OK;            
+         }
+         APIResult SceneInterface::StartCoupleScene(const char* pluginName, TESObjectREFR* furniture, const char* startingAnimation, Actor* dom,
+                                                    Actor* sub, uint32_t* threadID) noexcept {
++            if (!pluginName || !dom || !sub || !threadID) return Result::Invalid;
++            try {
++
++                 Threading::ThreadStartParams params;
++
++                 params.actors = GameAPI::GameActor::convertVector({ dom, sub});
++                 Graph::Node* node = startingAnimation ? Graph::GraphTable::getNodeById(startingAnimation) : nullptr;
++                 if (node) {
++                    params.startingNodes.push_back({node->animationLengthMs, node});
++                 }
++                 params.furniture = furniture;
++
++                  *threadID = Threading::startThread(params);
+ 
+-            if (!dom || !sub) return APIResult::Invalid;  
+-             Threading::ThreadStartParams params;
+-
+-             params.actors = GameAPI::GameActor::convertVector({ dom, sub});
+-             Graph::Node* node = Graph::GraphTable::getNodeById(startingAnimation);
+-             if (node) {
+-                params.startingNodes.push_back({node->animationLengthMs, node});
+-             }
+-             params.furniture = furniture;
+-             
+-              *threadID = Threading::startThread(params); 
+-
+-             if (*threadID == -1) return APIResult::Failed; 
+-             SKSE::log::info("Scene API: Couple Scene started by plugin {}", pluginName);
+-             return APIResult::OK;            
++                 if (*threadID == -1) return APIResult::Failed;
++                 SKSE::log::info("Scene API: Couple Scene started by plugin {}", pluginName);
++                 return APIResult::OK;
++            }
++            catch (...) {
++                SKSE::log::error("Scene API: StartCoupleScene failed with an exception");
++                return Result::Failed;
++            }
+         }
+         APIResult SceneInterface::StartThreesomeScene(const char* pluginName, TESObjectREFR* furniture, const char* startingAnimation,
+                                                       Actor* firstActor, Actor* secondActor, Actor* thirdActor,
+                                                       uint32_t* threadID) noexcept {
+-
+-            if (!firstActor || !secondActor || !thirdActor) return APIResult::Invalid;  
+-             Threading::ThreadStartParams params;
+-             params.actors = GameAPI::GameActor::convertVector({ firstActor, secondActor, thirdActor});
+-             Graph::Node* node = Graph::GraphTable::getNodeById(startingAnimation);
+-             if (node) {
+-                params.startingNodes.push_back({node->animationLengthMs, node});
+-             }
+-             params.furniture = furniture;
+-             
+-              *threadID = Threading::startThread(params); 
+-
+-             if (*threadID == -1) return APIResult::Failed; 
+-             SKSE::log::info("Scene API: Threesome Scene started by plugin {}", pluginName);
+-             return APIResult::OK;      
++            if (!pluginName || !firstActor || !secondActor || !thirdActor || !threadID) return Result::Invalid;
++            try {
++
++                 Threading::ThreadStartParams params;
++                 params.actors = GameAPI::GameActor::convertVector({ firstActor, secondActor, thirdActor});
++                 Graph::Node* node = startingAnimation ? Graph::GraphTable::getNodeById(startingAnimation) : nullptr;
++                 if (node) {
++                    params.startingNodes.push_back({node->animationLengthMs, node});
++                 }
++                 params.furniture = furniture;
++
++                  *threadID = Threading::startThread(params);
++
++                 if (*threadID == -1) return APIResult::Failed;
++                 SKSE::log::info("Scene API: Threesome Scene started by plugin {}", pluginName);
++                 return APIResult::OK;
++            }
++            catch (...) {
++                SKSE::log::error("Scene API: StartThreesomeScene failed with an exception");
++                return Result::Failed;
++            }
+         }
+         APIResult SceneInterface::StartFoursomeScene(const char* pluginName, TESObjectREFR* furniture, const char* startingAnimation,
+                                                      Actor* firstActor, Actor* secondActor, Actor* thirdActor,
+                                                      Actor* fourthActor, uint32_t* threadID) noexcept {
+-                                                        
+-             if (!firstActor || !secondActor || !thirdActor || !fourthActor) return APIResult::Invalid;
+-             Threading::ThreadStartParams params;
+-             params.actors = GameAPI::GameActor::convertVector({firstActor, secondActor, thirdActor, fourthActor});
+-             Graph::Node* node = Graph::GraphTable::getNodeById(startingAnimation);
+-             if (node) {
+-                params.startingNodes.push_back({node->animationLengthMs, node});
+-             }
+-             params.furniture = furniture;
+-
+-             *threadID = Threading::startThread(params);
+-
+-             if (*threadID == -1) return APIResult::Failed;
+-             SKSE::log::info("Scene API: Foursome Scene started by plugin {}", pluginName);
+-             return APIResult::OK;
++            if (!pluginName || !firstActor || !secondActor || !thirdActor || !fourthActor || !threadID) return Result::Invalid;
++            try {
++                 Threading::ThreadStartParams params;
++                 params.actors = GameAPI::GameActor::convertVector({firstActor, secondActor, thirdActor, fourthActor});
++                 Graph::Node* node = startingAnimation ? Graph::GraphTable::getNodeById(startingAnimation) : nullptr;
++                 if (node) {
++                    params.startingNodes.push_back({node->animationLengthMs, node});
++                 }
++                 params.furniture = furniture;
++
++                 *threadID = Threading::startThread(params);
++
++                 if (*threadID == -1) return APIResult::Failed;
++                 SKSE::log::info("Scene API: Foursome Scene started by plugin {}", pluginName);
++                 return APIResult::OK;
++            }
++            catch (...) {
++                SKSE::log::error("Scene API: StartFoursomeScene failed with an exception");
++                return Result::Failed;
++            }
+         }
+         APIResult SceneInterface::StopScene(const char* pluginName, uint32_t threadID) noexcept {
+              Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+              if (!thread) return APIResult::Invalid;
+ 
+-             thread->stopFaded();
+-             return Result::OK;
++            try {
++                 thread->stopFaded();
++            }
++            catch (...) {
++                SKSE::log::error("Scene API: StopScene failed with an exception");
++                return Result::Failed;
+             }
++             return Result::OK;
++        }
+         APIResult SceneInterface::SetAutoMode(const char* pluginName, uint32_t threadID, bool autoMode) noexcept {
+              Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+              if (!thread) return Result::Invalid;
+ 
+-             autoMode ? thread->startAutoMode() : thread->stopAutoMode();
++            try {
++                 autoMode ? thread->startAutoMode() : thread->stopAutoMode();
++            }
++            catch (...) {
++                SKSE::log::error("Scene API: SetAutoMode failed with an exception");
++                return Result::Failed;
++            }
+              return Result::OK; 
+         }
+         APIResult SceneInterface::TryGetAutoMode(const char* pluginName, uint32_t threadID, bool* autoMode) noexcept {
+              Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+-            if (!thread) return Result::Invalid;
++            if (!thread || !autoMode) return Result::Invalid;
+ 
+             *autoMode = thread->isInAutoMode(); 
+ 

@@ -9,6 +9,52 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:OStimNG 的 Scene API 七个入口都写着 noexcept,而每个函数体都在分配、指针参数又从不判空 —— 判据是「声明在别人手里的 noexcept 撤不掉,只能自己接住」
+
+**现象**:没有任何现象。`plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Main.cpp`(pin 132 行)里七个入口逐个写着 `noexcept`,
+而这七个 `noexcept` 是写在 `plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Scene.h:30-46` 的**虚函数声明**上的 ——
+消费方 `plugins/OStimTogether/src/OStimAPI/ModSceneControl.h:19` 持有一份逐字副本(`:22` 注释逐字「Exact OStim Scene ModAPI V1 vtable prefix through StopScene.
+No virtual destructor.」,`:24-29`/`:31`/`:39`/`:48`/`:58-60` 是同一批 `noexcept = 0;`),所以这一侧的 `noexcept` **撤不掉**:
+单边去掉会让定义与声明的异常规格不一致,而保留声明、任由异常逃出去,terminate 就落在调用方 `plugins/OStimTogether/src/CoopSessionManager.cpp:655` 那一帧上。
+
+**根因**:七个入口里六个的整个函数体都在分配,而它们调用的每一层都不写 `noexcept`:
+`GameAPI::GameActor::convertVector()`(`plugins/OStimNG/skse/src/GameAPI/GameActor.cpp:10`,形参**按值** `std::vector<RE::Actor*>`,`:11 std::vector<GameActor> ret` + `:13 ret.push_back`)、
+`Threading::startThread()`(`plugins/OStimNG/skse/src/Core/ThreadStarter/ThreadStarter.cpp:13`,非 noexcept,`:20 std::vector<GameAPI::GameActor> actorSet` + `:24`/`:29`/`:34` 三处 `"actor " + actor.getName() + …` 字符串拼接 + `:37 push_back` + `:42 Trait::ActorCondition::create`)、
+`Thread::stopFaded()`(`plugins/OStimNG/skse/src/Core/Thread.cpp:687`,非 noexcept,`:694 std::thread fadeThread = std::thread([&] { … });` —— `std::thread` 构造失败会抛 `std::system_error`)、
+`Thread::startAutoMode()`(`plugins/OStimNG/skse/src/Core/Thread/ThreadAutoControl.cpp:119` → `progressAutoMode()` `:162 std::string action = … ? "malemasturbation" : "femalemasturbation";`、`:163 getRandomNode(...)` 按值吃 `std::vector<Trait::ActorCondition>` + `std::function`)。
+`ThreadStartParams` 在 `plugins/OStimNG/skse/src/Core/ThreadManager.h:17`/`:50` 都是**按值**传递,所以一次 `startThread` 还要多拷一整包。
+分配失败逃出这些 `noexcept` 边界就是 `std::terminate`,**没有崩溃转储**(`docs/PITFALLS.md` §45);调用链上没有任何 catch ——
+`CoopSessionManager.cpp`(1275 行)的四处 try/catch 在 `:85-87`/`:99-101`/`:877-919`/`:990-1009`,与 `:607`/`:693` 两个入口**都不相干**。
+
+**修法**:不动 `noexcept`(声明不在本仓,`noexcept` 也不进 vtable 布局,单边撤销只换来一个「声明与定义不一致」),
+给六个会分配的函数体各加一层 `try { … } catch (...) { SKSE::log::error("Scene API: <名字> failed with an exception"); return Result::Failed; }` ——
+**不重试**:调用方 `CoopSessionManager.cpp:687-697` 本来就有 `RetryStartApprovedOwnerSession`,这里再退避只是把同一段分配走两遍。
+第七个 `TryGetAutoMode` **不加 try**:`ThreadManager::GetThread()`(`plugins/OStimNG/skse/src/Core/ThreadManager.cpp:108`)只取一次 `std::shared_lock`,
+`Thread::isInAutoMode()`(`plugins/OStimNG/skse/src/Core/Thread.h:163`)是 inline 返回一个 `bool`,体内零分配。
+同一补丁还补上这批入口一直缺的判空:`StartScene` 加 `!pluginName || !actors || !threadID`(原代码 `:15` 直接读 `actors[i]`),
+三个 `StartXScene` 各加 `!pluginName || !threadID`(actor 指针原本就判了),`TryGetAutoMode` 的 `if (!thread)` 扩成 `if (!thread || !autoMode)`(原代码 `:110` 直接写 `*autoMode`)。
+`startingAnimation` 的修法不是改 `getNodeById` 的签名,而是在四个调用点写成 `startingAnimation ? Graph::GraphTable::getNodeById(startingAnimation) : nullptr;` ——
+`getNodeById`(`plugins/OStimNG/skse/src/Graph/GraphTable/GraphTableNodes.cpp:144`)按值吃 `std::string`,传 null 就是从 null 构造 `std::string`(UB),三目之后天然落进本来就有的 `if (node)` 分支。
+
+**同族先例(判据载重)**:同一批 API 的兄弟 `plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Thread.cpp`(685 行,39 个 `noexcept` 函数)**每一个指针参数都先判** ——
+`:297 if (!outData) return;`、`:374 if (!outData) return false;`、`:394 if (!data) return APIResult::Invalid;`、`:426 if (!query || !buffer || bufferSize == 0) return 0;`、`:567 if (!actorFormIDs || actorCount == 0) return false;`;
+Scene 侧是这唯一一处两者都缺的。异常接住的形状在本仓已出现多次:`Util/VectorUtil.cpp:11`/`:22`(OStimNG 自己的 `try { … } catch (const std::exception& ex) {}`)、
+`STRPluginMessagingBridgeReceive.cpp:174-182`、`STRPMChatUiSuppress.h:113-143`。判据不是「要不要用异常」,而是「**不让异常穿过一个 `noexcept` 边界**」。
+
+**交付**:`Code/plugins/patches/OStimNG/0003-keep-an-allocation-failure-out-of-the-scene-api-entries.patch`
+(11507 B / 225 行,一个文件 `skse/src/ModAPI/OstimNG-API-Main.cpp`、一个 hunk `@@ -6,106 +6,149 @@`;pin blob `75bc52c` → 新 blob `f7f4067`,132 行 → 175 行)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+
+- 三重校验实跑(cwd = `plugins/OStimNG`):`git apply --check --cached` 退 **0**(能打到 pin)、前向 `git apply --check` 退 **0**(未应用时干净)、
+  应用后 `git apply --check --reverse` 退 **0**(与工作区一致);再次前向 `--check` 退 **1** 并报 `error: patch failed: skse/src/ModAPI/OstimNG-API-Main.cpp:6`(已应用,符合预期)。
+- 打到 pristine 索引后 `git show :skse/src/ModAPI/OstimNG-API-Main.cpp` 与手写的新文本**逐字节相等**,随后 `git reset -q` 复原。
+- 累积校验:`0001`/`0002`/`0003` 依次 `git apply --cached` 全部退 **0**,`git diff --stat`(工作区 vs 累积索引)**无输出**,`git diff --cached --stat` = 10 files changed, 339 insertions(+), 121 deletions(-)。
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **31** patch(es) apply to their pinned commits;`… check` → `PATCH CHECK OK`。
+- **本机不编译**(`docs/PITFALLS.md` §0/§1,`plugins/OStimNG/skse/AGENTS.md` 亦逐字写着「do not attempt to build c++ or cmake」),所以「这条链会不会真的耗尽内存」不可判定;
+  判据不是「会不会发生」,而是「发生之后进程还剩不剩得下一条记录」—— 修复前是 `std::terminate` 且无转储,修复后是一行日志加一个 `Result::Failed`。
+
 ### 修复:STRPM 桥的接收解析器写着 noexcept,而它调用的四个查找函数全都在建 vector —— 判据是「noexcept 的检查要顺着调用链走」
 
 **现象**:没有任何现象。`plugins/STRPluginMessagingAPI/src/STRPluginMessagingBridgeReceive.cpp:431`(pin 1221 行)的
