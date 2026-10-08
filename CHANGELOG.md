@@ -9,6 +9,73 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:服务端的邀请过期清理遍历的是一个没有任何实体携带的组件,所以一次都没有执行过 —— 判据是「全树只有这一个 view 指向没有挂载点的组件」
+
+**现象**:没有任何现象。`Code/server/Services/PartyService.cpp:88`(修复前)逐字
+
+```cpp
+    auto view = m_world.view<PartyComponent>();
+    for (auto entity : view)
+    {
+        auto& partyComponent = view.get<PartyComponent>(entity);
+```
+
+这段代码的唯一作用是每 10 秒(`:86 m_nextInvitationExpire = cCurrentTick + 10000;`)把 `PartyComponent::Invitations` 里过期的邀请擦掉。
+
+**根因**:`PartyComponent` 在这棵树里**不是实体组件,而是 `Player` 的一个成员**。`Code/server/Game/Player.h:54` 逐字 `PartyComponent m_party;`。
+全树唯一曾经的挂载点是 `OnPlayerJoin` 里的 `m_world.emplace<PartyComponent>(acEvent.Entity);`,它在 `663a187e Refactor player` 里被删除 —— 同一个提交把 `PartyService.h` 的 `Vector<entt::entity> Members;` 改成 `Vector<Player*> Members;`、把 `BroadcastPlayerList(std::optional<entt::entity>)` 改成 `BroadcastPlayerList(Player*)`,把 `emplace<PartyComponent>` 换成 `Player` 行上的 `m_party` 成员,而 `:88` 这个 view 被漏掉了。
+`git log --oneline -S "view<PartyComponent>"` 只给出 `9e0c078f`,说明它从被写下的那天起就没改过。
+
+一个 view 遍历的是「携带该组件的实体」;没有实体携带它,循环体一次都不执行 ⇒ **邀请从来没有被擦除过一次**。
+
+**判据(同族对照,载重)**:判据不是「这段循环写错了」,而是「**全树只有这一个 view 指向没有挂载点的组件**」—— 对着 `Code/` 全树取差集,结果只有一条:
+
+| 事实 | 实测 |
+| --- | --- |
+| 全树 `emplace/emplace_or_replace/try_emplace/replace/insert_or_assign/emplace_back<PartyComponent>` | **0 处** |
+| 全树 `view<PartyComponent>` | **1 处**(`Code/server/Services/PartyService.cpp:88`) |
+| 被 view 的组件总数 | 22 个,只有 `PartyComponent` 落在差集里 |
+| 唯一读者 | 就是这个 view(`Invitations` 在客户端 `Code/client/Services/PartyService.h:30` 有一对同名的,是另一个成员) |
+| 同族正确写法 | `GetParty()` 在 `Code/server` 有 **29 处**读者:`GameServer.cpp:788/810/845`、`PartyService.cpp:47/52/64/116/138/163/204/212/249/260/284/285/332/333/391`、`QuestService.cpp:39/175/215/231`、`MapService.cpp:26/37`、`OverlayService.cpp:45/47/118`、`CharacterService.cpp:556`、`WeatherService.cpp:34` —— **全部走 `Player*`** |
+
+**可达性**:写入点是 `Code/server/Services/PartyService.cpp:303`(`OnPartyInvite` 里的 `inviteePartyComponent.Invitations[pInviter] = cExpiryTick;`),读取点是 `:330`(`OnPartyAcceptInvite` 里的 `if (selfPartyComponent.Invitations.count(pInviter) == 0) return;`)。
+上界由写者决定,不由传输决定:键是 `Player*`,一个队伍的玩家数 ≤ `uMaxPlayerCount`(默认 8),玩家断线时整个 `Player`(含 `m_party`)随 `PlayerManager::Remove` 销毁 ⇒ **这不是无界增长,是过期语义失效** —— 邀请在 `cExpiryTick = GetTick() + 60000` 之后仍然被服务端接受。
+客户端 `Code/client/Services/Generic/PartyService.cpp:66-74` 早因本地 `m_invitations` 过期而拒发,但服务端没有对应门禁。
+
+**修法**:改成遍历玩家管理器,与其余 29 处读者一致 —— `Code/server/Services/PartyService.cpp:88-110`(修复后)逐字
+
+```cpp
+    // The invitations are a member of Player, not a component of an entity. PartyComponent used
+    // to be attached with emplace<PartyComponent> in OnPlayerJoin; that call went away when the
+    // party moved onto the player row (Code/server/Game/Player.h:54) and the view was left
+    // behind. A view over a component no entity carries iterates nothing, so no invitation was
+    // ever expired: the entry a leader wrote in OnPartyInvite stayed for as long as the invitee
+    // stayed connected, and OnPartyAcceptInvite kept accepting an invitation the client had
+    // already dropped. Walking the player manager is what the other 29 readers of GetParty() do.
+    for (Player* pPlayer : m_world.GetPlayerManager())
+    {
+        auto& partyComponent = pPlayer->GetParty();
+        auto itor = std::begin(partyComponent.Invitations);
+        while (itor != std::end(partyComponent.Invitations))
+        {
+            if (itor->second < cCurrentTick)
+            {
+                itor = partyComponent.Invitations.erase(itor);
+            }
+            else
+            {
+                ++itor;
+            }
+        }
+    }
+```
+
+擦除循环体逐字照抄 pin,只把取容器的两行换掉。`GetPlayerManager()` 的 range-for 在本仓另有 **25 处**先例(`Code/server/GameServer.cpp:328/722/731/762/805/837/1049` 等),`PlayerManager::Iterator`(`Code/server/Game/PlayerManager.h:9-26`)**只前进不删除**,所以遍历中改 `Player` 的成员是安全的。
+
+**验证**:`git diff --stat` = `Code/server/Services/PartyService.cpp | 12 +++++++++---` / `1 file changed, 9 insertions(+), 3 deletions(-)`,唯一 hunk `@@ -85,10 +85,16 @@ void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept`。
+`Code/tests/xmake.lua` 的 target 是 `TPTests`、依赖 `SkyrimEncoding`,**不含 `SkyrimTogetherServer`**,所以服务端的改动在本仓测试里覆盖不到。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以判据是静态的:全树差集只剩这一条,而 `view` 的语义就是「携带该组件的实体集合」。
+
 ### 修复:STRPM 桥的映射函数写着 noexcept,而其中三个跨 DLL 调用会分配的导出、五个自己建容器,每个都只被 VEH 与工作线程调用 —— 判据是「noexcept 的边界画在哪一层,就要把 try 写在哪一层」
 
 **现象**:没有任何现象。`plugins/STRPluginMessagingAPI/src/STRPMProxyResolverBridge.h`(pin 1165 行)里八个函数连着写 `noexcept`,其中五个体内会分配:

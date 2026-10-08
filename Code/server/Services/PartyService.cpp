@@ -85,10 +85,16 @@ void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept
     // Only expire once every 10 seconds
     m_nextInvitationExpire = cCurrentTick + 10000;
 
-    auto view = m_world.view<PartyComponent>();
-    for (auto entity : view)
+    // The invitations are a member of Player, not a component of an entity. PartyComponent used
+    // to be attached with emplace<PartyComponent> in OnPlayerJoin; that call went away when the
+    // party moved onto the player row (Code/server/Game/Player.h:54) and the view was left
+    // behind. A view over a component no entity carries iterates nothing, so no invitation was
+    // ever expired: the entry a leader wrote in OnPartyInvite stayed for as long as the invitee
+    // stayed connected, and OnPartyAcceptInvite kept accepting an invitation the client had
+    // already dropped. Walking the player manager is what the other 29 readers of GetParty() do.
+    for (Player* pPlayer : m_world.GetPlayerManager())
     {
-        auto& partyComponent = view.get<PartyComponent>(entity);
+        auto& partyComponent = pPlayer->GetParty();
         auto itor = std::begin(partyComponent.Invitations);
         while (itor != std::end(partyComponent.Invitations))
         {

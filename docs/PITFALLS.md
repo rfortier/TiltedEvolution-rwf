@@ -13406,4 +13406,99 @@ python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
 > 桥侧写着 `noexcept`、API 侧的导出没写,签名不同不代表承诺相同;`GetProcAddress` 之后那一次调用就是边界。
 > 第三条:**删 `noexcept` 之前,先数清上一层的调用者里有几个也写了 `noexcept`。**
 > `CaptureLifecycleCall` 写了,两个 VEH 处理器和两个 Worker 没写 —— 删掉被调者的,终止点只会换个帧。
+## 100. 2026-10-21 场次:服务端的邀请过期清理遍历的是一个没有任何实体携带的组件 —— 判据是「全树只有这一个 view 指向没有挂载点的组件」
+
+> **锚点**:`Code/server/Services/PartyService.cpp:88-110`(9 insertions / 3 deletions,单 hunk `@@ -85,10 +85,16 @@ void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept`)。
+
+### 100.1 缺陷
+
+`PartyService::OnUpdate` 里那段循环的唯一作用是每 10 秒把过期的队伍邀请擦掉,而它遍历的是一个**没有任何实体携带**的组件:
+
+```cpp
+// Code/server/Services/PartyService.cpp:88(修复前)
+    auto view = m_world.view<PartyComponent>();
+    for (auto entity : view)
+    {
+        auto& partyComponent = view.get<PartyComponent>(entity);
+        auto itor = std::begin(partyComponent.Invitations);
+        while (itor != std::end(partyComponent.Invitations))
+```
+
+`view<T>()` 遍历的是「携带 `T` 的实体集合」。没有实体携带 `T`,循环体一次都不执行 ⇒ **邀请从来没有被擦除过一次**。
+
+### 100.2 判据
+
+判据不是「这段循环写得对不对」,而是「**全树还有没有第二个 view 指向没有挂载点的组件**」。对着 `Code/` 全树取差集(见 100.5 的脚本),结果只有这一条:
+
+| 事实 | 实测 |
+| --- | --- |
+| 全树 `emplace/emplace_or_replace/try_emplace/replace/insert_or_assign/emplace_back<PartyComponent>` | **0 处** |
+| 全树 `view<PartyComponent>` | **1 处** |
+| 被 `view` 的组件总数 | 22 个,差集里只有 `PartyComponent` |
+| 组件现在的宿主 | `Code/server/Game/Player.h:54 PartyComponent m_party;` —— **`Player` 的成员,不是实体组件** |
+| `Invitations` 的读者 | 只有这个 view;客户端 `Code/client/Services/PartyService.h:30` 有一对同名的,是另一个成员 |
+
+同族正确写法有 **29 处**:`GetParty()` 的读者 `GameServer.cpp:788/810/845`、`PartyService.cpp:47/52/64/116/138/163/204/212/249/260/284/285/332/333/391`、`QuestService.cpp:39/175/215/231`、`MapService.cpp:26/37`、`OverlayService.cpp:45/47/118`、`CharacterService.cpp:556`、`WeatherService.cpp:34` —— **全部走 `Player*`**。
+
+### 100.3 可达性
+
+写入点是 `Code/server/Services/PartyService.cpp:303`(`OnPartyInvite` 里 `inviteePartyComponent.Invitations[pInviter] = cExpiryTick;`),读取点是 `:330`(`OnPartyAcceptInvite` 里 `if (selfPartyComponent.Invitations.count(pInviter) == 0) return;`)。
+上界由写者决定,不由传输决定:键是 `Player*`,一个队伍的玩家数 ≤ `uMaxPlayerCount`(默认 8),玩家断线时整个 `Player`(含 `m_party`)随 `PlayerManager::Remove` 销毁 ⇒ **这不是无界增长,是过期语义失效**:邀请在 `cExpiryTick = GetTick() + 60000` 之后仍然被服务端接受。
+客户端 `Code/client/Services/Generic/PartyService.cpp:66-74` 早因本地 `m_invitations` 过期而拒发,但服务端没有对应门禁。
+
+### 100.4 修法
+
+改成遍历玩家管理器,与其余 29 处读者一致(擦除循环体逐字照抄 pin,只把取容器的两行换掉):
+
+```cpp
+// Code/server/Services/PartyService.cpp:95(修复后)
+    for (Player* pPlayer : m_world.GetPlayerManager())
+    {
+        auto& partyComponent = pPlayer->GetParty();
+        auto itor = std::begin(partyComponent.Invitations);
+        while (itor != std::end(partyComponent.Invitations))
+        {
+            if (itor->second < cCurrentTick)
+            {
+                itor = partyComponent.Invitations.erase(itor);
+            }
+            else
+            {
+                ++itor;
+            }
+        }
+    }
+```
+
+`GetPlayerManager()` 的 range-for 在本仓另有 **25 处**先例(`Code/server/GameServer.cpp:328/722/731/762/805/837/1049` 等);`PlayerManager::Iterator`(`Code/server/Game/PlayerManager.h:9-26`)**只前进不删除**,所以遍历中改 `Player` 的成员是安全的。
+
+### 100.5 复核命令(照抄)
+
+```powershell
+# 1. 组件有没有挂载点(应输出 0 处;修复后的注释行不算)
+git grep -n -E '(emplace|emplace_or_replace|try_emplace|replace|insert_or_assign|emplace_back)<[^>]*PartyComponent' -- .
+
+# 2. 全树还有几个 view 指向它(应只剩 PartyService.cpp 里这一处;修复后不再有 view)
+git grep -n -E 'view\s*<\s*PartyComponent' -- .
+
+# 3. 唯一曾经的挂载点是被谁删的
+git log --oneline -S 'view<PartyComponent>'
+git log --oneline -S 'emplace<PartyComponent>'
+
+# 4. 同族正确写法有多少(应 29 处,全部走 Player*)
+git grep -n 'GetParty()' -- Code/server
+
+# 5. 差集脚本:被 view 的组件 - 有挂载点的组件 = 空
+#    git ls-files -- Code 逐文件 git show :<rel>,剥 CRLF 后取两个集合的差
+```
+
+**验证**:`git diff --stat` = `Code/server/Services/PartyService.cpp | 12 +++++++++---` / **1 file changed, 9 insertions(+), 3 deletions(-)**;唯一 hunk `@@ -85,10 +85,16 @@`。
+`Code/tests/xmake.lua` 的 target 是 `TPTests`、依赖 `SkyrimEncoding`,**不含 `SkyrimTogetherServer`**,所以服务端的改动在本仓测试里覆盖不到。
+**本机不编译**(§0/§1),所以判据是静态的:全树差集只剩这一条,而 `view` 的语义就是「携带该组件的实体集合」。
+
+> **教训**:第一条:**`view<T>()` 遍历的不是「T 的实例」,是「携带 T 的实体」—— 组件搬到别处(成员、`ctx()`、脚本层)时,view 不会报错,它只是安静地空转。**
+> 第二条:**判据要能机械执行:`view` 的组件集合减去 `emplace` 的组件集合,差集必须为空。**
+> 本轮就是这个差集里唯一的一条,而它藏在一个每 10 秒跑一次、写得很整齐的循环里。
+> 第三条:**`git log -S` 是找「谁漏改了一行」的最快尺。**
+> `663a187e` 改了成员类型、访问器、广播签名,只漏了 `:88` 这一行;`git log -S 'view<PartyComponent>'` 只给出写下它的那次提交,说明它从未被改过。
 
