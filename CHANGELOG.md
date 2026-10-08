@@ -9,6 +9,57 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:OStimNG 的菜单在后台线程删掉线程对象之后仍然解引用它 —— 判据是「判空要判在解引用那一刻,不是判在函数入口」
+
+**现象**:没有任何现象,直到停线程与菜单读取撞在同一帧。UI 层持有两个 `public` 裸指针 ——
+`plugins/OStimNG/skse/src/UI/UIState.h:49-50` 逐字 `Threading::Thread* currentThread;` 与 `Graph::Node* currentNode;`,两个都没有初始化器;
+`UIState::HandleThreadRemoved`(`plugins/OStimNG/skse/src/UI/UIState.cpp:106-110`)只清 `currentThread`,**`currentNode` 一次都不清**。
+清空写在 `ThreadManager::stopThreadNoLock`(`plugins/OStimNG/skse/src/Core/ThreadManager.cpp:204-219`)里,顺序逐字是
+`:209 UI::UIState::GetSingleton()->HandleThreadRemoved(thread);` → `:210 m_threadMap.erase(threadID);` → `:211 thread->close();` → `:212 delete thread;`,
+而它唯一的调用点 `:51` 在 `:38` 起的后台线程 `m_excitementThread` 里(`:44 if (!GameAPI::Game::isPaused())` 之后)—— **写指针的线程不是读指针的线程**。
+
+**根因**:全树 15 处解引用 `currentThread`/`currentNode` 时不判空,其中 5 处落在延迟执行的 lambda 里 ——
+`UI/OStimMenu.h:13-19` 的 `Update()` 逐字 `while (!_taskQueue.empty()) { auto& task = _taskQueue.front(); task(); _taskQueue.pop(); }`,
+`:63-67 QueueUITask` 只入队,`UI/OStimMenu.cpp:69-74 AdvanceMovie` 才调 `Update()` ⇒ **队列里的 lambda 在下一帧执行,与入队时刻不同步**;`SKSE::GetTaskInterface()->AddTask(...)` 同理。
+于是「帧 N 入队、后台线程在 N 与 N+1 之间停线程、帧 N+1 执行」这三步就构成一次空指针解引用:
+`UI/Scene/SceneMenu.cpp:193 ChangeAnimation`、`:206`/`:209 ChangeSpeed`、`UI/Search/SearchMenu.cpp:165 SelectOption`,以及经 `UI/Scene/SceneMenu.cpp:106-124 UpdateMenuData` 的 `QueueUITask` 落到 `:130`/`:131`/`:134`/`:138 BuildMenuData`。
+同步路径 10 处:`UI/Align/AlignMenu.cpp:66 LoadCurrentAlignment`、`:210 ToggleActor`、`:252 Increment`、`UI/Scene/SceneOptions.cpp:78 BuildSubPages`、`:105 BuildOptions`、
+`UI/Search/SearchMenu.cpp:153`/`:154 Search`、`ModAPI/OstimNG-API-Thread.cpp:439 SearchScenes`。
+`Core/ThreadManager.cpp:144-146 AnySceneRunning()` 是 `m_threadMap.size() > 0`,**不是**「`currentThread` 非空」,所以 `UIState::HandleControl` 首行那道门拦不住这一族。
+同一条族里还有一条比 nullptr 更糟的路径:`ThreadManager::UntrackAllThreads`(`plugins/OStimNG/skse/src/Core/ThreadManager.cpp:133-142`)逐字 `for (auto& entry : m_threadMap) { delete entry.second; } m_threadMap.clear();`,
+**完全不通知 UI**;它的唯一调用者 `plugins/OStimNG/skse/src/Serial/Manager.cpp:290-299 Revert(...)` 是读档/回滚 —— 那条路径留下的是非空悬垂指针。
+
+**判据(同族对照,载重)**:同一个 `plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Thread.cpp` 里 24 处 `GetThread(threadID)` **每一处都紧跟判空**,
+`UI/Scene/SceneMenu.cpp:152-159 UpdateSpeed` 逐字先 `auto thread = UI::UIState::GetSingleton()->currentThread; if (!thread) { return; }` 再取 `currentNode` 并同样判空,
+`UI/Align/AlignMenu.cpp:83-85`、`UI/UIState.cpp:15-18`、`UI/UIState.cpp:85-97 NodeChanged` 也都是先判后用 ⇒ UI 层这 15 处是 24:1 的惯例差,不是风格问题。
+`getFurnitureTypeInternal()` 也在这批里:`plugins/OStimNG/skse/src/Core/Thread.h:226` 逐字 `Furniture::FurnitureType* furnitureType = nullptr;`,
+同族 `Core/ThreadActor.cpp:538` 已按「可能为空」写(`if (Furniture::FurnitureType* furnitureType = thread->getFurnitureTypeInternal()) {`),而 `SceneMenu.cpp:138`/`SearchMenu.cpp:154` 直接 `->isChildOf(...)`。
+
+**修法**:不改任何公开签名,只把「用之前先取局部、取到之后再判空」补上 ——
+(1) `UIState.h:49-50` 两个成员就地补 `= nullptr`;(2) `UIState.cpp:106-110` 在清 `currentThread` 的同一个分支里补 `currentNode = nullptr;`;
+(3) `ThreadManager.cpp:137-139` 让 `UntrackAllThreads` 在 `delete` 之前逐个调 `UI::UIState::GetSingleton()->HandleThreadRemoved(entry.second);`,与 `stopThreadNoLock` 同一形状;
+(4) `AlignMenu.cpp` 的 `LoadCurrentAlignment`/`ToggleActor`/`Increment` 各取一次局部指针再判空(`ToggleActor` 另加 `currentNode->actors.empty()` —— 原式 `selectedSlot > currentNode->actors.size() - 1` 在空容器上是无符号回绕);
+(5) `SceneMenu.cpp` 的 `BuildMenuData` 把 `currentNode`/`currentThread`/`getFurnitureTypeInternal()` 各取一次局部并判空,`ChangeAnimation`/`ChangeSpeed` 的 lambda 内先取局部再判空;
+(6) `SceneOptions.cpp` 的 `auto& thread = UI::UIState::GetSingleton()->currentThread;` 改成 `auto thread = …` 并紧跟 `if (thread == nullptr) continue;`(引用绑定的空指针不会因为判空而变得安全);
+(7) `SearchMenu.cpp` 的 `Search` 在 `thread == nullptr` 时 `AssignData(data); return;`(保留「无结果」的既有语义,而不是让菜单停在上一次的结果上)。
+
+**交付**:`Code/plugins/patches/OStimNG/0004-keep-a-dead-thread-out-of-the-menus-that-dereference-it.patch`
+(9466 B / 210 行,7 个文件 14 个 hunk;`UIState.h` `0d0a5d5`→`806c2e5`、`UIState.cpp` `5149498`→`ac68b9c`、`ThreadManager.cpp` `2be63d4`→`64af7ba`、
+`AlignMenu.cpp` `64a3686`→`3d84077`、`SceneMenu.cpp` `68d56ba`→`fd02463`、`SceneOptions.cpp` `67ad326`→`1e7c074`、`SearchMenu.cpp` `6efe1b5`→`35b6df4`)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+
+- 三重校验实跑(cwd = `plugins/OStimNG`):`git apply --check --cached` 退 **0**(能打到 pin)、前向 `git apply --check` 退 **0**(未应用时干净)、
+  应用后 `git apply --check --reverse` 退 **0**(与工作区一致);再次前向 `--check` 退 **1** 并报 `error: patch failed: skse/src/Core/ThreadManager.cpp:135`(已应用,符合预期)。
+- 累积校验:`0001`/`0002`/`0003`/`0004` 依次 `git apply --cached` 全部退 **0**,`git diff --stat`(工作区 vs 累积索引)**无输出**,
+  `git diff --cached --stat` = 16 files changed, 387 insertions(+), 143 deletions(-),随后 `git reset -q` 复原。
+- `python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **32** patch(es);`… check` → `PATCH CHECK OK`。
+- `git apply` 会打两行 `warning: 2 lines add whitespace errors.`(补丁第 165/178 行):那两行是 pin 里本来就带尾空白的行(`if(results[i]->actors.size() == thread->getActorCount() ` 行尾 1 空格、`});    ` 行尾 4 空格),
+  只被局部改写,**不是新引入的空白** —— 这类告警要回到 pin 里核对,不能就地删掉尾空白(会多出一个不属于本补丁的改动)。
+- **本机不编译**(`docs/PITFALLS.md` §0/§1,`plugins/OStimNG/skse/AGENTS.md` 逐字「do not attempt to build c++ or cmake」),所以「后台线程与菜单读取会不会真的撞上」不可判定;
+  判据不是「会不会发生」,而是「发生之后读的是空指针还是已析构对象」—— 修复前两条都有,修复后 `HandleThreadRemoved` 覆盖了全部三条销毁路径(`stopThreadNoLock`/`UntrackAllThreads`/`migrateThread`)。
+
 ### 修复:OStimNG 的 Scene API 七个入口都写着 noexcept,而每个函数体都在分配、指针参数又从不判空 —— 判据是「声明在别人手里的 noexcept 撤不掉,只能自己接住」
 
 **现象**:没有任何现象。`plugins/OStimNG/skse/src/ModAPI/OstimNG-API-Main.cpp`(pin 132 行)里七个入口逐个写着 `noexcept`,

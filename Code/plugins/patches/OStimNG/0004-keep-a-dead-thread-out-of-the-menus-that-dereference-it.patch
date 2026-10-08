@@ -1,0 +1,209 @@
+diff --git a/skse/src/Core/ThreadManager.cpp b/skse/src/Core/ThreadManager.cpp
+index 2be63d4..64af7ba 100644
+--- a/skse/src/Core/ThreadManager.cpp
++++ b/skse/src/Core/ThreadManager.cpp
+@@ -135,6 +135,7 @@ namespace Threading {
+         // so no need to free actors etc. here
+         std::unique_lock<std::shared_mutex> lock(m_threadMapMtx);
+         for (auto& entry : m_threadMap) {
++            UI::UIState::GetSingleton()->HandleThreadRemoved(entry.second);
+             delete entry.second;
+         }
+         m_threadMap.clear();
+diff --git a/skse/src/UI/Align/AlignMenu.cpp b/skse/src/UI/Align/AlignMenu.cpp
+index 64a3686..3d84077 100644
+--- a/skse/src/UI/Align/AlignMenu.cpp
++++ b/skse/src/UI/Align/AlignMenu.cpp
+@@ -63,7 +63,9 @@ namespace UI::Align {
+     }
+ 
+     void AlignMenu::LoadCurrentAlignment() {
+-        currentActorInfo = UI::UIState::GetSingleton()->currentThread->getActorAlignment(selectedSlot);
++        auto thread = UI::UIState::GetSingleton()->currentThread;
++        if (thread == nullptr) return;
++        currentActorInfo = thread->getActorAlignment(selectedSlot);
+     }
+ 
+     void AlignMenu::Hide() {
+@@ -206,8 +208,10 @@ namespace UI::Align {
+     }
+ 
+     void AlignMenu::ToggleActor() {
++        auto currentNode = UI::UIState::GetSingleton()->currentNode;
++        if (currentNode == nullptr || currentNode->actors.empty()) return;
+         selectedSlot++;
+-        if (selectedSlot > UI::UIState::GetSingleton()->currentNode->actors.size() - 1) {
++        if (selectedSlot > currentNode->actors.size() - 1) {
+             selectedSlot = 0;
+         }
+         SetActor(selectedSlot);
+@@ -215,7 +219,10 @@ namespace UI::Align {
+         UpdateActorInfo();
+     }
+ 
+-    void AlignMenu::Increment(bool up) {        
++    void AlignMenu::Increment(bool up) {
++
++        auto thread = UI::UIState::GetSingleton()->currentThread;
++        if (thread == nullptr) return;
+ 
+         float* currentVal;
+         switch (selectedField) {
+@@ -245,7 +252,7 @@ namespace UI::Align {
+             *currentVal += actualIncrement;
+         else
+             *currentVal -= actualIncrement;
+-        UI::UIState::GetSingleton()->currentThread->updateActorAlignment(selectedSlot, currentActorInfo);
++        thread->updateActorAlignment(selectedSlot, currentActorInfo);
+ 
+         QueueUITask([this, currentVal, up]() {
+             RE::GFxValue alignmentInfo;
+diff --git a/skse/src/UI/Scene/SceneMenu.cpp b/skse/src/UI/Scene/SceneMenu.cpp
+index 68d56ba..fd02463 100644
+--- a/skse/src/UI/Scene/SceneMenu.cpp
++++ b/skse/src/UI/Scene/SceneMenu.cpp
+@@ -126,21 +126,23 @@ namespace UI::Scene {
+     void SceneMenu::BuildMenuData(MenuData& menuData) {
+         auto state = UI::UIState::GetSingleton();
+         auto currentNode = state->currentNode;
+-        if (!state->currentNode) return;
+-        if (currentNode->isTransition || state->currentThread->isInSequence() ||
+-            (state->currentThread->getThreadFlags() & Threading::ThreadFlag::NO_PLAYER_CONTROL)) {
++        auto currentThread = state->currentThread;
++        if (currentNode == nullptr || currentThread == nullptr) return;
++        if (currentNode->isTransition || currentThread->isInSequence() ||
++            (currentThread->getThreadFlags() & Threading::ThreadFlag::NO_PLAYER_CONTROL)) {
+             menuData.options.clear();
+         } else {
+-            std::vector<Trait::ActorCondition> conditions = state->currentThread->getActorConditions();
++            std::vector<Trait::ActorCondition> conditions = currentThread->getActorConditions();
++            auto furnitureType = currentThread->getFurnitureTypeInternal();
+ 
+             for (auto& nav : currentNode->navigations) {
+-                if (nav.fulfilledBy(conditions) &&
+-                    state->currentThread->getFurnitureTypeInternal()->isChildOf(nav.nodes.back()->furnitureType)) {
++                if (nav.fulfilledBy(conditions) && furnitureType != nullptr &&
++                    furnitureType->isChildOf(nav.nodes.back()->furnitureType)) {
+                     menuData.options.push_back({.nodeId = nav.nodes.front()->scene_id,
+                                                 .title = nav.nodes.back()->scene_name,
+                                                 .imagePath = nav.icon,
+                                                 .border = nav.border,
+-                                                .description = nav.getDescription(state->currentThread)});
++                                                .description = nav.getDescription(currentThread)});
+                 }
+             }
+         }
+@@ -190,7 +192,10 @@ namespace UI::Scene {
+     }
+ 
+     void SceneMenu::ChangeAnimation(std::string nodeId) {
+-        SKSE::GetTaskInterface()->AddTask([nodeId]() { UI::UIState::GetSingleton()->currentThread->Navigate(nodeId); });
++        SKSE::GetTaskInterface()->AddTask([nodeId]() {
++            auto thread = UI::UIState::GetSingleton()->currentThread;
++            if (thread != nullptr) thread->Navigate(nodeId);
++        });
+     }
+ 
+     void SceneMenu::HandleOption(std::string idx) {
+@@ -202,11 +207,13 @@ namespace UI::Scene {
+ 
+     void SceneMenu::ChangeSpeed(bool up) {
+         SKSE::GetTaskInterface()->AddTask([this, up]() {
++            auto thread = UI::UIState::GetSingleton()->currentThread;
++            if (thread == nullptr) return;
+             if (up) {
+-                UI::UIState::GetSingleton()->currentThread->increaseSpeed();
++                thread->increaseSpeed();
+                 SpeedUp();
+             } else {
+-                UI::UIState::GetSingleton()->currentThread->decreaseSpeed();
++                thread->decreaseSpeed();
+                 SpeedDown();
+             }
+         });
+diff --git a/skse/src/UI/Scene/SceneOptions.cpp b/skse/src/UI/Scene/SceneOptions.cpp
+index 67ad326..1e7c074 100644
+--- a/skse/src/UI/Scene/SceneOptions.cpp
++++ b/skse/src/UI/Scene/SceneOptions.cpp
+@@ -74,7 +74,8 @@ namespace UI::Scene {
+ 	void SceneOptions::BuildSubPages(MenuPage* parent, std::vector<MenuPage>& subPages, std::vector<Graph::MenuNode>& inputPages) {
+ 		for (auto& page : inputPages) {
+ 			if (page.repeat == "actor") {
+-				auto& thread = UI::UIState::GetSingleton()->currentThread;
++				auto thread = UI::UIState::GetSingleton()->currentThread;
++				if (thread == nullptr) continue;
+ 				for (auto& actorKvP : thread->getActors()) {
+ 					MenuPage newPage;
+ 					newPage.node = &page;
+@@ -101,7 +102,8 @@ namespace UI::Scene {
+ 	void SceneOptions::BuildOptions(MenuPage* parent, Graph::MenuNode& page) {
+ 		for (auto& option : page.options) {
+ 			if (option.repeat == "actor") {
+-				auto& thread = UI::UIState::GetSingleton()->currentThread;
++				auto thread = UI::UIState::GetSingleton()->currentThread;
++				if (thread == nullptr) continue;
+ 				for (auto& actorKvP : thread->getActors()) {
+ 					MenuOption newOption;
+ 					newOption.node = &option;
+diff --git a/skse/src/UI/Search/SearchMenu.cpp b/skse/src/UI/Search/SearchMenu.cpp
+index 6efe1b5..35b6df4 100644
+--- a/skse/src/UI/Search/SearchMenu.cpp
++++ b/skse/src/UI/Search/SearchMenu.cpp
+@@ -149,9 +149,15 @@ namespace UI::Search {
+         Graph::GraphTable::searchNodesByName(value , results);
+         std::vector<SearchItem> data;
+         auto state = UI::UIState::GetSingleton();
++        auto thread = state->currentThread;
++        if (thread == nullptr) {
++            AssignData(data);
++            return;
++        }
++        auto furnitureType = thread->getFurnitureTypeInternal();
+         for (int i = 0; i < results.size(); i++) {
+-            if(results[i]->actors.size() == state->currentThread->getActorCount() 
+-                && state->currentThread->getFurnitureTypeInternal()->isChildOf(results[i]->furnitureType)
++            if(results[i]->actors.size() == thread->getActorCount() 
++                && furnitureType != nullptr && furnitureType->isChildOf(results[i]->furnitureType)
+                 && !results[i]->isTransition)
+                 data.push_back(SearchItem{ results[i]->scene_id,results[i]->scene_name });
+         }
+@@ -162,8 +168,10 @@ namespace UI::Search {
+         auto node = Graph::GraphTable::getNodeById(val);    
+ 
+         SKSE::GetTaskInterface()->AddTask([node]() {
+-            UI::UIState::GetSingleton()->currentThread->ChangeNode(node);
+-        });        
++            auto thread = UI::UIState::GetSingleton()->currentThread;
++            if (thread != nullptr) thread->ChangeNode(node);
++        });    
++    }
+     }
+ 
+     void SearchMenu::GetControlHandler(RE::GFxValue& controlHandler) {
+diff --git a/skse/src/UI/UIState.cpp b/skse/src/UI/UIState.cpp
+index 5149498..ac68b9c 100644
+--- a/skse/src/UI/UIState.cpp
++++ b/skse/src/UI/UIState.cpp
+@@ -106,6 +106,7 @@ namespace UI {
+     void UIState::HandleThreadRemoved(Threading::Thread* thread) {
+         if (currentThread == thread) {
+             currentThread = nullptr;
++            currentNode = nullptr;
+         }
+     }
+ 
+diff --git a/skse/src/UI/UIState.h b/skse/src/UI/UIState.h
+index 0d0a5d5..806c2e5 100644
+--- a/skse/src/UI/UIState.h
++++ b/skse/src/UI/UIState.h
+@@ -46,8 +46,8 @@ namespace UI {
+         static bool IsExternalUIEnabled() { return useExternalUI; }
+ 
+ 
+-        Threading::Thread* currentThread;
+-        Graph::Node* currentNode;
++        Threading::Thread* currentThread = nullptr;
++        Graph::Node* currentNode = nullptr;
+     private:
+         // TODO remove this again when we no longer need OSA
+         int glyph = 0;
