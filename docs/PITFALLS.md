@@ -13302,3 +13302,108 @@ python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
 > 第三条:**`#define` 顶替标准函数的地方,判据要落在「它现在到底做了什么」上。**
 > `:76` 那一行之后 `fopen_s` 已经不是 C 运行时的 `fopen_s`;`git grep` 只命中 `CMakeLists.txt` 的 `/FI` 三行,说明没有任何源文件能提示你这一点。
 
+## 99. 2026-10-20 场次:STRPM 桥的映射函数写着 noexcept,而其中三个跨 DLL 调用会分配的导出、五个自己建容器 —— 判据是「noexcept 的边界画在哪一层,就要把 try 写在哪一层」
+
+> **锚点**:`Code/plugins/patches/STRPluginMessagingAPI/0007-keep-an-allocation-failure-out-of-the-proxy-resolver-mapping-table.patch`
+> (12270 B / 282 行,单文件单 hunk `@@ -729,136 +729,204 @@`;`src/STRPMProxyResolverBridge.h` `55eabd3`→`34dcb17`)。
+
+### 99.1 缺陷
+
+**一个 `noexcept` 函数调用了另一个 DLL 里会抛的函数,而那个函数没写 `noexcept`。**
+`plugins/STRPluginMessagingAPI/src/STRPMProxyResolverBridge.h:732-746` 逐字
+
+```cpp
+        void ReportResolvedMapping(
+            STRPM::ConnectionID connectionID,
+            STRPM::ProxyFormID formID) noexcept
+        {
+            if (const auto report = GetReportProxyMapping())
+            {
+                const auto result = report(connectionID, formID);
+```
+
+`report` 由 `:727-729` 的 `GetModuleHandleW(L"STRPluginMessagingAPI.dll")` + `GetProcAddress(module, "STRPM_ReportProxyMapping")` 取得,
+落在 `src/STRPMProxyResolverRuntime.h:254 STRPM_EXPORT STRPM::Result STRPM_CALL STRPM_ReportProxyMapping(…)` ——
+**这个导出不写 `noexcept`**,而体内 `:107` 逐字 `std::vector<Listener> listeners;`、`:136` 逐字 `listeners = _listeners;`。
+`:748`/`:754` 的两个薄壳与 `:261`/`:267` 两个导出同形(`:153`/`:177`、`:167`/`:184`)。
+⇒ **抛出点在 API DLL,终止点在桥 DLL。**
+
+同一批里另外四个是自己建容器:`:760-783 ObserveSender`(`:773 g_connectionToPlayer[connectionID] = playerId;`)、
+`:785-808 ObservePlayerProxy`(`:792 std::vector<STRPM::ConnectionID> connections;`、`:795`、`:799`)、
+`:810-836 RemovePlayerProxy`(`:815`、`:827`)、`:848-862 FlushMappings`(`:850`、`:857`)。
+
+### 99.2 判据
+
+**判据一(载重):`noexcept` 的边界画在哪一层,异常就在哪一层的帧里变成 terminate。**
+这八个函数的最外层调用者是 `src/STRPMProxyResolverBridge.h:932 LONG CALLBACK ExceptionHandler(EXCEPTION_POINTERS*)`、
+`src/STRPMProxyResolverTrace.h:201` 的同名函数、以及两个 `void Worker(std::stop_token token)`(`Bridge.h:1088`、`src/STRPMProxyResolverBootstrapV2.h`)——
+**四个调用者全都不写 `noexcept`**。终止点之所以存在,只因为桥侧把 `noexcept` 写在了里面这八个函数上。
+
+**判据二:删 `noexcept` 不是修法,因为上一层有的写了、有的没写。**
+`src/STRPMProxyResolverTrace.h:158 bool CaptureLifecycleCall(CONTEXT* context) noexcept` 体内 `:185`/`:194` 调 `ObservePlayerProxy`/`RemovePlayerProxy`;
+它的唯一调用者 `:265` 在非 `noexcept` 的 `ExceptionHandler` 里 ⇒ 删掉被调者的 `noexcept`,终止点就落在 `CaptureLifecycleCall` 这一帧,
+`std::terminate` 与「没有崩溃转储」(`docs/PITFALLS.md` §45)一件不少。
+同一文件里既有的四处先例(`:203-218 SnapshotProcessMemory`、`:627-647 ReadString`、`:652-679 PeekRawEnvelope`、`:1139-1153 Start()`)
+给的都是同一个形状:`try` + `catch (...)` + 记日志 + 返回失败值,**不重试**。
+
+**判据三:薄壳也要包,因为它才是跨边界那一跳的执行者。**
+`ReportResolvedMapping`/`RemoveResolvedMapping`/`ClearRuntimeMappings` 三个函数体内没有任何容器,
+只看「谁分配」会漏掉它们;但异常正是在它们自己的帧里穿过 `noexcept` 边界的。
+⇒ 本次包的函数是 **八个**,不是五个。
+
+### 99.3 可达性
+
+| 函数 | 调用点 | 调用点所在的函数是否 `noexcept` |
+| --- | --- | --- |
+| `ReportResolvedMapping` | `Bridge.h:782`/`:807`/`:861` | 是(三个调用者都在 `noexcept` 函数体内) |
+| `RemoveResolvedMapping` | `Bridge.h:780`/`:835` | 是 |
+| `ClearRuntimeMappings` | `Bridge.h:845` | 是 |
+| `ObserveSender` | `Bridge.h:886`、`src/STRPluginMessagingBridgeSKSE.cpp:91` | 是 / 否 |
+| `ObservePlayerProxy` | `Trace.h:185`、`Bridge.h:990` | 是(`CaptureLifecycleCall`) / 否(`ExceptionHandler`) |
+| `RemovePlayerProxy` | `Trace.h:194`、`Bridge.h:996` | 是 / 否 |
+| `ClearMappings` | `Bridge.h:1029`(`kDisconnected` 分支) | 否 |
+| `FlushMappings` | `Bridge.h:1132`、`src/STRPMProxyResolverBootstrapV2.h:312` | 否 |
+
+四条链都可达:`ObserveIncomingEnvelope`(`Bridge.h:864-887 noexcept`)由 `:949` 的 `EXCEPTION_BREAKPOINT` 分支调用;
+`FlushMappings` 在两个 Worker 的第二段每秒循环里(`Bridge.h:1132` 后跟 `SleepInterruptible(token, std::chrono::seconds(1))`)。
+
+### 99.4 修法
+
+在 `:760` 前插 8 行理由注释,再给八个函数各包 `try { … } catch (...) { Log(…); }`,失败只记一行日志、不重试。
+函数体其余部分逐字照抄 pin,只整体缩进 4 格。三个薄壳的 catch 里没有可用的局部量,只能带上 `connectionID`。
+
+### 99.5 复核命令(照抄)
+
+```powershell
+# 三重校验(cwd = plugins/STRPluginMessagingAPI)
+git apply --check --cached ../../Code/plugins/patches/STRPluginMessagingAPI/0007-*.patch   # 退 0
+git apply --check        ../../Code/plugins/patches/STRPluginMessagingAPI/0007-*.patch   # 退 0(尚未应用到工作区时)
+git apply                ../../Code/plugins/patches/STRPluginMessagingAPI/0007-*.patch && git apply --check --reverse ../../Code/plugins/patches/STRPluginMessagingAPI/0007-*.patch   # 应用后退 0
+git apply --check        ../../Code/plugins/patches/STRPluginMessagingAPI/0007-*.patch   # 已应用时退 1:error: patch failed: src/STRPMProxyResolverBridge.h:729
+
+# 累积校验(七个补丁依次打到 pristine 索引上)
+foreach ($p in Get-ChildItem ../../Code/plugins/patches/STRPluginMessagingAPI/*.patch) { git apply --cached $p.FullName }   # 逐个退 0
+git diff --stat          # 空
+git diff --cached --stat # 13 files changed, 526 insertions(+), 213 deletions(-)
+git reset -q
+
+# 门禁
+python Code\plugins\tools\plugin_patches.py verify    # PATCH VERIFY OK / 37 patch(es)
+python Code\plugins\tools\plugin_patches.py check     # PATCH CHECK OK
+```
+
+**验证**:`0007` 的 `git apply --check --cached` 退 **0**、前向 `git apply --check` 退 **0**;
+应用后 `git apply --check --reverse` 退 **0**,再次前向 `--check` 退 **1** 并报
+`error: patch failed: src/STRPMProxyResolverBridge.h:729` 与 `error: src/STRPMProxyResolverBridge.h: patch does not apply`;
+补丁里的 pin blob 哈希与 `git rev-parse :src/STRPMProxyResolverBridge.h` 相等(`55eabd3`);
+累积校验 `0001`…`0007` 依次退 **0**,`git diff --stat` 空、`git diff --cached --stat` = **13 files changed, 526 insertions(+), 213 deletions(-)**。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以「这条路径到底会不会耗尽内存」不可判定;
+判据不是「会不会发生」,而是「发生之后这八个帧里哪一个是最后一道 `noexcept`」。
+
+> **教训**:第一条:**`noexcept` 的边界画在哪一层,就要把 `try` 写在哪一层。**
+> 三个薄壳体内一行容器都没有,可异常正是在它们自己的帧里撞上 `noexcept` 的 —— 只看「谁分配」会漏掉它们。
+> 第二条:**跨 DLL 的 noexcept 要两边一起看。**
+> 桥侧写着 `noexcept`、API 侧的导出没写,签名不同不代表承诺相同;`GetProcAddress` 之后那一次调用就是边界。
+> 第三条:**删 `noexcept` 之前,先数清上一层的调用者里有几个也写了 `noexcept`。**
+> `CaptureLifecycleCall` 写了,两个 VEH 处理器和两个 Worker 没写 —— 删掉被调者的,终止点只会换个帧。
+

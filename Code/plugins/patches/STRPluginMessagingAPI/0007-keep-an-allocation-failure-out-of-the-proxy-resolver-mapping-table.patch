@@ -1,0 +1,281 @@
+diff --git a/src/STRPMProxyResolverBridge.h b/src/STRPMProxyResolverBridge.h
+index 55eabd3..34dcb17 100644
+--- a/src/STRPMProxyResolverBridge.h
++++ b/src/STRPMProxyResolverBridge.h
+@@ -729,136 +729,204 @@ namespace STRPMProxyResolverBridge
+                 GetProcAddress(module, "STRPM_ClearProxyMappings")) : nullptr;
+         }
+ 
++        // Every function below either crosses into STRPluginMessagingAPI.dll or
++        // builds a container of its own, and every one of them is reached only from
++        // vectored exception handlers and from the two worker thread entries - code
++        // that cannot handle a throw. An exception that leaves one of these frames
++        // terminates the game process with no crash dump, so each one contains its
++        // own failure and logs it. A dropped mapping degrades to a missed mapping,
++        // which is what this resolver already tolerates.
+         void ReportResolvedMapping(
+             STRPM::ConnectionID connectionID,
+             STRPM::ProxyFormID formID) noexcept
+         {
+-            if (const auto report = GetReportProxyMapping())
++            try
+             {
+-                const auto result = report(connectionID, formID);
+-                if (result == STRPM::Result::kOk)
++                if (const auto report = GetReportProxyMapping())
+                 {
+-                    Log("ProxyResolver mapping ready connection=%llu formId=0x%08X",
+-                        static_cast<unsigned long long>(connectionID),
+-                        static_cast<unsigned>(formID));
++                    const auto result = report(connectionID, formID);
++                    if (result == STRPM::Result::kOk)
++                    {
++                        Log("ProxyResolver mapping ready connection=%llu formId=0x%08X",
++                            static_cast<unsigned long long>(connectionID),
++                            static_cast<unsigned>(formID));
++                    }
+                 }
+             }
++            catch (...)
++            {
++                Log("ProxyResolver ran out of memory while publishing a mapping connection=%llu",
++                    static_cast<unsigned long long>(connectionID));
++            }
+         }
+ 
+         void RemoveResolvedMapping(STRPM::ConnectionID connectionID) noexcept
+         {
+-            if (const auto remove = GetRemoveProxyMapping())
+-                remove(connectionID);
++            try
++            {
++                if (const auto remove = GetRemoveProxyMapping())
++                    remove(connectionID);
++            }
++            catch (...)
++            {
++                Log("ProxyResolver ran out of memory while withdrawing a mapping connection=%llu",
++                    static_cast<unsigned long long>(connectionID));
++            }
+         }
+ 
+         void ClearRuntimeMappings() noexcept
+         {
+-            if (const auto clear = GetClearProxyMappings())
+-                clear();
++            try
++            {
++                if (const auto clear = GetClearProxyMappings())
++                    clear();
++            }
++            catch (...)
++            {
++                Log("ProxyResolver ran out of memory while clearing the registry");
++            }
+         }
+ 
+         void ObserveSender(
+             STRPM::ConnectionID connectionID,
+             std::uint32_t playerId) noexcept
+         {
+-            if (connectionID == 0 || playerId == 0)
+-                return;
++            try
++            {
++                if (connectionID == 0 || playerId == 0)
++                    return;
+ 
+-            STRPM::ProxyFormID formID = STRPM::kInvalidProxyFormID;
+-            bool identityChanged = false;
++                STRPM::ProxyFormID formID = STRPM::kInvalidProxyFormID;
++                bool identityChanged = false;
++                {
++                    std::scoped_lock lock(g_mappingMutex);
++                    const auto old = g_connectionToPlayer.find(connectionID);
++                    identityChanged = old != g_connectionToPlayer.end() && old->second != playerId;
++                    g_connectionToPlayer[connectionID] = playerId;
++                    const auto form = g_playerToForm.find(playerId);
++                    if (form != g_playerToForm.end())
++                        formID = form->second;
++                }
++
++                if (identityChanged && formID == STRPM::kInvalidProxyFormID)
++                    RemoveResolvedMapping(connectionID);
++                if (formID != STRPM::kInvalidProxyFormID)
++                    ReportResolvedMapping(connectionID, formID);
++            }
++            catch (...)
+             {
+-                std::scoped_lock lock(g_mappingMutex);
+-                const auto old = g_connectionToPlayer.find(connectionID);
+-                identityChanged = old != g_connectionToPlayer.end() && old->second != playerId;
+-                g_connectionToPlayer[connectionID] = playerId;
+-                const auto form = g_playerToForm.find(playerId);
+-                if (form != g_playerToForm.end())
+-                    formID = form->second;
++                Log("ProxyResolver ran out of memory while recording a sender identity connection=%llu",
++                    static_cast<unsigned long long>(connectionID));
+             }
+-
+-            if (identityChanged && formID == STRPM::kInvalidProxyFormID)
+-                RemoveResolvedMapping(connectionID);
+-            if (formID != STRPM::kInvalidProxyFormID)
+-                ReportResolvedMapping(connectionID, formID);
+         }
+ 
+         void ObservePlayerProxy(
+             std::uint32_t playerId,
+             STRPM::ProxyFormID formID) noexcept
+         {
+-            if (playerId == 0 || formID == STRPM::kInvalidProxyFormID)
+-                return;
+-
+-            std::vector<STRPM::ConnectionID> connections;
++            try
+             {
+-                std::scoped_lock lock(g_mappingMutex);
+-                g_playerToForm[playerId] = formID;
+-                for (const auto& [connectionID, mappedPlayerId] : g_connectionToPlayer)
++                if (playerId == 0 || formID == STRPM::kInvalidProxyFormID)
++                    return;
++
++                std::vector<STRPM::ConnectionID> connections;
+                 {
+-                    if (mappedPlayerId == playerId)
+-                        connections.push_back(connectionID);
++                    std::scoped_lock lock(g_mappingMutex);
++                    g_playerToForm[playerId] = formID;
++                    for (const auto& [connectionID, mappedPlayerId] : g_connectionToPlayer)
++                    {
++                        if (mappedPlayerId == playerId)
++                            connections.push_back(connectionID);
++                    }
+                 }
+-            }
+ 
+-            Log("ProxyResolver proxy observed playerId=%u formId=0x%08X",
+-                static_cast<unsigned>(playerId),
+-                static_cast<unsigned>(formID));
+-            for (const auto connectionID : connections)
+-                ReportResolvedMapping(connectionID, formID);
++                Log("ProxyResolver proxy observed playerId=%u formId=0x%08X",
++                    static_cast<unsigned>(playerId),
++                    static_cast<unsigned>(formID));
++                for (const auto connectionID : connections)
++                    ReportResolvedMapping(connectionID, formID);
++            }
++            catch (...)
++            {
++                Log("ProxyResolver ran out of memory while recording a proxy for playerId=%u",
++                    static_cast<unsigned>(playerId));
++            }
+         }
+ 
+         void RemovePlayerProxy(std::uint32_t playerId) noexcept
+         {
+-            if (playerId == 0)
+-                return;
+-
+-            std::vector<STRPM::ConnectionID> connections;
+-            STRPM::ProxyFormID oldFormID = STRPM::kInvalidProxyFormID;
++            try
+             {
+-                std::scoped_lock lock(g_mappingMutex);
+-                const auto form = g_playerToForm.find(playerId);
+-                if (form == g_playerToForm.end())
++                if (playerId == 0)
+                     return;
+-                oldFormID = form->second;
+-                g_playerToForm.erase(form);
+-                for (const auto& [connectionID, mappedPlayerId] : g_connectionToPlayer)
++
++                std::vector<STRPM::ConnectionID> connections;
++                STRPM::ProxyFormID oldFormID = STRPM::kInvalidProxyFormID;
+                 {
+-                    if (mappedPlayerId == playerId)
+-                        connections.push_back(connectionID);
++                    std::scoped_lock lock(g_mappingMutex);
++                    const auto form = g_playerToForm.find(playerId);
++                    if (form == g_playerToForm.end())
++                        return;
++                    oldFormID = form->second;
++                    g_playerToForm.erase(form);
++                    for (const auto& [connectionID, mappedPlayerId] : g_connectionToPlayer)
++                    {
++                        if (mappedPlayerId == playerId)
++                            connections.push_back(connectionID);
++                    }
+                 }
+-            }
+ 
+-            Log("ProxyResolver proxy removed playerId=%u formId=0x%08X",
+-                static_cast<unsigned>(playerId),
+-                static_cast<unsigned>(oldFormID));
+-            for (const auto connectionID : connections)
+-                RemoveResolvedMapping(connectionID);
++                Log("ProxyResolver proxy removed playerId=%u formId=0x%08X",
++                    static_cast<unsigned>(playerId),
++                    static_cast<unsigned>(oldFormID));
++                for (const auto connectionID : connections)
++                    RemoveResolvedMapping(connectionID);
++            }
++            catch (...)
++            {
++                Log("ProxyResolver ran out of memory while removing a proxy for playerId=%u",
++                    static_cast<unsigned>(playerId));
++            }
+         }
+ 
+         void ClearMappings() noexcept
+         {
++            try
++            {
++                {
++                    std::scoped_lock lock(g_mappingMutex);
++                    g_playerToForm.clear();
++                    g_connectionToPlayer.clear();
++                }
++                ClearRuntimeMappings();
++            }
++            catch (...)
+             {
+-                std::scoped_lock lock(g_mappingMutex);
+-                g_playerToForm.clear();
+-                g_connectionToPlayer.clear();
++                Log("ProxyResolver ran out of memory while clearing its mapping table");
+             }
+-            ClearRuntimeMappings();
+         }
+ 
+         void FlushMappings() noexcept
+         {
+-            std::vector<std::pair<STRPM::ConnectionID, STRPM::ProxyFormID>> mappings;
++            try
+             {
+-                std::scoped_lock lock(g_mappingMutex);
+-                for (const auto& [connectionID, playerId] : g_connectionToPlayer)
++                std::vector<std::pair<STRPM::ConnectionID, STRPM::ProxyFormID>> mappings;
+                 {
+-                    const auto form = g_playerToForm.find(playerId);
+-                    if (form != g_playerToForm.end())
+-                        mappings.emplace_back(connectionID, form->second);
++                    std::scoped_lock lock(g_mappingMutex);
++                    for (const auto& [connectionID, playerId] : g_connectionToPlayer)
++                    {
++                        const auto form = g_playerToForm.find(playerId);
++                        if (form != g_playerToForm.end())
++                            mappings.emplace_back(connectionID, form->second);
++                    }
+                 }
++                for (const auto& [connectionID, formID] : mappings)
++                    ReportResolvedMapping(connectionID, formID);
++            }
++            catch (...)
++            {
++                Log("ProxyResolver ran out of memory while flushing its mapping table");
+             }
+-            for (const auto& [connectionID, formID] : mappings)
+-                ReportResolvedMapping(connectionID, formID);
+         }
+ 
+         void ObserveIncomingEnvelope(CONTEXT* context) noexcept

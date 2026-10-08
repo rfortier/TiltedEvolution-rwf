@@ -9,6 +9,53 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:STRPM 桥的映射函数写着 noexcept,而其中三个跨 DLL 调用会分配的导出、五个自己建容器,每个都只被 VEH 与工作线程调用 —— 判据是「noexcept 的边界画在哪一层,就要把 try 写在哪一层」
+
+**现象**:没有任何现象。`plugins/STRPluginMessagingAPI/src/STRPMProxyResolverBridge.h`(pin 1165 行)里八个函数连着写 `noexcept`,其中五个体内会分配:
+
+```cpp
+        void ObserveSender(
+            STRPM::ConnectionID connectionID,
+            std::uint32_t playerId) noexcept
+```
+
+`:773` 逐字 `g_connectionToPlayer[connectionID] = playerId;`;`:792` 逐字 `std::vector<STRPM::ConnectionID> connections;`(`ObservePlayerProxy`,另有 `:795` 的 `g_playerToForm[playerId] = formID;` 与 `:799` 的 `connections.push_back(connectionID);`);`:815`/`:827` 同形(`RemovePlayerProxy`);`:850` 逐字 `std::vector<std::pair<STRPM::ConnectionID, STRPM::ProxyFormID>> mappings;` 加 `:857` 的 `mappings.emplace_back(connectionID, form->second);`(`FlushMappings`)。
+
+**根因**:这三层各自都能抛,而 `noexcept` 写在最里面那一层:
+
+1. **跨 DLL 的一层**。`:732` 的 `ReportResolvedMapping`、`:748` 的 `RemoveResolvedMapping`、`:754` 的 `ClearRuntimeMappings` 自己不做容器,但它们用 `:711-730` 的三个取址函数(`GetModuleHandleW(L"STRPluginMessagingAPI.dll")` + `GetProcAddress`)取到 `src/STRPMProxyResolverRuntime.h` 的三个导出 —— `:254 STRPM_ReportProxyMapping`、`:261 STRPM_RemoveProxyMapping`、`:267 STRPM_ClearProxyMappings`。
+   那三个导出**都不写 `noexcept`**,体内却各有一份 `std::vector<Listener> listeners;`(`:107`/`:153`/`:177`)与一次 `listeners = _listeners;`(`:136`/`:167`/`:184`)。
+   ⇒ **抛出点在 API DLL,而 `noexcept` 边界在桥 DLL**;异常穿过 `extern "C"` 边界之后落进的第一个 `noexcept` 帧,就是这三个薄壳。
+2. **容器的一层**。`ObserveSender`/`ObservePlayerProxy`/`RemovePlayerProxy`/`FlushMappings` 体内各建一个容器(上引四行)。
+3. **调用者的一层**。这八个函数的调用者里既有 `noexcept` 也有非 `noexcept`:
+   `src/STRPMProxyResolverTrace.h:185`/`:194` 调 `ObservePlayerProxy`/`RemovePlayerProxy`,而它们在 `:158 bool CaptureLifecycleCall(CONTEXT* context) noexcept` 体内,唯一调用者是 `:265`(在非 `noexcept` 的 `ExceptionHandler` 里)⇒ 终止落在 `CaptureLifecycleCall`;
+   `src/STRPMProxyResolverBridge.h:886` 调 `ObserveSender`,它在 `:864 void ObserveIncomingEnvelope(CONTEXT* context) noexcept` 体内,唯一调用者是 `:949`(桥自己的 `ExceptionHandler` 的 `EXCEPTION_BREAKPOINT` 分支);
+   `:990`/`:996` 调 `ObservePlayerProxy`/`RemovePlayerProxy`、`:1029` 调 `ClearMappings`(同一个 `ExceptionHandler` 的 `kDisconnected` 分支)、`:1132` 调 `FlushMappings`(在 `:1088 void Worker(std::stop_token token)` 的每秒循环里)、`src/STRPMProxyResolverBootstrapV2.h:312` 同形 —— **两个 Worker 都不是 `noexcept`**。
+
+**判据(同族对照,载重)**:判据不是「这些函数会不会分配」,而是「**`noexcept` 画在哪一层,异常就会在哪一层的帧里变成 terminate**」。
+桥 DLL 这一侧把 `noexcept` 写在了最内层五个函数上,而最外层能接住异常的两个 VEH 处理器与两个 Worker 都没写;API DLL 那一侧的三个导出干脆没写。
+所以「删掉桥侧的 `noexcept`」不是修法:它只是把终止点从被调者挪到 `CaptureLifecycleCall`(那条链上的上一层恰好写了 `noexcept`),而另外三条链上的终止点则外移 —— **两种结果都不是「有人处理了」**。
+同族先例是同一个文件里的四处(`:203 SnapshotProcessMemory`、`:627 ReadString`、`:652 PeekRawEnvelope`、`:1139 Start()`),它们的形状统一是「体内 `try` + `catch (...)` + 记一行日志 + 返回失败值」,不重试。`0004`/`0005`/`0006` 三个既有补丁给的都是同一个形状。
+
+**修法**:在 `:760` 前插 8 行理由注释,然后**给这八个函数各包一层 `try { … } catch (...) { Log(…); }`** —— 注意是八个而不是五个:
+三个薄壳(`ReportResolvedMapping`/`RemoveResolvedMapping`/`ClearRuntimeMappings`)虽然自己不建容器,但它们才是跨 DLL 那一跳的执行者,漏掉它们,异常就会在它们自己的帧里终止。
+函数体其余部分逐字照抄 pin,只整体缩进 4 格;失败时只记一行日志,不重试 —— 丢一条映射退化成一次漏映射,而这个解析器本来就容忍漏映射。
+
+**验证**:`0007` 的 `git apply --check --cached` 退 **0**、前向 `git apply --check` 退 **0**;
+应用后 `git apply --check --reverse` 退 **0**,再次前向 `--check` 退 **1** 并报
+`error: patch failed: src/STRPMProxyResolverBridge.h:729` 与 `error: src/STRPMProxyResolverBridge.h: patch does not apply`;
+补丁里的 pin blob 哈希与 `git rev-parse :src/STRPMProxyResolverBridge.h` 相等(`55eabd3`);
+累积校验 `0001`…`0007` 依次退 **0**,`git diff --stat` 空、`git diff --cached --stat` = **13 files changed, 526 insertions(+), 213 deletions(-)**。
+`python Code\plugins\tools\plugin_patches.py verify` → `PATCH VERIFY OK` / **37** patch(es);`… check` → `PATCH CHECK OK`。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以「这条路径到底会不会耗尽内存」不可判定;
+判据不是「会不会发生」,而是「发生之后这八个帧里哪一个是最后一道 `noexcept`」。
+
+**交付**:`Code/plugins/patches/STRPluginMessagingAPI/0007-keep-an-allocation-failure-out-of-the-proxy-resolver-mapping-table.patch`
+(12270 B / 282 行,单文件单 hunk `@@ -729,136 +729,204 @@`,`src/STRPMProxyResolverBridge.h` `55eabd3`→`34dcb17`)。
+The plugin is a submodule this project does not own and cannot push, and CI runs
+`git submodule update --init --force --recursive`, which discards a working-tree only change.
+It is therefore shipped as the patch above, which `plugin_patches.py` applies before configuring and building.
+
 ### 修复:STRPM 的两份日志重定向冒充 `fopen_s` 却继续写着 noexcept,而它们改用的 std::filesystem 每写一行日志都要分配 —— 判据是「替换一个 C 函数时,noexcept 要按替换后的实现重判,不能按被替换的签名继承」
 
 **现象**:没有任何现象。`plugins/STRPluginMessagingAPI/src/STRPMLogRedirect.h:19-22` 逐字
