@@ -62,43 +62,67 @@ ScriptService::ScriptService(World& aWorld, entt::dispatcher& aDispatcher)
 
 ScriptService::~ScriptService()
 {
-    auto &lockedState = m_lua.Lock().Get();
-    for (auto& m : m_sandboxes)
+    // A destructor is implicitly noexcept, and both of these are Lua calls that
+    // allocate. An exception escaping here during unwinding is std::terminate with
+    // no dump, which is a worse outcome than leaking a state that is being torn
+    // down anyway.
+    try
     {
-        m.clear();
+        auto &lockedState = m_lua.Lock().Get();
+        for (auto& m : m_sandboxes)
+        {
+            m.clear();
+        }
+
+        lockedState.collect_garbage();
     }
- 
-    lockedState.collect_garbage();
+    catch (...)
+    {
+        ReportFailure(__FUNCTION__, "ran out of memory while tearing down the Lua state");
+    }
 }
 
 void ScriptService::Initialize(Resources::ResourceCollection& aCollection) noexcept
 {
-    auto lua = m_lua.Lock();
-    auto& luaVm = lua.Get();
-    luaVm.set_exception_handler(ScriptExceptionHandler);
+    // Every line of this is allocation: a Lua library, the globals table, a
+    // registry slot per bound function, the package path, and a path built per
+    // manifest. It is called from GameServer::Initialize, before the server
+    // listens, so there is no caller that could report the failure - the promise
+    // is ours to keep. The server comes up without scripts rather than not coming
+    // up at all, and says so once.
+    try
+    {
+        auto lua = m_lua.Lock();
+        auto& luaVm = lua.Get();
+        luaVm.set_exception_handler(ScriptExceptionHandler);
 
-    m_globals = luaVm.globals();
+        m_globals = luaVm.globals();
 
-    luaVm.open_libraries(sol::lib::base, sol::lib::string, sol::lib::io, sol::lib::math, sol::lib::package,
-                         sol::lib::os, sol::lib::table, sol::lib::bit32);
+        luaVm.open_libraries(sol::lib::base, sol::lib::string, sol::lib::io, sol::lib::math, sol::lib::package,
+                             sol::lib::os, sol::lib::table, sol::lib::bit32);
 
-    // make sure to set package path to current directory scope
-    // as this could get overriden by LUA_PATH environment variable
-    luaVm["package"]["path"] = "./?.lua";
+        // make sure to set package path to current directory scope
+        // as this could get overriden by LUA_PATH environment variable
+        luaVm["package"]["path"] = "./?.lua";
 
-    BindInbuiltFunctions();
+        BindInbuiltFunctions();
 
-    aCollection.ForEachManifest([&](const Resources::Manifest001& aManifest) {
-        if (aManifest.EntryPoint.empty()) // just a dependency?
-            return;
-        auto entryPointPath = aCollection.GetResourceFolderPath() / aManifest.FolderName / aManifest.EntryPoint;
-        if (!std::filesystem::exists(entryPointPath))
-        {
-            spdlog::warn("Script entry point {} does not exist", entryPointPath.string());
-            return;
-        }
-        LoadScript(entryPointPath);
-    });
+        aCollection.ForEachManifest([&](const Resources::Manifest001& aManifest) {
+            if (aManifest.EntryPoint.empty()) // just a dependency?
+                return;
+            auto entryPointPath = aCollection.GetResourceFolderPath() / aManifest.FolderName / aManifest.EntryPoint;
+            if (!std::filesystem::exists(entryPointPath))
+            {
+                spdlog::warn("Script entry point {} does not exist", entryPointPath.string());
+                return;
+            }
+            LoadScript(entryPointPath);
+        });
+    }
+    catch (...)
+    {
+        ReportFailure(__FUNCTION__, "ran out of memory while setting up the Lua state; no script will run");
+    }
 }
 
 bool ScriptService::LoadScript(const std::filesystem::path& aPath)
@@ -168,7 +192,11 @@ std::tuple<bool, String> ScriptService::HandleChatMessage(const entt::entity aSe
 
 void ScriptService::HandlePlayerQuit(ConnectionId_t aConnectionId, Server::EDisconnectReason aReason) noexcept
 {
-    std::string reason;
+    // A pointer, not a std::string: the reason is one of six literals, and building
+    // the string was the last allocation left on the way into CallEvent - on the
+    // outside of its try block, in a noexcept function, on the disconnect path
+    // where the server is already shedding state.
+    const char* reason = "Unknown";
 
     switch (aReason)
     {
@@ -189,7 +217,6 @@ void ScriptService::HandlePlayerQuit(ConnectionId_t aConnectionId, Server::EDisc
         break;
     case Server::EDisconnectReason::Unknown:
     default:
-        reason = "Unknown";
         break;
     }
 
@@ -206,14 +233,13 @@ void ScriptService::OnUpdate(const UpdateEvent& acEvent) noexcept
     if (m_sandboxes.size() == 0)
         return;
 
-    try
-    {
-        CallEvent("onUpdate", acEvent.Delta);
-    }
-    catch (sol::error& exception)
-    {
-        spdlog::error("Script execution failure: {}", exception.what());
-    }
+    // This used to be wrapped in a try/catch for sol::error, which was the only
+    // thing that could come out of the call at the time. The handler now lives in
+    // CallEvent itself - a Lua callback is not the only way that call can fail, so
+    // the boundary had to move down to where the allocations are. Keeping a second
+    // catch here would also mean keeping an allocating log call inside a noexcept
+    // tick handler, which is the very thing being fixed.
+    CallEvent("onUpdate", acEvent.Delta);
 }
 
 void ScriptService::OnPlayerEnterWorld(const PlayerEnterWorldEvent& acEvent) noexcept
@@ -223,13 +249,49 @@ void ScriptService::OnPlayerEnterWorld(const PlayerEnterWorldEvent& acEvent) noe
     CallEvent("onPlayerEnterWorld", cPlayer);*/
 }
 
+void ScriptService::ReportFailure(const char* acpContext, const char* acpDetail) noexcept
+{
+    try
+    {
+        spdlog::error("{}: {}", acpContext, acpDetail);
+    }
+    catch (...)
+    {
+        // Nothing left to say it with. The alternative - letting the report of a
+        // failure become the failure - is strictly worse.
+    }
+}
+
 void ScriptService::AddEventHandler(const std::string acName, const sol::function acFunction) noexcept
 {
-    m_callbacks[String(acName)].push_back(acFunction);
+    // Called from the 'addEventHandler' binding, which Lua reaches while a script
+    // is loading. A registration that could not be stored is simply not there: the
+    // event it asked for will find no handler, which is the same outcome as the
+    // script never having asked. Letting it through instead would terminate the
+    // server from inside a Lua call.
+    try
+    {
+        m_callbacks[String(acName)].push_back(acFunction);
+    }
+    catch (...)
+    {
+        ReportFailure(__FUNCTION__, "ran out of memory while registering an event handler");
+    }
 }
 
 void ScriptService::CancelEvent(const std::string aReason) noexcept
 {
+    // The flag is set before the reason is copied, so a failure here still cancels
+    // the event and only loses its text. That order is deliberate: cancellation is
+    // what the caller asked for, the reason is only how it is reported.
     m_eventCanceled = true;
-    m_cancelReason = aReason;
+
+    try
+    {
+        m_cancelReason = aReason;
+    }
+    catch (...)
+    {
+        ReportFailure(__FUNCTION__, "ran out of memory while storing the cancellation reason");
+    }
 }

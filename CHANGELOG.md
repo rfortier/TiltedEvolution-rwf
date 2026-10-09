@@ -9,6 +9,199 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:服务端脚本层的 14 个 noexcept 里 13 个在分配,而全仓唯一有 catch 的文件把边界放在了调用者身上 —— 判据是「noexcept 的检查要顺着调用链走」
+
+**现象**:没有任何现象。`Code/server/Services/ScriptService.h`(pin 76 行)、`ScriptService.cpp`(pin 235 行)、`ScriptService.inl`(pin 42 行)三个文件里 **14 个函数声明**都写着 `noexcept`,而其中 **13 个的函数体在分配**:
+
+```cpp
+// Code/server/Services/ScriptService.inl:3-8(pin,修复前)
+template <typename... Args>
+std::tuple<bool, String> ScriptService::CallCancelableEvent(const String& acName, Args&&... args) noexcept
+{
+    m_eventCanceled = false;
+
+    auto& callbacks = m_callbacks[acName];   // :8 缺失即插入 ⇒ 分配
+```
+
+唯一不分配的那一个是 `:42 void OnPlayerEnterWorld(const PlayerEnterWorldEvent& acEvent) noexcept` —— 它的整个函数体是注释掉的。
+
+**根因**:这 14 个 `noexcept` 覆盖了从脚本加载到每一帧 tick 的全部路径,而 `try`/`catch` 在 `.inl` 里是 **0/0**,在 `.cpp` 里只有 **2 处**:
+
+| 位置(pin) | 分配点 | 谁调它 |
+| --- | --- | --- |
+| `ScriptService.inl:3-26 CallCancelableEvent` | `:8 m_callbacks[acName]`、`:12 sol::protected_function pf{callback}`、`:17 sol::error err = result;`、`:22`/`:25 std::make_tuple` | 六个入口 |
+| `ScriptService.inl:28-42 CallEvent` | `:30 m_callbacks[acName]`、`:34 sol::protected_function pf{callback}`、`:38 sol::error err = result;` | `OnUpdate`、`HandlePlayerQuit` |
+| `ScriptService.cpp:63-72 ~ScriptService`(隐式 `noexcept`) | `:68 m.clear()`、`:71 collect_garbage()` | `World` 析构 |
+| `ScriptService.cpp:74-102 Initialize` | `:80 m_globals = luaVm.globals()`、`:82-83 open_libraries`、`:87 luaVm["package"]["path"] = "./?.lua"`、`:91-101` 每个 manifest 建一条 path | `Code/server/GameServer.cpp:227` |
+| `ScriptService.cpp:169-197 HandlePlayerQuit` | `:171 std::string reason;` + 6 次赋值 | `Code/server/GameServer.cpp:634` |
+| `ScriptService.cpp:204-217 OnUpdate` | `:211 CallEvent("onUpdate", acEvent.Delta)` | `UpdateEvent` sink |
+| `ScriptService.cpp:226-229 AddEventHandler` | `:228 m_callbacks[String(acName)].push_back(acFunction);` | Lua 的 `addEventHandler` |
+| `ScriptService.cpp:231-235 CancelEvent` | `:234 m_cancelReason = aReason;` | Lua 的 `cancelEvent` |
+| 六个入口 `:144`/`:149`/`:154`/`:159`/`:164`/`:199` | 每个都在 `noexcept` 函数体里把字面量建成临时 `String` | 各自的 handler |
+
+`:121 catch (std::exception& exception)` 在 `LoadScript` 里(那个函数**不** `noexcept`,而且它的 catch 是对的);`:213 catch (sol::error& exception)` 在 `OnUpdate` 里,只接 `sol::error`。
+
+**判据(同族对照,载重)**:判据不是「这里会不会耗尽内存」,而是「**全仓唯一有 `try` 的那个文件,它的边界只覆盖了两条路径**」。
+
+`git grep --cached -n -E "\bcatch \(" -- Code/server` 在整个 `Code/server` 只命中 **2 处**,两处都在本文件(`:121`、`:213`),其余 **0 处**。`docs/PITFALLS.md:6179-6180`(§55)记的是同一件事:「全仓 `catch` 只有 8 处」,其中就有这两处。
+
+同族的先例是同一栋楼里刚修完的两处:
+
+| 场景 | `noexcept` 边界在哪 | catch 写在哪 |
+| --- | --- | --- |
+| §101 客户端 STRPM 桥 | `extern "C"` 导出,外面没有调用者 | 函数体里 |
+| §92/§93 插件补丁 | ABI 虚函数,消费方持逐字副本 | 函数体里 |
+| 本节 服务端 `ScriptService` | `Code/server/GameServer.h:103 void OnUpdate() override;`、`:104 OnConsume(...)`、`:106 OnDisconnection(...)` 三者**都不带 `noexcept`** | **仍然写在函数体里** |
+
+第三格是本节最需要解释的一格:它明明可以靠「删掉 `noexcept`」把责任推给上游,但没有。理由是承诺写在本文件身上,而调用链上确实有一个只接 `sol::error` 的 catch —— 那正是「边界放错了位置」的证据:`OnUpdate` 的 `:209-216` catch 在**调用者**身上,而分配在被调者体内(`docs/PITFALLS.md:12389-12394` §92.2 的判据逐字:「这条缺陷的判据不是「`Worker` 有没有分配」,而是**「`Worker` 的调用链上有没有人分配」**」)。
+
+**可达性**:七个入口各有至少一条不需要管理员的路径:
+
+| 入口(pin) | 触发 | 调用点 |
+| --- | --- | --- |
+| `HandlePlayerJoin` | 每个客户端认证后一次 | `Code/server/GameServer.cpp:1023` |
+| `HandlePlayerQuit` | 每次断连一次 | `Code/server/GameServer.cpp:634`(在 `:628 m_adminSessions.erase` 之后、`:645 trigger(PlayerLeaveEvent)` **之前**) |
+| `HandleChatMessage` | 每条聊天包一次 | `Code/server/Services/OverlayService.cpp:75` |
+| `HandleCharacterMove` | **每个 action event 一次** | `Code/server/Services/CharacterService.cpp:411` |
+| `HandleCharacterSpawn` / `HandleCharacterDestoy` | 每个角色出现/消失一次 | `Code/server/Services/CharacterService.cpp:371` / `:339` |
+| `HandleSetTime` | 每次时间同步一次 | `Code/server/Services/CalendarService.cpp:92` |
+
+`Initialize` 是最贵的一条:`Code/server/GameServer.cpp:227 m_pWorld->GetScriptService().Initialize(*m_pResources);` 在 `:218 void GameServer::Initialize()` 内,**监听之前**;它唯一的间接调用者是 `Code/server_runner/DediRunner.cpp:37 m_pServerInstance->Initialize();`(`DediRunner` 的构造函数里),而 `DediRunner` 由 `Code/server_runner/main.cpp:233 const auto cpRunner{std::make_unique<DediRunner>(argc, argv)};` 直接构造 ⇒ 抛出即**进程终止,没有监听、没有日志文件、没有 dump**。
+
+Lua 侧只有一处消费者:`plugins/STRPluginMessagingAPI/extras/str-server-resources/strpm-chat-relay/main.lua:158 addEventHandler("onChatMessage", function(entityId, message)` + `:163 cancelEvent("STRPM transport envelope")`。`addEventHandler` 在脚本加载期被调(即 `Initialize` 的 `ForEachManifest` 循环里),`cancelEvent` 在**每条聊天包**上被调。
+
+**修法**:三个文件,13 个函数体。`noexcept` **一处不删**。
+
+第一步不是加 `try`,是**改签名**:`CallCancelableEvent`/`CallEvent` 的第一个参数从 `const String& acName` 改成 `const char* acName`。
+
+```cpp
+// Code/server/Services/ScriptService.h:49-57(修复后)
+    // The name is a literal at every call site below, and it used to be a
+    // `const String&`: that made each of the six noexcept entry points build a
+    // temporary String *outside* the callee's try block, on the way in, where
+    // nothing can catch it. Taking the pointer keeps the only allocation inside
+    // the function that now handles it.
+    template <typename... Args>
+    std::tuple<bool, String> CallCancelableEvent(const char* acName, Args&&... args) noexcept;
+
+    template <typename... Args> void CallEvent(const char* acName, Args&&... args) noexcept;
+```
+
+六个入口全都传字面量,而 `const char*` → `String` 的临时对象是在**调用者的 `noexcept` 函数体里、被调者 `try` 之前**构造的 —— 在被调者体内新加的 catch 结构性地够不着它。改成指针后,唯一的分配(`m_callbacks[acName]` 那一次隐式转换)回到 `try` 里面。`HandlePlayerQuit` 的 `std::string reason` 同理:
+
+```cpp
+// Code/server/Services/ScriptService.cpp:193-199(修复后)
+void ScriptService::HandlePlayerQuit(ConnectionId_t aConnectionId, Server::EDisconnectReason aReason) noexcept
+{
+    // A pointer, not a std::string: the reason is one of six literals, and building
+    // the string was the last allocation left on the way into CallEvent - on the
+    // outside of its try block, in a noexcept function, on the disconnect path
+    // where the server is already shedding state.
+    const char* reason = "Unknown";
+```
+
+第二步是把 catch 放到**分配所在的那一层**:
+
+```cpp
+// Code/server/Services/ScriptService.inl:14-43(修复后)
+    try
+    {
+        m_eventCanceled = false;
+
+        auto& callbacks = m_callbacks[acName];
+
+        for (auto& callback : callbacks)
+        {
+            sol::protected_function pf{callback};
+            auto result = pf(std::forward<Args>(args)...);
+
+            if (!result.valid())
+            {
+                sol::error err = result;
+                spdlog::error(err.what());
+            }
+
+            if (m_eventCanceled == true)
+                return std::make_tuple(true, m_cancelReason);
+        }
+    }
+    catch (...)
+    {
+        ReportFailure(__FUNCTION__, "ran out of memory while calling the event handlers");
+    }
+
+    return {};
+```
+
+失败值取「**未取消**」(`return {};`),不是 `std::make_tuple(true, m_cancelReason)`:`true` 那一支要构造的正是刚刚构造失败的 `String`,而且「未取消」让 `HandlePlayerJoin` 不踢人、`HandleChatMessage` 照常广播 —— 把脚本层的失败升级成玩法层的失败(踢人/丢聊天)是更坏的结果。原来的 `return std::make_tuple(false, "");` 也改成值初始化,因为 catch 路径上不能有第二次分配。
+
+第三步是**报告本身不能再失败**。`xmake.lua:47` 钉的是 `"spdlog v1.13.0"`,全仓没有定义 `SPDLOG_NO_EXCEPTIONS`,所以 `spdlog::error` 的格式化会分配:
+
+```cpp
+// Code/server/Services/ScriptService.cpp:252-263(修复后)
+void ScriptService::ReportFailure(const char* acpContext, const char* acpDetail) noexcept
+{
+    try
+    {
+        spdlog::error("{}: {}", acpContext, acpDetail);
+    }
+    catch (...)
+    {
+        // Nothing left to say it with. The alternative - letting the report of a
+        // failure become the failure - is strictly worse.
+    }
+}
+```
+
+所有 catch 只调它,两个参数都是字面量或 `__FUNCTION__`(静态存储期),所以调用本身不构造任何对象。
+
+`OnUpdate` 里那个只接 `sol::error` 的 catch 被**删掉**而不是保留:
+
+```cpp
+// Code/server/Services/ScriptService.cpp:231-243(修复后)
+void ScriptService::OnUpdate(const UpdateEvent& acEvent) noexcept
+{
+    if (m_sandboxes.size() == 0)
+        return;
+
+    // This used to be wrapped in a try/catch for sol::error, which was the only
+    // thing that could come out of the call at the time. The handler now lives in
+    // CallEvent itself - a Lua callback is not the only way that call can fail, so
+    // the boundary had to move down to where the allocations are. Keeping a second
+    // catch here would also mean keeping an allocating log call inside a noexcept
+    // tick handler, which is the very thing being fixed.
+    CallEvent("onUpdate", acEvent.Delta);
+}
+```
+
+`sol::error` 现在由 `.inl` 里的 `if (!result.valid())` 分支处理,所以这一层 catch 剩下的唯一作用是在一个 `noexcept` 的 tick handler 里保留一次会分配的日志调用。
+
+`CancelEvent` 的顺序是刻意的:
+
+```cpp
+// Code/server/Services/ScriptService.cpp:282-297(修复后)
+    // The flag is set before the reason is copied, so a failure here still cancels
+    // the event and only loses its text. That order is deliberate: cancellation is
+    // what the caller asked for, the reason is only how it is reported.
+    m_eventCanceled = true;
+
+    try
+    {
+        m_cancelReason = aReason;
+    }
+    catch (...)
+    {
+        ReportFailure(__FUNCTION__, "ran out of memory while storing the cancellation reason");
+    }
+```
+
+`m_eventCanceled = true` 不分配,所以它留在 `try` 外面:取消是调用者要的,理由是报告用的。
+
+**验证**:`git diff --stat` = `Code/server/Services/ScriptService.cpp | 138 ++++++++++++++++++++++++---------` / `Code/server/Services/ScriptService.h | 17 +++-` / `Code/server/Services/ScriptService.inl | 77 +++++++++++++------` / **3 files changed, 168 insertions(+), 64 deletions(-)**,7 个 hunk(`.inl` 1 个 `@@ -1,42 +1,71 @@`、`.h` 1 个 `@@ -46,14 +46,27 @@ struct ScriptService`、`.cpp` 5 个);`ScriptService.inl` 42 行 → 71 行,`ScriptService.h` 76 行 → 89 行,`ScriptService.cpp` 235 行 → 297 行。
+`noexcept` 的**声明一处未动**(14 → 14,新增的第 15 个是 `ReportFailure`);`catch` 从 **2 处 → 8 处**,`try` 从 **2 处 → 8 处**,新增的 6 对全在分配点所在的那一层。
+`Code/server/xmake.lua:12 add_headerfiles("**.h")`、`:13 add_files("**.cpp")` 覆盖三个文件;`.inl` 经 `Code/server/Services/ScriptService.h:89 #include "ScriptService.inl"` 进入同一个编译单元。
+`Code/tests/xmake.lua` 的 target 是 `TPTests`、依赖 `SkyrimEncoding`,**不含 `SkyrimTogetherServer`**,所以服务端的改动在本仓测试里覆盖不到。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以判据是静态的:13 个函数体的分配点是逐字读出来的,`Code/server/GameServer.h:103/104/106` 三个覆写都不带 `noexcept` 也是逐字读出来的。
 ### 修复:服务端的任务去重历史只有时间上界、没有条数上界,而键由客户端任选 —— 判据是「同一层楼的任务日志已经写了 4096,而它们是同一类表」
 
 **现象**:没有任何现象。`Code/server/Services/PartyService.h`(pin 141 行)里的 `struct QuestStageDedupHistory` 只有一条退役路径:

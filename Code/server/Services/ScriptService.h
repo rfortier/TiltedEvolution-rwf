@@ -46,13 +46,26 @@ struct ScriptService
     void AddEventHandler(std::string acName, sol::function acFunction) noexcept;
     void CancelEvent(std::string aReason) noexcept;
 
+    // The name is a literal at every call site below, and it used to be a
+    // `const String&`: that made each of the six noexcept entry points build a
+    // temporary String *outside* the callee's try block, on the way in, where
+    // nothing can catch it. Taking the pointer keeps the only allocation inside
+    // the function that now handles it.
     template <typename... Args>
-    std::tuple<bool, String> CallCancelableEvent(const String& acName, Args&&... args) noexcept;
+    std::tuple<bool, String> CallCancelableEvent(const char* acName, Args&&... args) noexcept;
 
-    template <typename... Args> void CallEvent(const String& acName, Args&&... args) noexcept;
+    template <typename... Args> void CallEvent(const char* acName, Args&&... args) noexcept;
 
   private:
     void BindInbuiltFunctions();
+
+    // Never throws, and that is the whole point of it: the callers below are
+    // noexcept and use it as their handler, so it must not allocate. spdlog::error
+    // formats its arguments into a fresh buffer, which under an exhausted heap
+    // throws a second time - out of the one function that promised not to let
+    // anything through. Both arguments must outlive the call and neither may be
+    // built by it.
+    static void ReportFailure(const char* acpContext, const char* acpDetail) noexcept;
 
   private:
     using TCallbacks = Vector<sol::function>;
