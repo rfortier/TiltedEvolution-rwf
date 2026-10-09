@@ -70,13 +70,21 @@ void PluginMessagingService::FireProxyMapping(STRPM::ProxyMappingEventType aType
     event.newFormID = aNewFormId;
 
     // Collected under the lock and invoked after it is dropped, the same way
-    // OnPluginMessage delivers to channel listeners.
+    // OnPluginMessage delivers to channel listeners. The copy allocates, and
+    // this is reached from an entt observer - a frame with no caller that could
+    // catch a throw, running once per player spawn and once per despawn.
     TiltedPhoques::Vector<MappingListener> listeners;
+    try
     {
         std::scoped_lock lock(g_pluginMessagingMutex);
 
         for (const auto& listener : m_mappingListeners)
             listeners.push_back(MappingListener{ listener.Callback, listener.UserData });
+    }
+    catch (...)
+    {
+        Log("dropped a proxy mapping event: ran out of memory while collecting its listeners");
+        return;
     }
 
     for (const auto& listener : listeners)
@@ -129,43 +137,77 @@ STRPM::Result PluginMessagingService::RegisterChannel(const char* acpChannel, ST
     if (length == 0 || length > STRPM::kMaxChannelLength)
         return STRPM::Result::kInvalidArgument;
 
-    std::scoped_lock lock(g_pluginMessagingMutex);
+    std::uint64_t handle = 0;
 
-    for (const auto& listener : m_listeners)
+    try
     {
-        if (listener.Channel == acpChannel)
-            return STRPM::Result::kChannelAlreadyRegistered;
+        std::scoped_lock lock(g_pluginMessagingMutex);
+
+        for (const auto& listener : m_listeners)
+        {
+            if (listener.Channel == acpChannel)
+                return STRPM::Result::kChannelAlreadyRegistered;
+        }
+
+        handle = m_nextHandle++;
+
+        // Both rows allocate: the listener owns a copy of the channel name and
+        // the handle table owns another.
+        m_channels[handle] = acpChannel;
+        m_listeners.push_back(Listener{ acpChannel, aCallback, apUserData });
+
+        if (apOutHandle)
+            apOutHandle->value = handle;
     }
+    catch (...)
+    {
+        // The registration never completed, so nothing may be left of it. A row
+        // without a listener would be invisible - nothing enumerates the handle
+        // table - and it would hold a channel name forever.
+        {
+            std::scoped_lock lock(g_pluginMessagingMutex);
+            m_channels.erase(handle);
+        }
 
-    const auto handle = m_nextHandle++;
-    m_listeners.push_back(Listener{ acpChannel, aCallback, apUserData });
-    m_channels[handle] = acpChannel;
-
-    if (apOutHandle)
-        apOutHandle->value = handle;
+        Log("a plugin channel registration ran out of memory");
+        return STRPM::Result::kNotAvailable;
+    }
 
     return STRPM::Result::kOk;
 }
 
 STRPM::Result PluginMessagingService::UnregisterChannel(STRPM::ListenerHandle aHandle) noexcept
 {
-    std::scoped_lock lock(g_pluginMessagingMutex);
-
-    const auto it = m_channels.find(aHandle.value);
-    if (it == m_channels.end())
-        return STRPM::Result::kChannelNotRegistered;
-
-    const auto channel = it->second;
-    for (auto listener = m_listeners.begin(); listener != m_listeners.end(); ++listener)
+    try
     {
-        if (listener->Channel == channel)
+        std::scoped_lock lock(g_pluginMessagingMutex);
+
+        const auto it = m_channels.find(aHandle.value);
+        if (it == m_channels.end())
+            return STRPM::Result::kChannelNotRegistered;
+
+        // The name is copied out because erasing the listener below invalidates
+        // the reference, and that copy allocates.
+        const auto channel = it->second;
+        for (auto listener = m_listeners.begin(); listener != m_listeners.end(); ++listener)
         {
-            m_listeners.erase(listener);
-            break;
+            if (listener->Channel == channel)
+            {
+                m_listeners.erase(listener);
+                break;
+            }
         }
+
+        m_channels.erase(it);
+    }
+    catch (...)
+    {
+        // Nothing had been erased yet, so the registration is still whole and
+        // the plugin can simply try again.
+        Log("a plugin channel unregistration ran out of memory");
+        return STRPM::Result::kNotAvailable;
     }
 
-    m_channels.erase(it);
     return STRPM::Result::kOk;
 }
 
@@ -188,39 +230,50 @@ STRPM::Result PluginMessagingService::Send(const char* acpChannel, STRPM::Target
     if (!transport.IsOnline())
         return STRPM::Result::kNotConnected;
 
-    PluginMessagingRequest request{};
-    request.Channel = acpChannel;
-
-    switch (aTarget.kind)
+    // The channel name and the payload are both copied into the request, and
+    // both copies allocate. A plugin that gets a failure back keeps its own
+    // copy of whatever it wanted to send, so a refused send loses nothing.
+    try
     {
-    case STRPM::TargetKind::kServer:
-        request.TargetKind = PluginMessagingRequest::Target::kServer;
-        break;
-    case STRPM::TargetKind::kHost:
-        request.TargetKind = PluginMessagingRequest::Target::kHost;
-        break;
-    case STRPM::TargetKind::kPlayer:
-        request.TargetKind = PluginMessagingRequest::Target::kPlayer;
-        // The plugin echoes back the identity it was handed for a sender, which
-        // is the framework's PlayerId.
-        request.TargetPlayerId = static_cast<std::uint32_t>(aTarget.connectionID & 0xFFFFFFFFu);
-        break;
-    case STRPM::TargetKind::kAllPlayers:
-    default:
-        request.TargetKind = PluginMessagingRequest::Target::kAllPlayers;
-        break;
-    }
+        PluginMessagingRequest request{};
+        request.Channel = acpChannel;
 
-    if (aSize > 0)
+        switch (aTarget.kind)
+        {
+        case STRPM::TargetKind::kServer:
+            request.TargetKind = PluginMessagingRequest::Target::kServer;
+            break;
+        case STRPM::TargetKind::kHost:
+            request.TargetKind = PluginMessagingRequest::Target::kHost;
+            break;
+        case STRPM::TargetKind::kPlayer:
+            request.TargetKind = PluginMessagingRequest::Target::kPlayer;
+            // The plugin echoes back the identity it was handed for a sender, which
+            // is the framework's PlayerId.
+            request.TargetPlayerId = static_cast<std::uint32_t>(aTarget.connectionID & 0xFFFFFFFFu);
+            break;
+        case STRPM::TargetKind::kAllPlayers:
+        default:
+            request.TargetKind = PluginMessagingRequest::Target::kAllPlayers;
+            break;
+        }
+
+        if (aSize > 0)
+        {
+            const auto* pBytes = static_cast<const std::uint8_t*>(apData);
+            request.PluginData.assign(pBytes, pBytes + aSize);
+        }
+
+        // The framework's own transport carries the payload: no separate socket and
+        // no chat envelope, so nothing here can surface as a chat line.
+        if (!transport.Send(request))
+            return STRPM::Result::kTransportError;
+    }
+    catch (...)
     {
-        const auto* pBytes = static_cast<const std::uint8_t*>(apData);
-        request.PluginData.assign(pBytes, pBytes + aSize);
-    }
-
-    // The framework's own transport carries the payload: no separate socket and
-    // no chat envelope, so nothing here can surface as a chat line.
-    if (!transport.Send(request))
+        Log("a plugin send ran out of memory while building the payload");
         return STRPM::Result::kTransportError;
+    }
 
     return STRPM::Result::kOk;
 }
@@ -254,8 +307,19 @@ STRPM::Result PluginMessagingService::SetLocalDisplayName(const char* acpDisplay
     // login (NotifyPluginMessaging::SenderDisplayName, filled from
     // Player::GetUsername). Letting a plugin set it would let any plugin claim
     // to speak as somebody else.
-    std::scoped_lock lock(g_pluginMessagingMutex);
-    m_localDisplayName = acpDisplayName;
+    try
+    {
+        std::scoped_lock lock(g_pluginMessagingMutex);
+        m_localDisplayName = acpDisplayName;
+    }
+    catch (...)
+    {
+        // The name is deliberately never put on the wire (see above), so losing
+        // it costs nothing beyond the plugin's own bookkeeping.
+        Log("a plugin display name was dropped: ran out of memory");
+        return STRPM::Result::kNotAvailable;
+    }
+
     return STRPM::Result::kOk;
 }
 
@@ -303,18 +367,29 @@ STRPM::Result PluginMessagingService::ResolveProxy(STRPM::ConnectionID aConnecti
     // is the proxy a plugin has to act on.
     const auto playerId = static_cast<std::uint32_t>(aConnectionId & 0xFFFFFFFFu);
 
-    auto view = m_pWorld->view<FormIdComponent, PlayerComponent>();
-    for (auto entity : view)
+    // view<...>() creates a component pool the first time it is asked for one,
+    // and this resolver is called for every payload every plugin receives. A
+    // failure here answers "not found" below, which every caller already treats
+    // as a normal state rather than a failure.
+    try
     {
-        if (view.get<PlayerComponent>(entity).Id != playerId)
-            continue;
+        auto view = m_pWorld->view<FormIdComponent, PlayerComponent>();
+        for (auto entity : view)
+        {
+            if (view.get<PlayerComponent>(entity).Id != playerId)
+                continue;
 
-        const auto formId = view.get<FormIdComponent>(entity).Id;
-        if (formId == 0)
-            break;
+            const auto formId = view.get<FormIdComponent>(entity).Id;
+            if (formId == 0)
+                break;
 
-        *apOutFormId = static_cast<STRPM::ProxyFormID>(formId);
-        return STRPM::Result::kOk;
+            *apOutFormId = static_cast<STRPM::ProxyFormID>(formId);
+            return STRPM::Result::kOk;
+        }
+    }
+    catch (...)
+    {
+        Log("a proxy lookup ran out of memory while scanning the player components");
     }
 
     // Not found is a normal state, not a failure: a peer that has not been
@@ -328,15 +403,26 @@ STRPM::Result PluginMessagingService::RegisterProxyMappingListener(STRPM::ProxyM
     if (!aCallback)
         return STRPM::Result::kInvalidArgument;
 
-    std::scoped_lock lock(g_pluginMessagingMutex);
-
-    for (const auto& listener : m_mappingListeners)
+    try
     {
-        if (listener.Callback == aCallback && listener.UserData == apUserData)
-            return STRPM::Result::kOk;
+        std::scoped_lock lock(g_pluginMessagingMutex);
+
+        for (const auto& listener : m_mappingListeners)
+        {
+            if (listener.Callback == aCallback && listener.UserData == apUserData)
+                return STRPM::Result::kOk;
+        }
+
+        m_mappingListeners.push_back(MappingListener{ aCallback, apUserData });
+    }
+    catch (...)
+    {
+        // A plugin that is not registered here is back to polling ResolveProxy,
+        // which is what every plugin did before this listener existed.
+        Log("a proxy mapping listener registration ran out of memory");
+        return STRPM::Result::kNotAvailable;
     }
 
-    m_mappingListeners.push_back(MappingListener{ aCallback, apUserData });
     return STRPM::Result::kOk;
 }
 
@@ -384,6 +470,7 @@ void PluginMessagingService::OnPluginMessage(const NotifyPluginMessaging& acMess
     message.sequence = 0;
 
     TiltedPhoques::Vector<Delivery> deliveries;
+    try
     {
         std::scoped_lock lock(g_pluginMessagingMutex);
 
@@ -398,6 +485,13 @@ void PluginMessagingService::OnPluginMessage(const NotifyPluginMessaging& acMess
 
         if (m_transportCallback)
             deliveries.push_back(Delivery{ m_transportCallback, m_transportUserData });
+    }
+    catch (...)
+    {
+        // Same answer as the two drops above: the payload is lost, and nothing
+        // half-built is handed to a plugin.
+        Log("dropped a plugin payload: ran out of memory while collecting its listeners");
+        return;
     }
 
     for (const auto& delivery : deliveries)

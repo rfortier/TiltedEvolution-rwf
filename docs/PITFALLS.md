@@ -13501,4 +13501,148 @@ git grep -n 'GetParty()' -- Code/server
 > 本轮就是这个差集里唯一的一条,而它藏在一个每 10 秒跑一次、写得很整齐的循环里。
 > 第三条:**`git log -S` 是找「谁漏改了一行」的最快尺。**
 > `663a187e` 改了成员类型、访问器、广播签名,只漏了 `:88` 这一行;`git log -S 'view<PartyComponent>'` 只给出写下它的那次提交,说明它从未被改过。
+## 101. 2026-10-21 场次:客户端 STRPM 桥的 19 个入口全写着 noexcept,其中 8 个函数体在分配,而它们唯一的出口是同一个 DLL 里的 C 导出 —— 判据是「导出外面没有能接住异常的调用者,所以接住要写在函数体里」
+
+> **锚点**:`Code/client/Services/PluginMessagingService.cpp`(161 insertions / 67 deletions / 30 个 hunk,405 行 → 499 行)。
+
+### 101.1 缺陷
+
+`Code/client/Services/PluginMessagingService.cpp`(pin 405 行)里 **19 个函数签名**都带 `noexcept`,`try`/`catch` 是 **0/0**。其中 8 个函数体在分配:
+
+```cpp
+// Code/client/Services/PluginMessagingService.cpp:63-64(pin,修复前)
+void PluginMessagingService::FireProxyMapping(STRPM::ProxyMappingEventType aType, STRPM::ConnectionID aConnectionId,
+                                              STRPM::ProxyFormID aOldFormId, STRPM::ProxyFormID aNewFormId) noexcept
+{
+    ...
+    TiltedPhoques::Vector<MappingListener> listeners;   // :74
+    {
+        std::scoped_lock lock(g_pluginMessagingMutex);
+
+        for (const auto& listener : m_mappingListeners)
+            listeners.push_back(MappingListener{ listener.Callback, listener.UserData });   // :79
+    }
+```
+
+`Code/client/Services/PluginMessagingService.cpp:123`(pin)逐字 `STRPM::Result PluginMessagingService::RegisterChannel(const char* acpChannel, STRPM::ReceiveCallback aCallback, void* apUserData, STRPM::ListenerHandle* apOutHandle) noexcept`,体内 `:141` 逐字 `m_listeners.push_back(Listener{ acpChannel, aCallback, apUserData });`、`:142` 逐字 `m_channels[handle] = acpChannel;`。
+
+八个帧逐个(pin 行号 / 体内分配点 / 谁调它):
+
+| 函数 | pin 行 | 体内分配点 | 调用者 |
+| --- | --- | --- | --- |
+| `FireProxyMapping` | `:63-84` | `:74` + `:79` | entt observer(`OnPlayerComponentAdded`/`OnPlayerComponentRemoved`) |
+| `RegisterChannel` | `:123-148` | `:141` + `:142` | `PluginMessagingExport.cpp:30` |
+| `UnregisterChannel` | `:150-170` | `:158 const auto channel = it->second;` | `PluginMessagingExport.cpp:31` |
+| `Send` | `:172-226` | `:192 request.Channel =` + `:217 request.PluginData.assign` | `PluginMessagingExport.cpp:32` |
+| `SetLocalDisplayName` | `:247-260` | `:258 m_localDisplayName = acpDisplayName;` | `PluginMessagingExport.cpp:36` |
+| `ResolveProxy` | `:290-324` | `:306 auto view = m_pWorld->view<FormIdComponent, PlayerComponent>();` | `PluginMessagingExport.cpp:56` |
+| `RegisterProxyMappingListener` | `:326-341` | `:339 m_mappingListeners.push_back(...)` | `PluginMessagingExport.cpp:57` |
+| `OnPluginMessage` | `:359-405` | `:386 TiltedPhoques::Vector<Delivery> deliveries;` + `:396`/`:400` | `Code/client/World.cpp:65` 的 dispatcher sink |
+
+### 101.2 判据
+
+判据不是「这里会不会耗尽内存」,而是「**这 8 个帧里哪一个是最后一道 `noexcept`**」。它们没有一个是内部调用 —— 全部被 `Code/client/Services/PluginMessagingExport.cpp` 取地址后交给插件:
+
+| 位置 | 写法 |
+| --- | --- |
+| `Code/client/Services/PluginMessagingExport.cpp:75` | `STRPM_EXPORT STRPM::Result STRPM_CALL STR_QueryPluginMessagingInterface(...) noexcept` |
+| `:80` | `STR_QueryPluginMessagingProxyResolver(...) noexcept` |
+| `:146` | `STR_QueryPluginMessagingDiagnostics(...) noexcept` |
+| `:151` | `STRPM_QueryTransportInterface(...) noexcept` |
+| `:25-37` / `:54-65` / `:125-140` | 三个函数局部 static `s_interface` 的 14 个 lambda,**逐个都写 `noexcept`** |
+
+导出是 C ABI,插件经 `GetProcAddress` 直接调 —— **外面没有能接住异常的调用者**。抛出点(本文件)与 `noexcept` 边界(同 DLL 的导出)之间没有任何一层写 `try`,这与 §99 的跨 DLL 情形不同:那里是两个模块各写各的,这里是同一个模块里从函数体一路裸奔到 `extern "C"`。
+
+同族先例(载重):插件侧那 7 个子模块**没有任何一处 `try`/`catch`**(逐个实测 `try=0 catch=0`),而它们全部经这四个导出进来 ⇒ 这 8 个帧是这条链上唯一能放 `catch` 的地方。
+
+### 101.3 可达性
+
+触发频率由调用方决定,不由这条路径决定:
+
+| 帧 | 触发时机 |
+| --- | --- |
+| `FireProxyMapping` | 每次玩家实体出现/消失各一次 |
+| `ResolveProxy` | 每个插件每收到一个载荷调一次(七个插件的接收路径全部经它) |
+| `OnPluginMessage` | 每个入站载荷一次 |
+
+`FireProxyMapping` 的四个调用帧自己也都写着 `noexcept`:`Code/client/Services/Generic/CharacterService.cpp:358 OnAssignCharacter`、`:481 OnCharacterSpawn`、`Code/client/Services/Generic/OverlayService.cpp:434 OnPlayerComponentRemoved`、`Code/client/Services/Generic/WeatherService.cpp:110 OnPlayerComponentRemoved`。
+
+### 101.4 修法
+
+给这 8 个函数体各包一层 `try { … } catch (...) { Log("…"); return <既有失败值>; }`,catch 里只记一行、**不重试**。`noexcept` 一处未改 —— 删掉它只会把终止点挪到导出那一帧。
+
+`Code/client/Services/PluginMessagingService.cpp:142-174`(修复后)逐字
+
+```cpp
+    try
+    {
+        std::scoped_lock lock(g_pluginMessagingMutex);
+
+        for (const auto& listener : m_listeners)
+        {
+            if (listener.Channel == acpChannel)
+                return STRPM::Result::kChannelAlreadyRegistered;
+        }
+
+        handle = m_nextHandle++;
+
+        // Both rows allocate: the listener owns a copy of the channel name and
+        // the handle table owns another.
+        m_channels[handle] = acpChannel;
+        m_listeners.push_back(Listener{ acpChannel, aCallback, apUserData });
+
+        if (apOutHandle)
+            apOutHandle->value = handle;
+    }
+    catch (...)
+    {
+        // The registration never completed, so nothing may be left of it. A row
+        // without a listener would be invisible - nothing enumerates the handle
+        // table - and it would hold a channel name forever.
+        {
+            std::scoped_lock lock(g_pluginMessagingMutex);
+            m_channels.erase(handle);
+        }
+
+        Log("a plugin channel registration ran out of memory");
+        return STRPM::Result::kNotAvailable;
+    }
+```
+
+`RegisterChannel` 是唯一需要回滚的一处:两条表都分配,而 `m_channels` **没有任何枚举者**,半写下的行会永远持有一个 channel 名。`handle` 提到 `try` 外初始化(`:140 std::uint64_t handle = 0;`),catch 里重新取锁擦掉那一行(`scoped_lock` 已析构,不重入)。
+`ResolveProxy` 的 catch 只记一行**不 return**,落到既有的 `:397 *apOutFormId = STRPM::kInvalidProxyFormID; return STRPM::Result::kTargetNotFound;` —— 「没找到」本来就是正常状态。
+
+失败值一律沿用契约里**既有**的码(`kNotAvailable` / `kTransportError` / `kTargetNotFound`):七个插件各持一份 `ResultToString`,`plugins/DAVSyncTogether/src/DAVNetworkService.cpp:181`、`plugins/TradeTogether/src/StrMessagingTransport.cpp:440`、`plugins/AnimSyncTogether/src/STRPMClient.cpp:375` 都只看 `kOk`/`kTargetNotFound`/`kNotAvailable`,**没有一处区分「没找到」与「分配失败」** ⇒ 新增一个码的收益为零。
+
+### 101.5 复核命令(照抄)
+
+```powershell
+# 1. 签名一处未动(应仍 19),try/catch 从 0/0 变成 9/9
+git show :Code/client/Services/PluginMessagingService.cpp | Select-String -Pattern 'noexcept' | Measure-Object
+Select-String -Path Code\client\Services\PluginMessagingService.cpp -Pattern '\btry\b|\bcatch\b' | Measure-Object
+
+# 2. 八个帧的体内分配点(逐字)
+git show :Code/client/Services/PluginMessagingService.cpp | Select-String -Pattern 'listeners.push_back|m_channels\[handle\]|m_listeners.push_back|it->second|request.Channel =|PluginData.assign|m_localDisplayName =|view<FormIdComponent|m_mappingListeners.push_back|Vector<Delivery>'
+
+# 3. 导出那一层全是 noexcept,且外面没有调用者
+Select-String -Path Code\client\Services\PluginMessagingExport.cpp -Pattern 'noexcept|STRPM_EXPORT'
+
+# 4. 插件侧没有一处 try/catch(七个都要 0/0)
+#    plugins/<name>/src/*.cpp 逐个 Select-String -Pattern '\btry\b|\bcatch\b'
+
+# 5. 编译闭包:两个文件都在 add_files("**.cpp|Games/Skyrim/**") 覆盖范围内
+Select-String -Path Code\client\xmake.lua -Pattern 'add_files'
+```
+
+**验证**:`git diff --numstat` = `161	67	Code/client/Services/PluginMessagingService.cpp` / **30 个 hunk** / 405 行 → **499 行**;`noexcept` 出现次数 **19 → 19**,`try`/`catch` **0/0 → 9/9**(第 9 个 `try` 是 `Log` 那一行的注释词,不计入函数体)。
+`Code/client/xmake.lua:21` 的 `add_files("**.cpp|Games/Skyrim/**")` 覆盖本文件与 `PluginMessagingExport.cpp`,两者都在 `SkyrimTogetherClient` 与 `SkyrimTogetherClientLegacy` 的编译闭包内。
+`Code/tests/xmake.lua` 的 target 是 `TPTests`、依赖 `SkyrimEncoding`,**不含 `SkyrimTogetherClient`**,所以客户端的改动在本仓测试里覆盖不到。
+**本机不编译**(§0/§1),所以判据是静态的:8 个函数体各自的分配点是逐字读出来的,而它们的调用者全是 `noexcept` 或 C 导出。
+
+> **教训**:第一条:**`extern "C"` 导出是异常的终点站 —— 外面没有调用者,所以 `catch` 只能写在函数体里。**
+> 这 8 个函数没有一个是内部调用,「调用者会处理」这句话在 C ABI 边界上不成立。
+> 第二条:**同一个 DLL 里也要数 `noexcept` 的层数,不能因为「都是自己人」就假定有人接。**
+> 抛出点和边界都在本仓,中间那 30 个 hunk 里一层 `try` 都没有 —— §99 是跨模块,这一节是跨帧。
+> 第三条:**失败之后留下的半成品,要和失败本身一起设计。**
+> `RegisterChannel` 的两条表都分配,而 `m_channels` 没有任何枚举者:先写 handle 再写 listener,失败时就只能靠 catch 里的 `erase` 收尾。
 
