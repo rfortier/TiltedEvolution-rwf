@@ -9,6 +9,83 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:服务端的任务去重历史只有时间上界、没有条数上界,而键由客户端任选 —— 判据是「同一层楼的任务日志已经写了 4096,而它们是同一类表」
+
+**现象**:没有任何现象。`Code/server/Services/PartyService.h`(pin 141 行)里的 `struct QuestStageDedupHistory` 只有一条退役路径:
+
+```cpp
+// Code/server/Services/PartyService.h:79-80(pin)
+void inline Expire() noexcept;
+Container m_cache{};       // Short, time-ordered, duplicates valid (do they ever happen?)
+```
+
+**根因**:`Expire()` 只看时钟。`Code/server/Services/QuestService.cpp:309-321`(pin):
+
+```cpp
+const auto expiration = std::chrono::steady_clock::now() - uQuestHistoryExpiration.value_as<std::chrono::milliseconds>();
+
+while (!m_cache.empty() && m_cache.front().timestamp < expiration)
+{
+    auto& it = m_cache.front();
+    spdlog::debug(
+        "{}: expiring dedup history entry quest/scene: {:X}, stage: {}, status: {}, by player {:X}", __FUNCTION__,
+        it.questOrSceneId.LogFormat(), it.questStage, it.questStatus, it.playerId);
+    m_cache.pop_front();
+}
+```
+
+窗口是 `Code/server/Services/QuestService.cpp:17` 的 `Console::Setting uQuestHistoryExpiration("GameServer:uQuestHistoryExpiration", "Time in milliseconds to retain quest progression changes for deduplication", 30000U);` —— 30 秒。而 `Add` 在三条路径上都是无条件调用的(`:170` leader、`:203` member、`:258` scene begin),键由发送方逐包任选:`Code/encoding/Messages/RequestQuestUpdate.h` 的 `GameId Id; uint16_t Stage; uint8_t Status; uint8_t ClientQuestType;`,而 `GameId` 是 `{uint32_t BaseId; uint32_t ModId;}` 的 128 位值。⇒ 一个不断编新 id 的客户端,在这 30 秒窗口里能塞进多少行只取决于它的发送速率。
+
+**判据(同族对照,载重)**:同一层楼的任务日志已经为这件事写过答案 —— `Code/server/Services/QuestService.h:27-32`:
+
+| 事实 | 实测 |
+| --- | --- |
+| 同族上限 | `Code/server/Services/QuestService.h:32 static constexpr std::uint32_t kMaxQuestLogEntries = 4096;` |
+| 它的注释 | 「A quest log row is keyed by a GameId the client picks, and the only thing that ever retires one is a Stopped update for that same id: a client that keeps inventing ids grows this table for as long as it stays connected.」 |
+| 它的满表行为 | `Code/server/Services/QuestService.cpp:71 else if (entries.size() >= kMaxQuestLogEntries)` → `:78 spdlog::warn(...)` → **仍然转发**,只拒绝新键 |
+| 全树速率限制 | `git grep -n -iE "ratelimit\|rate_limit\|tokenbucket\|kBurst" -- Code/server` 只命中 `Code/server/Services/PluginMessagingService.{h,cpp}` 的令牌桶 ⇒ 任务包没有任何速率限制 |
+| 全树 `kMax*` | `git grep -n -E "kMax[A-Za-z]+\s*=" -- Code/server` 共 7 条:6 条既有 + 本条新增的 1 条 |
+
+两张表的键都是对端任选的 `GameId`,退役路径都只有一条。所以这里取同一个数:**4096**。
+
+**可达性**:包从 `Code/server/GameServer.cpp:261-275` 的 handler lambda(不带 `noexcept`)进,`:274 m_pWorld->GetDispatcher().trigger(PacketEvent<T>(pRealMessage.get(), pPlayer));`,由 `Code/server/Services/QuestService.cpp:23` 的 sink 接到 `:27 void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessage) noexcept`。服务端 handler 链上没有任何一层限流,唯一的门是 `Code/server/GameServer.cpp:584` 的单包大小检查。
+
+**修法**:`Code/server/Services/PartyService.h:58` 加 `static constexpr uint32_t kMaxEntries = 4096;`(与隔壁同名同值),`Add` 先查重、满表拒新:
+
+```cpp
+// Code/server/Services/QuestService.cpp:348-377(修复后)
+    Expire();
+
+    // Every row is keyed by what the sender picked and Expire() looks at the clock alone, so a
+    // client that keeps inventing ids grows this deque for the whole expiration window. A row that
+    // is already here is the ordinary case - it is what a deduplication history is for - and it is
+    // moved to the back instead of being recorded twice: the window is meant to run from the most
+    // recent occurrence - the scene master check below asks for "a recent scene change", and a
+    // player who re-enters the same scene is exactly the case it is there for - and the deque then
+    // only grows from ids nobody has sent before. Past the cap a new id is refused the way a full
+    // quest log refuses one; the rows already here keep deduplicating.
+    const auto existing = std::find_if(m_cache.begin(), m_cache.end(), [&](const Entry& e) {
+        return e.questOrSceneId == acQuestOrSceneId && e.questStage == acQuestStage && e.questStatus == acQuestStatus && e.playerId == acPlayerId;
+    });
+
+    if (existing != m_cache.end())
+        m_cache.erase(existing);
+
+    else if (m_cache.size() >= kMaxEntries)
+    {
+        spdlog::warn("{}: dedup history is full ({} entries), not recording quest/scene {:X}, stage: {}, status: {}, by player {:X}", __FUNCTION__, m_cache.size(),
+                     acQuestOrSceneId.LogFormat(), acQuestStage, acQuestStatus, acPlayerId);
+        return;
+    }
+
+    m_cache.emplace_back(acQuestOrSceneId, acQuestStage, acQuestStatus, acPlayerId, acTimeStamp);
+```
+
+查重那一半不是为了省内存,是为了**不改变语义**:`Found`/`FoundWPlayerId` 的判定全部发生在 `Add` 之前(`:160`、`:178`、`:202`、`:256`),它们只问「有没有这一行」,第二行对它们没有任何区别。第一版写的是 `return;`(重复即丢弃),被 `:256` 否掉了 —— 那里的注释逐字「Checking for a recent scene change in history keeps us unstuck in case scene end event is missed」,直接丢弃会让「玩家重进同一场景」这一正是它要覆盖的用例看到一条陈旧行;`erase` 加落到末尾的 `emplace_back` 是**刷新那一行的窗口**,不是丢掉它。
+
+**验证**:`git diff --stat` = `Code/server/Services/PartyService.h | 7 +++++++` / `Code/server/Services/QuestService.cpp | 23 +++++++++++++++++++++++` / **2 files changed, 30 insertions(+)**,两个 hunk(`@@ -50,6 +50,13 @@ struct QuestStageDedupHistory`、`@@ -350,5 +350,28 @@ void QuestStageDedupHistory::Add(const QuestOrSceneId& acQuestOrSceneId, const Q`),`PartyService.h` 141 行 → 148 行,`QuestService.cpp` 354 行 → 377 行。
+`Code/tests/xmake.lua` 的 target 是 `TPTests`、依赖 `SkyrimEncoding`,**不含 `SkyrimTogetherServer`**,所以服务端的改动在本仓测试里覆盖不到。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以判据是静态的:`Add` 的三个调用点、`Found`/`FoundWPlayerId` 的四个判定点、以及全树唯一的速率限制都是逐条读出来的。
 ### 修复:客户端 STRPM 桥的 19 个入口全写着 noexcept,其中 8 个函数体在分配,而它们唯一的出口是同一个 DLL 里的 C 导出 —— 判据是「导出外面没有能接住异常的调用者,所以接住要写在函数体里」
 
 **现象**:没有任何现象。`Code/client/Services/PluginMessagingService.cpp`(pin 405 行)里 **19 个函数签名**都带 `noexcept`,其中 **8 个函数体在分配**:

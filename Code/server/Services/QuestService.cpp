@@ -350,5 +350,28 @@ void QuestStageDedupHistory::Add(const QuestOrSceneId& acQuestOrSceneId, const Q
                                  const TimeStamp acTimeStamp)
 {
     Expire();
+
+    // Every row is keyed by what the sender picked and Expire() looks at the clock alone, so a
+    // client that keeps inventing ids grows this deque for the whole expiration window. A row that
+    // is already here is the ordinary case - it is what a deduplication history is for - and it is
+    // moved to the back instead of being recorded twice: the window is meant to run from the most
+    // recent occurrence - the scene master check below asks for "a recent scene change", and a
+    // player who re-enters the same scene is exactly the case it is there for - and the deque then
+    // only grows from ids nobody has sent before. Past the cap a new id is refused the way a full
+    // quest log refuses one; the rows already here keep deduplicating.
+    const auto existing = std::find_if(m_cache.begin(), m_cache.end(), [&](const Entry& e) {
+        return e.questOrSceneId == acQuestOrSceneId && e.questStage == acQuestStage && e.questStatus == acQuestStatus && e.playerId == acPlayerId;
+    });
+
+    if (existing != m_cache.end())
+        m_cache.erase(existing);
+
+    else if (m_cache.size() >= kMaxEntries)
+    {
+        spdlog::warn("{}: dedup history is full ({} entries), not recording quest/scene {:X}, stage: {}, status: {}, by player {:X}", __FUNCTION__, m_cache.size(),
+                     acQuestOrSceneId.LogFormat(), acQuestStage, acQuestStatus, acPlayerId);
+        return;
+    }
+
     m_cache.emplace_back(acQuestOrSceneId, acQuestStage, acQuestStatus, acPlayerId, acTimeStamp);
 }

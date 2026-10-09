@@ -50,6 +50,13 @@ struct QuestStageDedupHistory
     using iterator = Container::iterator;
     using const_iterator = Container::const_iterator;
 
+    // A row is keyed by a GameId the client picks, and the only thing that ever retires one is
+    // Expire(), which looks at time alone: a client that keeps inventing ids grows this deque for
+    // the whole expiration window. Bounded here like the quest log next door, with the same
+    // number, because it is the same kind of table. A full history stops recording new ids and
+    // says so; the entries already in it keep deduplicating.
+    static constexpr uint32_t kMaxEntries = 4096;
+
     void Add(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage, const QuestStatus acQuestStatus,
              const PlayerId& acPlayerId, const TimeStamp acTimeStamp = std::chrono::steady_clock::now());
 
