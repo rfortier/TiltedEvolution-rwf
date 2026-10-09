@@ -25,6 +25,8 @@
 #include <cxxopts.hpp>
 
 #include <spdlog/spdlog.h>
+
+#include <Diagnostics.h>
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
 #include <BuildInfo.h>

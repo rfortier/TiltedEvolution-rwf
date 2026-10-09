@@ -13,9 +13,19 @@ AdminService::AdminService(World& aWorld, entt::dispatcher& aDispatcher)
 
 void AdminService::HandleShutdown(const AdminPacketEvent<AdminShutdownRequest>& acMessage) noexcept
 {
-    spdlog::warn("Shutdown was requested by {:x}", acMessage.ConnectionId);
+    // The report formats into a fresh buffer, which is the only thing here that can
+    // allocate. The shutdown itself is what the admin asked for and it is issued either
+    // way: a request that could not be logged is still a request.
+    try
+    {
+        spdlog::warn("Shutdown was requested by {:x}", acMessage.ConnectionId);
 
-    GameServer::Get()->Kill();
+        GameServer::Get()->Kill();
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while logging a shutdown request");
+    }
 }
 
 void AdminService::sink_it_(const spdlog::details::log_msg& msg)

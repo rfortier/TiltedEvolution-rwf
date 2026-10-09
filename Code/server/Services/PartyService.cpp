@@ -112,266 +112,325 @@ void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
 void PartyService::OnPartyCreate(const PacketEvent<PartyCreateRequest>& acPacket) noexcept
 {
-    Player* const player = acPacket.pPlayer;
-    auto& inviterPartyComponent = player->GetParty();
-
-    spdlog::debug("[PartyService]: Received request to create party");
-
-    if (!inviterPartyComponent.JoinedPartyId) // Ensure not in party
+    // Every step below allocates: the party row, the member list, and a list and a
+    // string inside each notification. The request goes unanswered instead of the
+    // server going down; the player stays without a party and can ask again.
+    try
     {
-        uint32_t partyId = m_nextId++;
-        Party& party = m_parties[partyId];
-        party.Members.push_back(player);
-        party.LeaderPlayerId = player->GetId();
-        inviterPartyComponent.JoinedPartyId = partyId;
+        Player* const player = acPacket.pPlayer;
+        auto& inviterPartyComponent = player->GetParty();
 
-        spdlog::debug("[PartyService]: Created party for {}", player->GetId());
-        SendPartyJoinedEvent(party, player);
+        spdlog::debug("[PartyService]: Received request to create party");
 
-        if (m_parties.size() == 1 && GameServer::Get()->AllowsAutoPartyJoin())
+        if (!inviterPartyComponent.JoinedPartyId) // Ensure not in party
         {
-            for (Player* otherPlayer : m_world.GetPlayerManager())
+            uint32_t partyId = m_nextId++;
+            Party& party = m_parties[partyId];
+            party.Members.push_back(player);
+            party.LeaderPlayerId = player->GetId();
+            inviterPartyComponent.JoinedPartyId = partyId;
+
+            spdlog::debug("[PartyService]: Created party for {}", player->GetId());
+            SendPartyJoinedEvent(party, player);
+
+            if (m_parties.size() == 1 && GameServer::Get()->AllowsAutoPartyJoin())
             {
-                if (otherPlayer->GetId() != player->GetId())
+                for (Player* otherPlayer : m_world.GetPlayerManager())
                 {
-                    party.Members.push_back(otherPlayer);
-                    otherPlayer->GetParty().JoinedPartyId = partyId;
+                    if (otherPlayer->GetId() != player->GetId())
+                    {
+                        party.Members.push_back(otherPlayer);
+                        otherPlayer->GetParty().JoinedPartyId = partyId;
 
-                    SendPartyJoinedEvent(party, otherPlayer);
+                        SendPartyJoinedEvent(party, otherPlayer);
+                    }
                 }
-            }
 
-            BroadcastPartyInfo(partyId);
+                BroadcastPartyInfo(partyId);
+            }
         }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while creating a party");
     }
 }
 
 void PartyService::OnPartyChangeLeader(const PacketEvent<PartyChangeLeaderRequest>& acPacket) noexcept
 {
-    auto& message = acPacket.Packet;
-    Player* const player = acPacket.pPlayer;
-    Player* const pNewLeader = m_world.GetPlayerManager().GetById(message.PartyMemberPlayerId);
-
-    spdlog::debug("[PartyService]: Received request to change party leader to {}", message.PartyMemberPlayerId);
-
-    if (!pNewLeader)
+    // The report below is the only allocation: the member list is walked, not copied,
+    // and BroadcastPartyInfo guards its own. The leader is already changed above it.
+    try
     {
-        spdlog::error("[PartyService]: Player {} does not exist. Cannot change party leader", message.PartyMemberPlayerId);
-        return;
-    }
+        auto& message = acPacket.Packet;
+        Player* const player = acPacket.pPlayer;
+        Player* const pNewLeader = m_world.GetPlayerManager().GetById(message.PartyMemberPlayerId);
 
-    auto& inviterPartyComponent = player->GetParty();
-    if (inviterPartyComponent.JoinedPartyId) // Ensure not in party
-    {
-        // find, not operator[]: a JoinedPartyId that no party carries any more would insert a
-        // brand new party with an uninitialised leader id, and the comparison below would then
-        // read it.
-        const auto partyItor = m_parties.find(*inviterPartyComponent.JoinedPartyId);
-        if (partyItor != std::end(m_parties))
+        spdlog::debug("[PartyService]: Received request to change party leader to {}", message.PartyMemberPlayerId);
+
+        if (!pNewLeader)
         {
-            Party& party = partyItor->second;
-            if (party.LeaderPlayerId == player->GetId())
+            spdlog::error("[PartyService]: Player {} does not exist. Cannot change party leader", message.PartyMemberPlayerId);
+            return;
+        }
+
+        auto& inviterPartyComponent = player->GetParty();
+        if (inviterPartyComponent.JoinedPartyId) // Ensure not in party
+        {
+            // find, not operator[]: a JoinedPartyId that no party carries any more would insert a
+            // brand new party with an uninitialised leader id, and the comparison below would then
+            // read it.
+            const auto partyItor = m_parties.find(*inviterPartyComponent.JoinedPartyId);
+            if (partyItor != std::end(m_parties))
             {
-                for (auto& pPlayer : party.Members)
+                Party& party = partyItor->second;
+                if (party.LeaderPlayerId == player->GetId())
                 {
-                    if (pPlayer->GetId() == pNewLeader->GetId())
+                    for (auto& pPlayer : party.Members)
                     {
-                        party.LeaderPlayerId = pPlayer->GetId();
-                        spdlog::debug("[PartyService]: Changed party leader to {}, updating party members.", party.LeaderPlayerId);
-                        BroadcastPartyInfo(*inviterPartyComponent.JoinedPartyId);
-                        break;
+                        if (pPlayer->GetId() == pNewLeader->GetId())
+                        {
+                            party.LeaderPlayerId = pPlayer->GetId();
+                            spdlog::debug("[PartyService]: Changed party leader to {}, updating party members.", party.LeaderPlayerId);
+                            BroadcastPartyInfo(*inviterPartyComponent.JoinedPartyId);
+                            break;
+                        }
                     }
                 }
             }
         }
     }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a party change");
+    }
 }
 
 void PartyService::OnPartyKick(const PacketEvent<PartyKickRequest>& acPacket) noexcept
 {
-    auto& message = acPacket.Packet;
-    Player* const player = acPacket.pPlayer;
-    Player* const pKick = m_world.GetPlayerManager().GetById(message.PartyMemberPlayerId);
-
-    spdlog::debug("[PartyService]: Received request to change party leader to {}", message.PartyMemberPlayerId);
-
-    if (!pKick)
+    // Three reports and a call into RemovePlayerFromParty, which guards its own
+    // allocations. The kick itself is a removal from the member list, which does not
+    // allocate.
+    try
     {
-        spdlog::error("[PartyService]: Player {} does not exist. Cannot kick", message.PartyMemberPlayerId);
-        return;
-    }
+        auto& message = acPacket.Packet;
+        Player* const player = acPacket.pPlayer;
+        Player* const pKick = m_world.GetPlayerManager().GetById(message.PartyMemberPlayerId);
 
-    auto& inviterPartyComponent = player->GetParty();
-    if (inviterPartyComponent.JoinedPartyId) // Ensure not in party
-    {
-        const auto* pParty = GetById(*inviterPartyComponent.JoinedPartyId);
-        if (pParty != nullptr && pParty->LeaderPlayerId == player->GetId())
+        spdlog::debug("[PartyService]: Received request to change party leader to {}", message.PartyMemberPlayerId);
+
+        if (!pKick)
         {
-            // The target id arrives straight off the wire, so it can name a member of somebody else's
-            // party. Only a leader may kick, and only a player in their own party.
-            const auto& kickPartyComponent = pKick->GetParty();
-            if (!kickPartyComponent.JoinedPartyId || *kickPartyComponent.JoinedPartyId != *inviterPartyComponent.JoinedPartyId)
-            {
-                spdlog::error("[PartyService]: Player {} is not in the party of {}", message.PartyMemberPlayerId, player->GetId());
-                return;
-            }
-
-            spdlog::debug("[PartyService]: Kicking player {} from party", pKick->GetId());
-            RemovePlayerFromParty(pKick);
-            BroadcastPlayerList(pKick);
+            spdlog::error("[PartyService]: Player {} does not exist. Cannot kick", message.PartyMemberPlayerId);
+            return;
         }
+
+        auto& inviterPartyComponent = player->GetParty();
+        if (inviterPartyComponent.JoinedPartyId) // Ensure not in party
+        {
+            const auto* pParty = GetById(*inviterPartyComponent.JoinedPartyId);
+            if (pParty != nullptr && pParty->LeaderPlayerId == player->GetId())
+            {
+                // The target id arrives straight off the wire, so it can name a member of somebody else's
+                // party. Only a leader may kick, and only a player in their own party.
+                const auto& kickPartyComponent = pKick->GetParty();
+                if (!kickPartyComponent.JoinedPartyId || *kickPartyComponent.JoinedPartyId != *inviterPartyComponent.JoinedPartyId)
+                {
+                    spdlog::error("[PartyService]: Player {} is not in the party of {}", message.PartyMemberPlayerId, player->GetId());
+                    return;
+                }
+
+                spdlog::debug("[PartyService]: Kicking player {} from party", pKick->GetId());
+                RemovePlayerFromParty(pKick);
+                BroadcastPlayerList(pKick);
+            }
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a party kick");
     }
 }
 
 void PartyService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
 {
-    BroadcastPlayerList();
-
-    NotifyPlayerJoined notify{};
-    notify.PlayerId = acEvent.pPlayer->GetId();
-    notify.Username = acEvent.pPlayer->GetUsername();
-
-    notify.WorldSpaceId = acEvent.WorldSpaceId;
-    notify.CellId = acEvent.CellId;
-
-    notify.Level = acEvent.pPlayer->GetLevel();
-
-    spdlog::debug("[Party] New notify player {:x} {}", notify.PlayerId, notify.Username.c_str());
-
-    GameServer::Get()->SendToPlayers(notify, acEvent.pPlayer);
-
-    if (m_parties.size() == 1 && GameServer::Get()->AllowsAutoPartyJoin())
+    // The player list broadcast, the username copy in the notification, and the
+    // membership append below all allocate. A join that could not be recorded is not
+    // announced; the player stays connected and keeps playing.
+    try
     {
-        for (Player* player : m_world.GetPlayerManager())
+        BroadcastPlayerList();
+
+        NotifyPlayerJoined notify{};
+        notify.PlayerId = acEvent.pPlayer->GetId();
+        notify.Username = acEvent.pPlayer->GetUsername();
+
+        notify.WorldSpaceId = acEvent.WorldSpaceId;
+        notify.CellId = acEvent.CellId;
+
+        notify.Level = acEvent.pPlayer->GetLevel();
+
+        spdlog::debug("[Party] New notify player {:x} {}", notify.PlayerId, notify.Username.c_str());
+
+        GameServer::Get()->SendToPlayers(notify, acEvent.pPlayer);
+
+        if (m_parties.size() == 1 && GameServer::Get()->AllowsAutoPartyJoin())
         {
-            if (IsPlayerInParty(player))
+            for (Player* player : m_world.GetPlayerManager())
             {
-                auto& playerPartyComponent = player->GetParty();
+                if (IsPlayerInParty(player))
+                {
+                    auto& playerPartyComponent = player->GetParty();
 
-                // IsPlayerInParty only says the component carries an id, not that a party still
-                // answers to it, so the id is resolved here instead of indexed with.
-                const auto partyItor = m_parties.find(*playerPartyComponent.JoinedPartyId);
-                if (partyItor == std::end(m_parties))
-                    continue;
+                    // IsPlayerInParty only says the component carries an id, not that a party still
+                    // answers to it, so the id is resolved here instead of indexed with.
+                    const auto partyItor = m_parties.find(*playerPartyComponent.JoinedPartyId);
+                    if (partyItor == std::end(m_parties))
+                        continue;
 
-                Party& party = partyItor->second;
+                    Party& party = partyItor->second;
 
-                party.Members.push_back(acEvent.pPlayer);
-                acEvent.pPlayer->GetParty().JoinedPartyId = *playerPartyComponent.JoinedPartyId;
+                    party.Members.push_back(acEvent.pPlayer);
+                    acEvent.pPlayer->GetParty().JoinedPartyId = *playerPartyComponent.JoinedPartyId;
 
-                SendPartyJoinedEvent(party, acEvent.pPlayer);
+                    SendPartyJoinedEvent(party, acEvent.pPlayer);
 
-                BroadcastPartyInfo(*playerPartyComponent.JoinedPartyId);
+                    BroadcastPartyInfo(*playerPartyComponent.JoinedPartyId);
 
-                break;
+                    break;
+                }
             }
-        }
         
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while announcing a player join");
     }
 }
 
 void PartyService::OnPartyInvite(const PacketEvent<PartyInviteRequest>& acPacket) noexcept
 {
-    auto& message = acPacket.Packet;
-
-    // Make sure the player we invite exists
-    Player* const pInvitee = m_world.GetPlayerManager().GetById(message.PlayerId);
-    Player* const pInviter = acPacket.pPlayer;
-
-    // If both players are available and they are different
-    if (pInvitee && pInvitee != pInviter)
+    // The invitation row and the notification both allocate. A failure loses only the
+    // notification: the invitee still holds a valid invitation, which is what the
+    // accept path reads.
+    try
     {
-        auto& inviterPartyComponent = pInviter->GetParty();
-        auto& inviteePartyComponent = pInvitee->GetParty();
+        auto& message = acPacket.Packet;
 
-        spdlog::debug("[PartyService]: Got party invite from {}", pInviter->GetId());
+        // Make sure the player we invite exists
+        Player* const pInvitee = m_world.GetPlayerManager().GetById(message.PlayerId);
+        Player* const pInviter = acPacket.pPlayer;
 
-        if (!inviterPartyComponent.JoinedPartyId)
+        // If both players are available and they are different
+        if (pInvitee && pInvitee != pInviter)
         {
-            spdlog::debug("[PartyService]: Inviter not in party, cancelling invite.");
-            return;
+            auto& inviterPartyComponent = pInviter->GetParty();
+            auto& inviteePartyComponent = pInvitee->GetParty();
+
+            spdlog::debug("[PartyService]: Got party invite from {}", pInviter->GetId());
+
+            if (!inviterPartyComponent.JoinedPartyId)
+            {
+                spdlog::debug("[PartyService]: Inviter not in party, cancelling invite.");
+                return;
+            }
+            else if (inviteePartyComponent.JoinedPartyId)
+            {
+                spdlog::debug("[PartyService]: Invitee in party already, cancelling invite.");
+                return;
+            }
+
+            const auto* pParty = GetById(*inviterPartyComponent.JoinedPartyId);
+            if (pParty == nullptr || pParty->LeaderPlayerId != pInviter->GetId())
+            {
+                spdlog::debug("[PartyService]: Inviter not party leader, cancelling invite.");
+                return;
+            }
+
+            // Expire in 60 seconds
+            const auto cExpiryTick = GameServer::Get()->GetTick() + 60000;
+            inviteePartyComponent.Invitations[pInviter] = cExpiryTick;
+
+            NotifyPartyInvite notification;
+            notification.InviterId = pInviter->GetId();
+            notification.ExpiryTick = cExpiryTick;
+
+            spdlog::debug("[PartyService]: Sending party invite to {}", pInvitee->GetId());
+            pInvitee->Send(notification);
         }
-        else if (inviteePartyComponent.JoinedPartyId)
-        {
-            spdlog::debug("[PartyService]: Invitee in party already, cancelling invite.");
-            return;
-        }
-
-        const auto* pParty = GetById(*inviterPartyComponent.JoinedPartyId);
-        if (pParty == nullptr || pParty->LeaderPlayerId != pInviter->GetId())
-        {
-            spdlog::debug("[PartyService]: Inviter not party leader, cancelling invite.");
-            return;
-        }
-
-        // Expire in 60 seconds
-        const auto cExpiryTick = GameServer::Get()->GetTick() + 60000;
-        inviteePartyComponent.Invitations[pInviter] = cExpiryTick;
-
-        NotifyPartyInvite notification;
-        notification.InviterId = pInviter->GetId();
-        notification.ExpiryTick = cExpiryTick;
-
-        spdlog::debug("[PartyService]: Sending party invite to {}", pInvitee->GetId());
-        pInvitee->Send(notification);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while recording a party invitation");
     }
 }
 
 void PartyService::OnPartyAcceptInvite(const PacketEvent<PartyAcceptInviteRequest>& acPacket) noexcept
 {
-    auto& message = acPacket.Packet;
-
-    Player* const pInviter = m_world.GetPlayerManager().GetById(message.InviterId);
-    Player* pSelf = acPacket.pPlayer;
-
-    spdlog::debug("[PartyService]: Got party accept request from {}", pSelf->GetId());
-
-    // If both players are available and they are different
-    if (pInviter && pInviter != pSelf)
+    // The membership append and the two notifications allocate. The membership is
+    // written before anything is sent, so a failure only means the clients are told
+    // again by the next broadcast.
+    try
     {
-        auto& inviterPartyComponent = pInviter->GetParty();
-        auto& selfPartyComponent = pSelf->GetParty();
+        auto& message = acPacket.Packet;
 
-        // Check if we have this invitation so people don't invite themselves
-        if (selfPartyComponent.Invitations.count(pInviter) == 0)
-            return;
+        Player* const pInviter = m_world.GetPlayerManager().GetById(message.InviterId);
+        Player* pSelf = acPacket.pPlayer;
 
-        spdlog::debug("[PartyService]: Invite found, processing.");
-        if (!inviterPartyComponent.JoinedPartyId) // Ensure inviter is in a party otherwise break
+        spdlog::debug("[PartyService]: Got party accept request from {}", pSelf->GetId());
+
+        // If both players are available and they are different
+        if (pInviter && pInviter != pSelf)
         {
-            spdlog::debug("[PartyService]: Inviter not in party. Cancelling.");
-            return;
+            auto& inviterPartyComponent = pInviter->GetParty();
+            auto& selfPartyComponent = pSelf->GetParty();
+
+            // Check if we have this invitation so people don't invite themselves
+            if (selfPartyComponent.Invitations.count(pInviter) == 0)
+                return;
+
+            spdlog::debug("[PartyService]: Invite found, processing.");
+            if (!inviterPartyComponent.JoinedPartyId) // Ensure inviter is in a party otherwise break
+            {
+                spdlog::debug("[PartyService]: Inviter not in party. Cancelling.");
+                return;
+            }
+
+            auto partyId = *inviterPartyComponent.JoinedPartyId;
+            const auto partyItor = m_parties.find(partyId);
+            if (partyItor == std::end(m_parties))
+            {
+                spdlog::debug("[PartyService]: Inviter's party is gone. Cancelling.");
+                return;
+            }
+
+            Party& party = partyItor->second;
+
+            if (party.LeaderPlayerId != pInviter->GetId())
+            {
+                spdlog::debug("[PartyService]: Inviter is not party leader. Cancelling.");
+                return;
+            }
+
+            if (selfPartyComponent.JoinedPartyId) // Remove from party if in one already. TODO: Decide if player needs to be out of party first
+            {
+                spdlog::debug("[PartyService]: Invitee already in party, cancelling.");
+                // RemovePlayerFromParty(pSelf, false); // skip sending left event, will override with SendPartyJoinedEvent
+                return;
+            }
+
+            party.Members.push_back(pSelf);
+            selfPartyComponent.JoinedPartyId = partyId;
+
+            spdlog::debug("[PartyService]: Added invitee to party, sending events");
+            SendPartyJoinedEvent(party, pSelf);
+            BroadcastPartyInfo(partyId);
         }
-
-        auto partyId = *inviterPartyComponent.JoinedPartyId;
-        const auto partyItor = m_parties.find(partyId);
-        if (partyItor == std::end(m_parties))
-        {
-            spdlog::debug("[PartyService]: Inviter's party is gone. Cancelling.");
-            return;
-        }
-
-        Party& party = partyItor->second;
-
-        if (party.LeaderPlayerId != pInviter->GetId())
-        {
-            spdlog::debug("[PartyService]: Inviter is not party leader. Cancelling.");
-            return;
-        }
-
-        if (selfPartyComponent.JoinedPartyId) // Remove from party if in one already. TODO: Decide if player needs to be out of party first
-        {
-            spdlog::debug("[PartyService]: Invitee already in party, cancelling.");
-            // RemovePlayerFromParty(pSelf, false); // skip sending left event, will override with SendPartyJoinedEvent
-            return;
-        }
-
-        party.Members.push_back(pSelf);
-        selfPartyComponent.JoinedPartyId = partyId;
-
-        spdlog::debug("[PartyService]: Added invitee to party, sending events");
-        SendPartyJoinedEvent(party, pSelf);
-        BroadcastPartyInfo(partyId);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while adding a player to a party");
     }
 }
 
@@ -388,111 +447,151 @@ void PartyService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
 
 void PartyService::RemovePlayerFromParty(Player* apPlayer) noexcept
 {
-    auto* pPartyComponent = &apPlayer->GetParty();
-    spdlog::debug("[PartyService]: Removing player from party.");
-
-    if (pPartyComponent->JoinedPartyId)
+    // The erase and the reset do not allocate, but the four reports below and the
+    // BroadcastPartyInfo they lead to do. The player is already out of the member
+    // list by then, so a failure only costs the notification.
+    try
     {
-        auto id = *pPartyComponent->JoinedPartyId;
+        auto* pPartyComponent = &apPlayer->GetParty();
+        spdlog::debug("[PartyService]: Removing player from party.");
 
-        // find, not operator[]: a party that has already lost its last member is erased, and indexing
-        // would quietly insert a brand new empty one instead of reporting that there is nothing left
-        // to remove this player from.
-        const auto partyItor = m_parties.find(id);
-        if (partyItor != std::end(m_parties))
+        if (pPartyComponent->JoinedPartyId)
         {
-            Party& party = partyItor->second;
-            auto& members = party.Members;
+            auto id = *pPartyComponent->JoinedPartyId;
 
-            // Only a member can leave. erase(end()) is undefined behaviour, and a party can be asked to
-            // remove a player it does not contain: the kick handler takes the target id off the wire.
-            const auto memberItor = std::find(std::begin(members), std::end(members), apPlayer);
-            if (memberItor != std::end(members))
+            // find, not operator[]: a party that has already lost its last member is erased, and indexing
+            // would quietly insert a brand new empty one instead of reporting that there is nothing left
+            // to remove this player from.
+            const auto partyItor = m_parties.find(id);
+            if (partyItor != std::end(m_parties))
             {
-                members.erase(memberItor);
+                Party& party = partyItor->second;
+                auto& members = party.Members;
 
-                if (members.empty())
+                // Only a member can leave. erase(end()) is undefined behaviour, and a party can be asked to
+                // remove a player it does not contain: the kick handler takes the target id off the wire.
+                const auto memberItor = std::find(std::begin(members), std::end(members), apPlayer);
+                if (memberItor != std::end(members))
                 {
-                    m_parties.erase(id);
-                }
-                else
-                {
-                    if (party.LeaderPlayerId == apPlayer->GetId())
+                    members.erase(memberItor);
+
+                    if (members.empty())
                     {
-                        party.LeaderPlayerId = members.at(0)->GetId(); // Reassign party leader
-                        spdlog::debug("[PartyService]: Leader left, reassigned party leader to {}", party.LeaderPlayerId);
+                        m_parties.erase(id);
                     }
-                    spdlog::debug("[PartyService]: Updating other party players of removal.");
-                    BroadcastPartyInfo(id);
+                    else
+                    {
+                        if (party.LeaderPlayerId == apPlayer->GetId())
+                        {
+                            party.LeaderPlayerId = members.at(0)->GetId(); // Reassign party leader
+                            spdlog::debug("[PartyService]: Leader left, reassigned party leader to {}", party.LeaderPlayerId);
+                        }
+                        spdlog::debug("[PartyService]: Updating other party players of removal.");
+                        BroadcastPartyInfo(id);
+                    }
                 }
             }
+
+            pPartyComponent->JoinedPartyId.reset();
+
+            spdlog::debug("[PartyService]: Sending party left event to player.");
+            NotifyPartyLeft leftMessage;
+            apPlayer->Send(leftMessage);
         }
-
-        pPartyComponent->JoinedPartyId.reset();
-
-        spdlog::debug("[PartyService]: Sending party left event to player.");
-        NotifyPartyLeft leftMessage;
-        apPlayer->Send(leftMessage);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while removing a player from a party");
     }
 }
 
 void PartyService::BroadcastPlayerList(Player* apPlayer) const noexcept
 {
-    auto pIgnoredPlayer = apPlayer;
-    for (auto pSelf : m_world.GetPlayerManager())
+    // One message per player, each carrying a map with one entry per other player, so
+    // this is the allocation-heavy half of the party layer: n-1 maps of n-1 strings
+    // per call. A failure loses the remainder of the list instead of the server; the
+    // next join, leave or kick sends it again.
+    try
     {
-        if (pIgnoredPlayer == pSelf)
-            continue;
-
-        NotifyPlayerList playerList;
-        for (auto pPlayer : m_world.GetPlayerManager())
+        auto pIgnoredPlayer = apPlayer;
+        for (auto pSelf : m_world.GetPlayerManager())
         {
-            if (pSelf == pPlayer)
+            if (pIgnoredPlayer == pSelf)
                 continue;
 
-            if (pIgnoredPlayer == pPlayer)
-                continue;
+            NotifyPlayerList playerList;
+            for (auto pPlayer : m_world.GetPlayerManager())
+            {
+                if (pSelf == pPlayer)
+                    continue;
 
-            playerList.Players[pPlayer->GetId()] = pPlayer->GetUsername();
+                if (pIgnoredPlayer == pPlayer)
+                    continue;
+
+                playerList.Players[pPlayer->GetId()] = pPlayer->GetUsername();
+            }
+
+            pSelf->Send(playerList);
         }
-
-        pSelf->Send(playerList);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while broadcasting the player list");
     }
 }
 
 void PartyService::BroadcastPartyInfo(uint32_t aPartyId) const noexcept
 {
-    auto itor = m_parties.find(aPartyId);
-    if (itor == std::end(m_parties))
-        return;
-
-    auto& party = itor->second;
-    auto& members = party.Members;
-
-    NotifyPartyInfo message;
-    message.LeaderPlayerId = party.LeaderPlayerId;
-
-    for (auto pPlayer : members)
+    // Both the id list and the notification it is sent in allocate. Nothing is written
+    // to server state here, so a failure only costs this one broadcast.
+    try
     {
-        message.PlayerIds.push_back(pPlayer->GetId());
+        auto itor = m_parties.find(aPartyId);
+        if (itor == std::end(m_parties))
+            return;
+
+        auto& party = itor->second;
+        auto& members = party.Members;
+
+        NotifyPartyInfo message;
+        message.LeaderPlayerId = party.LeaderPlayerId;
+
+        for (auto pPlayer : members)
+        {
+            message.PlayerIds.push_back(pPlayer->GetId());
+        }
+
+        for (auto pPlayer : members)
+        {
+            message.IsLeader = pPlayer->GetId() == party.LeaderPlayerId;
+            pPlayer->Send(message);
+        }
     }
-
-    for (auto pPlayer : members)
+    catch (...)
     {
-        message.IsLeader = pPlayer->GetId() == party.LeaderPlayerId;
-        pPlayer->Send(message);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while broadcasting the party members");
     }
 }
 
 void PartyService::SendPartyJoinedEvent(Party& aParty, Player* aPlayer) noexcept
 {
-    NotifyPartyJoined joinedMessage;
-    joinedMessage.LeaderPlayerId = aParty.LeaderPlayerId;
-    joinedMessage.IsLeader = aParty.LeaderPlayerId == aPlayer->GetId();
-    for (auto pPlayer : aParty.Members)
+    // The id list is the allocation; the player's own membership was already written
+    // by the caller, so failing to send only means the client learns the party state
+    // from the next broadcast.
+    try
     {
-        joinedMessage.PlayerIds.push_back(pPlayer->GetId());
+        NotifyPartyJoined joinedMessage;
+        joinedMessage.LeaderPlayerId = aParty.LeaderPlayerId;
+        joinedMessage.IsLeader = aParty.LeaderPlayerId == aPlayer->GetId();
+        for (auto pPlayer : aParty.Members)
+        {
+            joinedMessage.PlayerIds.push_back(pPlayer->GetId());
+        }
+        spdlog::debug("[PartyService]: Sending party join event to player");
+        aPlayer->Send(joinedMessage);
     }
-    spdlog::debug("[PartyService]: Sending party join event to player");
-    aPlayer->Send(joinedMessage);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while sending the party joined event");
+    }
 }

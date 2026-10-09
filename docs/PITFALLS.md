@@ -14096,4 +14096,185 @@ Select-String -Path Code\server\Services\ScriptService.h -Pattern '#include "Scr
 > 六个入口全都 `return CallCancelableEvent("onCharacterMove", aNpc);`,而形参是 `const String&` ⇒ 临时对象在进函数之前就建好了,被调者新加的 catch 结构性地够不着它。改签名是修法的第一步,不是加 `try`。
 > 第三条:**失败的报告本身也会失败。**
 > `spdlog v1.13.0` 没有定义 `SPDLOG_NO_EXCEPTIONS`,格式化会分配 —— 在一个 `noexcept` 的 catch 里直接调 `spdlog::error`,等于把 terminate 从原来的位置挪到处理它的位置上。
+## 104. 2026-10-23 场次:服务端 211 个 `noexcept` 里只有 6 个写了 `catch`,其中 27 个在自己分配、44 个在格式化日志 —— 判据是「失败的报告本身也会失败」
+
+> **锚点**:`Code/server/**` 18 个文件、新增 `Code/server/Diagnostics.h`(27 行)(18 files changed, 2196 insertions(+) / 1560 deletions(-),483 个 hunk);`Code/server/Pch.h:29`、`Code/server/GameServer.h:92-107`、`Code/server/GameServer.cpp:1149-1170`、`Code/server/Components/ModsComponent.cpp:5-45`、`Code/server/Game/PlayerManager.cpp:16-60`、`Code/server/Game/Animation/ActionReplayCache.cpp:5-122`、`Code/server/Services/{ActorValueService,AdminService,CharacterService,CombatService,InventoryService,MagicService,ObjectService,OverlayService,PartyService,PlayerService,PluginMessagingService,QuestService}.cpp`。
+
+### 104.1 缺陷
+
+`Code/server/**` 共 100 个 `.cpp/.h/.inl`,里面有 **211 个 `noexcept` 函数定义**,体内含 `catch` 的只有 **6 个**。用一个「等长清空注释与字面量 → 花括号逐字符配平取函数体」的脚本数出来的是两族,它们有重叠:
+
+```
+家族一:体内自己分配内存(27 个定义)
+  Code/server/Components/ModsComponent.cpp:5  AddStandard          m_standardMods.emplace(acpFilename, Entry{id, 1})
+  Code/server/Components/ModsComponent.cpp:20 AddLite              m_liteMods.emplace(acpFilename, Entry{id, 1})
+  Code/server/Game/Animation/ActionReplayCache.cpp:5  FormRefinedReplayChain  Vector<ActionEvent>{m_actions.begin() + 1, m_actions.end()}
+  Code/server/Game/Animation/ActionReplayCache.cpp:18 AppendAll            m_actions.push_back(action)
+  Code/server/Game/Animation/ActionReplayCache.cpp:31 RefineReplayCache    action.EventName = String{*instantAnimName}
+  Code/server/Game/Animation/ActionReplayCache.cpp:64 IsExitAction         String lowercaseName{acAction.EventName}
+  Code/server/Game/PlayerManager.cpp:27       Create               m_players.emplace(aConnectionId, MakeUnique<Player>(aConnectionId))
+  Code/server/GameServer.cpp:1149             SanitizeUsername     String username = acUsername;
+  Code/server/GameServer.h:92                 AddAdminSession      m_adminSessions.insert(acSession)
+  Code/server/Services/ActorValueService.cpp:23 / :50 / :77   ActorValuesList[id] = value / notify.Values = message.Values
+  Code/server/Services/CharacterService.cpp:251 / :374 / :587 / :904 / :960   push_back / 8 次 emplace / Map<Player*, ...>
+  Code/server/Services/ObjectService.cpp:31 / :60            Vector<entt::entity> toDestroy / response.Objects.push_back
+  Code/server/Services/PartyService.cpp:113 / :226 / :273 / :320 / :439 / :463 / :487   m_parties[partyId] / push_back / Players[id] = ...
+  Code/server/Services/QuestService.cpp:27   OnQuestChanges       dedupHistory.Add(...)
+
+家族二:体内只有日志格式化,自己不含分配标记(44 个定义,共 106 条 spdlog 调用)
+  Code/server/Game/PlayerManager.cpp:16                    PlayerManager::Get
+  Code/server/Services/CharacterService.cpp  x11           :190 :332 :362 :445 :495 :508 :560 :573 :681 :745 :794
+  Code/server/Services/InventoryService.cpp  x3            :28 :99 :148
+  Code/server/Services/MagicService.cpp      x4            :24 :40 :53 :72
+  Code/server/Services/ActorValueService.cpp x1            :102 OnDeathStateChange
+  Code/server/Services/OverlayService.cpp    x1            :29  sendPlayerMessage
+  Code/server/Services/PartyService.cpp      x1            :190 OnPartyKick
+  Code/server/Services/PlayerService.cpp     x1            :153 OnPlayerRespawnRequest
+  Code/server/Services/PluginMessagingService.cpp x1        :54  OnPluginMessage
+  Code/server/Services/QuestService.cpp      x1            :309 QuestStageDedupHistory::Expire
+  Code/server/Services/CombatService.cpp     x1            :15  OnProjectileLaunchRequest
+  Code/server/Services/AdminService.cpp      x1            :14  HandleShutdown
+```
+
+家族二比家族一隐蔽:它看起来「只是打了一行日志」。
+
+### 104.2 判据
+
+| 对照 | 事实 | 结论 |
+| --- | --- | --- |
+| 本仓已有的正确形状 | `Code/server/Services/ScriptService.cpp:252-263`(commit `e7253f3b`)的 `ReportFailure` 是 `noexcept` + 内层 `try/catch(...)` | 修法不是新发明,是把那个形状搬给别的服务用 |
+| 「同族其它实现长什么样」 | `git grep -n -E "\bcatch \(" -- Code/server` 在本次修改前是 **14 处**,其中 2 处在 `ScriptService` | 整个服务层没有第二处边界 |
+| 日志本身会分配 | `Code/server/xmake.lua:47` 固定 `spdlog` v1.13.0;`git grep -rn -E "SPDLOG_ACTIVE_LEVEL\|SPDLOG_LEVEL\|SPDLOG_NO_EXCEPTIONS" -- Code xmake.lua` **零命中** | `spdlog::error` 把参数格式化进一个新建的 buffer ⇒ 在 `noexcept` 的 catch 里直接调它,等于把 terminate 挪到处理它的位置 |
+| 日志级别不是编译期属性 | `Code/server_runner/main.cpp:43 Console::StringSetting sLogLevel{"sLogLevel", "Log level to print", "info"}`、`:74 globalOut->set_level(level::from_str(sLogLevel.value()))` | 「`debug` 默认不打」是运行期设置,44 个定义里的 `debug` 行同样要守 |
+| 「下游有守卫」不等于「值被挡住了」 | `Code/server/GameServer.h:103/104/106` 的 `OnUpdate`/`OnConsume`/`OnDisconnection` 三个覆写**都不带 `noexcept`** | 但 handler 自己是 `noexcept` ⇒ 抛出仍在 handler 里 terminate,上游非 `noexcept` 救不了它(`docs/PITFALLS.md:12389-12394` §92.2 的「检查要顺着调用链走」) |
+| 承诺写在本文件身上 | 与 §103 同一格:可以不删 `noexcept` 把责任推给上游,但 `ScriptService` 那次已经决定不推 | 本次同样**一个 `noexcept` 都不删** |
+
+还有一条只在本节出现的判据:**回退值必须让语义仍然成立,而不是让编译通过**。
+
+`ModsComponent::AddStandard` 第一版我写成 `catch { return 0; }`,那是错的:id 会被 `Code/server/GameServer.cpp:988-997` 原样写进 `Mods::Entry::Id` 交给客户端,而 `Code/client/Systems/ModSystem.cpp:88-101` 用它建 `m_serverToGame` / `m_liteToServer` / `m_standardToServer` 三张反查表 —— 两个 mod 共用一个 id,客户端由它派生的每一个 form id 都会撞车,比「这一条没去重」坏得多。正确写法是**先把 id 取出来**(`const auto id = m_seed++;` 不分配),只把 `emplace` 包进 `try`,失败时丢掉去重行、照常返回唯一 id:
+
+```cpp
+// Code/server/Components/ModsComponent.cpp:14-29(修复后)
+const auto id = m_seed++;
+
+try
+{
+    m_standardMods.emplace(acpFilename, Entry{id, 1});
+}
+catch (...)
+{
+    Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while recording a client mod");
+}
+
+return id;
+```
+
+服务端除这个 `find` 之外**没有任何读者**(`git grep -n -E "GetStandardMods|GetLiteMods"` 零命中),所以丢一行去重只影响同一个文件名第二次出现时不再复用 id。
+
+### 104.3 可达性
+
+这 71 个站点全落在三条路径上,没有一条需要管理员:
+
+- **tick 线程**:`Code/server/GameServer.cpp:557-571 OnUpdate` → `:567 dispatcher.trigger(UpdateEvent{cDeltaSeconds})`,五个 sink(`CalendarService.cpp:18`、`CharacterService.cpp:53`、`PartyService.cpp:24`、`ScriptService.cpp:57`、`StringCacheService.cpp:10`)。`CharacterService::OnUpdate` 再转调 `ProcessFactionsChanges`(2 秒一次)与 `ProcessMovementChanges`(20 ms 一次)—— 后者每个 tick 为每个在线玩家建一张 `Map<uint32_t, ServerReferencesMoveRequest>`,并把 `animationComponent.Actions` 复制进每一条 update。
+- **收包**:`Code/server/GameServer.cpp:573-618 OnConsume` → `:616 m_messageHandlers[pMessage->GetOpcode()](pMessage, aConnectionId)`。任何一个已连接玩家都能发:聊天、任务更新、任务场景、队伍创建/邀请/接受/踢人/换队长、背包/装备、移动、法术/投射物、物件分配。
+- **断连**:`Code/server/GameServer.cpp:626-686 OnDisconnection` → `:645 trigger(PlayerLeaveEvent)` → `PartyService::OnPlayerLeave` → `RemovePlayerFromParty` + `BroadcastPlayerList`;后者是 O(n²) 条消息、每条一个 `Map<uint32_t, String>`(`PartyService.cpp:510-542`)。
+
+触发条件是堆耗尽。**本机不编译**(§0/§1),所以每一条都是静态读数,不是复现。
+
+### 104.4 修法
+
+新增 `Code/server/Diagnostics.h`(27 行),把 `ScriptService` 那个私有静态提升成一个每个服务都能用的自由函数:
+
+```cpp
+// Code/server/Diagnostics.h
+namespace Diagnostics
+{
+    inline void ReportFailure(const char* acpContext, const char* acpDetail) noexcept
+    {
+        try
+        {
+            spdlog::error("{}: {}", acpContext, acpDetail);
+        }
+        catch (...)
+        {
+        }
+    }
+}
+```
+
+两个形参都是 `const char*`,调用点一律传字面量或 `__FUNCTION__` —— 两者都不由这次调用构造,这正是 `docs/PITFALLS.md:14095-14096`(§103 第二条教训)说的那件事。
+
+它经 `Code/server/Pch.h:29 #include <Diagnostics.h>` 进入所有编译单元。选 `Pch.h` 而不是逐文件 include,是因为 `Code/server/xmake.lua:9 set_pcxxheader("Pch.h")` 已把它设成强制包含,而 `Code/server/Pch.cpp` 是**空文件** —— 不这么写就会有一个不包含它的 TU。
+
+18 个文件、71 个函数体加了 `try { ... } catch (...) { Diagnostics::ReportFailure(__FUNCTION__, "..."); }`。`noexcept` 211 → 212,新增的那一个是 `Diagnostics::ReportFailure` 自己。非 void 的补了显式回退:
+
+| 函数 | catch 里的回退 | 语义 |
+| --- | --- | --- |
+| `PlayerManager::Get` | `return nullptr;` | 与「没有实例」同一个答案,调用方本来就处理 |
+| `PlayerManager::Create` | `return nullptr;` | `GameServer.cpp:1000-1013` 已把这个答案当成「该连接已有玩家」,拒绝第二次认证 |
+| `ModsComponent::AddStandard`/`AddLite` | 无(先取 id) | 见 §104.2 末 |
+| `GameServer::SanitizeUsername` | `return String{};` | 退化成空名 ⇒ 查找失败并打印;唯一调用点是 `GameServer.cpp:436` 的控制台命令 |
+| `ActionReplayCache::RefineReplayCache` / `IsExitAction` | `return false;` | 「不是退出动作」是安全答案:动作留在缓存里,客户端不重置动画图 |
+| `CharacterService::CanClaimOwnership` / `TransferOwnership` | `return false;` | 「不能认领」/「没转移成功」,调用方不会广播一次只做了一半的交接 |
+| `CharacterService::Serialize` / `CreateCharacter` / `ObjectService::OnAssignObjectsRequest` | 无(保持已写入的部分) | 见下 |
+
+三个「写到一半」的位置特意**不回滚**,理由写进了代码注释:
+
+- `CreateCharacter`(`CharacterService.cpp:694-796`):失败时**不** `m_world.destroy(cEntity)`。到最后一个 `emplace` 时 `pPlayer->SetCharacter(cEntity)`(`:773`)可能已经执行,销毁一个 `Player` 还指着的实体正是 `GameServer.cpp:652-655` 那段注释警告的悬垂引用。半建的 actor 对任何要求它没拿到的组件的 view 都不可见,客户端收不到响应会再问一次。
+- `Serialize`:请求里已复制的字段保留,仍照常发出。
+- `OnAssignObjectsRequest`:已创建的对象留在世界里,不发响应,客户端重问整张表。
+
+`ScriptService` 那份私有静态**保持不动**。行为与新自由函数完全一致,把 8 个调用点改名是纯改名、零行为差,只会让 diff 变大。
+
+### 104.5 复核命令(照抄)
+
+```powershell
+# 1. 总数与两族分配点(等长清空注释/字面量 + 花括号配平;本仓无 rg,用 node)
+node -e "..."   # 见本节正文的脚本要点:codeMask + stripBindings + PAYLOAD 正则
+
+# 2. 修前修后的四个读数
+git stash; node -e "<census>"   # noexcept defs=211 guarded=6 allocUnguarded=27 logUnguarded=44
+git stash pop; node -e "<census>"   # noexcept defs=212 guarded=70 allocUnguarded=0  logUnguarded=0
+
+# 3. 全仓 try/catch 计数
+git grep -c -E "\btry\b" -- Code/server   # 修前 11 / 修后 75
+git grep -c -E "\bcatch\b" -- Code/server # 修前 14 / 修后 80
+
+# 4. 守卫调用点
+git grep -n "Diagnostics::ReportFailure" -- Code/server   # 63 处,17 个文件
+
+# 5. 日志会分配(spdlog 未被配置成不抛)
+git grep -rn -E "SPDLOG_ACTIVE_LEVEL|SPDLOG_LEVEL|SPDLOG_NO_EXCEPTIONS" -- Code xmake.lua   # 零命中
+Select-String -Path Code\server_runner\main.cpp -Pattern "sLogLevel|set_level"
+
+# 6. 编译闭包
+Select-String -Path Code\server\xmake.lua -Pattern "pcxxheader|add_headerfiles|add_files"
+Get-Item Code\server\Pch.cpp | Select-Object Length   # 0 字节 ⇒ 必须有强制包含
+
+# 7. 上游不是 noexcept 边界(所以「删掉 noexcept」也说得通,只是承诺在本文件身上)
+Select-String -Path Code\server\GameServer.h -Pattern "void On(Update|Consume|Disconnection)"
+```
+
+**验证**:`git diff --numstat -- Code/server` = **18 files changed, 2196 insertions(+), 1560 deletions(-)**,483 个 hunk;`Code/server/Diagnostics.h` 是唯一的新文件(27 行 / 961 字节 / LF / 尾换行)。逐文件行数:`ModsComponent.cpp` 47→75、`ActionReplayCache.cpp` 102→145、`PlayerManager.cpp` 121→145、`GameServer.cpp` 1158→1170、`GameServer.h` 133→147、`Pch.h` 56→58、`ActorValueService.cpp` 126→167、`AdminService.cpp` 49→59、`CharacterService.cpp` 1043→1226、`CombatService.cpp` 57→66、`InventoryService.cpp` 162→188、`MagicService.cpp` 86→119、`ObjectService.cpp` 199→219、`OverlayService.cpp` 120→164、`PartyService.cpp` 499→598、`PlayerService.cpp` 218→227、`PluginMessagingService.cpp` 116→127、`QuestService.cpp` 378→406。
+
+同一个普查脚本在 `HEAD` 与工作树上各跑一次:
+
+| 读数 | `HEAD` | 现在 |
+| --- | --- | --- |
+| `noexcept` 定义数 | 211 | 212 |
+| 体内含 `catch` | 6 | 70 |
+| 体内有分配标记且无 `catch` | 27 | **0** |
+| 体内有 `spdlog::` 且无 `catch` | 44(106 条日志) | **0**(0 条) |
+| `Code/server` 全文 `try`/`catch` | 11 / 14 | 75 / 80 |
+
+`Diagnostics::ReportFailure` 调用点 **63 个,17 个文件**:`CharacterService.cpp` 18、`PartyService.cpp` 10、`OverlayService.cpp` 5、`ActorValueService.cpp` 4、`ActionReplayCache.cpp` 4、`MagicService.cpp` 4、`InventoryService.cpp` 3、`QuestService.cpp` 3、`ModsComponent.cpp` 2、`PlayerManager.cpp` 2、`ObjectService.cpp` 2,`GameServer.cpp`/`GameServer.h`/`AdminService.cpp`/`CombatService.cpp`/`PlayerService.cpp`/`PluginMessagingService.cpp` 各 1。
+`Code/server/xmake.lua:12-13 add_headerfiles("**.h")` / `add_files("**.cpp")` 覆盖新头与全部 18 个文件;`:9 set_pcxxheader("Pch.h")` 保证 `Diagnostics.h` 进入每个 TU。每个改过的文件都做过花括号/圆括号/方括号配平与行尾检查;`Code/server/Services/PluginMessagingService.{cpp,h}` 本来就没有文件尾换行,与 `HEAD` 一致,未动。
+**本机不编译**(§0/§1),所以判据是静态的:分配点是逐字读出来的,`noexcept` 与 `try`/`catch` 的数量是脚本数出来的。
+
+> **教训**:第一条:**`noexcept` 是一条承诺,不是装饰;承诺写在哪个函数身上,`catch` 就得写在哪个函数体里。**
+> 211 个定义里 205 个没有 catch,不是 205 个缺陷,是一整个服务层把边界放错了位置。上游 `OnConsume`/`OnUpdate`/`OnDisconnection` 不带 `noexcept` 也救不了 handler —— 它在 handler 里就 terminate 了。
+> 第二条:**日志是分配,`debug` 也不例外。**
+> `spdlog` 没有被配置成 `SPDLOG_NO_EXCEPTIONS`,级别是运行期设置(`sLogLevel` 默认 `info`,但那是默认值,不是代码性质)。44 个「只打了一行日志」的函数体是这一节里最容易被放过的族。
+> 第三条:**回退值要能让语义继续成立,不是让编译通过。**
+> `AddStandard` 的 `return 0` 会让两个 mod 共用一个 id,而客户端拿它去建三张反查表;正确做法是先把不分配的 id 取出来,只把分配的那一步包进 `try`。「失败时返回什么」和「失败时哪一步不能回滚」是同一个问题的两面。
 

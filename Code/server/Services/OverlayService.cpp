@@ -28,92 +28,136 @@ OverlayService::OverlayService(World& aWorld, entt::dispatcher& aDispatcher)
 
 void sendPlayerMessage(const ChatMessageType acType, const String acContent, Player* aSendingPlayer) noexcept
 {
-    NotifyChatMessageBroadcast notifyMessage{};
-
-    notifyMessage.MessageType = acType;
-    notifyMessage.PlayerName = ChatSanitize::StripHtmlTags(aSendingPlayer->GetUsername());
-    notifyMessage.ChatMessage = ChatSanitize::StripHtmlTags(acContent);
-
-    auto character = aSendingPlayer->GetCharacter();
-
-    switch (notifyMessage.MessageType)
+    // Every branch below builds a broadcast, and the two sanitised strings are copies.
+    // A message that could not be prepared is dropped rather than half sent; chat is
+    // not state, so nothing is left inconsistent.
+    try
     {
-    case kGlobalChat: GameServer::Get()->SendToPlayers(notifyMessage); break;
+        NotifyChatMessageBroadcast notifyMessage{};
 
-    case kSystemMessage: spdlog::error("PlayerId {} attempted to send a System Message.", aSendingPlayer->GetId()); break;
+        notifyMessage.MessageType = acType;
+        notifyMessage.PlayerName = ChatSanitize::StripHtmlTags(aSendingPlayer->GetUsername());
+        notifyMessage.ChatMessage = ChatSanitize::StripHtmlTags(acContent);
 
-    case kPlayerDialogue: GameServer::Get()->SendToParty(notifyMessage, aSendingPlayer->GetParty()); break;
+        auto character = aSendingPlayer->GetCharacter();
 
-    case kPartyChat: GameServer::Get()->SendToParty(notifyMessage, aSendingPlayer->GetParty()); break;
-
-    case kLocalChat:
-        if (character)
+        switch (notifyMessage.MessageType)
         {
-            if (!GameServer::Get()->SendToPlayersInRange(notifyMessage, *character))
-                spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+        case kGlobalChat: GameServer::Get()->SendToPlayers(notifyMessage); break;
+
+        case kSystemMessage: spdlog::error("PlayerId {} attempted to send a System Message.", aSendingPlayer->GetId()); break;
+
+        case kPlayerDialogue: GameServer::Get()->SendToParty(notifyMessage, aSendingPlayer->GetParty()); break;
+
+        case kPartyChat: GameServer::Get()->SendToParty(notifyMessage, aSendingPlayer->GetParty()); break;
+
+        case kLocalChat:
+            if (character)
+            {
+                if (!GameServer::Get()->SendToPlayersInRange(notifyMessage, *character))
+                    spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+            }
+            break;
+        default: spdlog::error("{} is not a known MessageType", static_cast<uint64_t>(notifyMessage.MessageType)); break;
         }
-        break;
-    default: spdlog::error("{} is not a known MessageType", static_cast<uint64_t>(notifyMessage.MessageType)); break;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while preparing a chat message");
     }
 }
 
 void OverlayService::HandleChatMessage(const PacketEvent<SendChatMessageRequest>& acMessage) const noexcept
 {
-    // GetCharacter() is an optional that stays empty until CharacterService
-    // creates the character, so a player who chats before that - or whose
-    // character creation failed - dereferences an empty optional here. That is
-    // the same defect class as the /settime crash: any connected player can
-    // send this packet, and the server has to survive it. WeatherService and
-    // PlayerService::OnPlayerRespawnRequest already guard the identical call.
-    //
-    // Only the script callback is skipped: it is handed the entity, so a
-    // default-constructed one would reach script code as a bogus sender. The
-    // broadcast below needs no character of its own - sendPlayerMessage guards
-    // its own use - so global and party chat still work for that player.
-    if (const auto character = acMessage.pPlayer->GetCharacter())
+    // The script callback allocates a tuple and a String, and the broadcast below
+    // allocates again. A chat line that could not be delivered is lost; the server
+    // keeps running, which is what the character guard above it is also about.
+    try
     {
-        auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(*character, acMessage.Packet.ChatMessage);
-        if (canceled)
-            return;
-    }
+        // GetCharacter() is an optional that stays empty until CharacterService
+        // creates the character, so a player who chats before that - or whose
+        // character creation failed - dereferences an empty optional here. That is
+        // the same defect class as the /settime crash: any connected player can
+        // send this packet, and the server has to survive it. WeatherService and
+        // PlayerService::OnPlayerRespawnRequest already guard the identical call.
+        //
+        // Only the script callback is skipped: it is handed the entity, so a
+        // default-constructed one would reach script code as a bogus sender. The
+        // broadcast below needs no character of its own - sendPlayerMessage guards
+        // its own use - so global and party chat still work for that player.
+        if (const auto character = acMessage.pPlayer->GetCharacter())
+        {
+            auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(*character, acMessage.Packet.ChatMessage);
+            if (canceled)
+                return;
+        }
 
-    sendPlayerMessage(acMessage.Packet.MessageType, acMessage.Packet.ChatMessage, acMessage.pPlayer);
+        sendPlayerMessage(acMessage.Packet.MessageType, acMessage.Packet.ChatMessage, acMessage.pPlayer);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while handling a chat message");
+    }
 }
 
 void OverlayService::OnPlayerDialogue(const PacketEvent<PlayerDialogueRequest>& acMessage) const noexcept
 {
-    sendPlayerMessage(kPlayerDialogue, acMessage.Packet.Text, acMessage.pPlayer);
+    // The same broadcast path as the chat handler above, with the dialogue type.
+    try
+    {
+        sendPlayerMessage(kPlayerDialogue, acMessage.Packet.Text, acMessage.pPlayer);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while handling player dialogue");
+    }
 }
 
 void OverlayService::OnTeleport(const PacketEvent<TeleportRequest>& acMessage) const noexcept
 {
-    Player* pTargetPlayer = m_world.GetPlayerManager().GetById(acMessage.Packet.PlayerId);
-    if (!pTargetPlayer)
-        return;
-
-    NotifyTeleport response{};
-
-    auto character = pTargetPlayer->GetCharacter();
-    if (character)
+    // The response is a fixed size struct; the send it goes into is what allocates.
+    try
     {
-        const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
-        if (pMovementComponent)
-        {
-            const auto& cellComponent = pTargetPlayer->GetCellComponent();
-            response.CellId = cellComponent.Cell;
-            response.Position = pMovementComponent->Position;
-            response.WorldSpaceId = cellComponent.WorldSpaceId;
-        }
-    }
+        Player* pTargetPlayer = m_world.GetPlayerManager().GetById(acMessage.Packet.PlayerId);
+        if (!pTargetPlayer)
+            return;
 
-    acMessage.pPlayer->Send(response);
+        NotifyTeleport response{};
+
+        auto character = pTargetPlayer->GetCharacter();
+        if (character)
+        {
+            const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
+            if (pMovementComponent)
+            {
+                const auto& cellComponent = pTargetPlayer->GetCellComponent();
+                response.CellId = cellComponent.Cell;
+                response.Position = pMovementComponent->Position;
+                response.WorldSpaceId = cellComponent.WorldSpaceId;
+            }
+        }
+
+        acMessage.pPlayer->Send(response);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while answering a teleport request");
+    }
 }
 
 void OverlayService::OnPlayerHealthUpdate(const PacketEvent<RequestPlayerHealthUpdate>& acMessage) const noexcept
 {
-    NotifyPlayerHealthUpdate notify{};
-    notify.PlayerId = acMessage.pPlayer->GetId();
-    notify.Percentage = acMessage.Packet.Percentage;
+    // The party broadcast is the allocation; the notification itself is fixed size.
+    try
+    {
+        NotifyPlayerHealthUpdate notify{};
+        notify.PlayerId = acMessage.pPlayer->GetId();
+        notify.Percentage = acMessage.Packet.Percentage;
 
-    GameServer::Get()->SendToParty(notify, acMessage.pPlayer->GetParty(), acMessage.GetSender());
+        GameServer::Get()->SendToParty(notify, acMessage.pPlayer->GetParty(), acMessage.GetSender());
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while broadcasting a health update");
+    }
 }

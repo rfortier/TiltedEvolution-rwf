@@ -1148,10 +1148,22 @@ Player const* GameServer::GetAdminByUsername(const String& acUsername) noexcept
 
 String GameServer::SanitizeUsername(const String& acUsername) const noexcept
 {
-    String username = acUsername;
+    // The copy is the allocation, and the only caller is the console command that
+    // retries a username lookup. Returning the original is the honest answer: the
+    // lookup then fails the same way it would for any other unknown name, and the
+    // command prints that instead of the server dying.
+    try
+    {
+        String username = acUsername;
 
-    // space in username handling | "_" -> space
-    std::ranges::replace(username, '_', ' ');
+        // space in username handling | "_" -> space
+        std::ranges::replace(username, '_', ' ');
 
-    return username;
+        return username;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while sanitising a username");
+        return String{};
+    }
 }

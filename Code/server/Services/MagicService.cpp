@@ -23,63 +23,96 @@ MagicService::MagicService(World& aWorld, entt::dispatcher& aDispatcher) noexcep
 
 void MagicService::OnSpellCastRequest(const PacketEvent<SpellCastRequest>& acMessage) const noexcept
 {
-    auto& message = acMessage.Packet;
+    // The notification is a fixed size struct copied field by field; the report below
+    // is the only thing in this body that formats into a fresh buffer.
+    try
+    {
+        auto& message = acMessage.Packet;
 
-    NotifySpellCast notify;
-    notify.CasterId = message.CasterId;
-    notify.SpellFormId = message.SpellFormId;
-    notify.CastingSource = message.CastingSource;
-    notify.IsDualCasting = message.IsDualCasting;
-    notify.DesiredTarget = message.DesiredTarget;
+        NotifySpellCast notify;
+        notify.CasterId = message.CasterId;
+        notify.SpellFormId = message.SpellFormId;
+        notify.CastingSource = message.CastingSource;
+        notify.IsDualCasting = message.IsDualCasting;
+        notify.DesiredTarget = message.DesiredTarget;
 
-    const auto entity = static_cast<entt::entity>(message.CasterId);
-    if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
-        spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+        const auto entity = static_cast<entt::entity>(message.CasterId);
+        if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
+            spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a failed broadcast");
+    }
 }
 
 void MagicService::OnInterruptCastRequest(const PacketEvent<InterruptCastRequest>& acMessage) const noexcept
 {
-    auto& message = acMessage.Packet;
+    // Same shape as the spell cast handler above: fixed size notification, one report.
+    try
+    {
+        auto& message = acMessage.Packet;
 
-    NotifyInterruptCast notify;
-    notify.CasterId = message.CasterId;
-    notify.CastingSource = message.CastingSource;
+        NotifyInterruptCast notify;
+        notify.CasterId = message.CasterId;
+        notify.CastingSource = message.CastingSource;
 
-    const auto entity = static_cast<entt::entity>(message.CasterId);
-    if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
-        spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+        const auto entity = static_cast<entt::entity>(message.CasterId);
+        if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
+            spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a failed broadcast");
+    }
 }
 
 void MagicService::OnAddTargetRequest(const PacketEvent<AddTargetRequest>& acMessage) const noexcept
 {
-    auto& message = acMessage.Packet;
+    // Same shape as the spell cast handler above: fixed size notification, one report.
+    try
+    {
+        auto& message = acMessage.Packet;
 
-    NotifyAddTarget notify;
-    notify.TargetId = message.TargetId;
-    notify.CasterId = message.CasterId;
-    notify.SpellId = message.SpellId;
-    notify.EffectId = message.EffectId;
-    notify.Magnitude = message.Magnitude;
-    notify.IsDualCasting = message.IsDualCasting;
-    notify.ApplyHealPerkBonus = message.ApplyHealPerkBonus;
-    notify.ApplyStaminaPerkBonus = message.ApplyStaminaPerkBonus;
+        NotifyAddTarget notify;
+        notify.TargetId = message.TargetId;
+        notify.CasterId = message.CasterId;
+        notify.SpellId = message.SpellId;
+        notify.EffectId = message.EffectId;
+        notify.Magnitude = message.Magnitude;
+        notify.IsDualCasting = message.IsDualCasting;
+        notify.ApplyHealPerkBonus = message.ApplyHealPerkBonus;
+        notify.ApplyStaminaPerkBonus = message.ApplyStaminaPerkBonus;
 
-    const auto entity = static_cast<entt::entity>(message.TargetId);
-    if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
-        spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+        const auto entity = static_cast<entt::entity>(message.TargetId);
+        if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
+            spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a failed broadcast");
+    }
 }
 
 void MagicService::OnRemoveSpellRequest(const PacketEvent<RemoveSpellRequest>& acMessage) const noexcept
 {
-    const auto& message = acMessage.Packet;
+    // Same shape as the spell cast handler above: fixed size notification, one report.
+    try
+    {
+        const auto& message = acMessage.Packet;
     
-    NotifyRemoveSpell notify;
-    notify.TargetId = message.TargetId;
-    notify.SpellId = message.SpellId;
+        NotifyRemoveSpell notify;
+        notify.TargetId = message.TargetId;
+        notify.SpellId = message.SpellId;
 
-    //spdlog::info(__FUNCTION__ ": TargetId: {}, Spell baseId: {}", notify.TargetId, notify.SpellId.BaseId);
+        //spdlog::info(__FUNCTION__ ": TargetId: {}, Spell baseId: {}", notify.TargetId, notify.SpellId.BaseId);
 
-    const auto entity = static_cast<entt::entity>(message.TargetId);
-    if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
-        spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+        const auto entity = static_cast<entt::entity>(message.TargetId);
+        if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
+            spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a failed broadcast");
+    }
 }

@@ -30,28 +30,38 @@ ObjectService::ObjectService(World& aWorld, entt::dispatcher& aDispatcher)
 // Clients need a message saying the entity was destroyed.
 void ObjectService::OnPlayerLeaveCellEvent(const PlayerLeaveCellEvent& acEvent) noexcept
 {
-    for (Player* pPlayer : m_world.GetPlayerManager())
+    // The candidate vector is the allocation, and the entities in it are destroyed
+    // below. A failure destroys nothing: the objects outlive the cell until the next
+    // leave, which is the same state as a cell nobody left.
+    try
     {
-        if (pPlayer->GetCellComponent().Cell == acEvent.OldCell)
-            return;
+        for (Player* pPlayer : m_world.GetPlayerManager())
+        {
+            if (pPlayer->GetCellComponent().Cell == acEvent.OldCell)
+                return;
+        }
+
+        auto objectView = m_world.view<ObjectComponent, CellIdComponent>();
+        Vector<entt::entity> toDestroy;
+
+        for (auto entity : objectView)
+        {
+            const auto& cellIdComponent = objectView.get<CellIdComponent>(entity);
+
+            if (cellIdComponent.Cell != acEvent.OldCell)
+                continue;
+
+            toDestroy.push_back(entity);
+        }
+
+        for (auto& entity : toDestroy)
+        {
+            m_world.destroy(entity);
+        }
     }
-
-    auto objectView = m_world.view<ObjectComponent, CellIdComponent>();
-    Vector<entt::entity> toDestroy;
-
-    for (auto entity : objectView)
+    catch (...)
     {
-        const auto& cellIdComponent = objectView.get<CellIdComponent>(entity);
-
-        if (cellIdComponent.Cell != acEvent.OldCell)
-            continue;
-
-        toDestroy.push_back(entity);
-    }
-
-    for (auto& entity : toDestroy)
-    {
-        m_world.destroy(entity);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while collecting abandoned objects");
     }
 }
 
@@ -59,77 +69,87 @@ void ObjectService::OnPlayerLeaveCellEvent(const PlayerLeaveCellEvent& acEvent) 
 // This is fine for containers and doors, but if this system is expanded, think of temporaries.
 void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsRequest>& acMessage) noexcept
 {
-    auto view = m_world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
-
-    uint32_t objectCount = 0;
-    for (auto it = std::begin(view); it != std::end(view); ++it)
-        ++objectCount;
-
-    uint32_t refusedCount = 0;
-
-    AssignObjectsResponse response;
-
-    for (const ObjectData& object : acMessage.Packet.Objects)
+    // The response grows per object and every newly created object emplaces four
+    // components. A failure stops the loop with the objects created so far already in
+    // the world and no response sent, so the client asks again for the whole list.
+    try
     {
-        const auto iter = std::find_if(
-            std::begin(view), std::end(view),
-            [view, id = object.Id](auto entity)
-            {
-                const auto& formIdComponent = view.get<FormIdComponent>(entity);
-                return formIdComponent.Id == id;
-            });
+        auto view = m_world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
 
-        if (iter != std::end(view))
-        {
-            ObjectData objectData;
-            objectData.ServerId = World::ToInteger(*iter);
-
-            auto& formIdComponent = view.get<FormIdComponent>(*iter);
-            objectData.Id = formIdComponent.Id;
-
-            auto& objectComponent = view.get<ObjectComponent>(*iter);
-            objectData.CurrentLockData = objectComponent.CurrentLockData;
-
-            auto& inventoryComponent = view.get<InventoryComponent>(*iter);
-            objectData.CurrentInventory = inventoryComponent.Content;
-
-            objectData.IsSenderFirst = false;
-
-            response.Objects.push_back(objectData);
-        }
-        else if (objectCount >= kMaxObjectEntities)
-        {
-            ++refusedCount;
-        }
-        else
-        {
-            const auto cEntity = m_world.create();
+        uint32_t objectCount = 0;
+        for (auto it = std::begin(view); it != std::end(view); ++it)
             ++objectCount;
 
-            m_world.emplace<FormIdComponent>(cEntity, object.Id);
+        uint32_t refusedCount = 0;
 
-            auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity);
-            objectComponent.CurrentLockData = object.CurrentLockData;
+        AssignObjectsResponse response;
 
-            m_world.emplace<CellIdComponent>(cEntity, object.CellId, object.WorldSpaceId, object.CurrentCoords);
-            auto& inventoryComp = m_world.emplace<InventoryComponent>(cEntity);
-            inventoryComp.Content = object.CurrentInventory;
+        for (const ObjectData& object : acMessage.Packet.Objects)
+        {
+            const auto iter = std::find_if(
+                std::begin(view), std::end(view),
+                [view, id = object.Id](auto entity)
+                {
+                    const auto& formIdComponent = view.get<FormIdComponent>(entity);
+                    return formIdComponent.Id == id;
+                });
 
-            ObjectData objectData;
-            objectData.Id = object.Id;
-            objectData.ServerId = World::ToInteger(cEntity);
-            objectData.IsSenderFirst = true;
+            if (iter != std::end(view))
+            {
+                ObjectData objectData;
+                objectData.ServerId = World::ToInteger(*iter);
 
-            response.Objects.push_back(objectData);
+                auto& formIdComponent = view.get<FormIdComponent>(*iter);
+                objectData.Id = formIdComponent.Id;
+
+                auto& objectComponent = view.get<ObjectComponent>(*iter);
+                objectData.CurrentLockData = objectComponent.CurrentLockData;
+
+                auto& inventoryComponent = view.get<InventoryComponent>(*iter);
+                objectData.CurrentInventory = inventoryComponent.Content;
+
+                objectData.IsSenderFirst = false;
+
+                response.Objects.push_back(objectData);
+            }
+            else if (objectCount >= kMaxObjectEntities)
+            {
+                ++refusedCount;
+            }
+            else
+            {
+                const auto cEntity = m_world.create();
+                ++objectCount;
+
+                m_world.emplace<FormIdComponent>(cEntity, object.Id);
+
+                auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity);
+                objectComponent.CurrentLockData = object.CurrentLockData;
+
+                m_world.emplace<CellIdComponent>(cEntity, object.CellId, object.WorldSpaceId, object.CurrentCoords);
+                auto& inventoryComp = m_world.emplace<InventoryComponent>(cEntity);
+                inventoryComp.Content = object.CurrentInventory;
+
+                ObjectData objectData;
+                objectData.Id = object.Id;
+                objectData.ServerId = World::ToInteger(cEntity);
+                objectData.IsSenderFirst = true;
+
+                response.Objects.push_back(objectData);
+            }
         }
+
+        if (refusedCount != 0)
+            spdlog::warn("Object table is full ({} objects), {} of {} requested objects from player {} were refused", objectCount, refusedCount,
+                         acMessage.Packet.Objects.size(), acMessage.pPlayer->GetId());
+
+        if (!response.Objects.empty())
+            acMessage.pPlayer->Send(response);
     }
-
-    if (refusedCount != 0)
-        spdlog::warn("Object table is full ({} objects), {} of {} requested objects from player {} were refused", objectCount, refusedCount,
-                     acMessage.Packet.Objects.size(), acMessage.pPlayer->GetId());
-
-    if (!response.Objects.empty())
-        acMessage.pPlayer->Send(response);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while assigning objects");
+    }
 }
 
 void ObjectService::OnActivate(const PacketEvent<ActivateRequest>& acMessage) const noexcept

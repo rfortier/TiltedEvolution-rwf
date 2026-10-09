@@ -89,7 +89,21 @@ struct GameServer final : Server
 
     [[nodiscard]] const TiltedPhoques::Set<ConnectionId_t>& GetAdminSessions() const noexcept { return m_adminSessions; }
 
-    void AddAdminSession(ConnectionId_t acSession) noexcept { m_adminSessions.insert(acSession); }
+    void AddAdminSession(ConnectionId_t acSession) noexcept
+    {
+        // The admin session set is a node based set, so the insert allocates. The
+        // two callers are the console command and the authentication path, neither
+        // of which can report a failure: an admin that could not be recorded simply
+        // is not an admin, and the command that granted it says so.
+        try
+        {
+            m_adminSessions.insert(acSession);
+        }
+        catch (...)
+        {
+            Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while recording an admin session");
+        }
+    }
 
     void RemoveAdminSession(ConnectionId_t acSession) noexcept { m_adminSessions.erase(acSession); }
 

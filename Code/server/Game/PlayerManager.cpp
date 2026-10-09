@@ -15,25 +15,49 @@ PlayerManager::~PlayerManager() noexcept
 
 PlayerManager* PlayerManager::Get() noexcept
 {
-    if (!s_pInstance)
+    // The report formats into a fresh buffer, which is the only allocation here. The
+    // answer is null either way, and every caller already handles that: the pointer is
+    // the manager itself, which the server built before it could serve anyone.
+    try
     {
-        spdlog::error("Invalid access to playermanager");
-        return nullptr;
+        if (!s_pInstance)
+        {
+            spdlog::error("Invalid access to playermanager");
+            return nullptr;
+        }
+
+        return s_pInstance;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a missing player manager");
     }
 
-    return s_pInstance;
+    return nullptr;
 }
 
 Player* PlayerManager::Create(ConnectionId_t aConnectionId) noexcept
 {
-    const auto itor = m_players.find(aConnectionId);
-    if (itor == std::end(m_players))
+    // The map node and the Player both allocate. The caller is the authentication
+    // path, and it already treats a null answer as "this connection has no player":
+    // the request is refused instead of the server dying on a bad_alloc.
+    try
     {
-        const auto [insertedItor, inserted] = m_players.emplace(aConnectionId, MakeUnique<Player>(aConnectionId));
-        if (inserted)
+        const auto itor = m_players.find(aConnectionId);
+        if (itor == std::end(m_players))
         {
-            return insertedItor.value().get();
+            const auto [insertedItor, inserted] = m_players.emplace(aConnectionId, MakeUnique<Player>(aConnectionId));
+            if (inserted)
+            {
+                return insertedItor.value().get();
+            }
         }
+
+        return nullptr;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while creating a player row");
     }
 
     return nullptr;

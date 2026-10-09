@@ -152,56 +152,65 @@ void PlayerService::HandleInteriorCellEnter(const PacketEvent<EnterInteriorCellR
 
 void PlayerService::OnPlayerRespawnRequest(const PacketEvent<PlayerRespawnRequest>& acMessage) const noexcept
 {
-    float goldLossFactor = fGoldLossFactor.as_float();
-
-    auto character = acMessage.pPlayer->GetCharacter();
-    if (!character)
-        return;
-
-    auto view = m_world.view<InventoryComponent>();
-
-    const auto it = view.find(static_cast<entt::entity>(*character));
-
-    if (it != view.end())
+    // The two reports allocate, and so does each of the two broadcasts between them.
+    // The gold was already removed above, so a failure costs the notifications only.
+    try
     {
-        if (goldLossFactor != 0.0)
+        float goldLossFactor = fGoldLossFactor.as_float();
+
+        auto character = acMessage.pPlayer->GetCharacter();
+        if (!character)
+            return;
+
+        auto view = m_world.view<InventoryComponent>();
+
+        const auto it = view.find(static_cast<entt::entity>(*character));
+
+        if (it != view.end())
         {
-            auto& inventoryComponent = view.get<InventoryComponent>(*it);
+            if (goldLossFactor != 0.0)
+            {
+                auto& inventoryComponent = view.get<InventoryComponent>(*it);
 
-            GameId goldId(0, 0xF);
-            int32_t goldCount = inventoryComponent.Content.GetEntryCountById(goldId);
-            int32_t goldToRemove = static_cast<int32_t>(goldCount * goldLossFactor);
+                GameId goldId(0, 0xF);
+                int32_t goldCount = inventoryComponent.Content.GetEntryCountById(goldId);
+                int32_t goldToRemove = static_cast<int32_t>(goldCount * goldLossFactor);
 
-            Inventory::Entry entry{};
-            entry.BaseId = goldId;
-            entry.Count = -goldToRemove;
+                Inventory::Entry entry{};
+                entry.BaseId = goldId;
+                entry.Count = -goldToRemove;
 
-            inventoryComponent.Content.AddOrRemoveEntry(entry);
+                inventoryComponent.Content.AddOrRemoveEntry(entry);
 
-            NotifyInventoryChanges notifyInventoryChanges{};
-            notifyInventoryChanges.ServerId = World::ToInteger(*character);
-            if (const auto* pOwnerComponent = m_world.try_get<OwnerComponent>(*character))
-                notifyInventoryChanges.OwnershipEpoch = pOwnerComponent->OwnershipEpoch;
-            notifyInventoryChanges.Item = entry;
-            notifyInventoryChanges.Drop = false;
+                NotifyInventoryChanges notifyInventoryChanges{};
+                notifyInventoryChanges.ServerId = World::ToInteger(*character);
+                if (const auto* pOwnerComponent = m_world.try_get<OwnerComponent>(*character))
+                    notifyInventoryChanges.OwnershipEpoch = pOwnerComponent->OwnershipEpoch;
+                notifyInventoryChanges.Item = entry;
+                notifyInventoryChanges.Drop = false;
 
-            // Exclude respawned player from inventory changes notification...
-            if (!GameServer::Get()->SendToPlayersInRange(notifyInventoryChanges, *character, acMessage.GetSender()))
+                // Exclude respawned player from inventory changes notification...
+                if (!GameServer::Get()->SendToPlayersInRange(notifyInventoryChanges, *character, acMessage.GetSender()))
+                    spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+
+                // ...and instead, send NotifyPlayerRespawn so that the client can print a message.
+                NotifyPlayerRespawn notifyPlayerRespawn{};
+                notifyPlayerRespawn.GoldLost = goldToRemove;
+
+                acMessage.pPlayer->Send(notifyPlayerRespawn);
+            }
+
+            // Let all other players in cell respawn this player, since the body state seems to be bugged otherwise
+            NotifyRespawn notifyRespawn{};
+            notifyRespawn.ActorId = World::ToInteger(*character);
+
+            if (!GameServer::Get()->SendToPlayersInRange(notifyRespawn, *character, acMessage.GetSender()))
                 spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
-
-            // ...and instead, send NotifyPlayerRespawn so that the client can print a message.
-            NotifyPlayerRespawn notifyPlayerRespawn{};
-            notifyPlayerRespawn.GoldLost = goldToRemove;
-
-            acMessage.pPlayer->Send(notifyPlayerRespawn);
         }
-
-        // Let all other players in cell respawn this player, since the body state seems to be bugged otherwise
-        NotifyRespawn notifyRespawn{};
-        notifyRespawn.ActorId = World::ToInteger(*character);
-
-        if (!GameServer::Get()->SendToPlayersInRange(notifyRespawn, *character, acMessage.GetSender()))
-            spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while handling a respawn request");
     }
 }
 

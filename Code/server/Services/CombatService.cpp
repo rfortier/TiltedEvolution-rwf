@@ -14,43 +14,52 @@ CombatService::CombatService(World& aWorld, entt::dispatcher& aDispatcher) noexc
 
 void CombatService::OnProjectileLaunchRequest(const PacketEvent<ProjectileLaunchRequest>& acMessage) const noexcept
 {
-    auto& packet = acMessage.Packet;
+    // The notification is a fixed size struct copied field by field; the report at the
+    // end is the only thing in this body that formats into a fresh buffer.
+    try
+    {
+        auto& packet = acMessage.Packet;
 
-    NotifyProjectileLaunch notify{};
+        NotifyProjectileLaunch notify{};
 
-    notify.ShooterID = packet.ShooterID;
+        notify.ShooterID = packet.ShooterID;
 
-    notify.OriginX = packet.OriginX;
-    notify.OriginY = packet.OriginY;
-    notify.OriginZ = packet.OriginZ;
+        notify.OriginX = packet.OriginX;
+        notify.OriginY = packet.OriginY;
+        notify.OriginZ = packet.OriginZ;
 
-    notify.ProjectileBaseID = packet.ProjectileBaseID;
-    notify.WeaponID = packet.WeaponID;
-    notify.AmmoID = packet.AmmoID;
+        notify.ProjectileBaseID = packet.ProjectileBaseID;
+        notify.WeaponID = packet.WeaponID;
+        notify.AmmoID = packet.AmmoID;
 
-    notify.ZAngle = packet.ZAngle;
-    notify.XAngle = packet.XAngle;
-    notify.YAngle = packet.YAngle;
+        notify.ZAngle = packet.ZAngle;
+        notify.XAngle = packet.XAngle;
+        notify.YAngle = packet.YAngle;
 
-    notify.ParentCellID = packet.ParentCellID;
+        notify.ParentCellID = packet.ParentCellID;
 
-    notify.SpellID = packet.SpellID;
-    notify.CastingSource = packet.CastingSource;
+        notify.SpellID = packet.SpellID;
+        notify.CastingSource = packet.CastingSource;
 
-    notify.Area = packet.Area;
-    notify.Power = packet.Power;
-    notify.Scale = packet.Scale;
+        notify.Area = packet.Area;
+        notify.Power = packet.Power;
+        notify.Scale = packet.Scale;
 
-    notify.AlwaysHit = packet.AlwaysHit;
-    notify.NoDamageOutsideCombat = packet.NoDamageOutsideCombat;
-    notify.AutoAim = packet.AutoAim;
-    notify.DeferInitialization = packet.DeferInitialization;
-    notify.ForceConeOfFire = packet.ForceConeOfFire;
+        notify.AlwaysHit = packet.AlwaysHit;
+        notify.NoDamageOutsideCombat = packet.NoDamageOutsideCombat;
+        notify.AutoAim = packet.AutoAim;
+        notify.DeferInitialization = packet.DeferInitialization;
+        notify.ForceConeOfFire = packet.ForceConeOfFire;
 
-    notify.UnkBool1 = packet.UnkBool1;
-    notify.UnkBool2 = packet.UnkBool2;
+        notify.UnkBool1 = packet.UnkBool1;
+        notify.UnkBool2 = packet.UnkBool2;
 
-    const auto cShooterEntity = static_cast<entt::entity>(packet.ShooterID);
-    if (!GameServer::Get()->SendToPlayersInRange(notify, cShooterEntity, acMessage.GetSender()))
-        spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+        const auto cShooterEntity = static_cast<entt::entity>(packet.ShooterID);
+        if (!GameServer::Get()->SendToPlayersInRange(notify, cShooterEntity, acMessage.GetSender()))
+            spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a failed broadcast");
+    }
 }

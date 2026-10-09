@@ -53,64 +53,75 @@ bool PluginMessagingService::AllowMessage(std::uint32_t aPlayerId, std::uint32_t
 
 void PluginMessagingService::OnPluginMessage(const PacketEvent<PluginMessagingRequest>& acMessage) noexcept
 {
-    const auto& request = acMessage.Packet;
-
-    if (request.Channel.empty() || request.Channel.size() > kMaxChannelBytes)
-        return;
-
-    if (request.PluginData.size() > kMaxPayloadBytes)
-        return;
-
-    auto* pSender = acMessage.pPlayer;
-    if (!pSender)
-        return;
-
-    // The sender identity comes from the authenticated player, never from the
-    // payload. PlayerId is what a client can learn about its peers, so it is the
-    // only identity a plugin can address a reply to.
-    const auto senderPlayerId = pSender->GetId();
-    if (!AllowMessage(senderPlayerId, static_cast<std::uint32_t>(request.PluginData.size())))
+    // The notification copies the channel and the payload, both already bounded above,
+    // and the rate-limit report allocates too. A message that could not be prepared is
+    // dropped: plugins treat a missing message as a lost one, which is what the
+    // transport already gives them.
+    try
     {
-        spdlog::warn("PluginMessaging: rate limited player {} on channel {}", senderPlayerId, request.Channel.c_str());
-        return;
-    }
+        const auto& request = acMessage.Packet;
 
-    NotifyPluginMessaging notify{};
-    notify.Channel = request.Channel;
-    notify.PluginData = request.PluginData;
-    notify.SenderPlayerId = senderPlayerId;
-    notify.SenderDisplayName = pSender->GetUsername();
-    // There is no designated host in a dedicated-server session; the flag stays
-    // false until the framework has a notion of one, rather than guessing.
-    notify.SenderIsHost = false;
+        if (request.Channel.empty() || request.Channel.size() > kMaxChannelBytes)
+            return;
 
-    switch (request.TargetKind)
-    {
-    case PluginMessagingRequest::Target::kAllPlayers:
-        GameServer::Get()->SendToPlayers(notify, pSender);
-        break;
+        if (request.PluginData.size() > kMaxPayloadBytes)
+            return;
 
-    case PluginMessagingRequest::Target::kPlayer:
-    {
-        // Resolved through the player table, because the request carries a
-        // PlayerId and the wire needs a connection handle. An unknown id is a
-        // normal race against a disconnect, not an error.
-        if (request.TargetPlayerId != 0)
+        auto* pSender = acMessage.pPlayer;
+        if (!pSender)
+            return;
+
+        // The sender identity comes from the authenticated player, never from the
+        // payload. PlayerId is what a client can learn about its peers, so it is the
+        // only identity a plugin can address a reply to.
+        const auto senderPlayerId = pSender->GetId();
+        if (!AllowMessage(senderPlayerId, static_cast<std::uint32_t>(request.PluginData.size())))
         {
-            const auto* pTarget = m_world.GetPlayerManager().GetById(request.TargetPlayerId);
-            if (pTarget)
-                GameServer::Get()->Send(pTarget->GetConnectionId(), notify);
+            spdlog::warn("PluginMessaging: rate limited player {} on channel {}", senderPlayerId, request.Channel.c_str());
+            return;
         }
-        break;
+
+        NotifyPluginMessaging notify{};
+        notify.Channel = request.Channel;
+        notify.PluginData = request.PluginData;
+        notify.SenderPlayerId = senderPlayerId;
+        notify.SenderDisplayName = pSender->GetUsername();
+        // There is no designated host in a dedicated-server session; the flag stays
+        // false until the framework has a notion of one, rather than guessing.
+        notify.SenderIsHost = false;
+
+        switch (request.TargetKind)
+        {
+        case PluginMessagingRequest::Target::kAllPlayers:
+            GameServer::Get()->SendToPlayers(notify, pSender);
+            break;
+
+        case PluginMessagingRequest::Target::kPlayer:
+        {
+            // Resolved through the player table, because the request carries a
+            // PlayerId and the wire needs a connection handle. An unknown id is a
+            // normal race against a disconnect, not an error.
+            if (request.TargetPlayerId != 0)
+            {
+                const auto* pTarget = m_world.GetPlayerManager().GetById(request.TargetPlayerId);
+                if (pTarget)
+                    GameServer::Get()->Send(pTarget->GetConnectionId(), notify);
+            }
+            break;
+        }
+
+        case PluginMessagingRequest::Target::kServer:
+        case PluginMessagingRequest::Target::kHost:
+            // No server-side plugin host exists yet, so the payload is accepted and
+            // dropped rather than silently misrouted.
+            break;
+
+        default:
+            break;
+        }
     }
-
-    case PluginMessagingRequest::Target::kServer:
-    case PluginMessagingRequest::Target::kHost:
-        // No server-side plugin host exists yet, so the payload is accepted and
-        // dropped rather than silently misrouted.
-        break;
-
-    default:
-        break;
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while relaying a plugin message");
     }
 }
