@@ -9,6 +9,66 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:同一个审计脚本漏掉的 9 个 `noexcept` 分配点(客户端 8 个 + `es_loader` 1 个)—— 判据是「先问脚本漏了什么 token,再问剩下的算不算缺陷」
+
+**现象**:没有任何现象。前面三批(`941bd606` 服务端、`f0877c1b` 客户端、`84649881` 编码层)用的分配标记是 `push_back|emplace|insert\(|resize|reserve|make_shared|make_unique|new|String|Vector|Map|spdlog`。这一批把标记换成**逐行、只看函数体、屏蔽注释与 `#if 0`** 之后,又找出 9 个:
+
+| 站点 | 漏掉的 token | 分配点 |
+| --- | --- | --- |
+| `Code/client/Games/Skyrim/Actor.cpp:748 Actor::GetEssentialActorValues` | `insert` | `ActorValuesList.insert({i, value})` ×3 + `ActorMaxValuesList.insert(...)` ×3 |
+| `Code/client/Services/Generic/ActorValueService.cpp:42 CreateActorValuesComponent` | `insert` | 两个 map 各 `kActorValueCount` 次 `insert` |
+| `Code/client/Services/Generic/ActorValueService.cpp:103 BroadcastActorValues` | `insert` | 每 tick 每个 actor 两次 `insert` + 两次 `Send` |
+| `Code/client/Services/Generic/DiscoveryService.cpp:266 VisitForms` | `insert` | `m_forms.insert(formId)` 每个未发现 actor 一次 |
+| `Code/client/Services/Generic/ObjectService.cpp:73 GetPlayerStashContainers` | `insert` | `containers.insert(...)` 每个阵营最多两次 |
+| `Code/client/Systems/AnimationSystem.cpp:101 AddActionsForReplay` | `insert` | `TimePoints.insert(..., begin, end)` |
+| `Code/client/SkyrimVM64.cpp:68 DescribeOffset` | `std::to_string` | 返回值里的 `std::to_string` 与 `std::string("<unreadable>")` |
+| `Code/client/Services/Generic/RunnerService.cpp:12 Queue` | `std::function` | 形参按值传入 ⇒ 调用点构造 + `m_runner.Add` 建节点 |
+| `Code/components/es_loader/ESLoader.cpp:34 BuildRecordCollection` | `MakeUnique` | `MakeUnique<RecordCollection>()` + `fs::is_directory` |
+
+前六个是 `insert` 的两种写法之一被漏掉:旧标记里写的是 `\binsert\b`,但 `ActorValues::Deserialize` 那批用的是 `insert({key, value})`,而第一轮脚本用 `insert\s*\(` 时又把 `map.insert(...)` 的普通调用漏在外面 —— 两轮各漏一半。这一轮改成**逐行扫描 + 逐 token 匹配**,并把 `MakeUnique`/`MakeShared`/`std::to_string`/`std::ifstream`/`fs::is_directory` 也加进标记表。
+
+**判据(同族对照,载重)**:
+
+| 对照 | 事实 | 结论 |
+| --- | --- | --- |
+| 前一批的修法可以直接复用 | `Code/client/Diagnostics.h`(`f0877c1b`)经 `TiltedOnlinePCH.h:52` 进入客户端的每个 TU | 8 个客户端站点用 `Diagnostics::ReportFailure`,与那一批同形 |
+| `es_loader` **不在**那条 include 链上 | 它有自己的 xmake target(`Code/components/es_loader/xmake.lua`)和自己的强制包含 `stdafx.h`,后者只 `#include <spdlog/spdlog.h>` | 这一处用**本地 `try`/`catch` + `spdlog::error`**,与 §106 的编码层同理:先问这一层能不能用那个 helper |
+| 编码层留下的那条规则仍然成立 | `Code/encoding` 依旧零 `spdlog` 引用 | 这一批没有碰它 |
+| `es_loader` 里其余 8 个站点**不是**缺陷 | `Code/components/es_loader/ESLoader.cpp:49-54` 里 `LoadFiles()` 的调用被 `/* */` 注释掉,`BuildRecordCollection` 在 `:47` 直接 `return MakeUnique<RecordCollection>();`;`pluginFile.LoadFile`(`:127`)与 `IndexRecords` 的唯一调用点都在 `LoadFiles` 内 | `TESFile::LoadFile`/`IndexRecords`、`RecordCollection::GetFormType`、`Chunks::ParseValue`、`CONT`/`GMST`/`TES4::ParseChunks`、`TESFile::GetFormIdPrefix` 全在注释块之后的死路径上,与 §104 的 `#if 0` 三站点同类,判为**不改** |
+| 「同名不同层」要分开看 | `Actor::GetEssentialActorValues` 与 `ActorValueService::CreateActorValuesComponent` 都写 `ActorValuesList`,前者返回快照、后者写组件 | 回退语义不同,注释分别写清楚 |
+
+**可达性**:8 个客户端站点全在帧循环或收包路径上,没有一条需要管理员:
+
+- **tick**:`ActorValueService::OnUpdate` → `BroadcastActorValues`(每 tick 遍历全部本地 actor);`DiscoveryService::OnUpdate` → `VisitForms`(每 tick 遍历 `ProcessLists::highActorHandleArray`);`AnimationSystem` 的 replay 入队;`RunnerService::OnUpdate` → `m_runner.Drain()`。
+- **hook 回调**:`SkyrimVM64.cpp:68 DescribeOffset` 由 `HookVMUpdate` 调用(`:136`),每 `kTickHeartbeatEvery` 个 tick 一次。
+- **启动**:`ESLoader::BuildRecordCollection` 由 `Code/server/World.cpp:47` 在 `World` 构造时调用一次。
+
+触发条件是堆耗尽。**本机不编译**(`docs/PITFALLS.md` §0/§1),所以每一条都是静态读数。
+
+**修法**:9 个函数体加 `try`/`catch`,**一个 `noexcept` 都没有删**。回退值:
+
+| 站点 | catch 里的恢复 | 语义 |
+| --- | --- | --- |
+| `Actor::GetEssentialActorValues` | 两张表 `clear()` | 空快照 = 「没有本质 actor value 变化」 |
+| `ActorValueService::CreateActorValuesComponent` | 两张表 `clear()` | 组件已建但为空 = 「还不知道任何 actor value」 |
+| `ActorValueService::BroadcastActorValues` | 无(组件只在 `insert` 成功后写) | 没送出去的值得下个 tick 重试,不会记下一个服务端没被告知的值 |
+| `DiscoveryService::VisitForms` | 无(`m_forms` 保留已发现的) | 这个 tick 没访问到的 actor 就是「还没发现」,下个 tick 从 `m_forms` 接着走 |
+| `GetPlayerStashContainers` | `return Set<const TESObjectREFR*>{};` | 空集 = 「没有容器是赃物箱」,与上面「没有 ModManager」分支同一个答案 |
+| `AnimationSystem::AddActionsForReplay` | 无 | 组件保留已有的 time point、`ReplayCount` 不动 ⇒ 不会重复入队 |
+| `DescribeOffset` | `return std::string("<unavailable>");` | 心跳行照常打印,只是这个数字读不出来 |
+| `RunnerService::Queue` | 无 | 没排上的任务就是不执行,队列里不留半条 |
+| `ESLoader::BuildRecordCollection` | `return nullptr;` | 与「Data 目录不存在」同一个答案,调用方 `World.cpp:48` 于是不 emplace 任何 server mod |
+
+`ESLoader` 那一处的报告是本地写的,而且**自己再套一层 `try`/`catch`** —— 与 `Code/server/Diagnostics.h` 和 `Code/client/Diagnostics.h` 里那句注释同一个理由:失败的报告本身也会失败。
+
+**验证**:`git diff --numstat -- Code` = **9 files changed, 260 insertions(+), 135 deletions(-)**,52 个 hunk。逐文件:`client/Games/Skyrim/Actor.cpp` +18/-6(1596→1608)、`client/Games/Skyrim/CellRespawnOverrides.cpp` +4/-0(168→172)、`client/Services/Generic/ActorValueService.cpp` +75/-49(457→483)、`client/Services/Generic/DiscoveryService.cpp` +59/-46(380→393)、`client/Services/Generic/ObjectService.cpp` +25/-14(578→589)、`client/Services/Generic/RunnerService.cpp` +13/-1(21→33)、`client/SkyrimVM64.cpp` +12/-1(182→193)、`client/Systems/AnimationSystem.cpp` +16/-4(196→208)、`components/es_loader/ESLoader.cpp` +38/-14(151→175)。
+
+这 9 个文件的 `try`/`catch` 计数从 **29 / 29 到 39 / 39**,新增 10 对(9 个函数体 + `ESLoader` 里那层嵌套的报告守卫)。`Diagnostics::ReportFailure` 新增调用点 9 个。
+
+全仓普查(15 个 target、`noexcept` 定义 1514 个)在**换成逐行 + 完整 token 表**之后,剩下的未守站点只有 `Code/encoding/WireLimits.h:84 Clamp`(向下 `resize`,§106 已判)与 `es_loader` 的 8 个死路径站点(本节已判)。
+每个改过的文件都做过花括号/圆括号配平、`try`/`catch` 缩进配对与行尾检查;`Code/client/Games/Skyrim/CellRespawnOverrides.cpp` 与 `Code/components/es_loader/ESLoader.cpp` 都补上了报告,不留空 `catch`。
+**本机不编译**(§0/§1),所以判据是静态的。
+
 ### 修复:编码层 `Code/encoding` 的 503 个 `noexcept` 一个 `catch` 都没有,25 个在按对端声称的条数分配 —— 判据是「这一层不记日志,所以 `catch` 只能就地恢复」
 
 **现象**:没有任何现象。`Code/encoding/**` 共 352 个 `.cpp/.h`,里面 **503 个 `noexcept` 函数定义**,体内含 `catch` 的 **0 个**,全文 `try`/`catch` 计数 **0 / 0**。同一个脚本数出 **25 个**定义在按线上的长度分配 —— 20 个 `resize`,4 个 `insert`,1 个 `push_back`。

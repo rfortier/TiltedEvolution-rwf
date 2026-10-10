@@ -41,14 +41,27 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
 
 void ActorValueService::CreateActorValuesComponent(const entt::entity aEntity, Actor* apActor) noexcept
 {
-    auto& actorValuesComponent = m_world.emplace_or_replace<ActorValuesComponent>(aEntity);
-
-    for (int i = 0; i < ActorValueInfo::kActorValueCount; i++)
+    // The component is created first and the two maps are filled from the engine
+    // afterwards, so a failure leaves an empty component rather than no component.
+    // An empty snapshot reads as "no actor value is known yet", which the broadcast
+    // below already skips.
+    try
     {
-        float value = apActor->GetActorValue(i);
-        actorValuesComponent.CurrentActorValues.ActorValuesList.insert({i, value});
-        float maxValue = apActor->GetActorPermanentValue(i);
-        actorValuesComponent.CurrentActorValues.ActorMaxValuesList.insert({i, maxValue});
+        auto& actorValuesComponent = m_world.emplace_or_replace<ActorValuesComponent>(aEntity);
+
+        for (int i = 0; i < ActorValueInfo::kActorValueCount; i++)
+        {
+            float value = apActor->GetActorValue(i);
+            actorValuesComponent.CurrentActorValues.ActorValuesList.insert({i, value});
+            float maxValue = apActor->GetActorPermanentValue(i);
+            actorValuesComponent.CurrentActorValues.ActorMaxValuesList.insert({i, maxValue});
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ActorValueService::CreateActorValuesComponent");
+        actorValuesComponent.CurrentActorValues.ActorValuesList.clear();
+        actorValuesComponent.CurrentActorValues.ActorMaxValuesList.clear();
     }
 }
 
@@ -102,63 +115,76 @@ void ActorValueService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
 void ActorValueService::BroadcastActorValues() noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    auto view = m_world.view<FormIdComponent, LocalComponent, ActorValuesComponent>();
-
-    for (auto entity : view)
+    // Every request and both components allocate here, on a timer. The engine read
+    // and the request build are one unit: the component is only written after the
+    // insert succeeded, so a failure skips that actor value and the next tick sends
+    // it, instead of recording a value the server was never told about.
+    try
     {
-        auto& formIdComponent = view.get<FormIdComponent>(entity);
-        auto* pForm = TESForm::GetById(formIdComponent.Id);
-        auto* pActor = Cast<Actor>(pForm);
+        if (!m_transport.IsConnected())
+            return;
 
-        if (!pActor)
-            continue;
+        auto view = m_world.view<FormIdComponent, LocalComponent, ActorValuesComponent>();
 
-        auto& localComponent = view.get<LocalComponent>(entity);
-        auto& actorValuesComponent = view.get<ActorValuesComponent>(entity);
-
-        RequestActorValueChanges requestValueChanges;
-        requestValueChanges.Id = localComponent.Id;
-        requestValueChanges.OwnershipEpoch = localComponent.OwnershipEpoch;
-        RequestActorMaxValueChanges requestMaxValueChanges;
-        requestMaxValueChanges.Id = localComponent.Id;
-        requestMaxValueChanges.OwnershipEpoch = localComponent.OwnershipEpoch;
-
-        bool isPlayer = pActor->GetExtension() && pActor->GetExtension()->IsPlayer();
-
-        for (int i = 0; i < ActorValueInfo::kActorValueCount; i++)
+        for (auto entity : view)
         {
-            if (isPlayer && i == ActorValueInfo::kDragonSouls)
+            auto& formIdComponent = view.get<FormIdComponent>(entity);
+            auto* pForm = TESForm::GetById(formIdComponent.Id);
+            auto* pActor = Cast<Actor>(pForm);
+
+            if (!pActor)
                 continue;
+
+            auto& localComponent = view.get<LocalComponent>(entity);
+            auto& actorValuesComponent = view.get<ActorValuesComponent>(entity);
+
+            RequestActorValueChanges requestValueChanges;
+            requestValueChanges.Id = localComponent.Id;
+            requestValueChanges.OwnershipEpoch = localComponent.OwnershipEpoch;
+            RequestActorMaxValueChanges requestMaxValueChanges;
+            requestMaxValueChanges.Id = localComponent.Id;
+            requestMaxValueChanges.OwnershipEpoch = localComponent.OwnershipEpoch;
+
+            bool isPlayer = pActor->GetExtension() && pActor->GetExtension()->IsPlayer();
+
+            for (int i = 0; i < ActorValueInfo::kActorValueCount; i++)
+            {
+                if (isPlayer && i == ActorValueInfo::kDragonSouls)
+                    continue;
             
-            float newValue = pActor->GetActorValue(i);
-            float oldValue = actorValuesComponent.CurrentActorValues.ActorValuesList[i];
-            if (newValue != oldValue)
-            {
-                requestValueChanges.Values.insert({i, newValue});
-                actorValuesComponent.CurrentActorValues.ActorValuesList[i] = newValue;
+                float newValue = pActor->GetActorValue(i);
+                float oldValue = actorValuesComponent.CurrentActorValues.ActorValuesList[i];
+                if (newValue != oldValue)
+                {
+                    requestValueChanges.Values.insert({i, newValue});
+                    actorValuesComponent.CurrentActorValues.ActorValuesList[i] = newValue;
+                }
+
+                float newMaxValue = pActor->GetActorPermanentValue(i);
+                float oldMaxValue = actorValuesComponent.CurrentActorValues.ActorMaxValuesList[i];
+                if (newMaxValue != oldMaxValue)
+                {
+                    requestMaxValueChanges.Values.insert({i, newMaxValue});
+                    actorValuesComponent.CurrentActorValues.ActorMaxValuesList[i] = newMaxValue;
+                }
             }
 
-            float newMaxValue = pActor->GetActorPermanentValue(i);
-            float oldMaxValue = actorValuesComponent.CurrentActorValues.ActorMaxValuesList[i];
-            if (newMaxValue != oldMaxValue)
+            if (requestValueChanges.Values.size() > 0)
             {
-                requestMaxValueChanges.Values.insert({i, newMaxValue});
-                actorValuesComponent.CurrentActorValues.ActorMaxValuesList[i] = newMaxValue;
+                m_transport.Send(requestValueChanges);
+            }
+
+            if (requestMaxValueChanges.Values.size() > 0)
+            {
+                m_transport.Send(requestMaxValueChanges);
             }
         }
-
-        if (requestValueChanges.Values.size() > 0)
-        {
-            m_transport.Send(requestValueChanges);
-        }
-
-        if (requestMaxValueChanges.Values.size() > 0)
-        {
-            m_transport.Send(requestMaxValueChanges);
-        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ActorValueService::BroadcastActorValues");
+        // The actor value that could not be sent stays unwritten in the component,
+        // so the next tick sees it as changed again and retries it.
     }
 }
 

@@ -265,70 +265,83 @@ void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNe
 
 void DiscoveryService::VisitForms() noexcept
 {
-    static Set<uint32_t> s_previousForms;
-    s_previousForms = m_forms;
-
-    const auto visitor = [this](TESObjectREFR* apReference)
+    // The set and the enqueued events are the allocations, on the tick that walks
+    // every loaded actor. A failure stops the visit for this tick: the actors not
+    // visited are simply not discovered yet, and the next tick starts over from
+    // m_forms, which still holds what was found.
+    try
     {
-        const auto formId = apReference->formID;
+        static Set<uint32_t> s_previousForms;
+        s_previousForms = m_forms;
 
-        if (!m_forms.count(formId))
+        const auto visitor = [this](TESObjectREFR* apReference)
         {
-            m_forms.insert(formId);
+            const auto formId = apReference->formID;
 
-            m_dispatcher.enqueue(ActorAddedEvent(formId));
-        }
-        else
-            s_previousForms.erase(formId);
-    };
-
-    ProcessLists* const pProcessLists = ProcessLists::Get();
-    if (!pProcessLists)
-        return;
-
-    for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
-    {
-        TESObjectREFR* const pRefr = TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]);
-        if (pRefr)
-        {
-            if (pRefr->GetNiNode())
+            if (!m_forms.count(formId))
             {
-                visitor(pRefr);
+                m_forms.insert(formId);
+
+                m_dispatcher.enqueue(ActorAddedEvent(formId));
             }
-        }
-    }
+            else
+                s_previousForms.erase(formId);
+        };
 
-    // Not in actor holder. The visitor dereferences the reference immediately
-    // (its formID), and the player does not exist at the main menu or before a
-    // save is loaded, so this call must be guarded like VisitCell() above.
-    if (auto* pPlayer = PlayerCharacter::Get())
-        visitor(pPlayer);
+        ProcessLists* const pProcessLists = ProcessLists::Get();
+        if (!pProcessLists)
+            return;
 
-    // We dispatch removal events first to prevent needless reallocations
-    for (uint32_t formId : s_previousForms)
-    {
-        // A conform can remove both the 3D and the high-process handle. Keep the
-        // existing discovery entry so rebuilding it does not cancel its assignment.
-        // TODO: GetById performance in loop?
-        if (auto* pActor = Cast<Actor>(TESForm::GetById(formId)); pActor && !pActor->IsDeleted())
+        for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
         {
-            using ReconciliationStage = ActorExtension::ReconciliationStage;
-            const auto cStage = pActor->GetExtension()->Reconciliation;
-            const auto* pCell = pActor->GetParentCellEx();
-            // Finish the disable/enable pair even if the cell starts unloading.
-            // Once enabled, an unloaded cell is a real removal.
-            if (cStage == ReconciliationStage::WaitingForDisable || (cStage == ReconciliationStage::WaitingFor3D && pCell && pCell->IsAttached()))
+            TESObjectREFR* const pRefr = TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]);
+            if (pRefr)
             {
-                continue;
+                if (pRefr->GetNiNode())
+                {
+                    visitor(pRefr);
+                }
             }
         }
 
-        m_dispatcher.trigger(ActorRemovedEvent(formId));
-        m_forms.erase(formId);
-    }
+        // Not in actor holder. The visitor dereferences the reference immediately
+        // (its formID), and the player does not exist at the main menu or before a
+        // save is loaded, so this call must be guarded like VisitCell() above.
+        if (auto* pPlayer = PlayerCharacter::Get())
+            visitor(pPlayer);
 
-    // Dispatch all adds
-    m_dispatcher.update<ActorAddedEvent>();
+        // We dispatch removal events first to prevent needless reallocations
+        for (uint32_t formId : s_previousForms)
+        {
+            // A conform can remove both the 3D and the high-process handle. Keep the
+            // existing discovery entry so rebuilding it does not cancel its assignment.
+            // TODO: GetById performance in loop?
+            if (auto* pActor = Cast<Actor>(TESForm::GetById(formId)); pActor && !pActor->IsDeleted())
+            {
+                using ReconciliationStage = ActorExtension::ReconciliationStage;
+                const auto cStage = pActor->GetExtension()->Reconciliation;
+                const auto* pCell = pActor->GetParentCellEx();
+                // Finish the disable/enable pair even if the cell starts unloading.
+                // Once enabled, an unloaded cell is a real removal.
+                if (cStage == ReconciliationStage::WaitingForDisable || (cStage == ReconciliationStage::WaitingFor3D && pCell && pCell->IsAttached()))
+                {
+                    continue;
+                }
+            }
+
+            m_dispatcher.trigger(ActorRemovedEvent(formId));
+            m_forms.erase(formId);
+        }
+
+        // Dispatch all adds
+        m_dispatcher.update<ActorAddedEvent>();
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in DiscoveryService::VisitForms");
+        // The actors not visited this tick are not discovered yet. m_forms still
+        // holds what was found, so the next tick resumes from there.
+    }
 }
 
 void DiscoveryService::OnUpdate(const PreUpdateEvent& acUpdateEvent) noexcept

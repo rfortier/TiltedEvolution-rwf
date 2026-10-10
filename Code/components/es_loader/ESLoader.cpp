@@ -33,25 +33,49 @@ ESLoader::ESLoader()
 
 UniquePtr<RecordCollection> ESLoader::BuildRecordCollection() noexcept
 {
-    if (!fs::is_directory(m_directory))
+    // Reached from World::World on the server (Code/server/World.cpp:47). The
+    // directory probe, the load order parse and the collection itself all allocate,
+    // and a null collection is what this function already returns when the Data
+    // directory is missing - the caller then emplaces no server mods, which is the
+    // same state as a server with no plugins installed.
+    try
     {
-        // spdlog::warn("Data directory not found.");
+        if (!fs::is_directory(m_directory))
+        {
+            // spdlog::warn("Data directory not found.");
+            return nullptr;
+        }
+
+        if (!LoadLoadOrder())
+        {
+            return nullptr;
+        }
+
+        return MakeUnique<RecordCollection>();
+
+        /*
+        auto recordCollection = LoadFiles();
+        recordCollection->BuildReferences();
+
+        return std::move(recordCollection);
+        */
+    }
+    catch (...)
+    {
+        // This component has its own precompiled header (stdafx.h) and its own xmake
+        // target, so the shared Diagnostics helper the client and the server use is not
+        // on its include path. spdlog is, so the report is made here, under the same
+        // inner guard: reporting a failure must not become the failure.
+        try
+        {
+            spdlog::error("{}: ran out of memory while building the record collection", __FUNCTION__);
+        }
+        catch (...)
+        {
+        }
+
         return nullptr;
     }
-
-    if (!LoadLoadOrder())
-    {
-        return nullptr;
-    }
-
-    return MakeUnique<RecordCollection>();
-
-    /*
-    auto recordCollection = LoadFiles();
-    recordCollection->BuildReferences();
-
-    return std::move(recordCollection);
-    */
 }
 
 bool ESLoader::LoadLoadOrder()

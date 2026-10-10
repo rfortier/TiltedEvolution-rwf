@@ -67,7 +67,18 @@ static RawOffset ReadInt32At(const void* acpBase, size_t aOffset) noexcept
 
 static std::string DescribeOffset(const RawOffset& acProbe) noexcept
 {
-    return acProbe.readable ? std::to_string(acProbe.value) : std::string("<unreadable>");
+    // The two strings this builds are the allocation. They only exist for the
+    // heartbeat line below, which is what turns "the vm tick never reached us" into
+    // a readable number; a failed one is reported as such instead.
+    try
+    {
+        return acProbe.readable ? std::to_string(acProbe.value) : std::string("<unreadable>");
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in DescribeOffset");
+        return std::string("<unavailable>");
+    }
 }
 
 int TP_MAKE_THISCALL(HookVMUpdate, GameVM, float a2)

@@ -749,13 +749,25 @@ ActorValues Actor::GetEssentialActorValues() const noexcept
 {
     ActorValues actorValues;
 
-    int essentialValues[] = {ActorValueInfo::kHealth, ActorValueInfo::kStamina, ActorValueInfo::kMagicka};
-    for (auto i : essentialValues)
+    // Both maps are the allocation, and this is read on the path that builds an
+    // actor value snapshot. An empty snapshot is the safe answer: the caller sends
+    // no change, which is the same as an actor whose values did not move.
+    try
     {
-        float value = actorValueOwner.GetValue(i);
-        actorValues.ActorValuesList.insert({i, value});
-        float maxValue = actorValueOwner.GetPermanentValue(i);
-        actorValues.ActorMaxValuesList.insert({i, maxValue});
+        int essentialValues[] = {ActorValueInfo::kHealth, ActorValueInfo::kStamina, ActorValueInfo::kMagicka};
+        for (auto i : essentialValues)
+        {
+            float value = actorValueOwner.GetValue(i);
+            actorValues.ActorValuesList.insert({i, value});
+            float maxValue = actorValueOwner.GetPermanentValue(i);
+            actorValues.ActorMaxValuesList.insert({i, maxValue});
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::GetEssentialActorValues");
+        actorValues.ActorValuesList.clear();
+        actorValues.ActorMaxValuesList.clear();
     }
 
     return actorValues;

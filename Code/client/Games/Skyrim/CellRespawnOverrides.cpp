@@ -100,6 +100,10 @@ struct RespawnSettings
         }
         catch (...)
         {
+            Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while loading a cell respawn override");
+            // The override table is what this file exists to build, so a failure to
+            // grow it means the position for this cell is simply not configured -
+            // the same answer as a cell that has no override.
         }
     }
 

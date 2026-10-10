@@ -72,25 +72,36 @@ bool IsPlayerHome(const TESObjectCELL* pCell) noexcept
 // Only compare the container pointers; never read through them.
 Set<const TESObjectREFR*> GetPlayerStashContainers() noexcept
 {
-    Set<const TESObjectREFR*> containers{};
-
-    ModManager* pModManager = ModManager::Get();
-    if (!pModManager)
-        return containers;
-
-    for (const TESFaction* pFaction : pModManager->factions)
+    // The set is the allocation. An empty set is the safe answer: the caller then
+    // treats no container as a stash, which is what the "no mod manager" branch
+    // above already returns.
+    try
     {
-        if (!pFaction)
-            continue;
+        Set<const TESObjectREFR*> containers{};
 
-        if (pFaction->crimeData.playerInventoryContainer)
-            containers.insert(pFaction->crimeData.playerInventoryContainer);
+        ModManager* pModManager = ModManager::Get();
+        if (!pModManager)
+            return containers;
 
-        if (pFaction->crimeData.stolenGoodsContainer)
-            containers.insert(pFaction->crimeData.stolenGoodsContainer);
+        for (const TESFaction* pFaction : pModManager->factions)
+        {
+            if (!pFaction)
+                continue;
+
+            if (pFaction->crimeData.playerInventoryContainer)
+                containers.insert(pFaction->crimeData.playerInventoryContainer);
+
+            if (pFaction->crimeData.stolenGoodsContainer)
+                containers.insert(pFaction->crimeData.stolenGoodsContainer);
+        }
+
+        return containers;
     }
-
-    return containers;
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in GetPlayerStashContainers");
+        return Set<const TESObjectREFR*>{};
+    }
 }
 
 bool ShouldSyncObject(const TESObjectREFR* apObject, const Set<const TESObjectREFR*>& acPlayerStashContainers) noexcept

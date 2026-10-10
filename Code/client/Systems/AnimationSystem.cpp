@@ -101,10 +101,22 @@ void AnimationSystem::Clean(World& aWorld, const entt::entity aEntity) noexcept
 void AnimationSystem::AddActionsForReplay(RemoteAnimationComponent& aAnimationComponent,
                                           const ActionReplayChain& acReplay) noexcept
 {
-    aAnimationComponent.TimePoints.insert(aAnimationComponent.TimePoints.end(), acReplay.Actions.begin(),
-                                          acReplay.Actions.end());
-    aAnimationComponent.ReplayCount = acReplay.Actions.size();
-    aAnimationComponent.ResetAnimationGraphForReplay = acReplay.ResetAnimationGraph;
+    // The insert is the allocation. It is a hint for the replay, so a failure leaves
+    // the component with the time points it already had and no replay queued, which
+    // is what a chain with no actions produces.
+    try
+    {
+        aAnimationComponent.TimePoints.insert(aAnimationComponent.TimePoints.end(), acReplay.Actions.begin(),
+                                              acReplay.Actions.end());
+        aAnimationComponent.ReplayCount = acReplay.Actions.size();
+        aAnimationComponent.ResetAnimationGraphForReplay = acReplay.ResetAnimationGraph;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in AnimationSystem::AddActionsForReplay");
+        // The time points already in the component stay, and ReplayCount keeps the
+        // value of the last successful replay, so nothing is queued twice.
+    }
 }
 
 void AnimationSystem::AddAction(RemoteAnimationComponent& aAnimationComponent, const std::string& acActionDiff) noexcept
