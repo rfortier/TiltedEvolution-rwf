@@ -20,16 +20,26 @@ void StringCacheUpdate::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) con
 
 void StringCacheUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    StartId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-
-    const auto count = Serialization::ReadVarInt(aReader) & 0xFFFF;
-    Values.resize(count);
-
-    for (auto i = 0ull; i < count; ++i)
+    // The value list is the allocation. The start id was read before it and stays,
+    // and the receiver drops a message whose cursor does not line up with its own -
+    // which an empty list at the wrong id already is.
+    try
     {
-        auto value = Serialization::ReadString(aReader);
-        WireLimits::Clamp(value, WireLimits::kMaxCachedStringBytes);
+        StartId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
-        Values[i] = std::move(value);
+        const auto count = Serialization::ReadVarInt(aReader) & 0xFFFF;
+        Values.resize(count);
+
+        for (auto i = 0ull; i < count; ++i)
+        {
+            auto value = Serialization::ReadString(aReader);
+            WireLimits::Clamp(value, WireLimits::kMaxCachedStringBytes);
+
+            Values[i] = std::move(value);
+        }
+    }
+    catch (...)
+    {
+        Values.clear();
     }
 }

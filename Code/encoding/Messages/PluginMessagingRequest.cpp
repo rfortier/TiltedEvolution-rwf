@@ -24,26 +24,35 @@ void PluginMessagingRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter
 
 void PluginMessagingRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    ClientMessage::DeserializeRaw(aReader);
-
-    Channel = Serialization::ReadString(aReader);
-    if (Channel.size() > kMaxChannelBytes)
-        Channel.resize(kMaxChannelBytes);
-
-    std::uint64_t target = 0;
-    aReader.ReadBits(target, 8);
-    TargetKind = static_cast<Target>(target);
-
-    TargetPlayerId = static_cast<std::uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFFu);
-
-    // Never trust the wire length: a peer can claim more bytes than it sent.
-    const auto size = static_cast<std::uint32_t>(Serialization::ReadVarInt(aReader));
-    const auto bounded = std::min<std::uint32_t>(size, kMaxPayloadBytes);
-    PluginData.resize(bounded);
-    for (std::uint32_t i = 0; i < bounded; ++i)
+    // Same shape as NotifyPluginMessaging above. The channel and the target were
+    // read before the payload and stay; only the payload is dropped.
+    try
     {
-        std::uint64_t byte = 0;
-        aReader.ReadBits(byte, 8);
-        PluginData[i] = static_cast<std::uint8_t>(byte & 0xFF);
+        ClientMessage::DeserializeRaw(aReader);
+
+        Channel = Serialization::ReadString(aReader);
+        if (Channel.size() > kMaxChannelBytes)
+            Channel.resize(kMaxChannelBytes);
+
+        std::uint64_t target = 0;
+        aReader.ReadBits(target, 8);
+        TargetKind = static_cast<Target>(target);
+
+        TargetPlayerId = static_cast<std::uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFFu);
+
+        // Never trust the wire length: a peer can claim more bytes than it sent.
+        const auto size = static_cast<std::uint32_t>(Serialization::ReadVarInt(aReader));
+        const auto bounded = std::min<std::uint32_t>(size, kMaxPayloadBytes);
+        PluginData.resize(bounded);
+        for (std::uint32_t i = 0; i < bounded; ++i)
+        {
+            std::uint64_t byte = 0;
+            aReader.ReadBits(byte, 8);
+            PluginData[i] = static_cast<std::uint8_t>(byte & 0xFF);
+        }
+    }
+    catch (...)
+    {
+        PluginData.clear();
     }
 }

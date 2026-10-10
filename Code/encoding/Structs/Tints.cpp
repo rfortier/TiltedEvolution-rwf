@@ -43,34 +43,44 @@ void Tints::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 
 void Tints::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    uint64_t tmp = 0;
-    aReader.ReadBits(tmp, 8);
-
-    const auto cCount = tmp & 0xFF;
-
-    // The message is not guaranteed to arrive into a fresh object: append semantics
-    // would silently grow the list on every reuse.
-    Entries.clear();
-
-    for (auto i = 0u; i < cCount; ++i)
+    // The tint list is the allocation. The catch clears it, so a failure reads as
+    // "this appearance carries no tints" - the same answer an empty message gives -
+    // rather than as a half parsed one.
+    try
     {
-        uint64_t buffer = 0;
+        uint64_t tmp = 0;
+        aReader.ReadBits(tmp, 8);
 
-        Entry entry;
-        entry.Type = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+        const auto cCount = tmp & 0xFF;
 
-        aReader.ReadBits(buffer, 32);
-        entry.Color = buffer & 0xFFFFFFFF;
-        entry.Name.Deserialize(aReader);
+        // The message is not guaranteed to arrive into a fresh object: append semantics
+        // would silently grow the list on every reuse.
+        Entries.clear();
 
-        aReader.ReadBits(buffer, 32);
-        tmp = buffer & 0xFFFFFFFF;
+        for (auto i = 0u; i < cCount; ++i)
+        {
+            uint64_t buffer = 0;
 
-        // The alpha reaches TintMask::alpha on the receiving client, which the engine then
-        // blends with. A NaN or an infinity is not a large number but the absence of one,
-        // and no legitimate sender produces either.
-        entry.Alpha = WireLimits::ClampFinite(*reinterpret_cast<float*>(&tmp));
+            Entry entry;
+            entry.Type = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
-        Entries.push_back(entry);
+            aReader.ReadBits(buffer, 32);
+            entry.Color = buffer & 0xFFFFFFFF;
+            entry.Name.Deserialize(aReader);
+
+            aReader.ReadBits(buffer, 32);
+            tmp = buffer & 0xFFFFFFFF;
+
+            // The alpha reaches TintMask::alpha on the receiving client, which the engine then
+            // blends with. A NaN or an infinity is not a large number but the absence of one,
+            // and no legitimate sender produces either.
+            entry.Alpha = WireLimits::ClampFinite(*reinterpret_cast<float*>(&tmp));
+
+            Entries.push_back(entry);
+        }
+    }
+    catch (...)
+    {
+        Entries.clear();
     }
 }

@@ -57,34 +57,44 @@ void Inventory::Entry::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const n
 
 void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    BaseId.Deserialize(aReader);
-    Count = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-
-    ExtraCharge = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
-
-    ExtraEnchantId.Deserialize(aReader);
-    ExtraEnchantCharge = Serialization::ReadVarInt(aReader) & 0xFFFF;
-    const auto effectCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxEffectCount);
-    EnchantData.Effects.clear();
-    for (uint64_t i = 0; i < effectCount; i++)
+    // The enchantment effect list is the allocation. An empty list is an item with
+    // no enchantment, which the engine already handles: the enchant id and the
+    // charge were read before it and stay.
+    try
     {
-        EffectItem effect;
-        effect.Deserialize(aReader);
-        EnchantData.Effects.push_back(effect);
+        BaseId.Deserialize(aReader);
+        Count = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+
+        ExtraCharge = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+
+        ExtraEnchantId.Deserialize(aReader);
+        ExtraEnchantCharge = Serialization::ReadVarInt(aReader) & 0xFFFF;
+        const auto effectCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxEffectCount);
+        EnchantData.Effects.clear();
+        for (uint64_t i = 0; i < effectCount; i++)
+        {
+            EffectItem effect;
+            effect.Deserialize(aReader);
+            EnchantData.Effects.push_back(effect);
+        }
+
+        ExtraHealth = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+
+        ExtraPoisonId.Deserialize(aReader);
+        ExtraPoisonCount = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+
+        ExtraSoulLevel = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+
+        EnchantData.IsWeapon = Serialization::ReadBool(aReader);
+        ExtraEnchantRemoveUnequip = Serialization::ReadBool(aReader);
+        ExtraWorn = Serialization::ReadBool(aReader);
+        ExtraWornLeft = Serialization::ReadBool(aReader);
+        IsQuestItem = Serialization::ReadBool(aReader);
     }
-
-    ExtraHealth = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
-
-    ExtraPoisonId.Deserialize(aReader);
-    ExtraPoisonCount = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-
-    ExtraSoulLevel = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-
-    EnchantData.IsWeapon = Serialization::ReadBool(aReader);
-    ExtraEnchantRemoveUnequip = Serialization::ReadBool(aReader);
-    ExtraWorn = Serialization::ReadBool(aReader);
-    ExtraWornLeft = Serialization::ReadBool(aReader);
-    IsQuestItem = Serialization::ReadBool(aReader);
+    catch (...)
+    {
+        EnchantData.Effects.clear();
+    }
 }
 
 bool Inventory::operator==(const Inventory& acRhs) const noexcept
@@ -123,16 +133,25 @@ void Inventory::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 
 void Inventory::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    const auto count = std::min<uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFF, kMaxEntryCount);
-    Entries.clear();
-    for (uint32_t i = 0; i < count; i++)
+    // The entry list is the allocation. An empty inventory is the safe answer, and
+    // the equipment field below this block is still read.
+    try
     {
-        Entry entry;
-        entry.Deserialize(aReader);
-        Entries.push_back(entry);
-    }
+        const auto count = std::min<uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFF, kMaxEntryCount);
+        Entries.clear();
+        for (uint32_t i = 0; i < count; i++)
+        {
+            Entry entry;
+            entry.Deserialize(aReader);
+            Entries.push_back(entry);
+        }
 
-    CurrentMagicEquipment.Deserialize(aReader);
+        CurrentMagicEquipment.Deserialize(aReader);
+    }
+    catch (...)
+    {
+        Entries.clear();
+    }
 }
 
 std::optional<Inventory::Entry> Inventory::GetEntryById(GameId& aItemId) const noexcept
@@ -156,17 +175,26 @@ int32_t Inventory::GetEntryCountById(GameId& aItemId) const noexcept
 // TODO: unit testing
 void Inventory::AddOrRemoveEntry(const Entry& acEntry) noexcept
 {
-    auto duplicate = std::find_if(Entries.begin(), Entries.end(), [acEntry](Entry& entry) { return entry.CanBeMerged(acEntry); });
+    // The push_back is the only statement here that allocates, and a failed one
+    // leaves the list untouched: the inventory simply did not change, which is the
+    // answer a caller that lost the entry already handles.
+    try
+    {
+        auto duplicate = std::find_if(Entries.begin(), Entries.end(), [acEntry](Entry& entry) { return entry.CanBeMerged(acEntry); });
 
-    if (duplicate != Entries.end())
-    {
-        duplicate->Count += acEntry.Count;
-        if (duplicate->Count <= 0)
-            Entries.erase(duplicate);
+        if (duplicate != Entries.end())
+        {
+            duplicate->Count += acEntry.Count;
+            if (duplicate->Count <= 0)
+                Entries.erase(duplicate);
+        }
+        else
+        {
+            Entries.push_back(acEntry);
+        }
     }
-    else
+    catch (...)
     {
-        Entries.push_back(acEntry);
     }
 }
 

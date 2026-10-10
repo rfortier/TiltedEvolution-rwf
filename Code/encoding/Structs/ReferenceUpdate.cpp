@@ -31,15 +31,25 @@ void ReferenceUpdate::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const no
 
 void ReferenceUpdate::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    UpdatedMovement.Deserialize(aReader);
-
-    // Never trust the wire length, and never throw: this runs inside a noexcept frame.
-    const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActionEventCount);
-
-    ActionEvents.resize(count);
-
-    for (auto i = 0u; i < count; ++i)
+    // The action event list is the allocation. The movement was read before it and
+    // stays, so the actor is still moved; only the animations are dropped, and the
+    // next update carries them again.
+    try
     {
-        ActionEvents[i].ApplyDifferential(aReader);
+        UpdatedMovement.Deserialize(aReader);
+
+        // Never trust the wire length, and never throw: this runs inside a noexcept frame.
+        const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActionEventCount);
+
+        ActionEvents.resize(count);
+
+        for (auto i = 0u; i < count; ++i)
+        {
+            ActionEvents[i].ApplyDifferential(aReader);
+        }
+    }
+    catch (...)
+    {
+        ActionEvents.clear();
     }
 }

@@ -25,19 +25,40 @@ std::optional<const TiltedPhoques::String> StringCache::operator[](uint32_t aVal
 
 uint32_t StringCache::Add(const TiltedPhoques::String& acValue) noexcept
 {
-    if (auto id = this->operator[](acValue))
-        return *id;
+    // Both containers allocate, and this is reached from Deserialize below, which
+    // is noexcept. The map write is undone so the cache stays a contiguous prefix
+    // of the sender's, and the id returned is one no cursor can equal: Deserialize
+    // compares it with its own cursor and drops the rest of the message, which is
+    // what it already does for a value that reuses an old id.
+    try
+    {
+        if (auto id = this->operator[](acValue))
+            return *id;
 
-    const auto allocatedId = m_idToString.size();
-    m_stringToId[acValue] = allocatedId & 0xFFFFFFFF;
-    m_idToString.push_back(acValue);
+        const auto allocatedId = m_idToString.size();
+        m_stringToId[acValue] = allocatedId & 0xFFFFFFFF;
+        m_idToString.push_back(acValue);
 
-    return allocatedId;
+        return allocatedId;
+    }
+    catch (...)
+    {
+        m_stringToId.erase(acValue);
+        return kInvalidId;
+    }
 }
 
 void StringCache::AddWanted(const TiltedPhoques::String& acValue) noexcept
 {
-    m_wantedStrings.insert(acValue);
+    // The set insert is the allocation. A name that could not be recorded is simply
+    // not wanted: it is asked for again the next time the engine reads it.
+    try
+    {
+        m_wantedStrings.insert(acValue);
+    }
+    catch (...)
+    {
+    }
 }
 
 size_t StringCache::Size() const noexcept
@@ -50,24 +71,35 @@ StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
     StringCacheUpdate update;
     update.StartId = aStartId;
 
-    if (aStartId < m_idToString.size())
+    // The slice is the allocation. The cursor is left where it was - it is only
+    // advanced after the insert succeeds - so the next call sends the same slice
+    // again instead of skipping it, and an empty update carries the start id the
+    // receiver checks its own cursor against.
+    try
     {
-        // One message carries at most kMaxValueCount entries, and the receiver
-        // requires the ids to be contiguous: a message whose start id does not line
-        // up is dropped. Send a slice and advance the cursor by exactly what was
-        // written, so the rest goes out on the next call instead of being skipped
-        // and leaving the two caches out of step.
-        const auto count = std::min<size_t>(m_idToString.size() - aStartId, StringCacheUpdate::kMaxValueCount);
+        if (aStartId < m_idToString.size())
+        {
+            // One message carries at most kMaxValueCount entries, and the receiver
+            // requires the ids to be contiguous: a message whose start id does not line
+            // up is dropped. Send a slice and advance the cursor by exactly what was
+            // written, so the rest goes out on the next call instead of being skipped
+            // and leaving the two caches out of step.
+            const auto count = std::min<size_t>(m_idToString.size() - aStartId, StringCacheUpdate::kMaxValueCount);
 
-        auto itor = std::begin(m_idToString);
-        std::advance(itor, aStartId);
+            auto itor = std::begin(m_idToString);
+            std::advance(itor, aStartId);
 
-        auto end = itor;
-        std::advance(end, count);
+            auto end = itor;
+            std::advance(end, count);
 
-        update.Values.insert(std::begin(update.Values), itor, end);
+            update.Values.insert(std::begin(update.Values), itor, end);
 
-        aStartId += static_cast<uint32_t>(count);
+            aStartId += static_cast<uint32_t>(count);
+        }
+    }
+    catch (...)
+    {
+        update.Values.clear();
     }
 
     return update;

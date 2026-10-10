@@ -33,12 +33,22 @@ void ActionReplayChain::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const 
 
 void ActionReplayChain::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    ResetAnimationGraph = Serialization::ReadBool(aReader);
-    uint64_t actionsCount = 0;
-    aReader.ReadBits(actionsCount, 8);
-    Actions.resize(actionsCount);
-    for (ActionEvent& replayAction : Actions)
+    // The action list is the allocation. The graph reset flag was read before it,
+    // so the client still resets its animation graph and replays nothing - which is
+    // what a chain of no actions means.
+    try
     {
-        replayAction.ApplyDifferential(aReader);
+        ResetAnimationGraph = Serialization::ReadBool(aReader);
+        uint64_t actionsCount = 0;
+        aReader.ReadBits(actionsCount, 8);
+        Actions.resize(actionsCount);
+        for (ActionEvent& replayAction : Actions)
+        {
+            replayAction.ApplyDifferential(aReader);
+        }
+    }
+    catch (...)
+    {
+        Actions.clear();
     }
 }

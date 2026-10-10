@@ -36,20 +36,30 @@ void Factions::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 
 void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    // Never trust the wire length, and never throw: this runs inside a noexcept frame.
-    const auto npcCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
-
-    NpcFactions.resize(npcCount);
-    for (auto& entry : NpcFactions)
+    // Both lists are the allocation and both were sized from the wire. Empty lists
+    // are the safe answer: the consumer sees an actor with no faction changes.
+    try
     {
-        entry.Deserialize(aReader);
+        // Never trust the wire length, and never throw: this runs inside a noexcept frame.
+        const auto npcCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
+
+        NpcFactions.resize(npcCount);
+        for (auto& entry : NpcFactions)
+        {
+            entry.Deserialize(aReader);
+        }
+
+        const auto extraCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
+
+        ExtraFactions.resize(extraCount);
+        for (auto& entry : ExtraFactions)
+        {
+            entry.Deserialize(aReader);
+        }
     }
-
-    const auto extraCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
-
-    ExtraFactions.resize(extraCount);
-    for (auto& entry : ExtraFactions)
+    catch (...)
     {
-        entry.Deserialize(aReader);
+        NpcFactions.clear();
+        ExtraFactions.clear();
     }
 }

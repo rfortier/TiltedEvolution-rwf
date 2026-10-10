@@ -23,19 +23,28 @@ void ShiftGridCellRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) 
 
 void ShiftGridCellRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    ClientMessage::DeserializeRaw(aReader);
-
-    WorldSpaceId.Deserialize(aReader);
-    PlayerCell.Deserialize(aReader);
-    CenterCoords.Deserialize(aReader);
-
-    uint64_t count = 0;
-    aReader.ReadBits(count, 8);
-
-    Cells.resize(count);
-
-    for (auto i = 0u; i < count; ++i)
+    // The cell list is the allocation. An empty list is a grid shift that names no
+    // cells, which the server already handles as "nothing to visit".
+    try
     {
-        Cells[i].Deserialize(aReader);
+        ClientMessage::DeserializeRaw(aReader);
+
+        WorldSpaceId.Deserialize(aReader);
+        PlayerCell.Deserialize(aReader);
+        CenterCoords.Deserialize(aReader);
+
+        uint64_t count = 0;
+        aReader.ReadBits(count, 8);
+
+        Cells.resize(count);
+
+        for (auto i = 0u; i < count; ++i)
+        {
+            Cells[i].Deserialize(aReader);
+        }
+    }
+    catch (...)
+    {
+        Cells.clear();
     }
 }

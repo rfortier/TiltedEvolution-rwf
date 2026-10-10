@@ -33,23 +33,32 @@ void QuestLog::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 
 void QuestLog::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    uint64_t temp;
-    aReader.ReadBits(temp, 16);
-
-    // Never trust the wire length, and never throw: this runs inside a noexcept frame.
-    const auto count = std::min<size_t>(temp & 0xFFFF, kMaxEntryCount);
-
-    // The message is not guaranteed to arrive into a fresh object: append semantics
-    // would silently grow the list on every reuse.
-    Entries.clear();
-
-    for (size_t i = 0; i < count; ++i)
+    // The entry list is the allocation. An empty log is the safe answer: the client
+    // keeps the quest state it already has instead of a half applied one.
+    try
     {
-        Entry entry;
-        entry.Id.Deserialize(aReader);
+        uint64_t temp;
         aReader.ReadBits(temp, 16);
 
-        entry.Stage = temp & 0xFFFF;
-        Entries.push_back(entry);
+        // Never trust the wire length, and never throw: this runs inside a noexcept frame.
+        const auto count = std::min<size_t>(temp & 0xFFFF, kMaxEntryCount);
+
+        // The message is not guaranteed to arrive into a fresh object: append semantics
+        // would silently grow the list on every reuse.
+        Entries.clear();
+
+        for (size_t i = 0; i < count; ++i)
+        {
+            Entry entry;
+            entry.Id.Deserialize(aReader);
+            aReader.ReadBits(temp, 16);
+
+            entry.Stage = temp & 0xFFFF;
+            Entries.push_back(entry);
+        }
+    }
+    catch (...)
+    {
+        Entries.clear();
     }
 }

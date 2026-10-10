@@ -10,6 +10,12 @@ struct StringCache
 
     [[nodiscard]] std::optional<uint32_t> operator[](const TiltedPhoques::String&) const noexcept;
     [[nodiscard]] std::optional<const TiltedPhoques::String> operator[](uint32_t) const noexcept;
+    // Returned by Add when the value could not be recorded. No cursor can equal it:
+    // StringCache::Deserialize compares the id it gets against its own cursor and
+    // stops applying the message when they disagree, which is what has to happen
+    // when the cache did not grow.
+    static constexpr uint32_t kInvalidId = 0xFFFFFFFFu;
+
     uint32_t Add(const TiltedPhoques::String&) noexcept;
     [[nodiscard]] void AddWanted(const TiltedPhoques::String&) noexcept;
     [[nodiscard]] size_t Size() const noexcept;

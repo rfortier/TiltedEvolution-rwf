@@ -24,26 +24,37 @@ void RequestActorMaxValueChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aW
 
 void RequestActorMaxValueChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    ClientMessage::DeserializeRaw(aReader);
-
-    Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-    OwnershipEpoch = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-
-    // A message object can be reused: without this the entries of the previous
-    // message would linger and be applied a second time.
-    Values.clear();
-
-    const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), ActorValues::kMaxActorValueCount);
-    for (uint64_t i = 0; i < count; i++)
+    // Each insert allocates a node, and the count above is what the wire claims
+    // rather than what was sent. The map was cleared before the loop, so clearing
+    // it here restores the "no values" answer an empty message would have given,
+    // instead of a half applied set of actor values.
+    try
     {
-        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-        const auto value = Serialization::ReadFloat(aReader);
+        ClientMessage::DeserializeRaw(aReader);
 
-        // Both fields are read above so that an entry which is dropped here still
-        // consumes its bytes and the rest of the stream stays aligned.
-        if (!ActorValues::IsValidActorValue(key, value))
-            continue;
+        Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+        OwnershipEpoch = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
-        Values.insert({key, value});
+        // A message object can be reused: without this the entries of the previous
+        // message would linger and be applied a second time.
+        Values.clear();
+
+        const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), ActorValues::kMaxActorValueCount);
+        for (uint64_t i = 0; i < count; i++)
+        {
+            const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+            const auto value = Serialization::ReadFloat(aReader);
+
+            // Both fields are read above so that an entry which is dropped here still
+            // consumes its bytes and the rest of the stream stays aligned.
+            if (!ActorValues::IsValidActorValue(key, value))
+                continue;
+
+            Values.insert({key, value});
+        }
+    }
+    catch (...)
+    {
+        Values.clear();
     }
 }

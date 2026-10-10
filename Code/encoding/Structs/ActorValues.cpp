@@ -51,37 +51,48 @@ void ActorValues::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexce
 
 void ActorValues::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    // A message does not necessarily land in a fresh object, so drop whatever the
-    // previous parse left behind: insert() keeps stale keys around otherwise.
-    ActorValuesList.clear();
-    ActorMaxValuesList.clear();
-
-    // Never trust the wire length: a peer can claim far more entries than it sent.
-    const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActorValueCount);
-    for (uint64_t i = 0; i < count; i++)
+    // Both maps are the allocation. The catch restores the state the two clears
+    // below produce before anything is inserted, so a failure reads as "no actor
+    // values", which is what the sender of an empty message would have produced.
+    try
     {
-        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-        const auto value = Serialization::ReadFloat(aReader);
+        // A message does not necessarily land in a fresh object, so drop whatever the
+        // previous parse left behind: insert() keeps stale keys around otherwise.
+        ActorValuesList.clear();
+        ActorMaxValuesList.clear();
 
-        // Both fields are read above so that an entry which is dropped here still
-        // consumes its bytes and the rest of the stream stays aligned.
-        if (!IsValidActorValue(key, value))
-            continue;
+        // Never trust the wire length: a peer can claim far more entries than it sent.
+        const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActorValueCount);
+        for (uint64_t i = 0; i < count; i++)
+        {
+            const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+            const auto value = Serialization::ReadFloat(aReader);
 
-        ActorValuesList.insert({key, value});
+            // Both fields are read above so that an entry which is dropped here still
+            // consumes its bytes and the rest of the stream stays aligned.
+            if (!IsValidActorValue(key, value))
+                continue;
+
+            ActorValuesList.insert({key, value});
+        }
+
+        const auto maxCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActorValueCount);
+        for (uint64_t i = 0; i < maxCount; i++)
+        {
+            const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+            const auto value = Serialization::ReadFloat(aReader);
+
+            // Both fields are read above so that an entry which is dropped here still
+            // consumes its bytes and the rest of the stream stays aligned.
+            if (!IsValidActorValue(key, value))
+                continue;
+
+            ActorMaxValuesList.insert({key, value});
+        }
     }
-
-    const auto maxCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActorValueCount);
-    for (uint64_t i = 0; i < maxCount; i++)
+    catch (...)
     {
-        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-        const auto value = Serialization::ReadFloat(aReader);
-
-        // Both fields are read above so that an entry which is dropped here still
-        // consumes its bytes and the rest of the stream stays aligned.
-        if (!IsValidActorValue(key, value))
-            continue;
-
-        ActorMaxValuesList.insert({key, value});
+        ActorValuesList.clear();
+        ActorMaxValuesList.clear();
     }
 }

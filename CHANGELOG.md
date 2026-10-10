@@ -9,6 +9,81 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:编码层 `Code/encoding` 的 503 个 `noexcept` 一个 `catch` 都没有,25 个在按对端声称的条数分配 —— 判据是「这一层不记日志,所以 `catch` 只能就地恢复」
+
+**现象**:没有任何现象。`Code/encoding/**` 共 352 个 `.cpp/.h`,里面 **503 个 `noexcept` 函数定义**,体内含 `catch` 的 **0 个**,全文 `try`/`catch` 计数 **0 / 0**。同一个脚本数出 **25 个**定义在按线上的长度分配 —— 20 个 `resize`,4 个 `insert`,1 个 `push_back`。
+
+这一层是前两批(`941bd606` 服务端、`f0877c1b` 客户端)的共同底座:`Code/client/xmake.lua:41`、`Code/server/xmake.lua:44`、`Code/admin/xmake.lua:18`、`Code/tests/xmake.lua:9` 四个 target 都 `add_deps("SkyrimEncoding")`。客户端的 `TransportService::OnConsume` 与服务端的 `GameServer::OnConsume` 解析出的每一个包,都要先经过这里的 `DeserializeRaw`。
+
+**根因**:`noexcept` 写在函数身上,分配发生在函数体里,没有 catch —— `std::bad_alloc` 穿出去就是 `std::terminate`。
+
+**判据(同族对照,载重)**:
+
+| 对照 | 事实 | 结论 |
+| --- | --- | --- |
+| **这一层没有日志,而且是有意的** | `git grep -rn "spdlog\|fmt::" -- Code/encoding` **零命中**;`Code/encoding/xmake.lua:18 add_packages("hopscotch-map", "glm", "tiltedcore")` 没有 `spdlog`;`Code/tests/xmake.lua:10-15` 也不加 | 前两批用的 `Diagnostics::ReportFailure` 在这里**用不了** —— 加它会改这一层的依赖图,还会把 spdlog 拖进只依赖 `SkyrimEncoding` 的 `TPPTests` |
+| 同层已有的恢复形状 | `Code/encoding/Structs/CachedString.cpp:37-47`(commit 早期)在 `noexcept` 里用 `*this = TiltedPhoques::String();` 恢复,注释逐字「It used to assert(false), which aborts the process: this frame is noexcept, so there is no way to fail softly」 | 修法不是新发明:同一层早就用「就地恢复」而不是「上报」 |
+| `WireLimits.h` 的自我说明 | `:81-83`「Resizing down cannot throw」 | 唯一留在原样的站点正是向下 `resize`,不是遗漏 |
+| 上界的值由我们自己的发送侧决定 | 20 个 `resize` 里的条数分别来自 8 位、13 位、16 位、VarInt,而 `kMaxObjectEntities`/`kMaxEntryCount`/`kMaxActorValueCount` 等上界已经先夹过一遍 | 所以这里要防的不是「超长」,是「夹过之后仍然会分配的那一次失败」 |
+| 「下游有守卫」不等于「值被挡住了」 | `Messages/ClientMessageFactory.cpp:32-42` 与 `ServerMessageFactory.cpp` 的 `Extract` 都 `noexcept`,调用 `s_*MessageExtractor[opcode](aReader)`,而每个 extractor 直接 `ptr->DeserializeRaw(aReader)` | 抛出点在里面一层,工厂的 `noexcept` 挡不住它 |
+
+**可达性**:25 个站点全部落在两条路径上,没有一条需要管理员:
+
+- **收包解析**:`ClientMessageFactory::Extract`(`Code/encoding/Messages/ClientMessageFactory.cpp:32`,服务端 `GameServer.cpp:609` 调用)与 `ServerMessageFactory::Extract`(客户端 `TransportService.cpp:200` 调用)都 `noexcept`,都调 `DeserializeRaw`。任何一个已连接的对端都能触发 8 个 `Messages/*` 站点。
+- **状态与结构体**:`Structs/{ActorValues,Inventory,Factions,Mods,QuestLog,ReferenceUpdate,Tints,ActionReplayChain}.cpp` 与 `StringCache.cpp`。`StringCache::Add` 还有两个非收包调用点:`Code/server/GameServer.cpp:1043`(`StringCache::Get().Serialize(startId)`)与 `Code/encoding/Structs/CachedString.cpp:27/:62`(`AddWanted`)。
+
+触发条件是堆耗尽。**本机不编译**(`docs/PITFALLS.md` §0/§1),所以每一条都是静态读数。
+
+**修法**:21 个函数体加 `try { ... } catch (...) { <就地恢复> }`,**一个 `noexcept` 都没有删**(503 → 503)。回退值都选「与空消息同一个答案」:
+
+| 站点 | catch 里的恢复 | 语义 |
+| --- | --- | --- |
+| `AssignObjectsRequest` / `AssignObjectsResponse` / `ShiftGridCellRequest` | `Objects.clear()` / `Cells.clear()` | 空表 = 「没有分配任何物件 / 没有要访问的格子」 |
+| `NotifyPartyInfo` / `NotifyPartyJoined` | `PlayerIds.clear()` | 队长字段在列表之前读,保留;只丢成员表 |
+| `NotifyPluginMessaging` / `PluginMessagingRequest` | `PluginData.clear()` | 空载荷 = 插件眼里的一条丢失消息 |
+| `StringCacheUpdate::DeserializeRaw` | `Values.clear()` | `StartId` 已读,接收侧对不上游标就丢整条 |
+| `ActionReplayChain` | `Actions.clear()` | 图重置标志已读,重置动画图并回放零个动作 |
+| `ActorValues` / 四个 `*ActorValueChanges` | 两张表都 `clear()` | 「没有任何 actor value」 |
+| `Factions` / `QuestLog` / `Tints` / `Inventory::Deserialize` | 对应表 `clear()` | 空表是安全答案,调用方遍历后什么都不做 |
+| `Inventory::Entry::Deserialize` | `EnchantData.Effects.clear()` | 无附魔的物品,附魔 id 与充能已读并保留 |
+| `Inventory::AddOrRemoveEntry` | 无(失败即未改变) | 唯一会分配的是 `push_back`,失败后表原样 |
+| `Mods::Deserialize` | `ModList.clear()` | 客户端不建 id 映射,服务端下次握手重发 |
+| `ReferenceUpdate` | `ActionEvents.clear()` | 位移已读并保留,只丢动作 |
+| `StringCache::AddWanted` | 无 | 记不下的名字下次引擎再读时重新想要 |
+| `StringCache::Serialize` | `update.Values.clear()` | 游标只在 insert 成功后前进,下次调用重发同一片 |
+| `StringCache::Add` | `m_stringToId.erase(acValue); return kInvalidId;` | 见下 |
+
+`StringCache::Add` 是这一批里唯一需要**新增一个常量**的地方。`Deserialize` 靠「`Add` 返回的 id 是否等于自己数出来的游标」判断这条消息能不能继续应用,所以失败时必须返回一个**任何游标都不可能等于**的值:
+
+```cpp
+// Code/encoding/StringCache.h:13-18(新增)
+static constexpr uint32_t kInvalidId = 0xFFFFFFFFu;
+
+// Code/encoding/StringCache.cpp:44-48
+catch (...)
+{
+    m_stringToId.erase(acValue);
+    return kInvalidId;
+}
+```
+
+两个容器都分配,失败时把先写的那张表撤掉,缓存仍然是发送方的前缀;返回 `kInvalidId` 让 `Deserialize` 走它本来就有的「id 对不上就停下」分支。
+
+`WireLimits::Clamp`(`:84-88`)是**唯一留在原样**的站点,理由写在它自己的注释里:「Resizing down cannot throw」—— 它只在 `aValue.size() > aMaxBytes` 时调用 `resize(aMaxBytes)`,是向下收缩。
+
+**验证**:`git diff --numstat -- Code/encoding` = **22 files changed, 560 insertions(+), 305 deletions(-)**,115 个 hunk。逐文件行数:`Messages/AssignObjectsRequest.cpp` 29→40、`AssignObjectsResponse.cpp` 29→38、`NotifyActorMaxValueChanges.cpp` 50→61、`NotifyActorValueChanges.cpp` 50→61、`NotifyPartyInfo.cpp` 39→48、`NotifyPartyJoined.cpp` 39→48、`NotifyPluginMessaging.cpp` 44→54、`PluginMessagingRequest.cpp` 49→58、`RequestActorMaxValueChanges.cpp` 50→61、`RequestActorValueChanges.cpp` 50→61、`ShiftGridCellRequest.cpp` 42→51、`StringCacheUpdate.cpp` 36→46、`StringCache.cpp` 143→175、`StringCache.h` 31→37、`Structs/ActionReplayChain.cpp` 45→55、`Structs/ActorValues.cpp` 88→99、`Structs/Factions.cpp` 56→66、`Structs/Inventory.cpp` 215→243、`Structs/Mods.cpp` 51→61、`Structs/QuestLog.cpp` 56→65、`Structs/ReferenceUpdate.cpp` 46→56、`Structs/Tints.cpp` 77→86。
+
+| 读数 | `HEAD` | 现在 |
+| --- | --- | --- |
+| `noexcept` 定义数 | 503 | 503 |
+| 体内含 `catch` | 0 | 25 |
+| 体内有分配标记且无 `catch` | 25 | **1**(`WireLimits::Clamp`,向下 `resize`) |
+| `Code/encoding` 全文 `try`/`catch` | 0 / 0 | 25 / 26 |
+
+**这一层仍然不依赖 `spdlog`**:`git grep -rn "spdlog\|fmt::" -- Code/encoding` 改前改后都是零命中,`Code/encoding/xmake.lua:18` 与 `Code/tests/xmake.lua:10-15` 的包列表一个字没动。`Code/tests/encoding.cpp` 的 8 个 `StringCache` 测试全部依赖 `Add` 返回真实 id(其中 `:1595-1596` 直接 `REQUIRE(cId == 0)`),新常量只在 `catch` 路径上返回,成功路径的返回值不变。
+每个改过的文件都做过花括号/圆括号配平、`try`/`catch` 缩进配对与行尾检查。`Code/encoding/xmake.lua:9 set_pcxxheader("EncodingPch.h")` 与 `:6-7 add_headerfiles("**.h")`/`add_files("**.cpp")` 覆盖全部 22 个文件。
+**本机不编译**(§0/§1),所以判据是静态的。
+
 ### 修复:客户端 `Code/client` 里 698 个 `noexcept` 只有 9 个写了 `catch`,142 个在自己分配或格式化日志 —— 判据是「承诺写在哪个函数身上,`catch` 就得写在哪个函数体里」
 
 **现象**:没有任何现象。`Code/client/**` 共 446 个 `.cpp/.h/.inl`,里面 **698 个 `noexcept` 函数定义**,体内含 `catch` 的只有 **9 个**;同一个脚本数出 **142 个**定义在自己分配内存或调用 `spdlog`/`fmt::format`。`Code/client` 全文的 `try`/`catch` 计数是 **18 / 14**,`Code/encoding` 与 `Code/admin` 是 **0 / 0**。
