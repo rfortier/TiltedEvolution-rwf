@@ -164,71 +164,91 @@ void ActorValueService::BroadcastActorValues() noexcept
 
 void ActorValueService::OnHealthChange(const HealthChangeEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    auto view = m_world.view<FormIdComponent>();
-
-    const auto hitteeIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.HitteeId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (hitteeIt == std::end(view))
+    // Every body here allocates: the reports format into fresh buffers, the maps the
+    // engine fills are copied into components, and the notifications carry them back
+    // out. A dropped update is corrected by the next one the game sends.
+    try
     {
-        spdlog::warn("Health change event form id component not found, form id: {:X}", acEvent.HitteeId);
-        return;
-    }
+        if (!m_transport.IsConnected())
+            return;
 
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*hitteeIt);
-    if (!serverIdRes.has_value())
+        auto view = m_world.view<FormIdComponent>();
+
+        const auto hitteeIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.HitteeId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+        if (hitteeIt == std::end(view))
+        {
+            spdlog::warn("Health change event form id component not found, form id: {:X}", acEvent.HitteeId);
+            return;
+        }
+
+        std::optional<uint32_t> serverIdRes = Utils::GetServerId(*hitteeIt);
+        if (!serverIdRes.has_value())
+        {
+            spdlog::error("{}: failed to find server id", __FUNCTION__);
+            return;
+        }
+
+        uint32_t serverId = serverIdRes.value();
+
+        if (acEvent.DeltaHealth > -1.0f && acEvent.DeltaHealth < 1.0f)
+        {
+            if (m_smallHealthChanges.find(serverId) == m_smallHealthChanges.end())
+                m_smallHealthChanges[serverId] = acEvent.DeltaHealth;
+            else
+                m_smallHealthChanges[serverId] += acEvent.DeltaHealth;
+            return;
+        }
+
+        RequestHealthChangeBroadcast requestHealthChange;
+        requestHealthChange.Id = serverId;
+        requestHealthChange.DeltaHealth = acEvent.DeltaHealth;
+
+        m_transport.Send(requestHealthChange);
+
+        spdlog::debug("Sent out delta health through collection: {:X}:{:f}", serverId, acEvent.DeltaHealth);
+    }
+    catch (...)
     {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ActorValueService::OnHealthChange");
     }
-
-    uint32_t serverId = serverIdRes.value();
-
-    if (acEvent.DeltaHealth > -1.0f && acEvent.DeltaHealth < 1.0f)
-    {
-        if (m_smallHealthChanges.find(serverId) == m_smallHealthChanges.end())
-            m_smallHealthChanges[serverId] = acEvent.DeltaHealth;
-        else
-            m_smallHealthChanges[serverId] += acEvent.DeltaHealth;
-        return;
-    }
-
-    RequestHealthChangeBroadcast requestHealthChange;
-    requestHealthChange.Id = serverId;
-    requestHealthChange.DeltaHealth = acEvent.DeltaHealth;
-
-    m_transport.Send(requestHealthChange);
-
-    spdlog::debug("Sent out delta health through collection: {:X}:{:f}", serverId, acEvent.DeltaHealth);
 }
 
 void ActorValueService::RunSmallHealthUpdates() noexcept
 {
-    static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenUpdates = 250ms;
-
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastSendTimePoint < cDelayBetweenUpdates)
-        return;
-
-    lastSendTimePoint = now;
-
-    if (!m_smallHealthChanges.empty())
+    // Every body here allocates: the reports format into fresh buffers, the maps the
+    // engine fills are copied into components, and the notifications carry them back
+    // out. A dropped update is corrected by the next one the game sends.
+    try
     {
-        for (auto& value : m_smallHealthChanges)
+        static std::chrono::steady_clock::time_point lastSendTimePoint;
+        constexpr auto cDelayBetweenUpdates = 250ms;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastSendTimePoint < cDelayBetweenUpdates)
+            return;
+
+        lastSendTimePoint = now;
+
+        if (!m_smallHealthChanges.empty())
         {
-            RequestHealthChangeBroadcast requestHealthChange;
-            requestHealthChange.Id = value.first;
-            requestHealthChange.DeltaHealth = value.second;
+            for (auto& value : m_smallHealthChanges)
+            {
+                RequestHealthChangeBroadcast requestHealthChange;
+                requestHealthChange.Id = value.first;
+                requestHealthChange.DeltaHealth = value.second;
 
-            m_transport.Send(requestHealthChange);
+                m_transport.Send(requestHealthChange);
 
-            spdlog::debug("Sent out delta health through timer, {:X}:{:f}", value.first, value.second);
+                spdlog::debug("Sent out delta health through timer, {:X}:{:f}", value.first, value.second);
+            }
+
+            m_smallHealthChanges.clear();
         }
-
-        m_smallHealthChanges.clear();
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ActorValueService::RunSmallHealthUpdates");
     }
 }
 
@@ -285,95 +305,125 @@ void ActorValueService::RunActorValuesUpdates() noexcept
 
 void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) const noexcept
 {
-    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id);
-    if (!pActor)
+    // Every body here allocates: the reports format into fresh buffers, the maps the
+    // engine fills are copied into components, and the notifications carry them back
+    // out. A dropped update is corrected by the next one the game sends.
+    try
     {
-        spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.Id);
-        return;
+        Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id);
+        if (!pActor)
+        {
+            spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.Id);
+            return;
+        }
+
+        const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
+        pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
+
+        const float health = pActor->GetActorValue(ActorValueInfo::kHealth);
+        if (!pActor->IsDead() && health <= 0.f)
+        {
+            ActorExtension* pExtension = pActor->GetExtension();
+            // Players should never be killed
+            if (!pExtension->IsPlayer())
+                pActor->Kill();
+        }
+
+        // TODO(cosideci): find fix for player health sync so this can be used again
+        /*
+        if (pActor->GetExtension()->IsRemotePlayer())
+            World::Get().GetOverlayService().SetPlayerHealthPercentage(pActor->formID);
+        */
     }
-
-    const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
-    pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
-
-    const float health = pActor->GetActorValue(ActorValueInfo::kHealth);
-    if (!pActor->IsDead() && health <= 0.f)
+    catch (...)
     {
-        ActorExtension* pExtension = pActor->GetExtension();
-        // Players should never be killed
-        if (!pExtension->IsPlayer())
-            pActor->Kill();
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ActorValueService::OnHealthChangeBroadcast");
     }
-
-    // TODO(cosideci): find fix for player health sync so this can be used again
-    /*
-    if (pActor->GetExtension()->IsRemotePlayer())
-        World::Get().GetOverlayService().SetPlayerHealthPercentage(pActor->formID);
-    */
 }
 
 void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMessage) const noexcept
 {
-    auto view = m_world.view<FormIdComponent, RemoteComponent>();
-
-    const auto itor = std::find_if(std::begin(view), std::end(view), [&acMessage, view](entt::entity entity)
+    // Every body here allocates: the reports format into fresh buffers, the maps the
+    // engine fills are copied into components, and the notifications carry them back
+    // out. A dropped update is corrected by the next one the game sends.
+    try
     {
-        const auto& remote = view.get<RemoteComponent>(entity);
-        return remote.Id == acMessage.Id && acMessage.OwnershipEpoch != 0 && remote.OwnershipEpoch == acMessage.OwnershipEpoch;
-    });
+        auto view = m_world.view<FormIdComponent, RemoteComponent>();
 
-    if (itor == std::end(view))
-        return;
-
-    auto& formIdComponent = view.get<FormIdComponent>(*itor);
-    Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-
-    if (!pActor)
-        return;
-
-    for (const auto& [key, value] : acMessage.Values)
-    {
-        // Syncing dragon souls triggers "Dragon soul collected" event
-        if (key == ActorValueInfo::kDragonSouls || key == ActorValueInfo::kHealth)
-            continue;
-
-        spdlog::debug("Actor value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
-
-        if (key == ActorValueInfo::kStamina || key == ActorValueInfo::kMagicka || key == ActorValueInfo::kHealth)
+        const auto itor = std::find_if(std::begin(view), std::end(view), [&acMessage, view](entt::entity entity)
         {
-            pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, key, value);
-            continue;
+            const auto& remote = view.get<RemoteComponent>(entity);
+            return remote.Id == acMessage.Id && acMessage.OwnershipEpoch != 0 && remote.OwnershipEpoch == acMessage.OwnershipEpoch;
+        });
+
+        if (itor == std::end(view))
+            return;
+
+        auto& formIdComponent = view.get<FormIdComponent>(*itor);
+        Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+
+        if (!pActor)
+            return;
+
+        for (const auto& [key, value] : acMessage.Values)
+        {
+            // Syncing dragon souls triggers "Dragon soul collected" event
+            if (key == ActorValueInfo::kDragonSouls || key == ActorValueInfo::kHealth)
+                continue;
+
+            spdlog::debug("Actor value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
+
+            if (key == ActorValueInfo::kStamina || key == ActorValueInfo::kMagicka || key == ActorValueInfo::kHealth)
+            {
+                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, key, value);
+                continue;
+            }
+            pActor->SetActorValue(key, value);
         }
-        pActor->SetActorValue(key, value);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ActorValueService::OnActorValueChanges");
     }
 }
 
 void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges& acMessage) const noexcept
 {
-    auto view = m_world.view<FormIdComponent, RemoteComponent>();
-
-    const auto it = std::find_if(std::begin(view), std::end(view), [&acMessage, view](entt::entity entity)
+    // Every body here allocates: the reports format into fresh buffers, the maps the
+    // engine fills are copied into components, and the notifications carry them back
+    // out. A dropped update is corrected by the next one the game sends.
+    try
     {
-        const auto& remote = view.get<RemoteComponent>(entity);
-        return remote.Id == acMessage.Id && acMessage.OwnershipEpoch != 0 && remote.OwnershipEpoch == acMessage.OwnershipEpoch;
-    });
+        auto view = m_world.view<FormIdComponent, RemoteComponent>();
 
-    if (it == std::end(view))
-        return;
+        const auto it = std::find_if(std::begin(view), std::end(view), [&acMessage, view](entt::entity entity)
+        {
+            const auto& remote = view.get<RemoteComponent>(entity);
+            return remote.Id == acMessage.Id && acMessage.OwnershipEpoch != 0 && remote.OwnershipEpoch == acMessage.OwnershipEpoch;
+        });
 
-    auto& formIdComponent = view.get<FormIdComponent>(*it);
-    Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+        if (it == std::end(view))
+            return;
 
-    if (!pActor)
-        return;
+        auto& formIdComponent = view.get<FormIdComponent>(*it);
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
 
-    for (const auto& [key, value] : acMessage.Values)
+        if (!pActor)
+            return;
+
+        for (const auto& [key, value] : acMessage.Values)
+        {
+            if (key == ActorValueInfo::kDragonSouls)
+                continue;
+
+            spdlog::debug("Actor max value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
+
+            pActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, key, value);
+        }
+    }
+    catch (...)
     {
-        if (key == ActorValueInfo::kDragonSouls)
-            continue;
-
-        spdlog::debug("Actor max value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
-
-        pActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, key, value);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ActorValueService::OnActorMaxValueChanges");
     }
 }
 

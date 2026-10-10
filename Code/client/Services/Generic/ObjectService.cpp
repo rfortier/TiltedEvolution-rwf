@@ -120,327 +120,398 @@ void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
 
 void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    if (!pPlayer)
-        return;
-
-    // The player is between cells during a load, so the effective cell can be
-    // empty here and the cell id below would be built from a null cell.
-    TESObjectCELL* pCell = pPlayer->GetParentCellEx();
-    if (!pCell)
-        return;
-
-    // Player homes should not be synced, so that chest contents,
-    // which are often used as storage, are never accidentally wiped.
-    if (!World::Get().GetServerSettings().SyncPlayerHomes && IsPlayerHome(pCell))
-        return;
-
-    GameId cellId{};
-    if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellId))
+    // Object (container, door, activator) packets. The entity lookups and the object
+    // lists allocate; an object that could not be created is created again when the
+    // server resends its assignment.
+    try
     {
-        spdlog::error("Server cell id not found for cell form id {:X}", pCell->formID);
-        return;
-    }
+        if (!m_transport.IsConnected())
+            return;
 
-    GameId worldSpaceId{};
-    if (TESWorldSpace* pWorldSpace = pPlayer->GetWorldSpace())
-    {
-        if (!m_world.GetModSystem().GetServerModId(pWorldSpace->formID, worldSpaceId))
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        if (!pPlayer)
+            return;
+
+        // The player is between cells during a load, so the effective cell can be
+        // empty here and the cell id below would be built from a null cell.
+        TESObjectCELL* pCell = pPlayer->GetParentCellEx();
+        if (!pCell)
+            return;
+
+        // Player homes should not be synced, so that chest contents,
+        // which are often used as storage, are never accidentally wiped.
+        if (!World::Get().GetServerSettings().SyncPlayerHomes && IsPlayerHome(pCell))
+            return;
+
+        GameId cellId{};
+        if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellId))
         {
-            spdlog::error("Server world space id not found for world space form id {:X}", pWorldSpace->formID);
+            spdlog::error("Server cell id not found for cell form id {:X}", pCell->formID);
             return;
         }
-    }
 
-    Vector<FormType> formTypes = {FormType::Container, FormType::Door};
-    // Door seemed to be at the wrong form id (29, now 32), verify this.
-    Vector<TESObjectREFR*> objects = pCell->GetRefsByFormTypes(formTypes);
-
-    // The count travels in 8 bits, so a cell with more containers and doors than that
-    // needs more than one packet. Handing the whole list to one request is not an option:
-    // the writer clamps the count, and everything past the clamp is never sent at all.
-    AssignObjectsRequest request{};
-
-    const Set<const TESObjectREFR*> playerStashContainers = GetPlayerStashContainers();
-
-    for (TESObjectREFR* pObject : objects)
-    {
-        if (!ShouldSyncObject(pObject, playerStashContainers))
+        GameId worldSpaceId{};
+        if (TESWorldSpace* pWorldSpace = pPlayer->GetWorldSpace())
         {
-            spdlog::warn("Excluding sync for {:X}", pObject->formID);
-            continue;
+            if (!m_world.GetModSystem().GetServerModId(pWorldSpace->formID, worldSpaceId))
+            {
+                spdlog::error("Server world space id not found for world space form id {:X}", pWorldSpace->formID);
+                return;
+            }
         }
 
-        ObjectData objectData{};
-        objectData.CellId = cellId;
-        objectData.WorldSpaceId = worldSpaceId;
-        objectData.CurrentCoords = GridCellCoords::CalculateGridCellCoords(pObject->position.x, pObject->position.y);
+        Vector<FormType> formTypes = {FormType::Container, FormType::Door};
+        // Door seemed to be at the wrong form id (29, now 32), verify this.
+        Vector<TESObjectREFR*> objects = pCell->GetRefsByFormTypes(formTypes);
 
-        if (!m_world.GetModSystem().GetServerModId(pObject->formID, objectData.Id))
+        // The count travels in 8 bits, so a cell with more containers and doors than that
+        // needs more than one packet. Handing the whole list to one request is not an option:
+        // the writer clamps the count, and everything past the clamp is never sent at all.
+        AssignObjectsRequest request{};
+
+        const Set<const TESObjectREFR*> playerStashContainers = GetPlayerStashContainers();
+
+        for (TESObjectREFR* pObject : objects)
         {
-            spdlog::error("Server form id not found for object with form id {:X}", pObject->formID);
-            continue;
+            if (!ShouldSyncObject(pObject, playerStashContainers))
+            {
+                spdlog::warn("Excluding sync for {:X}", pObject->formID);
+                continue;
+            }
+
+            ObjectData objectData{};
+            objectData.CellId = cellId;
+            objectData.WorldSpaceId = worldSpaceId;
+            objectData.CurrentCoords = GridCellCoords::CalculateGridCellCoords(pObject->position.x, pObject->position.y);
+
+            if (!m_world.GetModSystem().GetServerModId(pObject->formID, objectData.Id))
+            {
+                spdlog::error("Server form id not found for object with form id {:X}", pObject->formID);
+                continue;
+            }
+
+            if (Lock* pLock = pObject->GetLock())
+            {
+                objectData.CurrentLockData.IsLocked = pLock->IsLocked();
+                objectData.CurrentLockData.LockLevel = pLock->lockLevel;
+            }
+
+            if (pObject->baseForm && pObject->baseForm->formType == FormType::Container)
+                objectData.CurrentInventory = pObject->GetInventory();
+
+            if (request.Objects.size() == AssignObjectsRequest::kMaxObjectCount)
+            {
+                m_transport.Send(request);
+                request.Objects.clear();
+            }
+
+            request.Objects.push_back(objectData);
         }
 
-        if (Lock* pLock = pObject->GetLock())
-        {
-            objectData.CurrentLockData.IsLocked = pLock->IsLocked();
-            objectData.CurrentLockData.LockLevel = pLock->lockLevel;
-        }
-
-        if (pObject->baseForm && pObject->baseForm->formType == FormType::Container)
-            objectData.CurrentInventory = pObject->GetInventory();
-
-        if (request.Objects.size() == AssignObjectsRequest::kMaxObjectCount)
-        {
+        if (!request.Objects.empty())
             m_transport.Send(request);
-            request.Objects.clear();
-        }
-
-        request.Objects.push_back(objectData);
     }
-
-    if (!request.Objects.empty())
-        m_transport.Send(request);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ObjectService::OnCellChange");
+    }
 }
 
 void ObjectService::OnAssignObjectsResponse(const AssignObjectsResponse& acMessage) noexcept
 {
-    for (const ObjectData& objectData : acMessage.Objects)
+    // Object (container, door, activator) packets. The entity lookups and the object
+    // lists allocate; an object that could not be created is created again when the
+    // server resends its assignment.
+    try
     {
-        const uint32_t cObjectId = World::Get().GetModSystem().GetGameId(objectData.Id);
-        TESObjectREFR* pObject = Cast<TESObjectREFR>(TESForm::GetById(cObjectId));
-        if (!pObject)
+        for (const ObjectData& objectData : acMessage.Objects)
         {
-            spdlog::error("Object not found for form id {:X}", objectData.Id);
-            continue;
-        }
-
-        CreateObjectEntity(pObject->formID, objectData.ServerId);
-
-        if (objectData.IsSenderFirst)
-            continue;
-
-        if (objectData.CurrentLockData != LockData{})
-        {
-            Lock* pLock = pObject->GetLock();
-
-            if (!pLock)
+            const uint32_t cObjectId = World::Get().GetModSystem().GetGameId(objectData.Id);
+            TESObjectREFR* pObject = Cast<TESObjectREFR>(TESForm::GetById(cObjectId));
+            if (!pObject)
             {
-                pLock = pObject->CreateLock();
-                if (!pLock)
-                    continue;
+                spdlog::error("Object not found for form id {:X}", objectData.Id);
+                continue;
             }
 
-            pLock->lockLevel = objectData.CurrentLockData.LockLevel;
-            pLock->SetLock(objectData.CurrentLockData.IsLocked);
-            pObject->LockChange();
-        }
+            CreateObjectEntity(pObject->formID, objectData.ServerId);
 
-        if (pObject->baseForm && pObject->baseForm->formType == FormType::Container)
-        {
-            Inventory currentInventory = pObject->GetInventory();
+            if (objectData.IsSenderFirst)
+                continue;
 
-            if (currentInventory.ContainsQuestItems())
-                pObject->SetInventoryRetainingQuestItems(currentInventory, objectData.CurrentInventory);
-            else
-                pObject->SetInventory(objectData.CurrentInventory);
+            if (objectData.CurrentLockData != LockData{})
+            {
+                Lock* pLock = pObject->GetLock();
+
+                if (!pLock)
+                {
+                    pLock = pObject->CreateLock();
+                    if (!pLock)
+                        continue;
+                }
+
+                pLock->lockLevel = objectData.CurrentLockData.LockLevel;
+                pLock->SetLock(objectData.CurrentLockData.IsLocked);
+                pObject->LockChange();
+            }
+
+            if (pObject->baseForm && pObject->baseForm->formType == FormType::Container)
+            {
+                Inventory currentInventory = pObject->GetInventory();
+
+                if (currentInventory.ContainsQuestItems())
+                    pObject->SetInventoryRetainingQuestItems(currentInventory, objectData.CurrentInventory);
+                else
+                    pObject->SetInventory(objectData.CurrentInventory);
+            }
         }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ObjectService::OnAssignObjectsResponse");
     }
 }
 
 entt::entity ObjectService::CreateObjectEntity(const uint32_t acFormId, const uint32_t acServerId) noexcept
 {
-    const auto view = m_world.view<FormIdComponent, ObjectComponent>();
+    // Object (container, door, activator) packets. The entity lookups and the object
+    // lists allocate; an object that could not be created is created again when the
+    // server resends its assignment.
+    try
+    {
+        const auto view = m_world.view<FormIdComponent, ObjectComponent>();
 
-    auto it = std::find_if(view.begin(), view.end(), [acServerId, view](entt::entity entity) { return view.get<ObjectComponent>(entity).Id == acServerId; });
+        auto it = std::find_if(view.begin(), view.end(), [acServerId, view](entt::entity entity) { return view.get<ObjectComponent>(entity).Id == acServerId; });
 
-    if (it != view.end())
-        return *it;
+        if (it != view.end())
+            return *it;
 
-    entt::entity entity = m_world.create();
-    spdlog::info("Created object entity, server id: {:X}, form id {:X}", acServerId, acFormId);
+        entt::entity entity = m_world.create();
+        spdlog::info("Created object entity, server id: {:X}, form id {:X}", acServerId, acFormId);
 
-    m_world.emplace<FormIdComponent>(entity, acFormId);
-    m_world.emplace<ObjectComponent>(entity, acServerId);
+        m_world.emplace<FormIdComponent>(entity, acFormId);
+        m_world.emplace<ObjectComponent>(entity, acServerId);
 
-    return entity;
+        return entity;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ObjectService::CreateObjectEntity");
+        return entt::null;
+    }
 }
 
 void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
 {
-    if (acEvent.ActivateFlag)
+    // Object (container, door, activator) packets. The entity lookups and the object
+    // lists allocate; an object that could not be created is created again when the
+    // server resends its assignment.
+    try
     {
-        acEvent.pObject->Activate(acEvent.pActivator, acEvent.Unk1, acEvent.pObjectToGet, acEvent.Count, acEvent.DefaultProcessing);
-    }
+        if (acEvent.ActivateFlag)
+        {
+            acEvent.pObject->Activate(acEvent.pActivator, acEvent.Unk1, acEvent.pObjectToGet, acEvent.Count, acEvent.DefaultProcessing);
+        }
 
-    if (!m_transport.IsConnected())
-        return;
-
-    if (Lock* pLock = acEvent.pObject->GetLock())
-    {
-        if (pLock->flags & 0xFF)
+        if (!m_transport.IsConnected())
             return;
+
+        if (Lock* pLock = acEvent.pObject->GetLock())
+        {
+            if (pLock->flags & 0xFF)
+                return;
+        }
+
+        ActivateRequest request;
+
+        if (!m_world.GetModSystem().GetServerModId(acEvent.pObject->formID, request.Id))
+        {
+            spdlog::error("Server form id not found for object form id {:X}", acEvent.pObject->formID);
+            return;
+        }
+
+        TESObjectCELL* pCell = acEvent.pObject->GetParentCellEx();
+        if (!pCell)
+        {
+            spdlog::error("Activated object has no parent cell: {:X}", acEvent.pObject->formID);
+            return;
+        }
+
+        if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
+        {
+            spdlog::error("Server cell id not found for cell form id {:X}", pCell->formID);
+            return;
+        }
+
+        auto view = m_world.view<FormIdComponent>();
+        const auto pEntity = std::find_if(std::begin(view), std::end(view), [id = acEvent.pActivator->formID, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+        if (pEntity == std::end(view))
+        {
+            // spdlog::error("Activator entity not found for form id {:X}", acEvent.pActivator->formID);
+            return;
+        }
+
+        std::optional<uint32_t> serverIdRes = Utils::GetServerId(*pEntity);
+        if (!serverIdRes.has_value())
+            return;
+
+        request.ActivatorId = serverIdRes.value();
+        request.PreActivationOpenState = acEvent.PreActivationOpenState;
+
+        m_transport.Send(request);
     }
-
-    ActivateRequest request;
-
-    if (!m_world.GetModSystem().GetServerModId(acEvent.pObject->formID, request.Id))
+    catch (...)
     {
-        spdlog::error("Server form id not found for object form id {:X}", acEvent.pObject->formID);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ObjectService::OnActivate");
     }
-
-    TESObjectCELL* pCell = acEvent.pObject->GetParentCellEx();
-    if (!pCell)
-    {
-        spdlog::error("Activated object has no parent cell: {:X}", acEvent.pObject->formID);
-        return;
-    }
-
-    if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
-    {
-        spdlog::error("Server cell id not found for cell form id {:X}", pCell->formID);
-        return;
-    }
-
-    auto view = m_world.view<FormIdComponent>();
-    const auto pEntity = std::find_if(std::begin(view), std::end(view), [id = acEvent.pActivator->formID, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (pEntity == std::end(view))
-    {
-        // spdlog::error("Activator entity not found for form id {:X}", acEvent.pActivator->formID);
-        return;
-    }
-
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*pEntity);
-    if (!serverIdRes.has_value())
-        return;
-
-    request.ActivatorId = serverIdRes.value();
-    request.PreActivationOpenState = acEvent.PreActivationOpenState;
-
-    m_transport.Send(request);
 }
 
 void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
 {
-    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ActivatorId);
-    if (!pActor)
+    // Object (container, door, activator) packets. The entity lookups and the object
+    // lists allocate; an object that could not be created is created again when the
+    // server resends its assignment.
+    try
     {
-        spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ActivatorId);
-        return;
-    }
-
-    const uint32_t cObjectId = World::Get().GetModSystem().GetGameId(acMessage.Id);
-    TESObjectREFR* pObject = Cast<TESObjectREFR>(TESForm::GetById(cObjectId));
-    if (!pObject)
-    {
-        spdlog::error("Failed to retrieve object to activate.");
-        return;
-    }
-
-    if (pObject->baseForm && pObject->baseForm->formType == FormType::Door)
-    {
-        auto remotePreActivationState = static_cast<TESObjectREFR::OpenState>(acMessage.PreActivationOpenState);
-        TESObjectREFR::OpenState localState = pObject->GetOpenState();
-
-        if (remotePreActivationState != localState)
+        Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ActivatorId);
+        if (!pActor)
         {
-            // The doors are unsynced at this point. If we'll Activate the one on our side
-            // it'll just continue to be unsynced (open remotely, closed locally and vice versa)
+            spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ActivatorId);
             return;
         }
-    }
 
-    // unsure if these flags are the best, but these are passed with the papyrus Activate fn
-    // might be an idea to have the client send the flags through NotifyActivate
-    pObject->Activate(pActor, 0, nullptr, 1, 0);
+        const uint32_t cObjectId = World::Get().GetModSystem().GetGameId(acMessage.Id);
+        TESObjectREFR* pObject = Cast<TESObjectREFR>(TESForm::GetById(cObjectId));
+        if (!pObject)
+        {
+            spdlog::error("Failed to retrieve object to activate.");
+            return;
+        }
+
+        if (pObject->baseForm && pObject->baseForm->formType == FormType::Door)
+        {
+            auto remotePreActivationState = static_cast<TESObjectREFR::OpenState>(acMessage.PreActivationOpenState);
+            TESObjectREFR::OpenState localState = pObject->GetOpenState();
+
+            if (remotePreActivationState != localState)
+            {
+                // The doors are unsynced at this point. If we'll Activate the one on our side
+                // it'll just continue to be unsynced (open remotely, closed locally and vice versa)
+                return;
+            }
+        }
+
+        // unsure if these flags are the best, but these are passed with the papyrus Activate fn
+        // might be an idea to have the client send the flags through NotifyActivate
+        pObject->Activate(pActor, 0, nullptr, 1, 0);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ObjectService::OnActivateNotify");
+    }
 }
 
 void ObjectService::OnLockChange(const LockChangeEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    LockChangeRequest request;
-
-    if (!m_world.GetModSystem().GetServerModId(acEvent.FormId, request.Id))
+    // Object (container, door, activator) packets. The entity lookups and the object
+    // lists allocate; an object that could not be created is created again when the
+    // server resends its assignment.
+    try
     {
-        spdlog::error("Server form id for lock object not found, form id: {:X}", acEvent.FormId);
-        return;
+        if (!m_transport.IsConnected())
+            return;
+
+        LockChangeRequest request;
+
+        if (!m_world.GetModSystem().GetServerModId(acEvent.FormId, request.Id))
+        {
+            spdlog::error("Server form id for lock object not found, form id: {:X}", acEvent.FormId);
+            return;
+        }
+
+        const auto* const pObject = Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId));
+
+        // The object can be gone by the time the queued lock change runs: the form
+        // id comes off an event, not off a live reference. The cell lookup below
+        // used to dereference the result unconditionally.
+        if (!pObject)
+        {
+            spdlog::error("Activated object no longer exists: {:X}", acEvent.FormId);
+            return;
+        }
+
+        TESObjectCELL* pCell = pObject->GetParentCellEx();
+        if (!pCell)
+        {
+            spdlog::error("Activated object has no parent cell: {:X}", pObject->formID);
+            return;
+        }
+
+        if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
+        {
+            spdlog::error("Server cell id for cell not found, cell form id: {:X}", pCell->formID);
+            return;
+        }
+
+        request.IsLocked = acEvent.IsLocked;
+        request.LockLevel = acEvent.LockLevel;
+
+        m_transport.Send(request);
     }
-
-    const auto* const pObject = Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId));
-
-    // The object can be gone by the time the queued lock change runs: the form
-    // id comes off an event, not off a live reference. The cell lookup below
-    // used to dereference the result unconditionally.
-    if (!pObject)
+    catch (...)
     {
-        spdlog::error("Activated object no longer exists: {:X}", acEvent.FormId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ObjectService::OnLockChange");
     }
-
-    TESObjectCELL* pCell = pObject->GetParentCellEx();
-    if (!pCell)
-    {
-        spdlog::error("Activated object has no parent cell: {:X}", pObject->formID);
-        return;
-    }
-
-    if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
-    {
-        spdlog::error("Server cell id for cell not found, cell form id: {:X}", pCell->formID);
-        return;
-    }
-
-    request.IsLocked = acEvent.IsLocked;
-    request.LockLevel = acEvent.LockLevel;
-
-    m_transport.Send(request);
 }
 
 void ObjectService::OnLockChangeNotify(const NotifyLockChange& acMessage) noexcept
 {
-    const auto cObjectId = World::Get().GetModSystem().GetGameId(acMessage.Id);
-    if (cObjectId == 0)
+    // Object (container, door, activator) packets. The entity lookups and the object
+    // lists allocate; an object that could not be created is created again when the
+    // server resends its assignment.
+    try
     {
-        spdlog::error("Failed to retrieve object id to (un)lock.");
-        return;
-    }
-
-    auto* pObject = Cast<TESObjectREFR>(TESForm::GetById(cObjectId));
-    if (!pObject)
-    {
-        spdlog::error("Failed to retrieve object to (un)lock.");
-        return;
-    }
-
-    auto* pLock = pObject->GetLock();
-
-    if(!acMessage.IsLocked)
-    {
-        if (!pLock || !pLock->IsLocked())
-            return;
-    }
-
-    if (!pLock && acMessage.IsLocked)
-    {
-        pLock = pObject->CreateLock();
-        if (!pLock)
+        const auto cObjectId = World::Get().GetModSystem().GetGameId(acMessage.Id);
+        if (cObjectId == 0)
         {
-            spdlog::error("Failed to create lock for object form id {:X}", pObject->formID);
+            spdlog::error("Failed to retrieve object id to (un)lock.");
             return;
         }
-    }
 
-    pLock->lockLevel = acMessage.LockLevel;
-    pLock->SetLock(acMessage.IsLocked);
-    pObject->LockChange();
+        auto* pObject = Cast<TESObjectREFR>(TESForm::GetById(cObjectId));
+        if (!pObject)
+        {
+            spdlog::error("Failed to retrieve object to (un)lock.");
+            return;
+        }
+
+        auto* pLock = pObject->GetLock();
+
+        if(!acMessage.IsLocked)
+        {
+            if (!pLock || !pLock->IsLocked())
+                return;
+        }
+
+        if (!pLock && acMessage.IsLocked)
+        {
+            pLock = pObject->CreateLock();
+            if (!pLock)
+            {
+                spdlog::error("Failed to create lock for object form id {:X}", pObject->formID);
+                return;
+            }
+        }
+
+        pLock->lockLevel = acMessage.LockLevel;
+        pLock->SetLock(acMessage.IsLocked);
+        pObject->LockChange();
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ObjectService::OnLockChangeNotify");
+    }
 }
 
 void ObjectService::OnScriptAnimationEvent(const ScriptAnimationEvent& acEvent) noexcept
@@ -455,27 +526,37 @@ void ObjectService::OnScriptAnimationEvent(const ScriptAnimationEvent& acEvent) 
 
 void ObjectService::OnNotifyScriptAnimation(const NotifyScriptAnimation& acMessage) noexcept
 {
-    if (acMessage.FormID == 0)
-        return;
-
-    auto* pForm = TESForm::GetById(acMessage.FormID);
-    auto* pObject = Cast<TESObjectREFR>(pForm);
-
-    if (!pObject)
+    // Object (container, door, activator) packets. The entity lookups and the object
+    // lists allocate; an object that could not be created is created again when the
+    // server resends its assignment.
+    try
     {
-        spdlog::error("Failed to fetch notify script animation object, form id: {:X}", acMessage.FormID);
-        return;
+        if (acMessage.FormID == 0)
+            return;
+
+        auto* pForm = TESForm::GetById(acMessage.FormID);
+        auto* pObject = Cast<TESObjectREFR>(pForm);
+
+        if (!pObject)
+        {
+            spdlog::error("Failed to fetch notify script animation object, form id: {:X}", acMessage.FormID);
+            return;
+        }
+
+        BSFixedString eventName(acMessage.EventName.c_str());
+        if (acMessage.Animation == String{})
+        {
+            pObject->PlayAnimation(&eventName);
+        }
+        else
+        {
+            BSFixedString animation(acMessage.Animation.c_str());
+            pObject->PlayAnimationAndWait(&animation, &eventName);
+        }
     }
-
-    BSFixedString eventName(acMessage.EventName.c_str());
-    if (acMessage.Animation == String{})
+    catch (...)
     {
-        pObject->PlayAnimation(&eventName);
-    }
-    else
-    {
-        BSFixedString animation(acMessage.Animation.c_str());
-        pObject->PlayAnimationAndWait(&animation, &eventName);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ObjectService::OnNotifyScriptAnimation");
     }
 }
 

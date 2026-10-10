@@ -109,17 +109,26 @@ void AnimationSystem::AddActionsForReplay(RemoteAnimationComponent& aAnimationCo
 
 void AnimationSystem::AddAction(RemoteAnimationComponent& aAnimationComponent, const std::string& acActionDiff) noexcept
 {
-    auto itor = std::begin(aAnimationComponent.TimePoints);
-    const auto end = std::cend(aAnimationComponent.TimePoints);
+    // The action diff is appended to the component the animation system replays. An
+    // action that could not be stored is not replayed.
+    try
+    {
+        auto itor = std::begin(aAnimationComponent.TimePoints);
+        const auto end = std::cend(aAnimationComponent.TimePoints);
 
-    auto& lastProcessedAction = aAnimationComponent.LastProcessedAction;
+        auto& lastProcessedAction = aAnimationComponent.LastProcessedAction;
 
-    TiltedPhoques::ViewBuffer buffer((uint8_t*)acActionDiff.data(), acActionDiff.size());
-    Buffer::Reader reader(&buffer);
+        TiltedPhoques::ViewBuffer buffer((uint8_t*)acActionDiff.data(), acActionDiff.size());
+        Buffer::Reader reader(&buffer);
 
-    lastProcessedAction.ApplyDifferential(reader);
+        lastProcessedAction.ApplyDifferential(reader);
 
-    aAnimationComponent.TimePoints.push_back(lastProcessedAction);
+        aAnimationComponent.TimePoints.push_back(lastProcessedAction);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in AnimationSystem::AddAction");
+    }
 }
 
 void AnimationSystem::Serialize(World& aWorld, ClientReferencesMoveRequest& aMovementSnapshot, LocalComponent& localComponent, LocalAnimationComponent& animationComponent, FormIdComponent& formIdComponent)

@@ -94,56 +94,65 @@ void TP_MAKE_THISCALL(HookBindEverythingToScript, BSScript::IVirtualMachine*)
 
 void PapyrusDetail::ReportRegistrationTarget() noexcept
 {
-    POINTER_SKYRIMSE(TRegisterPapyrusFunction, s_registerPapyrusFunction, 104788);
-    POINTER_SKYRIMSE(TBindEverythingToScript, s_bindEverythingToScript, 55739);
-
-    char registerAt[MAX_PATH + 48];
-    FormatModuleOffset(reinterpret_cast<uintptr_t>(s_registerPapyrusFunction.GetPtr()), registerAt);
-
-    char bindAt[MAX_PATH + 48];
-    FormatModuleOffset(reinterpret_cast<uintptr_t>(s_bindEverythingToScript.GetPtr()), bindAt);
-
-    spdlog::error("papyrus hooks sit on register {} and bind {}; the register hook has run {} times and the bind hook "
-                  "{} times",
-                  registerAt, bindAt, s_registrationsSeen.load(), s_bindsSeen.load());
-
-    auto* pVirtualMachine = GameVM::GetVirtualMachine();
-
-    if (!pVirtualMachine)
+    // Papyrus registration diagnostics. A report that could not be written costs the
+    // log line, not the registration.
+    try
     {
-        spdlog::error("the papyrus vm does not exist yet, so the register target cannot be compared against it");
-        return;
+        POINTER_SKYRIMSE(TRegisterPapyrusFunction, s_registerPapyrusFunction, 104788);
+        POINTER_SKYRIMSE(TBindEverythingToScript, s_bindEverythingToScript, 55739);
+
+        char registerAt[MAX_PATH + 48];
+        FormatModuleOffset(reinterpret_cast<uintptr_t>(s_registerPapyrusFunction.GetPtr()), registerAt);
+
+        char bindAt[MAX_PATH + 48];
+        FormatModuleOffset(reinterpret_cast<uintptr_t>(s_bindEverythingToScript.GetPtr()), bindAt);
+
+        spdlog::error("papyrus hooks sit on register {} and bind {}; the register hook has run {} times and the bind hook "
+                      "{} times",
+                      registerAt, bindAt, s_registrationsSeen.load(), s_bindsSeen.load());
+
+        auto* pVirtualMachine = GameVM::GetVirtualMachine();
+
+        if (!pVirtualMachine)
+        {
+            spdlog::error("the papyrus vm does not exist yet, so the register target cannot be compared against it");
+            return;
+        }
+
+        void* pVTable = nullptr;
+        SafeReadGameMemory(&pVTable, pVirtualMachine, sizeof(pVTable));
+
+        if (!pVTable)
+        {
+            spdlog::error("the papyrus vm at {:#x} has no readable vtable", reinterpret_cast<uintptr_t>(pVirtualMachine));
+            return;
+        }
+
+        char vtableAt[MAX_PATH + 48];
+        FormatModuleOffset(reinterpret_cast<uintptr_t>(pVTable), vtableAt);
+
+        // The game reaches RegisterFunction through this table, so the register
+        // target above has to be one of the entries below. If it is not, the id
+        // resolves to the wrong function and the hook can never fire.
+        spdlog::error("the papyrus vm is at {:#x} with vtable {}, its entries follow",
+                      reinterpret_cast<uintptr_t>(pVirtualMachine), vtableAt);
+
+        void* entries[48]{};
+        const size_t got = SafeReadGameMemory(entries, pVTable, sizeof(entries));
+
+        for (size_t i = 0; i < got / sizeof(void*); i++)
+        {
+            if (!entries[i])
+                continue;
+
+            char entryAt[MAX_PATH + 48];
+            FormatModuleOffset(reinterpret_cast<uintptr_t>(entries[i]), entryAt);
+            spdlog::error("  vtable[{:02}] {}", i, entryAt);
+        }
     }
-
-    void* pVTable = nullptr;
-    SafeReadGameMemory(&pVTable, pVirtualMachine, sizeof(pVTable));
-
-    if (!pVTable)
+    catch (...)
     {
-        spdlog::error("the papyrus vm at {:#x} has no readable vtable", reinterpret_cast<uintptr_t>(pVirtualMachine));
-        return;
-    }
-
-    char vtableAt[MAX_PATH + 48];
-    FormatModuleOffset(reinterpret_cast<uintptr_t>(pVTable), vtableAt);
-
-    // The game reaches RegisterFunction through this table, so the register
-    // target above has to be one of the entries below. If it is not, the id
-    // resolves to the wrong function and the hook can never fire.
-    spdlog::error("the papyrus vm is at {:#x} with vtable {}, its entries follow",
-                  reinterpret_cast<uintptr_t>(pVirtualMachine), vtableAt);
-
-    void* entries[48]{};
-    const size_t got = SafeReadGameMemory(entries, pVTable, sizeof(entries));
-
-    for (size_t i = 0; i < got / sizeof(void*); i++)
-    {
-        if (!entries[i])
-            continue;
-
-        char entryAt[MAX_PATH + 48];
-        FormatModuleOffset(reinterpret_cast<uintptr_t>(entries[i]), entryAt);
-        spdlog::error("  vtable[{:02}] {}", i, entryAt);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PapyrusDetail::ReportRegistrationTarget");
     }
 }
 

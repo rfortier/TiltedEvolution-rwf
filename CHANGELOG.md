@@ -9,6 +9,63 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:客户端 `Code/client` 里 698 个 `noexcept` 只有 9 个写了 `catch`,142 个在自己分配或格式化日志 —— 判据是「承诺写在哪个函数身上,`catch` 就得写在哪个函数体里」
+
+**现象**:没有任何现象。`Code/client/**` 共 446 个 `.cpp/.h/.inl`,里面 **698 个 `noexcept` 函数定义**,体内含 `catch` 的只有 **9 个**;同一个脚本数出 **142 个**定义在自己分配内存或调用 `spdlog`/`fmt::format`。`Code/client` 全文的 `try`/`catch` 计数是 **18 / 14**,`Code/encoding` 与 `Code/admin` 是 **0 / 0**。
+
+这与刚提交的服务端那一批(`941bd606`,`Code/server` 211 → 212 个 `noexcept`、6 → 70 个 `catch`)是同一族缺陷的另一半:那一批只覆盖了 `Code/server`,客户端从来没有过边界。
+
+**根因**:`noexcept` 写在函数身上,分配发生在函数体里,而 catch 一个都没有 —— `std::bad_alloc` 从体内穿出去就是 `std::terminate`。客户端比服务端更糟的一点是:**`Code/client` 里没有任何 `set_terminate`、`std::terminate`、`AddVectoredExceptionHandler` 或 `SetUnhandledExceptionFilter`**(`git grep -rn -E "set_terminate|std::terminate|SetUnhandledExceptionFilter|AddVectoredExceptionHandler" -- Code/client` 零命中)。`CrashHandler` 装的是 `LPTOP_LEVEL_EXCEPTION_FILTER`,而 terminate 是 C++ 运行时的 `abort()`,不经过它 —— 所以这一族在客户端连 dump 都没有。
+
+**判据(同族对照,载重)**:
+
+| 对照 | 事实 | 结论 |
+| --- | --- | --- |
+| 本仓已有的正确形状 | `Code/server/Diagnostics.h`(commit `941bd606` 新增,27 行)与更早的 `ScriptService::ReportFailure`(`e7253f3b`) | 修法不是新发明,是让客户端用同一个 helper |
+| 「同族其它实现长什么样」 | 客户端已有的 9 个 catch 里,8 个是 `PluginMessagingService.cpp` 自己的 `Log()`(`cd74a67e`) | 全客户端只有那一处边界 |
+| 日志本身会分配 | `Code/client/xmake.lua` 没有定义 `SPDLOG_NO_EXCEPTIONS`;`TiltedOnlineApp.cpp:75 spdlog::flush_every(std::chrono::seconds(1))`、`:80 logger->flush_on(spdlog::level::warn)` | 与 `docs/PITFALLS.md` §103 第三条教训同一格:失败的报告本身也会失败 |
+| 「下游有守卫」不等于「值被挡住了」 | `Code/client/Services/TransportService.h` 的 `OnConsume`/`OnConnected`/`OnDisconnected`/`OnUpdate` 四个覆写**都不带 `noexcept`** | 但 handler 自己是 ⇒ 抛出仍在 handler 里 terminate,上游非 `noexcept` 救不了它 |
+| `#if 0` 里的分配不算 | 3 个站点(`DebugService::OnUpdate`、`CombatService::OnHitEvent`、`CombatService::RunTargetUpdates`)的全部命中都在 `#if 0` 块内 | 逐行核对后不改:`OnUpdate` 的 10 行活代码不分配,另外两个函数体整个是 `#if 0` |
+
+**可达性**:142 个站点落在四条路径上,没有一条需要管理员:
+
+- **收包**:`Code/client/Services/TransportService.cpp:181-220 OnConsume`(服务端可发的每一种包)→ `:222 DispatchMessage` → 每个服务的 `OnNotify*`。这条路径上还有 `CharacterService.cpp` 的 30 个定义,是客户端最密的一处。
+- **tick**:`TransportService::HandleUpdate` → 各服务的 `Run*`(`RunRemoteUpdates`、`RunSmallHealthUpdates`、`RunNakedNPCBugChecks`、`ApplyQueuedEffects`、`RunExperienceUpdates`、`ApplyCachedWeaponDraws`、`RunWeatherUpdates`、`ProcessLeveledConforms`)。
+- **握手泵**:`TransportService::HandshakeThreadMain` / `PumpConnectionLocked` / `PumpHeartbeat` —— 按 `TransportService.h` 的注释,这条路径上的线程**不是游戏线程**。
+- **hook 回调**:`HookAudit::Record/Report/Verify`、`GamePatch.h` 的 6 个字节补丁 helper、`Actor`/`TESObjectREFR`/`PlayerCharacter` 等引擎侧 helper。
+
+**修法**:新增 `Code/client/Diagnostics.h`(27 行),与 `Code/server/Diagnostics.h` 逐字同形,经 `Code/client/TiltedOnlinePCH.h:50-52` 进入每个编译单元。选 PCH 而不是逐文件 include:`Code/client/xmake.lua:17 set_pcxxheader("TiltedOnlinePCH.h")` 已把它设成强制包含,而 `TiltedOnlinePCH.cpp` 只有一行 `#include <TiltedOnlinePCH.h>` —— 不这么写就会有一个不包含它的 TU。
+
+42 个文件、142 个函数体加了 `try { ... } catch (...) { Diagnostics::ReportFailure(__FUNCTION__, "..."); }`,**一个 `noexcept` 都没有删**(698 → 699,新增的是 `Diagnostics::ReportFailure` 自己)。非 void 的补了显式回退:
+
+| 函数 | catch 里的回退 | 语义 |
+| --- | --- | --- |
+| `GamePatch.h` 的 `Anchor`/`At`/`WriteBytes`/`Nop`/`BranchTarget`/`SwapCall` | `nullptr` / `false` | 「补丁没打上」是这些函数本来就会给出的答案 |
+| `VersionDbPtr::GetPtr` | `return nullptr;` | 与「这个 offset 没有指针」同一个答案,`operator T*` 与 `operator->` 都直接转它 |
+| `Actor::RemoveSpell`、`EffectItem::IsNightVisionEffect`、`LeveledNpcSystem::ApplyPick`、`CellRespawnOverrides.cpp:115` | `false` | 「没生效」,调用方本来就处理 |
+| `EnchantmentItem::Create`、`Projectile::Launch`、`TESObjectREFR::GetExtraDataFromItem` | `nullptr` / `apResult` | 与引擎拒绝同一个答案 |
+| `TESObjectCELL::GetRefsByFormTypes`、`TESObjectREFR::RemoveNonQuestItems`、`Actor::GetFactions`、`TESObjectREFR::GetInventory` | `{}` | 空表是安全答案:调用方遍历后什么都不做 |
+| `Utils::GetServerId` | `std::nullopt` | 与「查不到」同一个答案 |
+| `Utils::GetByServerId<T>` | `nullptr` | 每个调用点本来就检查空指针 |
+| `PapyrusService::Get`、`ObjectService::CreateObjectEntity`、`CharacterService::CreateCharacterForEntity` | `nullptr` / `entt::null` | 与「没有这个函数 / 没有这个实体」同一个答案 |
+
+**验证**:`git diff --numstat -- Code/client` = **42 files changed, 5561 insertions(+), 4126 deletions(-)**,1318 个 hunk;`Code/client/Diagnostics.h` 是唯一的新文件。同一个普查脚本在 `HEAD` 与工作树上各跑一次:
+
+| 读数 | `HEAD` | 现在 |
+| --- | --- | --- |
+| `noexcept` 定义数 | 698 | 699 |
+| 体内含 `catch` | 9 | 149 |
+| 体内有分配/日志标记且无 `catch` | 142 | **3** |
+| 其中命中全在 `#if 0` 内 | 0 | 3(逐行核对) |
+| `Code/client` 全文 `try`/`catch` | 18 / 14 | 158 / 164 |
+
+`Diagnostics::ReportFailure` 调用点 **139 个,分布在 41 个文件**:`CharacterService.cpp` 30、`Actor.cpp` 9、`MagicService.cpp` 9、`ObjectService.cpp` 8、`TransportService.cpp` 8、`TESObjectREFR.cpp` 7、`OverlayService.cpp` 7、`GamePatch.h` 6、`ActorValueService.cpp` 5、`InventoryService.cpp` 5、`PartyService.cpp` 4、`WeatherService.cpp` 4,其余各 1–3。
+
+留在原样的三处不是遗漏,是**逐行核对过命中全在 `#if 0` 里**:`DebugService::OnUpdate` 的活代码只有窗口查找与一次挂起的 `MoveTo`,不分配;`CombatService::OnHitEvent` 与 `RunTargetUpdates` 的函数体整个是 `#if 0`。
+
+`Code/client/xmake.lua:13-14 add_headerfiles("**.h")` / `add_files("**.cpp")` 覆盖新头与全部 42 个文件;`:17 set_pcxxheader("TiltedOnlinePCH.h")` 保证 `Diagnostics.h` 进入每个 TU。每个改过的文件都做过花括号/圆括号配平、`try`/`catch` 缩进配对与行尾检查(工作树里 6 个文件本来就是 LF,与 `HEAD` 一致,未动;`Code/client/Components/LocalAnimationComponent.h` 是其中之一,现在仍是 LF)。
+**本机不编译**(`docs/PITFALLS.md` §0/§1),所以判据是静态的:分配点是逐字读出来的,`noexcept`、`try`/`catch` 与 `#if 0` 的判定都是脚本数出来的。
+
 ### 修复:服务端 `Code/server` 里 211 个 `noexcept` 只有 6 个写了 `catch`,而其中 27 个在自己分配、44 个在格式化日志 —— 判据是「`noexcept` 是一条承诺,失败的报告本身也会失败」
 
 **现象**:没有任何现象。`Code/server/**` 共 100 个 `.cpp/.h/.inl`,里面 **211 个 `noexcept` 函数定义**,体内含 `catch` 的只有 **6 个**。用等长清空注释与字面量、再按花括号配平取函数体的脚本逐个数,得到两族分配点,它们有重叠:

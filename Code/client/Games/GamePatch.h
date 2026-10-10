@@ -72,14 +72,24 @@ struct Site
 // anchor is unknown has to be skipped, not redirected somewhere writable.
 inline uint8_t* Anchor(const uint32_t acId, const char* acpWhat) noexcept
 {
-    auto* pAddress = static_cast<uint8_t*>(VersionDb::Get().FindAddressById(acId));
-    if (!pAddress)
+    // Byte-patch helpers. The report is the only allocation; the patch itself is
+    // applied either way, and the answer says what happened to it.
+    try
     {
-        spdlog::warn("patch '{}' skipped: address library id {} is not mapped on game {}", acpWhat, acId,
-                     VersionDb::Get().GetLoadedVersionString());
-    }
+        auto* pAddress = static_cast<uint8_t*>(VersionDb::Get().FindAddressById(acId));
+        if (!pAddress)
+        {
+            spdlog::warn("patch '{}' skipped: address library id {} is not mapped on game {}", acpWhat, acId,
+                         VersionDb::Get().GetLoadedVersionString());
+        }
 
-    return pAddress;
+        return pAddress;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Anchor");
+        return nullptr;
+    }
 }
 
 // True when the running build is the 1.5.x version acpVersion, i.e. the one a
@@ -95,40 +105,60 @@ inline bool IsMeasuredFor(const char* acpVersion) noexcept
 // Applies the per-version offset to an anchor.
 inline uint8_t* At(uint8_t* apAnchor, const Site& acSite, const char* acpWhat) noexcept
 {
-    if (!apAnchor)
-        return nullptr;
-
-    if (!VersionDb::Get().IsLegacyFormat())
-        return apAnchor + acSite.modern;
-
-    if (acSite.legacy == Site::kUnknown || !acSite.legacyMeasuredOn || !IsMeasuredFor(acSite.legacyMeasuredOn))
+    // Byte-patch helpers. The report is the only allocation; the patch itself is
+    // applied either way, and the answer says what happened to it.
+    try
     {
-        spdlog::warn("patch '{}' skipped: no site inside this function is verified for game {}", acpWhat,
-                     VersionDb::Get().GetLoadedVersionString());
+        if (!apAnchor)
+            return nullptr;
+
+        if (!VersionDb::Get().IsLegacyFormat())
+            return apAnchor + acSite.modern;
+
+        if (acSite.legacy == Site::kUnknown || !acSite.legacyMeasuredOn || !IsMeasuredFor(acSite.legacyMeasuredOn))
+        {
+            spdlog::warn("patch '{}' skipped: no site inside this function is verified for game {}", acpWhat,
+                         VersionDb::Get().GetLoadedVersionString());
+            return nullptr;
+        }
+
+        return apAnchor + acSite.legacy;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in At");
         return nullptr;
     }
-
-    return apAnchor + acSite.legacy;
 }
 
 inline bool WriteBytes(void* apAddress, const void* acpData, const size_t acSize, const char* acpWhat) noexcept
 {
-    if (!apAddress)
-        return false;
-
+    // Byte-patch helpers. The report is the only allocation; the patch itself is
+    // applied either way, and the answer says what happened to it.
+    try
     {
-        const mem::protect scope({apAddress, acSize});
-        if (!scope)
-        {
-            spdlog::error("patch '{}' failed: cannot unprotect {} bytes at {}", acpWhat, acSize, fmt::ptr(apAddress));
+        if (!apAddress)
             return false;
+
+        {
+            const mem::protect scope({apAddress, acSize});
+            if (!scope)
+            {
+                spdlog::error("patch '{}' failed: cannot unprotect {} bytes at {}", acpWhat, acSize, fmt::ptr(apAddress));
+                return false;
+            }
+
+            std::memcpy(apAddress, acpData, acSize);
         }
 
-        std::memcpy(apAddress, acpData, acSize);
+        FlushInstructionCache(GetCurrentProcess(), apAddress, acSize);
+        return true;
     }
-
-    FlushInstructionCache(GetCurrentProcess(), apAddress, acSize);
-    return true;
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in WriteBytes");
+        return false;
+    }
 }
 
 template <class T> bool Put(void* apAddress, const T acValue, const char* acpWhat) noexcept
@@ -138,22 +168,32 @@ template <class T> bool Put(void* apAddress, const T acValue, const char* acpWha
 
 inline bool Nop(void* apAddress, const size_t acLength, const char* acpWhat) noexcept
 {
-    if (!apAddress)
-        return false;
-
+    // Byte-patch helpers. The report is the only allocation; the patch itself is
+    // applied either way, and the answer says what happened to it.
+    try
     {
-        const mem::protect scope({apAddress, acLength});
-        if (!scope)
-        {
-            spdlog::error("patch '{}' failed: cannot unprotect {} bytes at {}", acpWhat, acLength, fmt::ptr(apAddress));
+        if (!apAddress)
             return false;
+
+        {
+            const mem::protect scope({apAddress, acLength});
+            if (!scope)
+            {
+                spdlog::error("patch '{}' failed: cannot unprotect {} bytes at {}", acpWhat, acLength, fmt::ptr(apAddress));
+                return false;
+            }
+
+            std::memset(apAddress, 0x90, acLength);
         }
 
-        std::memset(apAddress, 0x90, acLength);
+        FlushInstructionCache(GetCurrentProcess(), apAddress, acLength);
+        return true;
     }
-
-    FlushInstructionCache(GetCurrentProcess(), apAddress, acLength);
-    return true;
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Nop");
+        return false;
+    }
 }
 
 // The runtime is not always within reach of a rel32 branch, and this is the
@@ -200,15 +240,25 @@ inline bool Reaches(const void* apFrom, const void* apTo) noexcept
 // stub when the real target is out of range. Null means give up and log.
 inline const void* BranchTarget(void* apFrom, const void* apTo, const char* acpWhat) noexcept
 {
-    if (Reaches(apFrom, apTo))
-        return apTo;
+    // Byte-patch helpers. The report is the only allocation; the patch itself is
+    // applied either way, and the answer says what happened to it.
+    try
+    {
+        if (Reaches(apFrom, apTo))
+            return apTo;
 
-    if (auto* pStub = NearStub(apTo))
-        return pStub;
+        if (auto* pStub = NearStub(apTo))
+            return pStub;
 
-    spdlog::error("patch '{}' skipped: target {} is too far from {} for a rel32 and no near stub could be allocated",
-                  acpWhat, fmt::ptr(apTo), fmt::ptr(apFrom));
-    return nullptr;
+        spdlog::error("patch '{}' skipped: target {} is too far from {} for a rel32 and no near stub could be allocated",
+                      acpWhat, fmt::ptr(apTo), fmt::ptr(apFrom));
+        return nullptr;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in BranchTarget");
+        return nullptr;
+    }
 }
 
 // Redirects a single `call rel32` site: reads the current target into
@@ -218,28 +268,38 @@ inline const void* BranchTarget(void* apFrom, const void* apTo, const char* acpW
 // logged no-op instead of a corrupted function.
 template <class TFunc> bool SwapCall(void* apAddress, TFunc& aOriginal, TFunc aReplacement, const char* acpWhat) noexcept
 {
-    if (!apAddress)
-        return false;
-
-    auto* pSite = static_cast<uint8_t*>(apAddress);
-    if (*pSite != 0xE8)
+    // Byte-patch helpers. The report is the only allocation; the patch itself is
+    // applied either way, and the answer says what happened to it.
+    try
     {
-        spdlog::error("patch '{}' skipped: no call at {} (found {:#04x}), the offset does not hold on game {}", acpWhat,
-                      fmt::ptr(pSite), *pSite, VersionDb::Get().GetLoadedVersionString());
+        if (!apAddress)
+            return false;
+
+        auto* pSite = static_cast<uint8_t*>(apAddress);
+        if (*pSite != 0xE8)
+        {
+            spdlog::error("patch '{}' skipped: no call at {} (found {:#04x}), the offset does not hold on game {}", acpWhat,
+                          fmt::ptr(pSite), *pSite, VersionDb::Get().GetLoadedVersionString());
+            return false;
+        }
+
+        int32_t displacement = 0;
+        std::memcpy(&displacement, pSite + 1, sizeof(displacement));
+        aOriginal = reinterpret_cast<TFunc>(pSite + 5 + displacement);
+
+        const void* pTarget = BranchTarget(pSite, reinterpret_cast<const void*>(aReplacement), acpWhat);
+        if (!pTarget)
+            return false;
+
+        displacement = static_cast<int32_t>(reinterpret_cast<intptr_t>(pTarget) - reinterpret_cast<intptr_t>(pSite) - 5);
+
+        return WriteBytes(pSite + 1, &displacement, sizeof(displacement), acpWhat);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in SwapCall");
         return false;
     }
-
-    int32_t displacement = 0;
-    std::memcpy(&displacement, pSite + 1, sizeof(displacement));
-    aOriginal = reinterpret_cast<TFunc>(pSite + 5 + displacement);
-
-    const void* pTarget = BranchTarget(pSite, reinterpret_cast<const void*>(aReplacement), acpWhat);
-    if (!pTarget)
-        return false;
-
-    displacement = static_cast<int32_t>(reinterpret_cast<intptr_t>(pTarget) - reinterpret_cast<intptr_t>(pSite) - 5);
-
-    return WriteBytes(pSite + 1, &displacement, sizeof(displacement), acpWhat);
 }
 
 // Overwrites the function at apAddress with an unconditional jmp rel32.

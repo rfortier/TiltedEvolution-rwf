@@ -59,617 +59,707 @@ void MagicService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
 void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    if (!acEvent.pCaster->pCasterActor || !acEvent.pCaster->pCasterActor->GetNiNode())
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        spdlog::warn("Spell cast event has no actor or actor is not loaded");
-        return;
-    }
+        if (!m_transport.IsConnected())
+            return;
 
-    TESForm* pMagicForm = TESForm::GetById(acEvent.SpellId);
-
-    // Summoned creatures are replicated by their owning client (see IsPlayerSummon); replaying the
-    // summon cast elsewhere spawns a duplicate, unowned creature that fights the real one. Summon spells avoid
-    // this via projectile sync, but summon EnchantmentItems (Sanguine Rose, Staff of the Familiar) didn't (#791).
-    if (const MagicItem* pMagicItem = Cast<MagicItem>(pMagicForm); pMagicItem && pMagicItem->HasSummonEffect())
-    {
-        spdlog::debug("{}: not syncing summon cast {:X}, the summoned actor is synced by its owner", __FUNCTION__, acEvent.SpellId);
-        return;
-    }
-
-    // only sync concentration spells through spell cast sync, the rest through projectile sync for accuracy
-    if (SpellItem* pSpell = Cast<SpellItem>(pMagicForm))
-    {
-        if ((pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION || pSpell->IsHealingSpell()) && !pSpell->IsWardSpell() && !pSpell->IsInvisibilitySpell())
+        if (!acEvent.pCaster->pCasterActor || !acEvent.pCaster->pCasterActor->GetNiNode())
         {
-            spdlog::debug("Canceled magic spell");
+            spdlog::warn("Spell cast event has no actor or actor is not loaded");
             return;
         }
-    }
 
-    uint32_t formId = acEvent.pCaster->pCasterActor->formID;
+        TESForm* pMagicForm = TESForm::GetById(acEvent.SpellId);
 
-    auto view = m_world.view<FormIdComponent, LocalComponent>();
-    const auto casterEntityIt = std::find_if(std::begin(view), std::end(view), [formId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == formId; });
-
-    if (casterEntityIt == std::end(view))
-        return;
-
-    auto& localComponent = view.get<LocalComponent>(*casterEntityIt);
-
-    SpellCastRequest request{};
-
-    request.CasterId = localComponent.Id;
-    request.CastingSource = acEvent.pCaster->GetCastingSource();
-    request.IsDualCasting = acEvent.pCaster->GetIsDualCasting();
-
-    if (!m_world.GetModSystem().GetServerModId(acEvent.SpellId, request.SpellFormId))
-    {
-        spdlog::error("Server spell id not found for spell form id {:X}", acEvent.SpellId);
-        return;
-    }
-
-    if (acEvent.DesiredTargetID != 0)
-    {
-        auto targetView = m_world.view<FormIdComponent>();
-        const auto targetEntityIt = std::find_if(std::begin(targetView), std::end(targetView), [id = acEvent.DesiredTargetID, targetView](entt::entity entity) { return targetView.get<FormIdComponent>(entity).Id == id; });
-
-        if (targetEntityIt != std::end(targetView))
+        // Summoned creatures are replicated by their owning client (see IsPlayerSummon); replaying the
+        // summon cast elsewhere spawns a duplicate, unowned creature that fights the real one. Summon spells avoid
+        // this via projectile sync, but summon EnchantmentItems (Sanguine Rose, Staff of the Familiar) didn't (#791).
+        if (const MagicItem* pMagicItem = Cast<MagicItem>(pMagicForm); pMagicItem && pMagicItem->HasSummonEffect())
         {
-            auto desiredTargetIdRes = Utils::GetServerId(*targetEntityIt);
-            if (desiredTargetIdRes.has_value())
-                request.DesiredTarget = desiredTargetIdRes.value();
-            else
-                spdlog::error("{}: failed to find server id", __FUNCTION__);
+            spdlog::debug("{}: not syncing summon cast {:X}, the summoned actor is synced by its owner", __FUNCTION__, acEvent.SpellId);
+            return;
         }
+
+        // only sync concentration spells through spell cast sync, the rest through projectile sync for accuracy
+        if (SpellItem* pSpell = Cast<SpellItem>(pMagicForm))
+        {
+            if ((pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION || pSpell->IsHealingSpell()) && !pSpell->IsWardSpell() && !pSpell->IsInvisibilitySpell())
+            {
+                spdlog::debug("Canceled magic spell");
+                return;
+            }
+        }
+
+        uint32_t formId = acEvent.pCaster->pCasterActor->formID;
+
+        auto view = m_world.view<FormIdComponent, LocalComponent>();
+        const auto casterEntityIt = std::find_if(std::begin(view), std::end(view), [formId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == formId; });
+
+        if (casterEntityIt == std::end(view))
+            return;
+
+        auto& localComponent = view.get<LocalComponent>(*casterEntityIt);
+
+        SpellCastRequest request{};
+
+        request.CasterId = localComponent.Id;
+        request.CastingSource = acEvent.pCaster->GetCastingSource();
+        request.IsDualCasting = acEvent.pCaster->GetIsDualCasting();
+
+        if (!m_world.GetModSystem().GetServerModId(acEvent.SpellId, request.SpellFormId))
+        {
+            spdlog::error("Server spell id not found for spell form id {:X}", acEvent.SpellId);
+            return;
+        }
+
+        if (acEvent.DesiredTargetID != 0)
+        {
+            auto targetView = m_world.view<FormIdComponent>();
+            const auto targetEntityIt = std::find_if(std::begin(targetView), std::end(targetView), [id = acEvent.DesiredTargetID, targetView](entt::entity entity) { return targetView.get<FormIdComponent>(entity).Id == id; });
+
+            if (targetEntityIt != std::end(targetView))
+            {
+                auto desiredTargetIdRes = Utils::GetServerId(*targetEntityIt);
+                if (desiredTargetIdRes.has_value())
+                    request.DesiredTarget = desiredTargetIdRes.value();
+                else
+                    spdlog::error("{}: failed to find server id", __FUNCTION__);
+            }
+        }
+
+        spdlog::debug("Spell cast event sent, ID: {:X}, Source: {}, IsDualCasting: {}, desired target: {:X}", request.CasterId, request.CastingSource, request.IsDualCasting, request.DesiredTarget);
+
+        m_transport.Send(request);
     }
-
-    spdlog::debug("Spell cast event sent, ID: {:X}, Source: {}, IsDualCasting: {}, desired target: {:X}", request.CasterId, request.CastingSource, request.IsDualCasting, request.DesiredTarget);
-
-    m_transport.Send(request);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::OnSpellCastEvent");
+    }
 }
 
 void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noexcept
 {
-    using CS = MagicSystem::CastingSource;
-
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.CasterId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (remoteIt == std::end(remoteView))
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        spdlog::warn("Caster with remote id {:X} not found.", acMessage.CasterId);
-        return;
-    }
+        using CS = MagicSystem::CastingSource;
 
-    auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
-    TESForm* pForm = TESForm::GetById(formIdComponent.Id);
-    Actor* pActor = Cast<Actor>(pForm);
+        auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
+        const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.CasterId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
 
-    // Cast resolves to null whenever the RTTI of the running build is not mapped, and the
-    // peer picked which remote id this resolves through.
-    if (!pActor)
-    {
-        spdlog::warn("{}: caster {:X} is not a loaded actor", __FUNCTION__, formIdComponent.Id);
-        return;
-    }
-
-    pActor->GenerateMagicCasters();
-
-    // GenerateMagicCasters only fills a slot when the engine hands one back, so the array can
-    // still be null here.
-    if (!pActor->casters[CS::LEFT_HAND])
-    {
-        spdlog::warn("{}: caster {:X} has no left hand caster", __FUNCTION__, formIdComponent.Id);
-        return;
-    }
-
-    // Only left hand casters need dual casting (?)
-    pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);
-
-    if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
-    {
-        spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
-        return;
-    }
-
-    MagicItem* pSpell = nullptr;
-
-    pSpell = pActor->magicItems[acMessage.CastingSource];
-
-    if (!pSpell)
-    {
-        const uint32_t cSpellFormId = World::Get().GetModSystem().GetGameId(acMessage.SpellFormId);
-        if (cSpellFormId == 0)
+        if (remoteIt == std::end(remoteView))
         {
-            spdlog::error("Could not find spell form id for GameId base {:X}, mod {:X}", acMessage.SpellFormId.BaseId, acMessage.SpellFormId.ModId);
+            spdlog::warn("Caster with remote id {:X} not found.", acMessage.CasterId);
             return;
         }
 
-        TESForm* pSpellForm = TESForm::GetById(cSpellFormId);
-        if (!pSpellForm)
+        auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
+        TESForm* pForm = TESForm::GetById(formIdComponent.Id);
+        Actor* pActor = Cast<Actor>(pForm);
+
+        // Cast resolves to null whenever the RTTI of the running build is not mapped, and the
+        // peer picked which remote id this resolves through.
+        if (!pActor)
         {
-            spdlog::error("Cannot find spell form, id: {:X}.", cSpellFormId);
+            spdlog::warn("{}: caster {:X} is not a loaded actor", __FUNCTION__, formIdComponent.Id);
             return;
         }
 
-        pSpell = Cast<MagicItem>(pSpellForm);
-    }
+        pActor->GenerateMagicCasters();
 
-    if (!pSpell)
-    {
-        spdlog::error("Could not find spell.");
-        return;
-    }
-
-    // Never replay a summon locally, whatever the sender decided: the creature arrives as a
-    // replicated actor from its owner.
-    if (pSpell->HasSummonEffect())
-    {
-        spdlog::debug("{}: ignoring remote summon cast {:X} from caster {:X}", __FUNCTION__, pSpell->formID, acMessage.CasterId);
-        return;
-    }
-
-    TESObjectREFR* pDesiredTarget = nullptr;
-
-    if (acMessage.DesiredTarget != 0)
-    {
-        auto view = m_world.view<FormIdComponent>();
-        for (auto entity : view)
+        // GenerateMagicCasters only fills a slot when the engine hands one back, so the array can
+        // still be null here.
+        if (!pActor->casters[CS::LEFT_HAND])
         {
-            std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
-            if (!serverIdRes.has_value())
+            spdlog::warn("{}: caster {:X} has no left hand caster", __FUNCTION__, formIdComponent.Id);
+            return;
+        }
+
+        // Only left hand casters need dual casting (?)
+        pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);
+
+        if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
+        {
+            spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
+            return;
+        }
+
+        MagicItem* pSpell = nullptr;
+
+        pSpell = pActor->magicItems[acMessage.CastingSource];
+
+        if (!pSpell)
+        {
+            const uint32_t cSpellFormId = World::Get().GetModSystem().GetGameId(acMessage.SpellFormId);
+            if (cSpellFormId == 0)
             {
-                spdlog::error("{}: failed to find server id", __FUNCTION__);
-                continue;
+                spdlog::error("Could not find spell form id for GameId base {:X}, mod {:X}", acMessage.SpellFormId.BaseId, acMessage.SpellFormId.ModId);
+                return;
             }
 
-            uint32_t serverId = serverIdRes.value();
-
-            if (serverId == acMessage.DesiredTarget)
+            TESForm* pSpellForm = TESForm::GetById(cSpellFormId);
+            if (!pSpellForm)
             {
-                const auto& formIdComponent = view.get<FormIdComponent>(entity);
-                pDesiredTarget = Cast<TESObjectREFR>(TESForm::GetById(formIdComponent.Id));
+                spdlog::error("Cannot find spell form, id: {:X}.", cSpellFormId);
+                return;
+            }
+
+            pSpell = Cast<MagicItem>(pSpellForm);
+        }
+
+        if (!pSpell)
+        {
+            spdlog::error("Could not find spell.");
+            return;
+        }
+
+        // Never replay a summon locally, whatever the sender decided: the creature arrives as a
+        // replicated actor from its owner.
+        if (pSpell->HasSummonEffect())
+        {
+            spdlog::debug("{}: ignoring remote summon cast {:X} from caster {:X}", __FUNCTION__, pSpell->formID, acMessage.CasterId);
+            return;
+        }
+
+        TESObjectREFR* pDesiredTarget = nullptr;
+
+        if (acMessage.DesiredTarget != 0)
+        {
+            auto view = m_world.view<FormIdComponent>();
+            for (auto entity : view)
+            {
+                std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
+                if (!serverIdRes.has_value())
+                {
+                    spdlog::error("{}: failed to find server id", __FUNCTION__);
+                    continue;
+                }
+
+                uint32_t serverId = serverIdRes.value();
+
+                if (serverId == acMessage.DesiredTarget)
+                {
+                    const auto& formIdComponent = view.get<FormIdComponent>(entity);
+                    pDesiredTarget = Cast<TESObjectREFR>(TESForm::GetById(formIdComponent.Id));
+                }
             }
         }
+
+        ScopedSpellCastOverride _;
+
+        MagicCaster* pCaster = pActor->GetMagicCaster(static_cast<CS>(acMessage.CastingSource));
+        if (!pCaster)
+        {
+            spdlog::warn("{}: failed to find caster.", __FUNCTION__);
+            return;
+        }
+
+        pCaster->CastSpellImmediate(pSpell, false, pDesiredTarget, 1.0f, false, 0.0f);
+
+        spdlog::debug("Successfully casted remote spell");
     }
-
-    ScopedSpellCastOverride _;
-
-    MagicCaster* pCaster = pActor->GetMagicCaster(static_cast<CS>(acMessage.CastingSource));
-    if (!pCaster)
+    catch (...)
     {
-        spdlog::warn("{}: failed to find caster.", __FUNCTION__);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::OnNotifySpellCast");
     }
-
-    pCaster->CastSpellImmediate(pSpell, false, pDesiredTarget, 1.0f, false, 0.0f);
-
-    spdlog::debug("Successfully casted remote spell");
 }
 
 void MagicService::OnInterruptCastEvent(const InterruptCastEvent& acEvent) const noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    uint32_t formId = acEvent.CasterFormID;
-
-    auto view = m_world.view<FormIdComponent, LocalComponent>();
-    const auto casterEntityIt = std::find_if(std::begin(view), std::end(view), [formId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == formId; });
-
-    if (casterEntityIt == std::end(view))
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        spdlog::warn("{}: could not find caster, form id {:X}", __FUNCTION__, formId);
-        return;
+        if (!m_transport.IsConnected())
+            return;
+
+        uint32_t formId = acEvent.CasterFormID;
+
+        auto view = m_world.view<FormIdComponent, LocalComponent>();
+        const auto casterEntityIt = std::find_if(std::begin(view), std::end(view), [formId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == formId; });
+
+        if (casterEntityIt == std::end(view))
+        {
+            spdlog::warn("{}: could not find caster, form id {:X}", __FUNCTION__, formId);
+            return;
+        }
+
+        auto& localComponent = view.get<LocalComponent>(*casterEntityIt);
+
+        InterruptCastRequest request;
+        request.CasterId = localComponent.Id;
+        request.CastingSource = acEvent.CastingSource;
+
+        spdlog::debug("Sending out interrupt cast");
+
+        m_transport.Send(request);
     }
-
-    auto& localComponent = view.get<LocalComponent>(*casterEntityIt);
-
-    InterruptCastRequest request;
-    request.CasterId = localComponent.Id;
-    request.CastingSource = acEvent.CastingSource;
-
-    spdlog::debug("Sending out interrupt cast");
-
-    m_transport.Send(request);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::OnInterruptCastEvent");
+    }
 }
 
 void MagicService::OnNotifyInterruptCast(const NotifyInterruptCast& acMessage) const noexcept
 {
-    if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
-        return;
+        if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
+        {
+            spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
+            return;
+        }
+
+        auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
+        const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.CasterId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+
+        if (remoteIt == std::end(remoteView))
+        {
+            spdlog::warn("Caster with remote id {:X} not found.", acMessage.CasterId);
+            return;
+        }
+
+        auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
+
+        const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
+        Actor* pActor = Cast<Actor>(pForm);
+
+        if (!pActor)
+        {
+            spdlog::warn("{}: caster {:X} is not a loaded actor", __FUNCTION__, formIdComponent.Id);
+            return;
+        }
+
+        pActor->GenerateMagicCasters();
+
+        MagicCaster* pCaster = pActor->GetMagicCaster(static_cast<MagicSystem::CastingSource>(acMessage.CastingSource));
+        if (!pCaster)
+        {
+            spdlog::warn("{}: failed to find caster.", __FUNCTION__);
+            return;
+        }
+
+        pCaster->InterruptCast();
+
+        spdlog::debug("Interrupt remote cast successful");
     }
-
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.CasterId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (remoteIt == std::end(remoteView))
+    catch (...)
     {
-        spdlog::warn("Caster with remote id {:X} not found.", acMessage.CasterId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::OnNotifyInterruptCast");
     }
-
-    auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
-
-    const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
-    Actor* pActor = Cast<Actor>(pForm);
-
-    if (!pActor)
-    {
-        spdlog::warn("{}: caster {:X} is not a loaded actor", __FUNCTION__, formIdComponent.Id);
-        return;
-    }
-
-    pActor->GenerateMagicCasters();
-
-    MagicCaster* pCaster = pActor->GetMagicCaster(static_cast<MagicSystem::CastingSource>(acMessage.CastingSource));
-    if (!pCaster)
-    {
-        spdlog::warn("{}: failed to find caster.", __FUNCTION__);
-        return;
-    }
-
-    pCaster->InterruptCast();
-
-    spdlog::debug("Interrupt remote cast successful");
 }
 
 void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    // These effects are applied through spell cast sync
-    if (SpellItem* pSpellItem = Cast<SpellItem>(TESForm::GetById(acEvent.SpellID)))
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        if ((pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION && !pSpellItem->IsHealingSpell()) || pSpellItem->IsWardSpell() || pSpellItem->IsInvisibilitySpell() || pSpellItem->IsBoundWeaponSpell())
-        {
+        if (!m_transport.IsConnected())
             return;
-        }
-    }
 
-    AddTargetRequest request{};
-
-    if (!m_world.GetModSystem().GetServerModId(acEvent.SpellID, request.SpellId.ModId, request.SpellId.BaseId))
-    {
-        spdlog::error("{}: could not find server ID for spell with formID {:X}, discarding", __FUNCTION__, acEvent.SpellID);
-        return;
-    }
-
-    if (!m_world.GetModSystem().GetServerModId(acEvent.EffectID, request.EffectId.ModId, request.EffectId.BaseId))
-    {
-        spdlog::error("{}: could not find server ID for effect with formID {:X}, discarding", __FUNCTION__, acEvent.EffectID);
-        return;
-    }
-
-    request.Magnitude = acEvent.Magnitude;
-
-    // Because it takes time to create Actors, the Caster or Target may not
-    // exist on the server yet, or server may not have told us yet. Have to queue to compensate.
-    auto view = m_world.view<FormIdComponent>();
-    const auto it = std::find_if(std::begin(view), std::end(view), [id = acEvent.TargetID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (it == std::end(view))
-    {
-        MagicQueue::Spdlog("{}: server entity for target formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.TargetID);
-        m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));
-        return;
-    }
-
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
-    if (!serverIdRes.has_value())
-    {
-        MagicQueue::Spdlog("{}: server ID for target formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.TargetID);
-        m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));
-        return;
-    }
-
-    request.TargetId = serverIdRes.value();
-
-    if (acEvent.CasterID)
-    {
-        const auto casterIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.CasterID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-        if (casterIt == std::end(view))
+        // These effects are applied through spell cast sync
+        if (SpellItem* pSpellItem = Cast<SpellItem>(TESForm::GetById(acEvent.SpellID)))
         {
-            MagicQueue::Spdlog("{}: server entity for caster formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.CasterID);
-            m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));  
+            if ((pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION && !pSpellItem->IsHealingSpell()) || pSpellItem->IsWardSpell() || pSpellItem->IsInvisibilitySpell() || pSpellItem->IsBoundWeaponSpell())
+            {
+                return;
+            }
+        }
+
+        AddTargetRequest request{};
+
+        if (!m_world.GetModSystem().GetServerModId(acEvent.SpellID, request.SpellId.ModId, request.SpellId.BaseId))
+        {
+            spdlog::error("{}: could not find server ID for spell with formID {:X}, discarding", __FUNCTION__, acEvent.SpellID);
             return;
         }
 
-        serverIdRes = Utils::GetServerId(*casterIt);
-        if (!serverIdRes.has_value())
+        if (!m_world.GetModSystem().GetServerModId(acEvent.EffectID, request.EffectId.ModId, request.EffectId.BaseId))
         {
-            MagicQueue::Spdlog("{}: server ID for caster formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.CasterID);
+            spdlog::error("{}: could not find server ID for effect with formID {:X}, discarding", __FUNCTION__, acEvent.EffectID);
+            return;
+        }
+
+        request.Magnitude = acEvent.Magnitude;
+
+        // Because it takes time to create Actors, the Caster or Target may not
+        // exist on the server yet, or server may not have told us yet. Have to queue to compensate.
+        auto view = m_world.view<FormIdComponent>();
+        const auto it = std::find_if(std::begin(view), std::end(view), [id = acEvent.TargetID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+        if (it == std::end(view))
+        {
+            MagicQueue::Spdlog("{}: server entity for target formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.TargetID);
             m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));
             return;
         }
 
-        request.CasterId = serverIdRes.value();
+        std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
+        if (!serverIdRes.has_value())
+        {
+            MagicQueue::Spdlog("{}: server ID for target formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.TargetID);
+            m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));
+            return;
+        }
+
+        request.TargetId = serverIdRes.value();
+
+        if (acEvent.CasterID)
+        {
+            const auto casterIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.CasterID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+            if (casterIt == std::end(view))
+            {
+                MagicQueue::Spdlog("{}: server entity for caster formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.CasterID);
+                m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));  
+                return;
+            }
+
+            serverIdRes = Utils::GetServerId(*casterIt);
+            if (!serverIdRes.has_value())
+            {
+                MagicQueue::Spdlog("{}: server ID for caster formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.CasterID);
+                m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));
+                return;
+            }
+
+            request.CasterId = serverIdRes.value();
+        }
+
+        request.IsDualCasting = acEvent.IsDualCasting;
+        request.ApplyHealPerkBonus = acEvent.ApplyHealPerkBonus;
+        request.ApplyStaminaPerkBonus = acEvent.ApplyStaminaPerkBonus;
+
+        m_transport.Send(request);
+
+        spdlog::debug("Sending effect sync request");
     }
-
-    request.IsDualCasting = acEvent.IsDualCasting;
-    request.ApplyHealPerkBonus = acEvent.ApplyHealPerkBonus;
-    request.ApplyStaminaPerkBonus = acEvent.ApplyStaminaPerkBonus;
-
-    m_transport.Send(request);
-
-    spdlog::debug("Sending effect sync request");
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::OnAddTargetEvent");
+    }
 }
 
 void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
 {
-    const uint32_t cSpellId = World::Get().GetModSystem().GetGameId(acMessage.SpellId);
-    if (cSpellId == 0)
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        spdlog::error("{}: failed to retrieve formID of server spell id, GameId base: {:X}, mod: {:X}, discarding", __FUNCTION__, acMessage.SpellId.BaseId, acMessage.SpellId.ModId);
-        return;
-    }
-
-    MagicItem* pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
-    if (!pSpell)
-    {
-        spdlog::error("{}: failed to retrieve spell by formID {:X}, discarding", __FUNCTION__, cSpellId);
-        return;
-    }
-
-    const uint32_t cEffectId = World::Get().GetModSystem().GetGameId(acMessage.EffectId);
-    if (cEffectId == 0)
-    {
-        spdlog::error("{}: failed to retrieve formID of server effect id, GameId base: {:X}, mod: {:X}, discarding", __FUNCTION__, acMessage.EffectId.BaseId, acMessage.EffectId.ModId);
-        return;
-    }
-
-    EffectItem* pEffect = pSpell->GetEffect(cEffectId);
-    if (!pEffect)
-    {
-        spdlog::error("{}: failed to retrieve effect by formID {:X}", __FUNCTION__, cEffectId);
-        return;
-    }
-
-    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.TargetId);
-    if (!pActor)
-    {
-        MagicQueue::Spdlog("{}: could not find targeted Actor for serverID {:X}, queueing", __FUNCTION__, acMessage.TargetId);
-        m_queuedRemoteEffects.push(acMessage);
-        return;
-    }
-
-    Actor* pCaster{};
-    acMessage.CasterId && (pCaster = Utils::GetByServerId<Actor>(acMessage.CasterId));
-    if (acMessage.CasterId && !pCaster)
-    {
-        MagicQueue::Spdlog("{}: could not find caster Actor for serverID {:X}, queueing", __FUNCTION__, acMessage.CasterId);
-        m_queuedRemoteEffects.push(acMessage);
-        return;
-    }
-
-    // This hack is here because slow time seems to be twice as slow when cast by an npc
-    if (pEffect->IsSlowEffect())
-    {
-        // The player is null on the main menu and while a save is loading, where there is nothing to redirect the
-        // cast to. The caster resolved and checked above is kept instead of being overwritten with a null.
-        if (acMessage.CasterId)
+        const uint32_t cSpellId = World::Get().GetModSystem().GetGameId(acMessage.SpellId);
+        if (cSpellId == 0)
         {
-            if (auto* pPlayer = PlayerCharacter::Get())
-                pCaster = pPlayer;
+            spdlog::error("{}: failed to retrieve formID of server spell id, GameId base: {:X}, mod: {:X}, discarding", __FUNCTION__, acMessage.SpellId.BaseId, acMessage.SpellId.ModId);
+            return;
         }
 
-        spdlog::debug(
-            __FUNCTION__ ": hacking IsSlowEffect() targetId {:X}, casterId {:X}, magnitude {}, IsDualCasting {}", acMessage.TargetId, acMessage.CasterId, acMessage.Magnitude,
-            acMessage.IsDualCasting);
+        MagicItem* pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
+        if (!pSpell)
+        {
+            spdlog::error("{}: failed to retrieve spell by formID {:X}, discarding", __FUNCTION__, cSpellId);
+            return;
+        }
+
+        const uint32_t cEffectId = World::Get().GetModSystem().GetGameId(acMessage.EffectId);
+        if (cEffectId == 0)
+        {
+            spdlog::error("{}: failed to retrieve formID of server effect id, GameId base: {:X}, mod: {:X}, discarding", __FUNCTION__, acMessage.EffectId.BaseId, acMessage.EffectId.ModId);
+            return;
+        }
+
+        EffectItem* pEffect = pSpell->GetEffect(cEffectId);
+        if (!pEffect)
+        {
+            spdlog::error("{}: failed to retrieve effect by formID {:X}", __FUNCTION__, cEffectId);
+            return;
+        }
+
+        Actor* pActor = Utils::GetByServerId<Actor>(acMessage.TargetId);
+        if (!pActor)
+        {
+            MagicQueue::Spdlog("{}: could not find targeted Actor for serverID {:X}, queueing", __FUNCTION__, acMessage.TargetId);
+            m_queuedRemoteEffects.push(acMessage);
+            return;
+        }
+
+        Actor* pCaster{};
+        acMessage.CasterId && (pCaster = Utils::GetByServerId<Actor>(acMessage.CasterId));
+        if (acMessage.CasterId && !pCaster)
+        {
+            MagicQueue::Spdlog("{}: could not find caster Actor for serverID {:X}, queueing", __FUNCTION__, acMessage.CasterId);
+            m_queuedRemoteEffects.push(acMessage);
+            return;
+        }
+
+        // This hack is here because slow time seems to be twice as slow when cast by an npc
+        if (pEffect->IsSlowEffect())
+        {
+            // The player is null on the main menu and while a save is loading, where there is nothing to redirect the
+            // cast to. The caster resolved and checked above is kept instead of being overwritten with a null.
+            if (acMessage.CasterId)
+            {
+                if (auto* pPlayer = PlayerCharacter::Get())
+                    pCaster = pPlayer;
+            }
+
+            spdlog::debug(
+                __FUNCTION__ ": hacking IsSlowEffect() targetId {:X}, casterId {:X}, magnitude {}, IsDualCasting {}", acMessage.TargetId, acMessage.CasterId, acMessage.Magnitude,
+                acMessage.IsDualCasting);
+        }
+
+        MagicTarget::AddTargetData data{};
+        data.pCaster = pCaster;
+        data.pSpell = pSpell;
+        data.pEffectItem = pEffect;
+        data.fMagnitude = acMessage.Magnitude;
+        data.fUnkFloat1 = 1.0f;
+        data.eCastingSource = MagicSystem::CastingSource::CASTING_SOURCE_COUNT;
+        data.bDualCast = acMessage.IsDualCasting;
+
+        if (pEffect->IsWerewolfEffect())
+            pActor->GetExtension()->GraphDescriptorHash = AnimationGraphDescriptor_WerewolfBehavior::m_key;
+
+        if (pEffect->IsVampireLordEffect())
+            pActor->GetExtension()->GraphDescriptorHash = AnimationGraphDescriptor_VampireLordBehavior::m_key;
+
+        // This hack is here because slow time seems to be twice as slow when cast by an npc
+        if (pEffect->IsSlowEffect())
+        {
+            // The player is null on the main menu and while a save is loading, where the effect stays on the target
+            // resolved above rather than being moved onto a player that is not there.
+            if (auto* pPlayer = PlayerCharacter::Get())
+                pActor = pPlayer;
+        }
+
+        pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
+        spdlog::debug("Applied remote magic effect");
     }
-
-    MagicTarget::AddTargetData data{};
-    data.pCaster = pCaster;
-    data.pSpell = pSpell;
-    data.pEffectItem = pEffect;
-    data.fMagnitude = acMessage.Magnitude;
-    data.fUnkFloat1 = 1.0f;
-    data.eCastingSource = MagicSystem::CastingSource::CASTING_SOURCE_COUNT;
-    data.bDualCast = acMessage.IsDualCasting;
-
-    if (pEffect->IsWerewolfEffect())
-        pActor->GetExtension()->GraphDescriptorHash = AnimationGraphDescriptor_WerewolfBehavior::m_key;
-
-    if (pEffect->IsVampireLordEffect())
-        pActor->GetExtension()->GraphDescriptorHash = AnimationGraphDescriptor_VampireLordBehavior::m_key;
-
-    // This hack is here because slow time seems to be twice as slow when cast by an npc
-    if (pEffect->IsSlowEffect())
+    catch (...)
     {
-        // The player is null on the main menu and while a save is loading, where the effect stays on the target
-        // resolved above rather than being moved onto a player that is not there.
-        if (auto* pPlayer = PlayerCharacter::Get())
-            pActor = pPlayer;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::OnNotifyAddTarget");
     }
-
-    pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
-    spdlog::debug("Applied remote magic effect");
 }
 
 void MagicService::OnRemoveSpellEvent(const RemoveSpellEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    RemoveSpellRequest request{};
-
-    if (!m_world.GetModSystem().GetServerModId(acEvent.SpellId, request.SpellId.ModId, request.SpellId.BaseId))
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        spdlog::error("{}: Could not find spell with form {:X}", __FUNCTION__, acEvent.SpellId);
-        return;
+        if (!m_transport.IsConnected())
+            return;
+
+        RemoveSpellRequest request{};
+
+        if (!m_world.GetModSystem().GetServerModId(acEvent.SpellId, request.SpellId.ModId, request.SpellId.BaseId))
+        {
+            spdlog::error("{}: Could not find spell with form {:X}", __FUNCTION__, acEvent.SpellId);
+            return;
+        }
+
+        auto view = m_world.view<FormIdComponent>();
+        const auto it = std::find_if(std::begin(view), std::end(view), [id = acEvent.TargetId, view](auto entity) {
+            return view.get<FormIdComponent>(entity).Id == id;
+        });
+
+        if (it == std::end(view))
+        {
+            spdlog::warn("Form id not found for magic remove target, form id: {:X}", acEvent.TargetId);
+            return;
+        }
+
+        std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
+        if (!serverIdRes.has_value())
+        {
+            spdlog::warn("Server id not found for magic remove target, form id: {:X}", acEvent.TargetId);
+            return;
+        }
+
+        request.TargetId = serverIdRes.value();
+
+        //spdlog::info(__FUNCTION__ ": requesting remove spell with base id {:X} from actor with server id {:X}", request.SpellId.BaseId, request.TargetId);
+
+        m_transport.Send(request);
     }
-
-    auto view = m_world.view<FormIdComponent>();
-    const auto it = std::find_if(std::begin(view), std::end(view), [id = acEvent.TargetId, view](auto entity) {
-        return view.get<FormIdComponent>(entity).Id == id;
-    });
-
-    if (it == std::end(view))
+    catch (...)
     {
-        spdlog::warn("Form id not found for magic remove target, form id: {:X}", acEvent.TargetId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::OnRemoveSpellEvent");
     }
-
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
-    if (!serverIdRes.has_value())
-    {
-        spdlog::warn("Server id not found for magic remove target, form id: {:X}", acEvent.TargetId);
-        return;
-    }
-
-    request.TargetId = serverIdRes.value();
-
-    //spdlog::info(__FUNCTION__ ": requesting remove spell with base id {:X} from actor with server id {:X}", request.SpellId.BaseId, request.TargetId);
-
-    m_transport.Send(request);
 }
 
 void MagicService::OnNotifyRemoveSpell(const NotifyRemoveSpell& acMessage) noexcept
 {
-    uint32_t targetFormId = acMessage.TargetId;
-
-    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.TargetId);
-    if (!pActor)
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        spdlog::warn(__FUNCTION__ ": could not find actor server id {:X}", acMessage.TargetId);
-        return;
-    }
+        uint32_t targetFormId = acMessage.TargetId;
 
-    const uint32_t cSpellId = World::Get().GetModSystem().GetGameId(acMessage.SpellId);
-    if (cSpellId == 0)
+        Actor* pActor = Utils::GetByServerId<Actor>(acMessage.TargetId);
+        if (!pActor)
+        {
+            spdlog::warn(__FUNCTION__ ": could not find actor server id {:X}", acMessage.TargetId);
+            return;
+        }
+
+        const uint32_t cSpellId = World::Get().GetModSystem().GetGameId(acMessage.SpellId);
+        if (cSpellId == 0)
+        {
+            spdlog::error("{}: failed to retrieve spell id, GameId base: {:X}, mod: {:X}", __FUNCTION__,
+                          acMessage.SpellId.BaseId, acMessage.SpellId.ModId);
+            return;
+        }
+
+        MagicItem* pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
+        if (!pSpell)
+        {
+            spdlog::error("{}: Failed to retrieve spell by id {:X}", __FUNCTION__, cSpellId);
+            return;
+        }
+
+        // Remove the spell from the actor
+        //spdlog::info(__FUNCTION__ ": removing spell with form id {:X} from actor with form id {:X}", cSpellId, targetFormId);
+        pActor->RemoveSpell(pSpell);
+    }
+    catch (...)
     {
-        spdlog::error("{}: failed to retrieve spell id, GameId base: {:X}, mod: {:X}", __FUNCTION__,
-                      acMessage.SpellId.BaseId, acMessage.SpellId.ModId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::OnNotifyRemoveSpell");
     }
-
-    MagicItem* pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
-    if (!pSpell)
-    {
-        spdlog::error("{}: Failed to retrieve spell by id {:X}", __FUNCTION__, cSpellId);
-        return;
-    }
-
-    // Remove the spell from the actor
-    //spdlog::info(__FUNCTION__ ": removing spell with form id {:X} from actor with form id {:X}", cSpellId, targetFormId);
-    pActor->RemoveSpell(pSpell);
 }
 
 void MagicService::ApplyQueuedEffects() noexcept
 {
-    static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenUpdates = 100ms;
-
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastSendTimePoint < cDelayBetweenUpdates)
-        return;
-
-    lastSendTimePoint = now;
-
-    // Search queued events
-    while (!m_queuedEffects.empty())
+    // Spell, projectile and effect packets. The reports and the effect lists allocate;
+    // a cast that could not be queued is not applied, which is the same outcome as a
+    // cast the game refused.
+    try
     {
-        AddTargetEvent target = m_queuedEffects.front().Target();
-        Actor* pCaster = Cast<Actor>(TESForm::GetById(target.CasterID));
-        Actor* pTarget = Cast<Actor>(TESForm::GetById(target.TargetID));
-        auto pTargetName = (pTarget && pTarget->baseForm) ? pTarget->baseForm->GetName() : "";
-        auto pCasterName = (pCaster && pCaster->baseForm) ? pCaster->baseForm->GetName() : "";
+        static std::chrono::steady_clock::time_point lastSendTimePoint;
+        constexpr auto cDelayBetweenUpdates = 100ms;
 
-        // Check for and skip expired (timed out) events, that Actor isn't likely to exist anymore.
-        if (m_queuedEffects.front().Expired())
-            MagicQueue::Spdlog("{}: removing expired AddTargetEvent from queue: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
-                               __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
-        else
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastSendTimePoint < cDelayBetweenUpdates)
+            return;
+
+        lastSendTimePoint = now;
+
+        // Search queued events
+        while (!m_queuedEffects.empty())
         {
-            // Process queued target events. If caster and target now have server IDs, this should work.
-            // If they don't, stop processing the list until next iteration.
-            auto view = m_world.view<FormIdComponent>();
-            const auto it = std::find_if(std::begin(view), std::end(view), [id = target.TargetID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
+            AddTargetEvent target = m_queuedEffects.front().Target();
+            Actor* pCaster = Cast<Actor>(TESForm::GetById(target.CasterID));
+            Actor* pTarget = Cast<Actor>(TESForm::GetById(target.TargetID));
+            auto pTargetName = (pTarget && pTarget->baseForm) ? pTarget->baseForm->GetName() : "";
+            auto pCasterName = (pCaster && pCaster->baseForm) ? pCaster->baseForm->GetName() : "";
 
-            if (it == std::end(view))
+            // Check for and skip expired (timed out) events, that Actor isn't likely to exist anymore.
+            if (m_queuedEffects.front().Expired())
+                MagicQueue::Spdlog("{}: removing expired AddTargetEvent from queue: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                                   __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
+            else
             {
-                spdlog::debug("{}: server entity for AddTargetEvent target formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
-                              __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
-                break;
-            }
+                // Process queued target events. If caster and target now have server IDs, this should work.
+                // If they don't, stop processing the list until next iteration.
+                auto view = m_world.view<FormIdComponent>();
+                const auto it = std::find_if(std::begin(view), std::end(view), [id = target.TargetID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
 
-            entt::entity entity = *it;
-            std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
-            if (!serverIdRes.has_value())
-            {
-                spdlog::debug("{}: serverID for AddTargetEvent target formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
-                              __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
-                break;
-            }
-
-            if (target.CasterID)
-            {
-                const auto casterIt = std::find_if(std::begin(view), std::end(view), [id = target.CasterID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-                if (casterIt == std::end(view))
+                if (it == std::end(view))
                 {
-                    spdlog::debug("{}: serverID for AddTargetEvent caster formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                    spdlog::debug("{}: server entity for AddTargetEvent target formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
                                   __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
                     break;
                 }
 
-                serverIdRes = Utils::GetServerId(*casterIt);
+                entt::entity entity = *it;
+                std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
                 if (!serverIdRes.has_value())
                 {
-                    spdlog::debug("{}: serverID for AddTargetEvent caster formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                    spdlog::debug("{}: serverID for AddTargetEvent target formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
                                   __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
                     break;
                 }
+
+                if (target.CasterID)
+                {
+                    const auto casterIt = std::find_if(std::begin(view), std::end(view), [id = target.CasterID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+                    if (casterIt == std::end(view))
+                    {
+                        spdlog::debug("{}: serverID for AddTargetEvent caster formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                                      __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
+                        break;
+                    }
+
+                    serverIdRes = Utils::GetServerId(*casterIt);
+                    if (!serverIdRes.has_value())
+                    {
+                        spdlog::debug("{}: serverID for AddTargetEvent caster formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                                      __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
+                        break;
+                    }
+                }
+
+                // At this point, it will succeed or fail, but not queue another one ad infinitum
+                MagicQueue::Spdlog("{}: retrying AddTargetEvent for caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})", 
+                                   __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
+                OnAddTargetEvent(target);        
             }
-
-            // At this point, it will succeed or fail, but not queue another one ad infinitum
-            MagicQueue::Spdlog("{}: retrying AddTargetEvent for caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})", 
-                               __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
-            OnAddTargetEvent(target);        
+            m_queuedEffects.pop();
         }
-        m_queuedEffects.pop();
-    }
 
-    // Same again for remote events
-    while (!m_queuedRemoteEffects.empty())
-    {
-        NotifyAddTarget target = m_queuedRemoteEffects.front().Target();
-        Actor* pTarget = Utils::GetByServerId<Actor>(target.TargetId); 
-        Actor* pCaster = Utils::GetByServerId<Actor>(target.CasterId); 
-        auto pTargetName = (pTarget && pTarget->baseForm) ? pTarget->baseForm->GetName() : "";
-        auto pCasterName = (pCaster && pCaster->baseForm) ? pCaster->baseForm->GetName() : ""; 
-
-        if (m_queuedRemoteEffects.front().Expired())
-            MagicQueue::Spdlog("{}: removing expired NotifyAddTarget event from queue: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
-                               __FUNCTION__, pCasterName, target.CasterId, target.SpellId, target.EffectId, pTargetName, target.TargetId);
-        else
+        // Same again for remote events
+        while (!m_queuedRemoteEffects.empty())
         {
-            if (!pTarget)
-            {
-                spdlog::debug("{}: Actor for target serverID still not found for NotifyAddTarget: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
-                              __FUNCTION__, pCasterName, target.CasterId, target.SpellId, target.EffectId, pTargetName, target.TargetId);
-                break;
-            }
+            NotifyAddTarget target = m_queuedRemoteEffects.front().Target();
+            Actor* pTarget = Utils::GetByServerId<Actor>(target.TargetId); 
+            Actor* pCaster = Utils::GetByServerId<Actor>(target.CasterId); 
+            auto pTargetName = (pTarget && pTarget->baseForm) ? pTarget->baseForm->GetName() : "";
+            auto pCasterName = (pCaster && pCaster->baseForm) ? pCaster->baseForm->GetName() : ""; 
 
-            if (target.CasterId && !pCaster)
+            if (m_queuedRemoteEffects.front().Expired())
+                MagicQueue::Spdlog("{}: removing expired NotifyAddTarget event from queue: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                                   __FUNCTION__, pCasterName, target.CasterId, target.SpellId, target.EffectId, pTargetName, target.TargetId);
+            else
             {
-                spdlog::debug("{}: Actor for caster serverID still not found for NotifyAddTarget: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
-                              __FUNCTION__, pCasterName, target.CasterId, target.SpellId, target.EffectId, pTargetName, target.TargetId);
-                break; 
-            }
+                if (!pTarget)
+                {
+                    spdlog::debug("{}: Actor for target serverID still not found for NotifyAddTarget: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                                  __FUNCTION__, pCasterName, target.CasterId, target.SpellId, target.EffectId, pTargetName, target.TargetId);
+                    break;
+                }
 
-            MagicQueue::Spdlog("{}: retrying NotifyAddTarget for caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
-                               __FUNCTION__, pCasterName, target.CasterId, target.SpellId, target.EffectId, pTargetName,target.TargetId);
-            OnNotifyAddTarget(target);
+                if (target.CasterId && !pCaster)
+                {
+                    spdlog::debug("{}: Actor for caster serverID still not found for NotifyAddTarget: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                                  __FUNCTION__, pCasterName, target.CasterId, target.SpellId, target.EffectId, pTargetName, target.TargetId);
+                    break; 
+                }
+
+                MagicQueue::Spdlog("{}: retrying NotifyAddTarget for caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
+                                   __FUNCTION__, pCasterName, target.CasterId, target.SpellId, target.EffectId, pTargetName,target.TargetId);
+                OnNotifyAddTarget(target);
+            }
+            m_queuedRemoteEffects.pop();
         }
-        m_queuedRemoteEffects.pop();
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in MagicService::ApplyQueuedEffects");
     }
 }
 

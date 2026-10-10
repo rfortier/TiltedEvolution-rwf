@@ -89,87 +89,96 @@ void CombatService::OnProjectileLaunchedEvent(const ProjectileLaunchedEvent& acE
 
 void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMessage) const noexcept
 {
-    ModSystem& modSystem = World::Get().GetModSystem();
-
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ShooterID](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (remoteIt == std::end(remoteView))
+    // A packet handler and its per-frame follow-up. The report and the target list
+    // allocate; a target that could not be queued is dropped rather than mis-aimed.
+    try
     {
-        spdlog::warn("Shooter with remote id {:X} not found.", acMessage.ShooterID);
-        return;
+        ModSystem& modSystem = World::Get().GetModSystem();
+
+        auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
+        const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ShooterID](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+
+        if (remoteIt == std::end(remoteView))
+        {
+            spdlog::warn("Shooter with remote id {:X} not found.", acMessage.ShooterID);
+            return;
+        }
+
+        FormIdComponent formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
+
+        Projectile::LaunchData launchData{};
+
+        // Projectile::Launch relies on pParentCell being valid.
+        // TODO: it's possible that more of these values must have a value, should probably check for that in the game code.
+        const uint32_t cParentCellId = modSystem.GetGameId(acMessage.ParentCellID);
+        launchData.pParentCell = Cast<TESObjectCELL>(TESForm::GetById(cParentCellId));
+
+        if (!launchData.pParentCell)
+        {
+            spdlog::warn("Cannot launch projectile, invalid parent cell: {:X}", cParentCellId);
+            return;
+        }
+
+        launchData.pShooter = Cast<TESObjectREFR>(TESForm::GetById(formIdComponent.Id));
+
+        launchData.Origin.x = acMessage.OriginX;
+        launchData.Origin.y = acMessage.OriginY;
+        launchData.Origin.z = acMessage.OriginZ;
+
+        const uint32_t cProjectileBaseId = modSystem.GetGameId(acMessage.ProjectileBaseID);
+        launchData.pProjectileBase = TESForm::GetById(cProjectileBaseId);
+
+        if (!launchData.pProjectileBase)
+        {
+            spdlog::warn("Cannot launch projectile, invalid projectile base: {:X}", cProjectileBaseId);
+            return;
+        }
+
+        const uint32_t cFromWeaponId = modSystem.GetGameId(acMessage.WeaponID);
+        launchData.pFromWeapon = Cast<TESObjectWEAP>(TESForm::GetById(cFromWeaponId));
+
+        const uint32_t cFromAmmoId = modSystem.GetGameId(acMessage.AmmoID);
+        launchData.pFromAmmo = Cast<TESAmmo>(TESForm::GetById(cFromAmmoId));
+
+        launchData.fZAngle = acMessage.ZAngle;
+        launchData.fXAngle = acMessage.XAngle;
+        launchData.fYAngle = acMessage.YAngle;
+
+        const uint32_t cSpellId = modSystem.GetGameId(acMessage.SpellID);
+        launchData.pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
+
+        if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
+        {
+            spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
+            return;
+        }
+
+        launchData.eCastingSource = static_cast<MagicSystem::CastingSource>(acMessage.CastingSource);
+
+        launchData.iArea = acMessage.Area;
+        launchData.fPower = acMessage.Power;
+        launchData.fScale = acMessage.Scale;
+
+        launchData.bAlwaysHit = acMessage.AlwaysHit;
+        launchData.bNoDamageOutsideCombat = acMessage.NoDamageOutsideCombat;
+        launchData.bAutoAim = acMessage.AutoAim;
+
+        launchData.bForceConeOfFire = acMessage.ForceConeOfFire;
+
+        // always use origin, or it'll recalculate it and it desyncs
+        launchData.bUseOrigin = true;
+
+        launchData.bUnkBool1 = acMessage.UnkBool1;
+        launchData.bUnkBool2 = acMessage.UnkBool2;
+
+        BSPointerHandle<Projectile> result;
+
+        Projectile::Launch(&result, launchData);
     }
-
-    FormIdComponent formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
-
-    Projectile::LaunchData launchData{};
-
-    // Projectile::Launch relies on pParentCell being valid.
-    // TODO: it's possible that more of these values must have a value, should probably check for that in the game code.
-    const uint32_t cParentCellId = modSystem.GetGameId(acMessage.ParentCellID);
-    launchData.pParentCell = Cast<TESObjectCELL>(TESForm::GetById(cParentCellId));
-
-    if (!launchData.pParentCell)
+    catch (...)
     {
-        spdlog::warn("Cannot launch projectile, invalid parent cell: {:X}", cParentCellId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CombatService::OnNotifyProjectileLaunch");
     }
-
-    launchData.pShooter = Cast<TESObjectREFR>(TESForm::GetById(formIdComponent.Id));
-
-    launchData.Origin.x = acMessage.OriginX;
-    launchData.Origin.y = acMessage.OriginY;
-    launchData.Origin.z = acMessage.OriginZ;
-
-    const uint32_t cProjectileBaseId = modSystem.GetGameId(acMessage.ProjectileBaseID);
-    launchData.pProjectileBase = TESForm::GetById(cProjectileBaseId);
-
-    if (!launchData.pProjectileBase)
-    {
-        spdlog::warn("Cannot launch projectile, invalid projectile base: {:X}", cProjectileBaseId);
-        return;
-    }
-
-    const uint32_t cFromWeaponId = modSystem.GetGameId(acMessage.WeaponID);
-    launchData.pFromWeapon = Cast<TESObjectWEAP>(TESForm::GetById(cFromWeaponId));
-
-    const uint32_t cFromAmmoId = modSystem.GetGameId(acMessage.AmmoID);
-    launchData.pFromAmmo = Cast<TESAmmo>(TESForm::GetById(cFromAmmoId));
-
-    launchData.fZAngle = acMessage.ZAngle;
-    launchData.fXAngle = acMessage.XAngle;
-    launchData.fYAngle = acMessage.YAngle;
-
-    const uint32_t cSpellId = modSystem.GetGameId(acMessage.SpellID);
-    launchData.pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
-
-    if (acMessage.CastingSource < 0 || acMessage.CastingSource >= 4)
-    {
-        spdlog::warn("{}: could not find casting source {}", __FUNCTION__, acMessage.CastingSource);
-        return;
-    }
-
-    launchData.eCastingSource = static_cast<MagicSystem::CastingSource>(acMessage.CastingSource);
-
-    launchData.iArea = acMessage.Area;
-    launchData.fPower = acMessage.Power;
-    launchData.fScale = acMessage.Scale;
-
-    launchData.bAlwaysHit = acMessage.AlwaysHit;
-    launchData.bNoDamageOutsideCombat = acMessage.NoDamageOutsideCombat;
-    launchData.bAutoAim = acMessage.AutoAim;
-
-    launchData.bForceConeOfFire = acMessage.ForceConeOfFire;
-
-    // always use origin, or it'll recalculate it and it desyncs
-    launchData.bUseOrigin = true;
-
-    launchData.bUnkBool1 = acMessage.UnkBool1;
-    launchData.bUnkBool2 = acMessage.UnkBool2;
-
-    BSPointerHandle<Projectile> result;
-
-    Projectile::Launch(&result, launchData);
 }
 
 void CombatService::OnHitEvent(const HitEvent& acEvent) const noexcept

@@ -26,15 +26,24 @@
 
 uint64_t DisplayGraphDescriptorKey(BSAnimationGraphManager* pManager) noexcept
 {
-    auto hash = pManager->GetDescriptorKey();
-    auto pDescriptor = AnimationGraphDescriptorManager::Get().GetDescriptor(hash);
+    // A debug view. The two reports below are the only allocations in this body.
+    try
+    {
+        auto hash = pManager->GetDescriptorKey();
+        auto pDescriptor = AnimationGraphDescriptorManager::Get().GetDescriptor(hash);
 
-    spdlog::info("Key: {}", hash);
-    std::cout << "uint64_t key = " << hash << ";" << std::endl;
-    if (!pDescriptor)
-        spdlog::error("Descriptor key not found");
+        spdlog::info("Key: {}", hash);
+        std::cout << "uint64_t key = " << hash << ";" << std::endl;
+        if (!pDescriptor)
+            spdlog::error("Descriptor key not found");
 
-    return hash;
+        return hash;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in DisplayGraphDescriptorKey");
+        return 0;
+    }
 }
 
 void DebugService::DrawAnimDebugView()

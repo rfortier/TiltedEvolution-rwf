@@ -165,47 +165,72 @@ void CharacterService::ReconcileActorData(
 
 bool CharacterService::RequestOwnership(const uint32_t aFormId, const uint32_t aServerId, const entt::entity aEntity) const noexcept
 {
-    Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
-    if (!pActor)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn("Cannot request ownership of actor {:X} because its form {:X} is unavailable", aServerId, aFormId);
+        Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
+        if (!pActor)
+        {
+            spdlog::warn("Cannot request ownership of actor {:X} because its form {:X} is unavailable", aServerId, aFormId);
+            return false;
+        }
+
+        ActorExtension* pExtension = pActor->GetExtension();
+        if (pExtension->IsRemotePlayer())
+        {
+            spdlog::warn("Cannot request ownership of remote player actor {:X}", aServerId);
+            return false;
+        }
+
+        if (pActor->IsPlayerSummon())
+        {
+            spdlog::warn("Cannot request ownership of remote player summon {:X}", aServerId);
+            return false;
+        }
+
+        const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity);
+        if (!pRemoteComponent || pRemoteComponent->Id != aServerId || pRemoteComponent->OwnershipEpoch == 0)
+            return false;
+
+        RequestOwnershipClaim request;
+        request.ServerId = aServerId;
+        request.ExpectedOwnershipEpoch = pRemoteComponent->OwnershipEpoch;
+
+        if (!m_transport.Send(request))
+            return false;
+
+        return true;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::RequestOwnership");
         return false;
     }
-
-    ActorExtension* pExtension = pActor->GetExtension();
-    if (pExtension->IsRemotePlayer())
-    {
-        spdlog::warn("Cannot request ownership of remote player actor {:X}", aServerId);
-        return false;
-    }
-
-    if (pActor->IsPlayerSummon())
-    {
-        spdlog::warn("Cannot request ownership of remote player summon {:X}", aServerId);
-        return false;
-    }
-
-    const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity);
-    if (!pRemoteComponent || pRemoteComponent->Id != aServerId || pRemoteComponent->OwnershipEpoch == 0)
-        return false;
-
-    RequestOwnershipClaim request;
-    request.ServerId = aServerId;
-    request.ExpectedOwnershipEpoch = pRemoteComponent->OwnershipEpoch;
-
-    if (!m_transport.Send(request))
-        return false;
-
-    return true;
 }
 
 void CharacterService::DeleteTempActor(const uint32_t aFormId) noexcept
 {
-    Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
-    if (pActor && ((pActor->formID & 0xFF000000) == 0xFF000000))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        pActor->Delete();
-        spdlog::info("\tDeleted actor {:X}", aFormId);
+        Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
+        if (pActor && ((pActor->formID & 0xFF000000) == 0xFF000000))
+        {
+            pActor->Delete();
+            spdlog::info("\tDeleted actor {:X}", aFormId);
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::DeleteTempActor");
     }
 }
 
@@ -255,34 +280,46 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
 
 void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
 {
-    if (auto* pActor = Cast<Actor>(TESForm::GetById(acEvent.FormId)))
-        pActor->GetExtension()->Reconciliation = ActorExtension::ReconciliationStage::None;
-
-    m_pendingLeveledConforms.erase(acEvent.FormId);
-
-    auto view = m_world.view<FormIdComponent>();
-    const auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.FormId](auto aEntity) { return view.get<FormIdComponent>(aEntity).Id == formId; });
-
-    if (entityIt == view.end())
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::error("Actor to remove not found in form ids map {:X}", acEvent.FormId);
-        return;
+        if (auto* pActor = Cast<Actor>(TESForm::GetById(acEvent.FormId)))
+            pActor->GetExtension()->Reconciliation = ActorExtension::ReconciliationStage::None;
+
+        m_pendingLeveledConforms.erase(acEvent.FormId);
+
+        auto view = m_world.view<FormIdComponent>();
+        const auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.FormId](auto aEntity) { return view.get<FormIdComponent>(aEntity).Id == formId; });
+
+        if (entityIt == view.end())
+        {
+            spdlog::error("Actor to remove not found in form ids map {:X}", acEvent.FormId);
+            return;
+        }
+
+        const auto cId = *entityIt;
+
+        auto& formIdComponent = view.get<FormIdComponent>(cId);
+        CancelServerAssignment(*entityIt, formIdComponent.Id);
+
+        m_world.remove<EarlyAnimationBufferComponent>(cId);
+
+        if (m_world.all_of<FormIdComponent>(cId))
+            m_world.remove<FormIdComponent>(cId);
+
+        if (m_world.orphan(cId))
+            m_world.destroy(cId);
+
+        spdlog::info("Actor removed, form id: {:X}", acEvent.FormId);
     }
-
-    const auto cId = *entityIt;
-
-    auto& formIdComponent = view.get<FormIdComponent>(cId);
-    CancelServerAssignment(*entityIt, formIdComponent.Id);
-
-    m_world.remove<EarlyAnimationBufferComponent>(cId);
-
-    if (m_world.all_of<FormIdComponent>(cId))
-        m_world.remove<FormIdComponent>(cId);
-
-    if (m_world.orphan(cId))
-        m_world.destroy(cId);
-
-    spdlog::info("Actor removed, form id: {:X}", acEvent.FormId);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnActorRemoved");
+    }
 }
 
 void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
@@ -357,362 +394,410 @@ void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEve
 
 void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessage) noexcept
 {
-    spdlog::info(__FUNCTION__ ": Received for cookie {:X}, server id {:X}", acMessage.Cookie, acMessage.ServerId);
-
-    auto view = m_world.view<WaitingForAssignmentComponent>();
-    const auto itor = std::find_if(std::begin(view), std::end(view), [view, cookie = acMessage.Cookie](auto entity) { return view.get<WaitingForAssignmentComponent>(entity).Cookie == cookie; });
-
-    if (itor == std::end(view))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn("Never found requested cookie: {}", acMessage.Cookie);
-        return;
-    }
+        spdlog::info(__FUNCTION__ ": Received for cookie {:X}, server id {:X}", acMessage.Cookie, acMessage.ServerId);
 
-    const auto cEntity = *itor;
-    const bool isCancelled = view.get<WaitingForAssignmentComponent>(cEntity).Cancelled;
+        auto view = m_world.view<WaitingForAssignmentComponent>();
+        const auto itor = std::find_if(std::begin(view), std::end(view), [view, cookie = acMessage.Cookie](auto entity) { return view.get<WaitingForAssignmentComponent>(entity).Cookie == cookie; });
 
-    m_world.remove<WaitingForAssignmentComponent>(cEntity);
-#if (!IS_MASTER)
-    m_world.remove<ReplayedActionsDebugComponent>(cEntity);
-#endif
-
-    if (isCancelled)
-    {
-        if (acMessage.Owner)
-            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
-
-        if (m_world.valid(cEntity))
-            m_world.destroy(cEntity);
-
-        return;
-    }
-
-    if (acMessage.OwnershipEpoch == 0)
-    {
-        spdlog::warn("Ignored assignment for actor {:X} because the server returned an invalid ownership epoch", acMessage.ServerId);
-        return;
-    }
-
-    const auto formIdComponent = m_world.try_get<FormIdComponent>(cEntity);
-    if (!formIdComponent)
-    {
-        if (acMessage.Owner)
-            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
-
-        if (m_world.valid(cEntity))
-            m_world.destroy(cEntity);
-
-        spdlog::warn("Discarded assignment for actor {:X} because the local entity no longer has a form", acMessage.ServerId);
-        return;
-    }
-
-    Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent->Id));
-    if (!pActor)
-    {
-        if (acMessage.Owner)
-            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
-
-        spdlog::warn("Discarded assignment for actor {:X} because form {:X} is unavailable", acMessage.ServerId, formIdComponent->Id);
-        m_world.destroy(cEntity);
-        return;
-    }
-
-    // TODO: how could this possibly trigger?
-    // it's kinda interfering with my WaitingFor3D code
-    if (acMessage.PlayerId != 0)
-        m_world.emplace_or_replace<PlayerComponent>(cEntity, acMessage.PlayerId);
-
-    ActorData actorData{};
-    actorData.InitialActorValues = acMessage.AllActorValues;
-    actorData.InitialInventory = acMessage.CurrentInventory;
-    actorData.IsDead = acMessage.IsDead;
-    actorData.IsWeaponDrawn = acMessage.IsWeaponDrawn;
-
-    if (acMessage.Owner)
-    {
-        spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
-
-        pActor->GetExtension()->SetRemote(true);
-        ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, actorData, true, true);
-
-        auto& localAnimationComponent = m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
-
-        if (auto* pEarlyAnimComponent = m_world.try_get<EarlyAnimationBufferComponent>(cEntity))
+        if (itor == std::end(view))
         {
-            for (const auto& action : pEarlyAnimComponent->Actions)
-            {
-                localAnimationComponent.Append(action);
-            }
+            spdlog::warn("Never found requested cookie: {}", acMessage.Cookie);
+            return;
         }
-        m_world.remove<EarlyAnimationBufferComponent>(cEntity);
 
-        auto& localComponent = m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
-        localComponent.IsDead = acMessage.IsDead;
-        localComponent.IsWeaponDrawn = acMessage.IsWeaponDrawn;
-        pActor->GetExtension()->SetRemote(false);
+        const auto cEntity = *itor;
+        const bool isCancelled = view.get<WaitingForAssignmentComponent>(cEntity).Cancelled;
+
+        m_world.remove<WaitingForAssignmentComponent>(cEntity);
+    #if (!IS_MASTER)
+        m_world.remove<ReplayedActionsDebugComponent>(cEntity);
+    #endif
+
+        if (isCancelled)
+        {
+            if (acMessage.Owner)
+                DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+
+            if (m_world.valid(cEntity))
+                m_world.destroy(cEntity);
+
+            return;
+        }
+
+        if (acMessage.OwnershipEpoch == 0)
+        {
+            spdlog::warn("Ignored assignment for actor {:X} because the server returned an invalid ownership epoch", acMessage.ServerId);
+            return;
+        }
+
+        const auto formIdComponent = m_world.try_get<FormIdComponent>(cEntity);
+        if (!formIdComponent)
+        {
+            if (acMessage.Owner)
+                DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+
+            if (m_world.valid(cEntity))
+                m_world.destroy(cEntity);
+
+            spdlog::warn("Discarded assignment for actor {:X} because the local entity no longer has a form", acMessage.ServerId);
+            return;
+        }
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent->Id));
+        if (!pActor)
+        {
+            if (acMessage.Owner)
+                DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+
+            spdlog::warn("Discarded assignment for actor {:X} because form {:X} is unavailable", acMessage.ServerId, formIdComponent->Id);
+            m_world.destroy(cEntity);
+            return;
+        }
+
+        // TODO: how could this possibly trigger?
+        // it's kinda interfering with my WaitingFor3D code
+        if (acMessage.PlayerId != 0)
+            m_world.emplace_or_replace<PlayerComponent>(cEntity, acMessage.PlayerId);
+
+        ActorData actorData{};
+        actorData.InitialActorValues = acMessage.AllActorValues;
+        actorData.InitialInventory = acMessage.CurrentInventory;
+        actorData.IsDead = acMessage.IsDead;
+        actorData.IsWeaponDrawn = acMessage.IsWeaponDrawn;
+
+        if (acMessage.Owner)
+        {
+            spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
+
+            pActor->GetExtension()->SetRemote(true);
+            ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, actorData, true, true);
+
+            auto& localAnimationComponent = m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
+
+            if (auto* pEarlyAnimComponent = m_world.try_get<EarlyAnimationBufferComponent>(cEntity))
+            {
+                for (const auto& action : pEarlyAnimComponent->Actions)
+                {
+                    localAnimationComponent.Append(action);
+                }
+            }
+            m_world.remove<EarlyAnimationBufferComponent>(cEntity);
+
+            auto& localComponent = m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
+            localComponent.IsDead = acMessage.IsDead;
+            localComponent.IsWeaponDrawn = acMessage.IsWeaponDrawn;
+            pActor->GetExtension()->SetRemote(false);
+        }
+        else
+        {
+            spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
+
+            m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id, acMessage.OwnershipEpoch);
+
+            pActor->GetExtension()->SetRemote(true);
+
+            m_world.remove<EarlyAnimationBufferComponent>(cEntity);
+            InterpolationSystem::Setup(m_world, cEntity);
+            AnimationSystem::Setup(m_world, cEntity);
+            AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(cEntity), acMessage.ActionsToReplay);
+
+    #if (!IS_MASTER)
+            m_world.emplace_or_replace<ReplayedActionsDebugComponent>(cEntity, acMessage.ActionsToReplay);
+    #endif
+
+            ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, actorData, true, false);
+
+            MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
+
+            // The owner's leveled pick rides the assignment response for actors we discovered ourselves
+            ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+        }
+        pActor->GetExtension()->SetNakedDeadline();
     }
-    else
+    catch (...)
     {
-        spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
-
-        m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id, acMessage.OwnershipEpoch);
-
-        pActor->GetExtension()->SetRemote(true);
-
-        m_world.remove<EarlyAnimationBufferComponent>(cEntity);
-        InterpolationSystem::Setup(m_world, cEntity);
-        AnimationSystem::Setup(m_world, cEntity);
-        AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(cEntity), acMessage.ActionsToReplay);
-
-#if (!IS_MASTER)
-        m_world.emplace_or_replace<ReplayedActionsDebugComponent>(cEntity, acMessage.ActionsToReplay);
-#endif
-
-        ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, actorData, true, false);
-
-        MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
-
-        // The owner's leveled pick rides the assignment response for actors we discovered ourselves
-        ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnAssignCharacter");
     }
-    pActor->GetExtension()->SetNakedDeadline();
 }
 
 void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) const noexcept
 {
-    if (acMessage.OwnershipEpoch == 0)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn("Ignored spawn for actor {:X} because the ownership epoch is invalid", acMessage.ServerId);
-        return;
-    }
-
-    auto remoteView = m_world.view<RemoteComponent>();
-    const auto remoteItor = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ServerId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (remoteItor != std::end(remoteView))
-    {
-        spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
-        return;
-    }
-
-    // Same for an actor this client already owns. Re-adding it as a remote spawn
-    // puts a second actor in the world for one server id, which is the state the
-    // engine crashes on.
-    auto localView = m_world.view<LocalComponent>();
-    const auto localItor = std::find_if(std::begin(localView), std::end(localView), [localView, Id = acMessage.ServerId](auto entity) { return localView.get<LocalComponent>(entity).Id == Id; });
-
-    if (localItor != std::end(localView))
-    {
-        spdlog::warn("Character with remote id {:X} is already owned locally.", acMessage.ServerId);
-        return;
-    }
-
-    Actor* pActor = nullptr;
-
-    std::optional<entt::entity> entity;
-
-    // Custom forms
-    if (acMessage.FormId == GameId{})
-    {
-        TESNPC* pNpc = nullptr;
-
-        entity = m_world.create();
-
-        if (acMessage.BaseId != GameId{})
+        if (acMessage.OwnershipEpoch == 0)
         {
-            // Prefer the owner's resolved leveled pick over the lossy template base
-            if (acMessage.LeveledNpcPickId != GameId{})
-                pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.LeveledNpcPickId)));
+            spdlog::warn("Ignored spawn for actor {:X} because the ownership epoch is invalid", acMessage.ServerId);
+            return;
+        }
 
-            if (!pNpc)
-                pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.BaseId)));
+        auto remoteView = m_world.view<RemoteComponent>();
+        const auto remoteItor = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ServerId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
 
-            if (!pNpc)
+        if (remoteItor != std::end(remoteView))
+        {
+            spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+            return;
+        }
+
+        // Same for an actor this client already owns. Re-adding it as a remote spawn
+        // puts a second actor in the world for one server id, which is the state the
+        // engine crashes on.
+        auto localView = m_world.view<LocalComponent>();
+        const auto localItor = std::find_if(std::begin(localView), std::end(localView), [localView, Id = acMessage.ServerId](auto entity) { return localView.get<LocalComponent>(entity).Id == Id; });
+
+        if (localItor != std::end(localView))
+        {
+            spdlog::warn("Character with remote id {:X} is already owned locally.", acMessage.ServerId);
+            return;
+        }
+
+        Actor* pActor = nullptr;
+
+        std::optional<entt::entity> entity;
+
+        // Custom forms
+        if (acMessage.FormId == GameId{})
+        {
+            TESNPC* pNpc = nullptr;
+
+            entity = m_world.create();
+
+            if (acMessage.BaseId != GameId{})
             {
-                spdlog::error("Failed to retrieve NPC, it will not be spawned, possibly missing mod, base: {:X}:{:X}, form: {:X}:{:X}", acMessage.BaseId.BaseId, acMessage.BaseId.ModId, acMessage.FormId.BaseId, acMessage.FormId.ModId);
+                // Prefer the owner's resolved leveled pick over the lossy template base
+                if (acMessage.LeveledNpcPickId != GameId{})
+                    pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.LeveledNpcPickId)));
+
+                if (!pNpc)
+                    pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.BaseId)));
+
+                if (!pNpc)
+                {
+                    spdlog::error("Failed to retrieve NPC, it will not be spawned, possibly missing mod, base: {:X}:{:X}, form: {:X}:{:X}", acMessage.BaseId.BaseId, acMessage.BaseId.ModId, acMessage.FormId.BaseId, acMessage.FormId.ModId);
+                    return;
+                }
+
+                pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+            }
+            else
+            {
+                // Players and npcs with temporary ref ids and base ids (usually random events)
+                pNpc = TESNPC::Create(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+                FaceGenSystem::Setup(m_world, *entity, acMessage.FaceTints);
+            }
+
+            // The engine builds this body on a later tick, and SetRemoteFaceGenForce has
+            // to be in effect before it does.
+            SetRemoteFaceGenForce(true);
+
+            pActor = Actor::Create(pNpc);
+        }
+        else
+        {
+            const uint32_t cActorId = World::Get().GetModSystem().GetGameId(acMessage.FormId);
+
+            auto waitingView = m_world.view<FormIdComponent, WaitingForAssignmentComponent>();
+            const auto waitingItor = std::find_if(std::begin(waitingView), std::end(waitingView), [waitingView, cActorId](auto entity) { return waitingView.get<FormIdComponent>(entity).Id == cActorId; });
+
+            if (waitingItor != std::end(waitingView))
+            {
+                spdlog::info("Character with form id {:X} already has a spawn request in progress.", cActorId);
                 return;
             }
 
-            pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+            auto* const pForm = TESForm::GetById(cActorId);
+            pActor = Cast<Actor>(pForm);
+
+            if (!pActor)
+            {
+                spdlog::error("Failed to retrieve Actor {:X}, it will not be spawned, possibly missing mod", cActorId);
+                spdlog::error("\tForm : {:X}", pForm ? pForm->formID : 0);
+                return;
+            }
+
+            const auto view = m_world.view<FormIdComponent>();
+            const auto itor = std::find_if(std::begin(view), std::end(view), [cActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == cActorId; });
+
+            if (itor != std::end(view))
+                entity = *itor;
+            else
+                entity = m_world.create();
         }
-        else
-        {
-            // Players and npcs with temporary ref ids and base ids (usually random events)
-            pNpc = TESNPC::Create(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
-            FaceGenSystem::Setup(m_world, *entity, acMessage.FaceTints);
-        }
-
-        // The engine builds this body on a later tick, and SetRemoteFaceGenForce has
-        // to be in effect before it does.
-        SetRemoteFaceGenForce(true);
-
-        pActor = Actor::Create(pNpc);
-    }
-    else
-    {
-        const uint32_t cActorId = World::Get().GetModSystem().GetGameId(acMessage.FormId);
-
-        auto waitingView = m_world.view<FormIdComponent, WaitingForAssignmentComponent>();
-        const auto waitingItor = std::find_if(std::begin(waitingView), std::end(waitingView), [waitingView, cActorId](auto entity) { return waitingView.get<FormIdComponent>(entity).Id == cActorId; });
-
-        if (waitingItor != std::end(waitingView))
-        {
-            spdlog::info("Character with form id {:X} already has a spawn request in progress.", cActorId);
-            return;
-        }
-
-        auto* const pForm = TESForm::GetById(cActorId);
-        pActor = Cast<Actor>(pForm);
 
         if (!pActor)
         {
-            spdlog::error("Failed to retrieve Actor {:X}, it will not be spawned, possibly missing mod", cActorId);
-            spdlog::error("\tForm : {:X}", pForm ? pForm->formID : 0);
+            spdlog::error("Actor object {:X} could not be created.", acMessage.ServerId);
             return;
         }
 
-        const auto view = m_world.view<FormIdComponent>();
-        const auto itor = std::find_if(std::begin(view), std::end(view), [cActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == cActorId; });
+        spdlog::info("CharacterSpawnRequest, server id: {:X}, form id: {:X}", acMessage.ServerId, pActor->formID);
 
-        if (itor != std::end(view))
-            entity = *itor;
-        else
-            entity = m_world.create();
-    }
+        // Pending reconciliation re-enables the actor after applying the owner's pick.
+        if (pActor->IsDisabled() && pActor->GetExtension()->Reconciliation != ActorExtension::ReconciliationStage::WaitingForDisable)
+        {
+            spdlog::warn("Disabled actor is being re-enabled: {:X}", pActor->formID);
+            pActor->EnableImpl();
+        }
 
-    if (!pActor)
-    {
-        spdlog::error("Actor object {:X} could not be created.", acMessage.ServerId);
-        return;
-    }
+        pActor->GetExtension()->SetRemote(true);
 
-    spdlog::info("CharacterSpawnRequest, server id: {:X}, form id: {:X}", acMessage.ServerId, pActor->formID);
+        pActor->rotation.x = acMessage.Rotation.x;
+        pActor->rotation.z = acMessage.Rotation.y;
 
-    // Pending reconciliation re-enables the actor after applying the owner's pick.
-    if (pActor->IsDisabled() && pActor->GetExtension()->Reconciliation != ActorExtension::ReconciliationStage::WaitingForDisable)
-    {
-        spdlog::warn("Disabled actor is being re-enabled: {:X}", pActor->formID);
-        pActor->EnableImpl();
-    }
-
-    pActor->GetExtension()->SetRemote(true);
-
-    pActor->rotation.x = acMessage.Rotation.x;
-    pActor->rotation.z = acMessage.Rotation.y;
-
-    // The player is null on the main menu and while a save is loading, where a
-    // spawn request can already arrive; the cell is only the anchor for MoveTo.
-    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        pActor->MoveTo(pPlayer->GetParentCellEx(), acMessage.Position);
-
-    pActor->SetActorValues(acMessage.InitialActorValues);
-
-    pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
-    if (acMessage.IsPlayer)
-    {
-        pActor->SetIgnoreFriendlyHit(true);
-        pActor->SetPlayerRespawnMode();
-        m_world.emplace_or_replace<PlayerComponent>(*entity, acMessage.PlayerId);
-    }
-
-    if (pActor->IsDead() != acMessage.IsDead)
-        acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
-
-    spdlog::info("Spawn Request Is summon {}", acMessage.IsPlayerSummon);
-
-    if (acMessage.IsPlayerSummon)
-    {
-        // Prevents remote summons agroing other players.
+        // The player is null on the main menu and while a save is loading, where a
+        // spawn request can already arrive; the cell is only the anchor for MoveTo.
         if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-            pActor->SetCommandingActor(pPlayer->GetHandle());
+            pActor->MoveTo(pPlayer->GetParentCellEx(), acMessage.Position);
+
+        pActor->SetActorValues(acMessage.InitialActorValues);
+
+        pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
+        if (acMessage.IsPlayer)
+        {
+            pActor->SetIgnoreFriendlyHit(true);
+            pActor->SetPlayerRespawnMode();
+            m_world.emplace_or_replace<PlayerComponent>(*entity, acMessage.PlayerId);
+        }
+
+        if (pActor->IsDead() != acMessage.IsDead)
+            acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
+
+        spdlog::info("Spawn Request Is summon {}", acMessage.IsPlayerSummon);
+
+        if (acMessage.IsPlayerSummon)
+        {
+            // Prevents remote summons agroing other players.
+            if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+                pActor->SetCommandingActor(pPlayer->GetHandle());
+        }
+
+        // Static references arrive with their own locally rolled leveled pick; conform to the owner's.
+        if (acMessage.FormId != GameId{})
+            ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+
+        m_world.emplace_or_replace<RemoteComponent>(*entity, acMessage.ServerId, pActor->formID, acMessage.OwnershipEpoch);
+
+        auto& interpolationComponent = InterpolationSystem::Setup(m_world, *entity);
+        interpolationComponent.Position = acMessage.Position;
+
+        AnimationSystem::Setup(m_world, *entity);
+
+        m_world.emplace_or_replace<WaitingFor3D>(*entity, acMessage);
+
+        auto& remoteAnimationComponent = m_world.get<RemoteAnimationComponent>(*entity);
+
+        AnimationSystem::AddActionsForReplay(remoteAnimationComponent, acMessage.ActionsToReplay);
+
+    #if (!IS_MASTER)
+        m_world.emplace_or_replace<ReplayedActionsDebugComponent>(*entity, acMessage.ActionsToReplay);
+    #endif
     }
-
-    // Static references arrive with their own locally rolled leveled pick; conform to the owner's.
-    if (acMessage.FormId != GameId{})
-        ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
-
-    m_world.emplace_or_replace<RemoteComponent>(*entity, acMessage.ServerId, pActor->formID, acMessage.OwnershipEpoch);
-
-    auto& interpolationComponent = InterpolationSystem::Setup(m_world, *entity);
-    interpolationComponent.Position = acMessage.Position;
-
-    AnimationSystem::Setup(m_world, *entity);
-
-    m_world.emplace_or_replace<WaitingFor3D>(*entity, acMessage);
-
-    auto& remoteAnimationComponent = m_world.get<RemoteAnimationComponent>(*entity);
-
-    AnimationSystem::AddActionsForReplay(remoteAnimationComponent, acMessage.ActionsToReplay);
-
-#if (!IS_MASTER)
-    m_world.emplace_or_replace<ReplayedActionsDebugComponent>(*entity, acMessage.ActionsToReplay);
-#endif
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnCharacterSpawn");
+    }
 }
 
 void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest& acMessage) const noexcept
 {
-    if (acMessage.Updates.empty())
-        return;
-
-    auto view = m_world.view<RemoteComponent, InterpolationComponent, RemoteAnimationComponent>();
-
-    // Index the view once instead of scanning it per entry. The scan made this
-    // O(updates x entities) on the movement path, and a busy cell puts one entry
-    // per actor in range into every packet.
-    TiltedPhoques::Map<uint32_t, entt::entity> byServerId;
-    for (auto entity : view)
-        byServerId[view.get<RemoteComponent>(entity).Id] = entity;
-
-    for (const auto& [serverId, update] : acMessage.Updates)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        const auto itor = byServerId.find(serverId);
+        if (acMessage.Updates.empty())
+            return;
 
-        if (itor == std::end(byServerId))
-            continue;
+        auto view = m_world.view<RemoteComponent, InterpolationComponent, RemoteAnimationComponent>();
 
-        const auto entity = itor->second;
-        auto& interpolationComponent = view.get<InterpolationComponent>(entity);
-        auto& animationComponent = view.get<RemoteAnimationComponent>(entity);
-        const auto& movement = update.UpdatedMovement;
+        // Index the view once instead of scanning it per entry. The scan made this
+        // O(updates x entities) on the movement path, and a busy cell puts one entry
+        // per actor in range into every packet.
+        TiltedPhoques::Map<uint32_t, entt::entity> byServerId;
+        for (auto entity : view)
+            byServerId[view.get<RemoteComponent>(entity).Id] = entity;
 
-        InterpolationComponent::TimePoint point;
-        point.Tick = acMessage.Tick;
-        point.Position = movement.Position;
-        point.Rotation = {movement.Rotation.x, 0.f, movement.Rotation.y};
-        point.Variables = movement.Variables;
-        point.Direction = movement.Direction;
-
-        InterpolationSystem::AddPoint(interpolationComponent, point);
-
-        for (const auto& action : update.ActionEvents)
+        for (const auto& [serverId, update] : acMessage.Updates)
         {
-            animationComponent.TimePoints.push_back(action);
+            const auto itor = byServerId.find(serverId);
+
+            if (itor == std::end(byServerId))
+                continue;
+
+            const auto entity = itor->second;
+            auto& interpolationComponent = view.get<InterpolationComponent>(entity);
+            auto& animationComponent = view.get<RemoteAnimationComponent>(entity);
+            const auto& movement = update.UpdatedMovement;
+
+            InterpolationComponent::TimePoint point;
+            point.Tick = acMessage.Tick;
+            point.Position = movement.Position;
+            point.Rotation = {movement.Rotation.x, 0.f, movement.Rotation.y};
+            point.Variables = movement.Variables;
+            point.Direction = movement.Direction;
+
+            InterpolationSystem::AddPoint(interpolationComponent, point);
+
+            for (const auto& action : update.ActionEvents)
+            {
+                animationComponent.TimePoints.push_back(action);
+            }
         }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnReferencesMoveRequest");
     }
 }
 
 void CharacterService::OnActionEvent(const ActionEvent& acActionEvent) const noexcept
 {
-    auto view = m_world.view<LocalAnimationComponent, FormIdComponent>();
-    const auto itor = std::find_if(std::begin(view), std::end(view), [id = acActionEvent.ActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (itor != std::end(view))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        auto& localComponent = view.get<LocalAnimationComponent>(*itor);
-
-        localComponent.Append(acActionEvent);
-    }
-    else if (m_transport.IsOnline())
-    {
-        // A `LocalAnimationComponent` is not attached yet, but the actor already exists and is running animations
-
-        auto view = m_world.view<FormIdComponent, EarlyAnimationBufferComponent>();
+        auto view = m_world.view<LocalAnimationComponent, FormIdComponent>();
         const auto itor = std::find_if(std::begin(view), std::end(view), [id = acActionEvent.ActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
 
         if (itor != std::end(view))
         {
-            view.get<EarlyAnimationBufferComponent>(*itor).Actions.push_back(acActionEvent);
+            auto& localComponent = view.get<LocalAnimationComponent>(*itor);
+
+            localComponent.Append(acActionEvent);
         }
+        else if (m_transport.IsOnline())
+        {
+            // A `LocalAnimationComponent` is not attached yet, but the actor already exists and is running animations
+
+            auto view = m_world.view<FormIdComponent, EarlyAnimationBufferComponent>();
+            const auto itor = std::find_if(std::begin(view), std::end(view), [id = acActionEvent.ActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+            if (itor != std::end(view))
+            {
+                view.get<EarlyAnimationBufferComponent>(*itor).Actions.push_back(acActionEvent);
+            }
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnActionEvent");
     }
 }
 
@@ -742,117 +827,129 @@ void CharacterService::OnFactionsChanges(const NotifyFactionsChanges& acEvent) c
 
 void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMessage) noexcept
 {
-    if (acMessage.OwnershipEpoch == 0)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn("Ignored ownership update for actor {:X} because the epoch is invalid", acMessage.ServerId);
-        return;
-    }
-
-    auto entity = Utils::FindEntityByServerId(acMessage.ServerId);
-    if (entity && !m_world.any_of<LocalComponent, RemoteComponent>(*entity))
-        entity.reset();
-
-    uint32_t currentEpoch = 0;
-    if (entity)
-    {
-        if (const auto* pLocalComponent = m_world.try_get<LocalComponent>(*entity))
-            currentEpoch = pLocalComponent->OwnershipEpoch;
-        else if (const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(*entity))
-            currentEpoch = pRemoteComponent->OwnershipEpoch;
-    }
-
-    if (currentEpoch != 0 && acMessage.OwnershipEpoch <= currentEpoch)
-    {
-        spdlog::debug("Ignored stale ownership update for actor {:X} at epoch {}; current epoch is {}", acMessage.ServerId, acMessage.OwnershipEpoch, currentEpoch);
-        return;
-    }
-
-    const bool isLocalOwner = acMessage.OwnerPlayerId == m_transport.GetLocalPlayerId();
-    if (!entity)
-    {
-        // A transfer does not contain enough form data to recreate an unknown actor. Decline so the server can try another loaded client.
-        if (isLocalOwner)
-            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
-        else
-            spdlog::debug("Ignored ownership update for unknown actor {:X} at epoch {}", acMessage.ServerId, acMessage.OwnershipEpoch);
-        return;
-    }
-
-    const entt::entity cEntity = *entity;
-    const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(cEntity);
-    Actor* pActor = pFormIdComponent ? Cast<Actor>(TESForm::GetById(pFormIdComponent->Id)) : nullptr;
-
-    // Preserve the accepted epoch's pick for actors that still need to be created.
-    if (auto* pWaitingFor3D = m_world.try_get<WaitingFor3D>(cEntity))
-        pWaitingFor3D->SpawnRequest.LeveledNpcPickId = acMessage.LeveledNpcPickId;
-
-    if (isLocalOwner)
-    {
-        if (!pFormIdComponent || !pActor || !pActor->GetNiNode())
+        if (acMessage.OwnershipEpoch == 0)
         {
-            uint32_t cachedRefId = pFormIdComponent ? pFormIdComponent->Id : 0;
-            if (const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(cEntity))
-                cachedRefId = pRemoteComponent->CachedRefId;
-
-            if (pActor)
-                pActor->GetExtension()->SetRemote(true);
-
-            m_world.remove<LocalAnimationComponent, LocalComponent>(cEntity);
-            if (m_world.all_of<RemoteComponent>(cEntity))
-                m_world.get<RemoteComponent>(cEntity).OwnershipEpoch = acMessage.OwnershipEpoch;
-            else if (cachedRefId != 0)
-                m_world.emplace<RemoteComponent>(cEntity, acMessage.ServerId, cachedRefId, acMessage.OwnershipEpoch);
-
-            spdlog::warn("Declined ownership of actor {:X} at epoch {} because the actor is not ready", acMessage.ServerId, acMessage.OwnershipEpoch);
-            DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+            spdlog::warn("Ignored ownership update for actor {:X} because the epoch is invalid", acMessage.ServerId);
             return;
         }
 
-        // Reconcile while hooks still treat the actor as remote/non-authoritative.
-        pActor->GetExtension()->SetRemote(true);
+        auto entity = Utils::FindEntityByServerId(acMessage.ServerId);
+        if (entity && !m_world.any_of<LocalComponent, RemoteComponent>(*entity))
+            entity.reset();
+
+        uint32_t currentEpoch = 0;
+        if (entity)
+        {
+            if (const auto* pLocalComponent = m_world.try_get<LocalComponent>(*entity))
+                currentEpoch = pLocalComponent->OwnershipEpoch;
+            else if (const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(*entity))
+                currentEpoch = pRemoteComponent->OwnershipEpoch;
+        }
+
+        if (currentEpoch != 0 && acMessage.OwnershipEpoch <= currentEpoch)
+        {
+            spdlog::debug("Ignored stale ownership update for actor {:X} at epoch {}; current epoch is {}", acMessage.ServerId, acMessage.OwnershipEpoch, currentEpoch);
+            return;
+        }
+
+        const bool isLocalOwner = acMessage.OwnerPlayerId == m_transport.GetLocalPlayerId();
+        if (!entity)
+        {
+            // A transfer does not contain enough form data to recreate an unknown actor. Decline so the server can try another loaded client.
+            if (isLocalOwner)
+                DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+            else
+                spdlog::debug("Ignored ownership update for unknown actor {:X} at epoch {}", acMessage.ServerId, acMessage.OwnershipEpoch);
+            return;
+        }
+
+        const entt::entity cEntity = *entity;
+        const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(cEntity);
+        Actor* pActor = pFormIdComponent ? Cast<Actor>(TESForm::GetById(pFormIdComponent->Id)) : nullptr;
+
+        // Preserve the accepted epoch's pick for actors that still need to be created.
+        if (auto* pWaitingFor3D = m_world.try_get<WaitingFor3D>(cEntity))
+            pWaitingFor3D->SpawnRequest.LeveledNpcPickId = acMessage.LeveledNpcPickId;
+
+        if (isLocalOwner)
+        {
+            if (!pFormIdComponent || !pActor || !pActor->GetNiNode())
+            {
+                uint32_t cachedRefId = pFormIdComponent ? pFormIdComponent->Id : 0;
+                if (const auto* pRemoteComponent = m_world.try_get<RemoteComponent>(cEntity))
+                    cachedRefId = pRemoteComponent->CachedRefId;
+
+                if (pActor)
+                    pActor->GetExtension()->SetRemote(true);
+
+                m_world.remove<LocalAnimationComponent, LocalComponent>(cEntity);
+                if (m_world.all_of<RemoteComponent>(cEntity))
+                    m_world.get<RemoteComponent>(cEntity).OwnershipEpoch = acMessage.OwnershipEpoch;
+                else if (cachedRefId != 0)
+                    m_world.emplace<RemoteComponent>(cEntity, acMessage.ServerId, cachedRefId, acMessage.OwnershipEpoch);
+
+                spdlog::warn("Declined ownership of actor {:X} at epoch {} because the actor is not ready", acMessage.ServerId, acMessage.OwnershipEpoch);
+                DeclineOwnership(acMessage.ServerId, acMessage.OwnershipEpoch);
+                return;
+            }
+
+            // Reconcile while hooks still treat the actor as remote/non-authoritative.
+            pActor->GetExtension()->SetRemote(true);
+            m_world.remove<LocalAnimationComponent, LocalComponent>(cEntity);
+            m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, pFormIdComponent->Id, acMessage.OwnershipEpoch);
+
+            ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, acMessage.CurrentActorData, true, true);
+            ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+
+            DeleteRemoteEntityComponents(cEntity);
+            CacheSystem::Setup(m_world, cEntity, pActor);
+            m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
+            auto& localComponent = m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
+            localComponent.IsDead = acMessage.CurrentActorData.IsDead;
+            localComponent.IsWeaponDrawn = acMessage.CurrentActorData.IsWeaponDrawn;
+
+            // LocalComponent is installed only after canonical reconciliation is complete.
+            pActor->GetExtension()->SetRemote(false);
+            spdlog::info("Gained ownership of actor {:X} at epoch {}", acMessage.ServerId, acMessage.OwnershipEpoch);
+            return;
+        }
+
+        if (pActor)
+            pActor->GetExtension()->SetRemote(true);
+
         m_world.remove<LocalAnimationComponent, LocalComponent>(cEntity);
-        m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, pFormIdComponent->Id, acMessage.OwnershipEpoch);
 
-        ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, acMessage.CurrentActorData, true, true);
-        ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+        if (pFormIdComponent)
+        {
+            m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, pFormIdComponent->Id, acMessage.OwnershipEpoch);
 
-        DeleteRemoteEntityComponents(cEntity);
-        CacheSystem::Setup(m_world, cEntity, pActor);
-        m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
-        auto& localComponent = m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
-        localComponent.IsDead = acMessage.CurrentActorData.IsDead;
-        localComponent.IsWeaponDrawn = acMessage.CurrentActorData.IsWeaponDrawn;
+            if (!m_world.all_of<InterpolationComponent>(cEntity))
+                InterpolationSystem::Setup(m_world, cEntity);
+            if (!m_world.all_of<RemoteAnimationComponent>(cEntity))
+                AnimationSystem::Setup(m_world, cEntity);
+        }
+        else if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(cEntity))
+        {
+            pRemoteComponent->OwnershipEpoch = acMessage.OwnershipEpoch;
+        }
 
-        // LocalComponent is installed only after canonical reconciliation is complete.
-        pActor->GetExtension()->SetRemote(false);
-        spdlog::info("Gained ownership of actor {:X} at epoch {}", acMessage.ServerId, acMessage.OwnershipEpoch);
-        return;
+        ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, acMessage.CurrentActorData, pActor && pActor->GetNiNode(), false);
+        if (pActor)
+            ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
+
+        spdlog::info("Actor {:X} is now owned by player {:X} at epoch {}", acMessage.ServerId, acMessage.OwnerPlayerId, acMessage.OwnershipEpoch);
     }
-
-    if (pActor)
-        pActor->GetExtension()->SetRemote(true);
-
-    m_world.remove<LocalAnimationComponent, LocalComponent>(cEntity);
-
-    if (pFormIdComponent)
+    catch (...)
     {
-        m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, pFormIdComponent->Id, acMessage.OwnershipEpoch);
-
-        if (!m_world.all_of<InterpolationComponent>(cEntity))
-            InterpolationSystem::Setup(m_world, cEntity);
-        if (!m_world.all_of<RemoteAnimationComponent>(cEntity))
-            AnimationSystem::Setup(m_world, cEntity);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnOwnershipTransfer");
     }
-    else if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(cEntity))
-    {
-        pRemoteComponent->OwnershipEpoch = acMessage.OwnershipEpoch;
-    }
-
-    ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, acMessage.CurrentActorData, pActor && pActor->GetNiNode(), false);
-    if (pActor)
-        ApplyLeveledNpcPick(pActor, acMessage.LeveledNpcPickId);
-
-    spdlog::info("Actor {:X} is now owned by player {:X} at epoch {}", acMessage.ServerId, acMessage.OwnerPlayerId, acMessage.OwnershipEpoch);
 }
 
 void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage) const noexcept
@@ -878,212 +975,284 @@ void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage)
 
 void CharacterService::OnNotifyRespawn(const NotifyRespawn& acMessage) const noexcept
 {
-    auto view = m_world.view<FormIdComponent, RemoteComponent>();
-    const auto entityIt = std::find_if(view.begin(), view.end(), [view, id = acMessage.ActorId](auto aEntity) { return view.get<RemoteComponent>(aEntity).Id == id; });
-
-    if (entityIt == view.end())
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::error("Actor to respawn not found in: {:X}", acMessage.ActorId);
-        return;
+        auto view = m_world.view<FormIdComponent, RemoteComponent>();
+        const auto entityIt = std::find_if(view.begin(), view.end(), [view, id = acMessage.ActorId](auto aEntity) { return view.get<RemoteComponent>(aEntity).Id == id; });
+
+        if (entityIt == view.end())
+        {
+            spdlog::error("Actor to respawn not found in: {:X}", acMessage.ActorId);
+            return;
+        }
+
+        const auto cId = *entityIt;
+
+        auto& formIdComponent = view.get<FormIdComponent>(cId);
+        CancelServerAssignment(*entityIt, formIdComponent.Id);
+
+        m_world.remove<EarlyAnimationBufferComponent>(cId);
+
+        if (m_world.all_of<FormIdComponent>(cId))
+            m_world.remove<FormIdComponent>(cId);
+
+        if (m_world.orphan(cId))
+            m_world.destroy(cId);
+
+        RequestRespawn request;
+        request.ActorId = acMessage.ActorId;
+
+        m_transport.Send(request);
     }
-
-    const auto cId = *entityIt;
-
-    auto& formIdComponent = view.get<FormIdComponent>(cId);
-    CancelServerAssignment(*entityIt, formIdComponent.Id);
-
-    m_world.remove<EarlyAnimationBufferComponent>(cId);
-
-    if (m_world.all_of<FormIdComponent>(cId))
-        m_world.remove<FormIdComponent>(cId);
-
-    if (m_world.orphan(cId))
-        m_world.destroy(cId);
-
-    RequestRespawn request;
-    request.ActorId = acMessage.ActorId;
-
-    m_transport.Send(request);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnNotifyRespawn");
+    }
 }
 
 void CharacterService::OnBeastFormChange(const BeastFormChangeEvent& acEvent) const noexcept
 {
-    auto view = m_world.view<FormIdComponent>();
-
-    const auto it = std::find_if(view.begin(), view.end(), [view](auto entity) { return view.get<FormIdComponent>(entity).Id == 0x14; });
-
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
-    if (!serverIdRes.has_value())
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
-        return;
+        auto view = m_world.view<FormIdComponent>();
+
+        const auto it = std::find_if(view.begin(), view.end(), [view](auto entity) { return view.get<FormIdComponent>(entity).Id == 0x14; });
+
+        std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
+        if (!serverIdRes.has_value())
+        {
+            spdlog::error("{}: failed to find server id", __FUNCTION__);
+            return;
+        }
+
+        uint32_t serverId = serverIdRes.value();
+
+        RequestRespawn request;
+        request.ActorId = serverId;
+
+        Actor* pActor = Utils::GetByServerId<Actor>(serverId);
+        if (!pActor)
+        {
+            spdlog::warn(__FUNCTION__ ": could not find actor for server id {:X}", serverId);
+            return;
+        }
+
+        TESNPC* pNpc = Cast<TESNPC>(pActor->baseForm);
+        if (!pNpc)
+        {
+            spdlog::warn(__FUNCTION__ ": could not find actor baseform for server id {:X}", serverId);
+            return;
+        }
+
+        pNpc->Serialize(&request.AppearanceBuffer);
+        request.ChangeFlags = pNpc->GetChangeFlags();
+
+        m_transport.Send(request);
     }
-
-    uint32_t serverId = serverIdRes.value();
-
-    RequestRespawn request;
-    request.ActorId = serverId;
-
-    Actor* pActor = Utils::GetByServerId<Actor>(serverId);
-    if (!pActor)
+    catch (...)
     {
-        spdlog::warn(__FUNCTION__ ": could not find actor for server id {:X}", serverId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnBeastFormChange");
     }
-
-    TESNPC* pNpc = Cast<TESNPC>(pActor->baseForm);
-    if (!pNpc)
-    {
-        spdlog::warn(__FUNCTION__ ": could not find actor baseform for server id {:X}", serverId);
-        return;
-    }
-
-    pNpc->Serialize(&request.AppearanceBuffer);
-    request.ChangeFlags = pNpc->GetChangeFlags();
-
-    m_transport.Send(request);
 }
 
 void CharacterService::OnMountEvent(const MountEvent& acEvent) const noexcept
 {
-    auto view = m_world.view<FormIdComponent>();
-
-    const auto riderIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.RiderID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (riderIt == std::end(view))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn("Rider not found, form id: {:X}", acEvent.RiderID);
-        return;
+        auto view = m_world.view<FormIdComponent>();
+
+        const auto riderIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.RiderID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+        if (riderIt == std::end(view))
+        {
+            spdlog::warn("Rider not found, form id: {:X}", acEvent.RiderID);
+            return;
+        }
+
+        const entt::entity cRiderEntity = *riderIt;
+        const auto* pRiderLocalComponent = m_world.try_get<LocalComponent>(cRiderEntity);
+        if (!pRiderLocalComponent)
+            return;
+
+        const auto mountIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.MountID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+        if (mountIt == std::end(view))
+        {
+            spdlog::warn("Mount not found, form id: {:X}", acEvent.MountID);
+            return;
+        }
+
+        const entt::entity cMountEntity = *mountIt;
+
+        uint32_t mountServerId = 0;
+        uint32_t mountOwnershipEpoch = 0;
+        if (const auto* pMountLocalComponent = m_world.try_get<LocalComponent>(cMountEntity))
+        {
+            mountServerId = pMountLocalComponent->Id;
+            mountOwnershipEpoch = pMountLocalComponent->OwnershipEpoch;
+        }
+        else if (const auto* pMountRemoteComponent = m_world.try_get<RemoteComponent>(cMountEntity))
+        {
+            mountServerId = pMountRemoteComponent->Id;
+            mountOwnershipEpoch = pMountRemoteComponent->OwnershipEpoch;
+        }
+        else
+            return;
+
+        MountRequest request{};
+        request.RiderId = pRiderLocalComponent->Id;
+        request.RiderOwnershipEpoch = pRiderLocalComponent->OwnershipEpoch;
+        request.MountId = mountServerId;
+        request.MountOwnershipEpoch = mountOwnershipEpoch;
+
+        m_transport.Send(request);
     }
-
-    const entt::entity cRiderEntity = *riderIt;
-    const auto* pRiderLocalComponent = m_world.try_get<LocalComponent>(cRiderEntity);
-    if (!pRiderLocalComponent)
-        return;
-
-    const auto mountIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.MountID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (mountIt == std::end(view))
+    catch (...)
     {
-        spdlog::warn("Mount not found, form id: {:X}", acEvent.MountID);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnMountEvent");
     }
-
-    const entt::entity cMountEntity = *mountIt;
-
-    uint32_t mountServerId = 0;
-    uint32_t mountOwnershipEpoch = 0;
-    if (const auto* pMountLocalComponent = m_world.try_get<LocalComponent>(cMountEntity))
-    {
-        mountServerId = pMountLocalComponent->Id;
-        mountOwnershipEpoch = pMountLocalComponent->OwnershipEpoch;
-    }
-    else if (const auto* pMountRemoteComponent = m_world.try_get<RemoteComponent>(cMountEntity))
-    {
-        mountServerId = pMountRemoteComponent->Id;
-        mountOwnershipEpoch = pMountRemoteComponent->OwnershipEpoch;
-    }
-    else
-        return;
-
-    MountRequest request{};
-    request.RiderId = pRiderLocalComponent->Id;
-    request.RiderOwnershipEpoch = pRiderLocalComponent->OwnershipEpoch;
-    request.MountId = mountServerId;
-    request.MountOwnershipEpoch = mountOwnershipEpoch;
-
-    m_transport.Send(request);
 }
 
 void CharacterService::OnNotifyMount(const NotifyMount& acMessage) const noexcept
 {
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-
-    const auto riderIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.RiderId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (riderIt == std::end(remoteView))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn("Rider with remote id {:X} not found.", acMessage.RiderId);
-        return;
+        auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
+
+        const auto riderIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.RiderId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+
+        if (riderIt == std::end(remoteView))
+        {
+            spdlog::warn("Rider with remote id {:X} not found.", acMessage.RiderId);
+            return;
+        }
+
+        auto& riderFormIdComponent = remoteView.get<FormIdComponent>(*riderIt);
+        TESForm* pRiderForm = TESForm::GetById(riderFormIdComponent.Id);
+        Actor* pRider = Cast<Actor>(pRiderForm);
+        if (!pRider)
+            return;
+
+        const auto mountIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.MountId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+        if (mountIt == std::end(remoteView))
+        {
+            spdlog::warn("Cannot apply mount update because mount {:X} is unavailable", acMessage.MountId);
+            return;
+        }
+
+        const auto& mountFormIdComponent = remoteView.get<FormIdComponent>(*mountIt);
+        Actor* pMount = Cast<Actor>(TESForm::GetById(mountFormIdComponent.Id));
+        if (!pMount)
+            return;
+
+        pRider->InitiateMountPackage(pMount);
     }
-
-    auto& riderFormIdComponent = remoteView.get<FormIdComponent>(*riderIt);
-    TESForm* pRiderForm = TESForm::GetById(riderFormIdComponent.Id);
-    Actor* pRider = Cast<Actor>(pRiderForm);
-    if (!pRider)
-        return;
-
-    const auto mountIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.MountId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-    if (mountIt == std::end(remoteView))
+    catch (...)
     {
-        spdlog::warn("Cannot apply mount update because mount {:X} is unavailable", acMessage.MountId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnNotifyMount");
     }
-
-    const auto& mountFormIdComponent = remoteView.get<FormIdComponent>(*mountIt);
-    Actor* pMount = Cast<Actor>(TESForm::GetById(mountFormIdComponent.Id));
-    if (!pMount)
-        return;
-
-    pRider->InitiateMountPackage(pMount);
 }
 
 void CharacterService::OnInitPackageEvent(const InitPackageEvent& acEvent) const noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    auto view = m_world.view<FormIdComponent>();
-
-    const auto actorIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.ActorId, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (actorIt == std::end(view))
-        return;
-
-    const entt::entity cActorEntity = *actorIt;
-
-    std::optional<uint32_t> actorServerIdRes = Utils::GetServerId(cActorEntity);
-    if (!actorServerIdRes.has_value())
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
-        return;
+        if (!m_transport.IsConnected())
+            return;
+
+        auto view = m_world.view<FormIdComponent>();
+
+        const auto actorIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.ActorId, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
+
+        if (actorIt == std::end(view))
+            return;
+
+        const entt::entity cActorEntity = *actorIt;
+
+        std::optional<uint32_t> actorServerIdRes = Utils::GetServerId(cActorEntity);
+        if (!actorServerIdRes.has_value())
+        {
+            spdlog::error("{}: failed to find server id", __FUNCTION__);
+            return;
+        }
+
+        NewPackageRequest request;
+        request.ActorId = actorServerIdRes.value();
+        if (!m_world.GetModSystem().GetServerModId(acEvent.PackageId, request.PackageId.ModId, request.PackageId.BaseId))
+            return;
+
+        m_transport.Send(request);
     }
-
-    NewPackageRequest request;
-    request.ActorId = actorServerIdRes.value();
-    if (!m_world.GetModSystem().GetServerModId(acEvent.PackageId, request.PackageId.ModId, request.PackageId.BaseId))
-        return;
-
-    m_transport.Send(request);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnInitPackageEvent");
+    }
 }
 
 void CharacterService::OnNotifyNewPackage(const NotifyNewPackage& acMessage) const noexcept
 {
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ActorId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (remoteIt == std::end(remoteView))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn("Actor for package with remote id {:X} not found.", acMessage.ActorId);
-        return;
+        auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
+        const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ActorId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+
+        if (remoteIt == std::end(remoteView))
+        {
+            spdlog::warn("Actor for package with remote id {:X} not found.", acMessage.ActorId);
+            return;
+        }
+
+        auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
+
+        const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
+        Actor* pActor = Cast<Actor>(pForm);
+
+        const uint32_t cPackageFormId = World::Get().GetModSystem().GetGameId(acMessage.PackageId);
+        const TESForm* pPackageForm = TESForm::GetById(cPackageFormId);
+        if (!pPackageForm)
+        {
+            spdlog::warn("Actor package not found, base id: {:X}, mod id: {:X}", acMessage.PackageId.BaseId, acMessage.PackageId.ModId);
+            return;
+        }
+
+        TESPackage* pPackage = Cast<TESPackage>(pPackageForm);
+
+        pActor->SetPackage(pPackage);
     }
-
-    auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
-
-    const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
-    Actor* pActor = Cast<Actor>(pForm);
-
-    const uint32_t cPackageFormId = World::Get().GetModSystem().GetGameId(acMessage.PackageId);
-    const TESForm* pPackageForm = TESForm::GetById(cPackageFormId);
-    if (!pPackageForm)
+    catch (...)
     {
-        spdlog::warn("Actor package not found, base id: {:X}, mod id: {:X}", acMessage.PackageId.BaseId, acMessage.PackageId.ModId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnNotifyNewPackage");
     }
-
-    TESPackage* pPackage = Cast<TESPackage>(pPackageForm);
-
-    pActor->SetPackage(pPackage);
 }
 
 void CharacterService::OnAddExperienceEvent(const AddExperienceEvent& acEvent) noexcept
@@ -1105,156 +1274,216 @@ void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMess
 
 void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
-    auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.ActorID](auto entity) {
-        return view.get<FormIdComponent>(entity).Id == formId;
-    });
-
-    if (entityIt == view.end())
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::debug(__FUNCTION__ ": failed to find speaking Actor's FormIdComponent, formId {:X}, isLeader {}", acEvent.ActorID, isLeader);
-        return;
-    }
+        if (!m_transport.IsConnected())
+            return;
 
-    auto serverIdRes = Utils::GetServerId(*entityIt);
-    if (!serverIdRes)
-    {
-        spdlog::debug(__FUNCTION__ ": server id not found for formId {:X}, isLeader {}", acEvent.ActorID, isLeader);
-        return;
-    }
+        const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
+        auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+        auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.ActorID](auto entity) {
+            return view.get<FormIdComponent>(entity).Id == formId;
+        });
+
+        if (entityIt == view.end())
+        {
+            spdlog::debug(__FUNCTION__ ": failed to find speaking Actor's FormIdComponent, formId {:X}, isLeader {}", acEvent.ActorID, isLeader);
+            return;
+        }
+
+        auto serverIdRes = Utils::GetServerId(*entityIt);
+        if (!serverIdRes)
+        {
+            spdlog::debug(__FUNCTION__ ": server id not found for formId {:X}, isLeader {}", acEvent.ActorID, isLeader);
+            return;
+        }
     
-    Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.ActorID));
-    if (!pActor)
-        return;
+        Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.ActorID));
+        if (!pActor)
+            return;
 
-    bool isLocal = pActor->GetExtension()->IsLocal();
-    bool isInScene = pActor->IsInScene();
-    auto sceneId = isInScene ? pActor->GetCurrentScene()->formID : 0;
-    bool isTaskDialogue = pActor->IsTalking() && pActor->IsInDialogueWithPlayer();
-    bool isSpeakingInScene = pActor->IsSpeakingInScene();
+        bool isLocal = pActor->GetExtension()->IsLocal();
+        bool isInScene = pActor->IsInScene();
+        auto sceneId = isInScene ? pActor->GetCurrentScene()->formID : 0;
+        bool isTaskDialogue = pActor->IsTalking() && pActor->IsInDialogueWithPlayer();
+        bool isSpeakingInScene = pActor->IsSpeakingInScene();
 
-    const bool willSync = isTaskDialogue || isLocal && !isInScene;
+        const bool willSync = isTaskDialogue || isLocal && !isInScene;
 
-    spdlog::debug(
-        __FUNCTION__ ": isLocal {}, isInScene {}, isSpeakingInScene {}, isTaskDialogue {}, willSync {}, scene {:X}, Actor "
-                     "{:X}, serverId {:X}, isLeader {}, name {}, soundFile {}",
-        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader,
-        pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>", acEvent.VoiceFile);
+        spdlog::debug(
+            __FUNCTION__ ": isLocal {}, isInScene {}, isSpeakingInScene {}, isTaskDialogue {}, willSync {}, scene {:X}, Actor "
+                         "{:X}, serverId {:X}, isLeader {}, name {}, soundFile {}",
+            isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader,
+            pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>", acEvent.VoiceFile);
 
-    if (willSync)
+        if (willSync)
+        {
+            DialogueRequest request{};
+            request.ServerId = serverIdRes.value();
+            request.SoundFilename = acEvent.VoiceFile;
+
+            m_transport.Send(request);
+        }
+    }
+    catch (...)
     {
-        DialogueRequest request{};
-        request.ServerId = serverIdRes.value();
-        request.SoundFilename = acEvent.VoiceFile;
-
-        m_transport.Send(request);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnDialogueEvent");
     }
 }
 
 void CharacterService::OnNotifyDialogue(const NotifyDialogue& acMessage) noexcept
 {
-    // A member can initiate dialogue with an NPC owned by this client.
-    const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
-    if (!pActor)
-        return;
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
+    {
+        // A member can initiate dialogue with an NPC owned by this client.
+        const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
+        Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
+        if (!pActor)
+            return;
 
-    spdlog::debug(
-        __FUNCTION__ ": playing dialogue Actor {:X}, serverId {:X}, isLeader {}, name {}, soundFile {}", pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm->GetName(),
-        acMessage.SoundFilename);
+        spdlog::debug(
+            __FUNCTION__ ": playing dialogue Actor {:X}, serverId {:X}, isLeader {}, name {}, soundFile {}", pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm->GetName(),
+            acMessage.SoundFilename);
 
-    pActor->StopCurrentDialogue(true);
-    pActor->SpeakSound(acMessage.SoundFilename.c_str());
+        pActor->StopCurrentDialogue(true);
+        pActor->SpeakSound(acMessage.SoundFilename.c_str());
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnNotifyDialogue");
+    }
 }
 
 void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
-        return;
-
-    const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
-    auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.SpeakerID](auto entity) { return view.get<FormIdComponent>(entity).Id == formId; });
-
-    if (entityIt == view.end())
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::debug(__FUNCTION__ ": failed to find subtitle Actor's FormIdComponent, formId {:X}, isLeader {}", acEvent.SpeakerID, isLeader);
-        return;
+        if (!m_transport.IsConnected())
+            return;
+
+        const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
+        auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+        auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.SpeakerID](auto entity) { return view.get<FormIdComponent>(entity).Id == formId; });
+
+        if (entityIt == view.end())
+        {
+            spdlog::debug(__FUNCTION__ ": failed to find subtitle Actor's FormIdComponent, formId {:X}, isLeader {}", acEvent.SpeakerID, isLeader);
+            return;
+        }
+
+        auto serverIdRes = Utils::GetServerId(*entityIt);
+        if (!serverIdRes)
+        {
+            spdlog::debug(__FUNCTION__ ": server id not found for formId {:X}, isLeader {}", acEvent.SpeakerID, isLeader);
+            return;
+        }
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.SpeakerID));
+        if (!pActor)
+            return;
+
+        bool isLocal = pActor->GetExtension()->IsLocal();
+        bool isInScene = pActor->IsInScene();
+        auto isSpeakingInScene = pActor->IsSpeakingInScene();
+        auto sceneId = isInScene ? pActor->GetCurrentScene()->formID : 0;
+        bool isTaskDialogue = pActor->IsTalking() && pActor->IsInDialogueWithPlayer();
+
+        const bool willSync = isTaskDialogue || isLocal && !isInScene;
+
+        spdlog::debug(
+            __FUNCTION__ ": isLocal {}, isInScene {}, isSpeakingInScene {}, isTaskDialogue {}, willSync {}, scene {:X}, Actor "
+                         "{:X}, serverId {:X}, isLeader {}, name {}, subtitle {}",
+            isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader,
+            pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>", acEvent.Text);
+
+        if (willSync)
+        {
+            SubtitleRequest request{};
+            request.ServerId = serverIdRes.value();
+            request.Text = acEvent.Text;
+            request.TopicFormId = acEvent.TopicFormID;
+            m_transport.Send(request);
+        }
     }
-
-    auto serverIdRes = Utils::GetServerId(*entityIt);
-    if (!serverIdRes)
+    catch (...)
     {
-        spdlog::debug(__FUNCTION__ ": server id not found for formId {:X}, isLeader {}", acEvent.SpeakerID, isLeader);
-        return;
-    }
-
-    Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.SpeakerID));
-    if (!pActor)
-        return;
-
-    bool isLocal = pActor->GetExtension()->IsLocal();
-    bool isInScene = pActor->IsInScene();
-    auto isSpeakingInScene = pActor->IsSpeakingInScene();
-    auto sceneId = isInScene ? pActor->GetCurrentScene()->formID : 0;
-    bool isTaskDialogue = pActor->IsTalking() && pActor->IsInDialogueWithPlayer();
-
-    const bool willSync = isTaskDialogue || isLocal && !isInScene;
-
-    spdlog::debug(
-        __FUNCTION__ ": isLocal {}, isInScene {}, isSpeakingInScene {}, isTaskDialogue {}, willSync {}, scene {:X}, Actor "
-                     "{:X}, serverId {:X}, isLeader {}, name {}, subtitle {}",
-        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader,
-        pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>", acEvent.Text);
-
-    if (willSync)
-    {
-        SubtitleRequest request{};
-        request.ServerId = serverIdRes.value();
-        request.Text = acEvent.Text;
-        request.TopicFormId = acEvent.TopicFormID;
-        m_transport.Send(request);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnSubtitleEvent");
     }
 }
 
 void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcept
 {
-    const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
-    if (!pActor)
-        return;
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
+    {
+        const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
+        Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
+        if (!pActor)
+            return;
 
-    // This is only for fallout 4
-    TESTopicInfo* pInfo = nullptr;
-    pInfo = Cast<TESTopicInfo>(TESForm::GetById(acMessage.TopicFormId));
+        // This is only for fallout 4
+        TESTopicInfo* pInfo = nullptr;
+        pInfo = Cast<TESTopicInfo>(TESForm::GetById(acMessage.TopicFormId));
 
-    spdlog::debug(__FUNCTION__ ": showing subtitle Actor {:X}, serverId {:X}, isLeader {}, name {}, message: {}",
-                  pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>",
-                  acMessage.Text);
+        spdlog::debug(__FUNCTION__ ": showing subtitle Actor {:X}, serverId {:X}, isLeader {}, name {}, message: {}",
+                      pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>",
+                      acMessage.Text);
 
-    SubtitleManager::Get()->HideSubtitle(pActor);   // Subtitle conflicts can hang, this makes it beter at least.
-    SubtitleManager::Get()->ShowSubtitle(pActor, acMessage.Text.c_str(), pInfo);
+        SubtitleManager::Get()->HideSubtitle(pActor);   // Subtitle conflicts can hang, this makes it beter at least.
+        SubtitleManager::Get()->ShowSubtitle(pActor, acMessage.Text.c_str(), pInfo);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnNotifySubtitle");
+    }
 }
 
 void CharacterService::OnNotifyActorTeleport(const NotifyActorTeleport& acMessage) noexcept
 {
-    auto& modSystem = m_world.GetModSystem();
-
-    const uint32_t cActorId = World::Get().GetModSystem().GetGameId(acMessage.FormId);
-    Actor* pActor = Cast<Actor>(TESForm::GetById(cActorId));
-    if (!pActor)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::error(__FUNCTION__ ": failed to retrieve actor to teleport.");
-        return;
+        auto& modSystem = m_world.GetModSystem();
+
+        const uint32_t cActorId = World::Get().GetModSystem().GetGameId(acMessage.FormId);
+        Actor* pActor = Cast<Actor>(TESForm::GetById(cActorId));
+        if (!pActor)
+        {
+            spdlog::error(__FUNCTION__ ": failed to retrieve actor to teleport.");
+            return;
+        }
+
+        MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
+
+        spdlog::info("Successfully teleported actor, form id: {:X}, world space: {:X}, cell: {:X}, position: ({}, {}, {})", pActor->formID, acMessage.WorldSpaceId.BaseId, acMessage.CellId.BaseId, acMessage.Position.x, acMessage.Position.y, acMessage.Position.z);
     }
-
-    MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
-
-    spdlog::info("Successfully teleported actor, form id: {:X}, world space: {:X}, cell: {:X}, position: ({}, {}, {})", pActor->formID, acMessage.WorldSpaceId.BaseId, acMessage.CellId.BaseId, acMessage.Position.x, acMessage.Position.y, acMessage.Position.z);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::OnNotifyActorTeleport");
+    }
 }
 
 void CharacterService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
@@ -1272,399 +1501,460 @@ void CharacterService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexc
 
 void CharacterService::MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept
 {
-    TESObjectCELL* pCell = nullptr;
-    if (!acWorldSpaceId)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        const uint32_t cCellId = m_world.GetModSystem().GetGameId(acCellId);
-        pCell = Cast<TESObjectCELL>(TESForm::GetById(cCellId));
-    }
-    // In case of lazy-loading of exterior cells
-    else
-    {
-        const uint32_t cWorldSpaceId = m_world.GetModSystem().GetGameId(acWorldSpaceId);
-        TESWorldSpace* const pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(cWorldSpaceId));
-        if (pWorldSpace)
+        TESObjectCELL* pCell = nullptr;
+        if (!acWorldSpaceId)
         {
-            GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acPosition);
-            pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
+            const uint32_t cCellId = m_world.GetModSystem().GetGameId(acCellId);
+            pCell = Cast<TESObjectCELL>(TESForm::GetById(cCellId));
         }
-    }
+        // In case of lazy-loading of exterior cells
+        else
+        {
+            const uint32_t cWorldSpaceId = m_world.GetModSystem().GetGameId(acWorldSpaceId);
+            TESWorldSpace* const pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(cWorldSpaceId));
+            if (pWorldSpace)
+            {
+                GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acPosition);
+                pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
+            }
+        }
 
-    if (!pCell)
+        if (!pCell)
+        {
+            spdlog::error(__FUNCTION__ ": failed to fetch cell to teleport, actor: {:X}, worldspace: {:X}, cell: {:X}, position: {}, {}, {}", apActor->formID, acWorldSpaceId.BaseId, acCellId.BaseId, acPosition.x, acPosition.y, acPosition.z);
+            return;
+        }
+
+        apActor->MoveTo(pCell, acPosition);
+    }
+    catch (...)
     {
-        spdlog::error(__FUNCTION__ ": failed to fetch cell to teleport, actor: {:X}, worldspace: {:X}, cell: {:X}, position: {}, {}, {}", apActor->formID, acWorldSpaceId.BaseId, acCellId.BaseId, acPosition.x, acPosition.y, acPosition.z);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::MoveActor");
     }
-
-    apActor->MoveTo(pCell, acPosition);
 }
 
 void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
 {
-    if (!m_transport.IsOnline())
-        return;
-
-    auto& formIdComponent = m_world.get<FormIdComponent>(aEntity);
-
-    Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-    if (!pActor)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn(__FUNCTION__ ": actor for new entity not found, form id: {:X}", formIdComponent.Id);
-        return;
-    }
+        if (!m_transport.IsOnline())
+            return;
 
-    if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity); pRemoteComponent)
-    {
-        // TODO(cosideci): don't just take all actors (i.e. from other parties),
-        // maybe check it server side, add a variable to the request.
-        if (m_world.GetPartyService().IsLeader() && !pActor->IsTemporary() && !pActor->IsMount())
+        auto& formIdComponent = m_world.get<FormIdComponent>(aEntity);
+
+        Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+        if (!pActor)
         {
-            spdlog::info("Sending ownership claim for actor {:X} with server id {:X}", pActor->formID, pRemoteComponent->Id);
-
-            RequestOwnership(pActor->formID, pRemoteComponent->Id, aEntity);
+            spdlog::warn(__FUNCTION__ ": actor for new entity not found, form id: {:X}", formIdComponent.Id);
+            return;
         }
-        else
-            spdlog::debug("New entity remotely managed, form id: {:X}, server id: {:X}", pActor->formID, pRemoteComponent->Id);
 
-        return;
+        if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity); pRemoteComponent)
+        {
+            // TODO(cosideci): don't just take all actors (i.e. from other parties),
+            // maybe check it server side, add a variable to the request.
+            if (m_world.GetPartyService().IsLeader() && !pActor->IsTemporary() && !pActor->IsMount())
+            {
+                spdlog::info("Sending ownership claim for actor {:X} with server id {:X}", pActor->formID, pRemoteComponent->Id);
+
+                RequestOwnership(pActor->formID, pRemoteComponent->Id, aEntity);
+            }
+            else
+                spdlog::debug("New entity remotely managed, form id: {:X}, server id: {:X}", pActor->formID, pRemoteComponent->Id);
+
+            return;
+        }
+
+        if (m_world.any_of<RemoteComponent, LocalComponent, WaitingForAssignmentComponent>(aEntity))
+            return;
+
+        CacheSystem::Setup(World::Get(), aEntity, pActor);
+
+        RequestServerAssignment(aEntity);
     }
-
-    if (m_world.any_of<RemoteComponent, LocalComponent, WaitingForAssignmentComponent>(aEntity))
-        return;
-
-    CacheSystem::Setup(World::Get(), aEntity, pActor);
-
-    RequestServerAssignment(aEntity);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::ProcessNewEntity");
+    }
 }
 
 void CharacterService::RequestServerAssignment(const entt::entity aEntity) const noexcept
 {
-    if (!m_transport.IsOnline())
-        return;
-
-    static uint32_t sCookieSeed = 0;
-
-    const auto& formIdComponent = m_world.get<FormIdComponent>(aEntity);
-
-    auto* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-    if (!pActor)
-        return;
-
-    TESNPC* pNpc = Cast<TESNPC>(pActor->baseForm);
-    if (!pNpc)
-        return;
-
-    AssignCharacterRequest message{};
-
-    message.Cookie = sCookieSeed;
-
-    if (!m_world.GetModSystem().GetServerModId(formIdComponent.Id, message.ReferenceId))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::error("Server reference id not found for form id {:X}", formIdComponent.Id);
-        return;
-    }
-
-    const auto* pParentCell = pActor->GetParentCellEx();
-    const uint32_t cParentCellFormId = pParentCell ? pParentCell->formID : 0;
-
-    if (!m_world.GetModSystem().GetServerModId(cParentCellFormId, message.CellId))
-    {
-        spdlog::error("Server cell id not found for cell id {:X}", cParentCellFormId);
-        return;
-    }
-
-    if (const auto pWorldSpace = pActor->GetWorldSpace())
-    {
-        if (!m_world.GetModSystem().GetServerModId(pWorldSpace->formID, message.WorldSpaceId))
-            return;
-    }
-
-    message.Position = pActor->position;
-    message.Rotation.x = pActor->rotation.x;
-    message.Rotation.y = pActor->rotation.z;
-
-    // Serialize the base form
-    const auto isPlayer = (formIdComponent.Id == 0x14);
-    const auto isTemporary = pActor->formID >= 0xFF000000;
-
-    if (isPlayer)
-    {
-        pNpc->MarkChanged(0x2000800);
-    }
-
-    const auto changeFlags = pNpc->GetChangeFlags();
-
-    if (isPlayer || changeFlags != 0)
-    {
-        message.ChangeFlags = changeFlags;
-        pNpc->Serialize(&message.AppearanceBuffer);
-    }
-
-    if (isPlayer)
-    {
-        auto& entries = message.FaceTints.Entries;
-
-        // The player is null on the main menu and while a save is loading, where
-        // this assignment is skipped instead of faulting.
-        const PlayerCharacter* pPlayer = PlayerCharacter::Get();
-        if (!pPlayer)
+        if (!m_transport.IsOnline())
             return;
 
-        const auto& tints = pPlayer->GetTints();
+        static uint32_t sCookieSeed = 0;
 
-        entries.resize(tints.length);
+        const auto& formIdComponent = m_world.get<FormIdComponent>(aEntity);
 
-        for (auto i = 0u; i < tints.length; ++i)
+        auto* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+        if (!pActor)
+            return;
+
+        TESNPC* pNpc = Cast<TESNPC>(pActor->baseForm);
+        if (!pNpc)
+            return;
+
+        AssignCharacterRequest message{};
+
+        message.Cookie = sCookieSeed;
+
+        if (!m_world.GetModSystem().GetServerModId(formIdComponent.Id, message.ReferenceId))
         {
-            entries[i].Alpha = tints[i]->alpha;
-            entries[i].Color = tints[i]->color;
-            entries[i].Type = tints[i]->type;
-
-            if (tints[i]->texture)
-                entries[i].Name = tints[i]->texture->name.AsAscii();
+            spdlog::error("Server reference id not found for form id {:X}", formIdComponent.Id);
+            return;
         }
-    }
 
-    if (isPlayer)
-    {
-        auto& questLog = message.QuestContent.Entries;
-        auto& modSystem = m_world.GetModSystem();
+        const auto* pParentCell = pActor->GetParentCellEx();
+        const uint32_t cParentCellFormId = pParentCell ? pParentCell->formID : 0;
 
-        // The player is null on the main menu and while a save is loading, where
-        // there is no quest log to send either.
-        const PlayerCharacter* pPlayer = PlayerCharacter::Get();
-        if (!pPlayer)
-            return;
-
-        for (const auto& objective : pPlayer->objectives)
+        if (!m_world.GetModSystem().GetServerModId(cParentCellFormId, message.CellId))
         {
-            auto* pQuest = objective.instance->quest;
-            if (!pQuest)
-                continue;
+            spdlog::error("Server cell id not found for cell id {:X}", cParentCellFormId);
+            return;
+        }
 
-            if (!QuestService::IsNonSyncableQuest(pQuest))
+        if (const auto pWorldSpace = pActor->GetWorldSpace())
+        {
+            if (!m_world.GetModSystem().GetServerModId(pWorldSpace->formID, message.WorldSpaceId))
+                return;
+        }
+
+        message.Position = pActor->position;
+        message.Rotation.x = pActor->rotation.x;
+        message.Rotation.y = pActor->rotation.z;
+
+        // Serialize the base form
+        const auto isPlayer = (formIdComponent.Id == 0x14);
+        const auto isTemporary = pActor->formID >= 0xFF000000;
+
+        if (isPlayer)
+        {
+            pNpc->MarkChanged(0x2000800);
+        }
+
+        const auto changeFlags = pNpc->GetChangeFlags();
+
+        if (isPlayer || changeFlags != 0)
+        {
+            message.ChangeFlags = changeFlags;
+            pNpc->Serialize(&message.AppearanceBuffer);
+        }
+
+        if (isPlayer)
+        {
+            auto& entries = message.FaceTints.Entries;
+
+            // The player is null on the main menu and while a save is loading, where
+            // this assignment is skipped instead of faulting.
+            const PlayerCharacter* pPlayer = PlayerCharacter::Get();
+            if (!pPlayer)
+                return;
+
+            const auto& tints = pPlayer->GetTints();
+
+            entries.resize(tints.length);
+
+            for (auto i = 0u; i < tints.length; ++i)
             {
-                GameId id{};
+                entries[i].Alpha = tints[i]->alpha;
+                entries[i].Color = tints[i]->color;
+                entries[i].Type = tints[i]->type;
 
-                if (modSystem.GetServerModId(pQuest->formID, id))
-                {
-                    auto& entry = questLog.emplace_back();
-                    entry.Stage = pQuest->currentStage;
-                    entry.Id = id;
-                }
+                if (tints[i]->texture)
+                    entries[i].Name = tints[i]->texture->name.AsAscii();
             }
         }
 
-        // remove duplicates
-        const auto ip = std::unique(questLog.begin(), questLog.end());
-        questLog.resize(std::distance(questLog.begin(), ip));
-    }
-
-    message.CurrentActorData = BuildActorData(pActor);
-
-    message.FactionsContent = pActor->GetFactions();
-    message.IsDragon = pActor->IsDragon();
-    message.IsMount = pActor->IsMount();
-    message.IsPlayerSummon = pActor->GetCommandingActor() && pActor->GetCommandingActor()->formID == 0x14;
-
-    if (const TESNPC* pPick = pActor->GetLeveledPick())
-    {
-        const uint32_t pickFormId = pPick->formID;
-        if (m_world.GetModSystem().GetServerModId(pickFormId, message.LeveledNpcPickId))
-            spdlog::info("Captured leveled NPC pick {:X} for actor {:X} (base {:X})", pickFormId, pActor->formID, pNpc->formID);
-        else
-            spdlog::warn("Leveled NPC pick {:X} has no server id, identity sync skipped", pickFormId);
-    }
-    else if (pNpc->IsTemporary())
-    {
-        spdlog::info("No leveled pick recoverable for temp base {:X} (actor {:X}), identity sync unavailable", pNpc->formID, pActor->formID);
-    }
-
-    if (pNpc->IsTemporary())
-        pNpc = pNpc->GetTemplateBase();
-
-    if (isTemporary)
-    {
-        if (pNpc && !m_world.GetModSystem().GetServerModId(pNpc->formID, message.FormId))
+        if (isPlayer)
         {
-            spdlog::error("Server NPC form id not found for form id {:X}", pNpc->formID);
-            return;
+            auto& questLog = message.QuestContent.Entries;
+            auto& modSystem = m_world.GetModSystem();
+
+            // The player is null on the main menu and while a save is loading, where
+            // there is no quest log to send either.
+            const PlayerCharacter* pPlayer = PlayerCharacter::Get();
+            if (!pPlayer)
+                return;
+
+            for (const auto& objective : pPlayer->objectives)
+            {
+                auto* pQuest = objective.instance->quest;
+                if (!pQuest)
+                    continue;
+
+                if (!QuestService::IsNonSyncableQuest(pQuest))
+                {
+                    GameId id{};
+
+                    if (modSystem.GetServerModId(pQuest->formID, id))
+                    {
+                        auto& entry = questLog.emplace_back();
+                        entry.Stage = pQuest->currentStage;
+                        entry.Id = id;
+                    }
+                }
+            }
+
+            // remove duplicates
+            const auto ip = std::unique(questLog.begin(), questLog.end());
+            questLog.resize(std::distance(questLog.begin(), ip));
+        }
+
+        message.CurrentActorData = BuildActorData(pActor);
+
+        message.FactionsContent = pActor->GetFactions();
+        message.IsDragon = pActor->IsDragon();
+        message.IsMount = pActor->IsMount();
+        message.IsPlayerSummon = pActor->GetCommandingActor() && pActor->GetCommandingActor()->formID == 0x14;
+
+        if (const TESNPC* pPick = pActor->GetLeveledPick())
+        {
+            const uint32_t pickFormId = pPick->formID;
+            if (m_world.GetModSystem().GetServerModId(pickFormId, message.LeveledNpcPickId))
+                spdlog::info("Captured leveled NPC pick {:X} for actor {:X} (base {:X})", pickFormId, pActor->formID, pNpc->formID);
+            else
+                spdlog::warn("Leveled NPC pick {:X} has no server id, identity sync skipped", pickFormId);
+        }
+        else if (pNpc->IsTemporary())
+        {
+            spdlog::info("No leveled pick recoverable for temp base {:X} (actor {:X}), identity sync unavailable", pNpc->formID, pActor->formID);
+        }
+
+        if (pNpc->IsTemporary())
+            pNpc = pNpc->GetTemplateBase();
+
+        if (isTemporary)
+        {
+            if (pNpc && !m_world.GetModSystem().GetServerModId(pNpc->formID, message.FormId))
+            {
+                spdlog::error("Server NPC form id not found for form id {:X}", pNpc->formID);
+                return;
+            }
+        }
+
+        // Serialize actions
+        auto* const pExtension = pActor->GetExtension();
+
+        message.LatestAction = pExtension->LatestAnimation;
+        pActor->SaveAnimationVariables(message.LatestAction.Variables);
+
+        const bool isLeader = m_world.Get().GetPartyService().IsLeader(); // Distinguish logs in 2-party      
+        spdlog::info(__FUNCTION__ ": request id: {:X}, cookie: {:X}, entity: {:X}, isLeader: {}", formIdComponent.Id, sCookieSeed, to_integral(aEntity), isLeader);
+
+        if (m_transport.Send(message))
+        {
+            m_world.emplace<WaitingForAssignmentComponent>(aEntity, sCookieSeed);
+
+            sCookieSeed++;
         }
     }
-
-    // Serialize actions
-    auto* const pExtension = pActor->GetExtension();
-
-    message.LatestAction = pExtension->LatestAnimation;
-    pActor->SaveAnimationVariables(message.LatestAction.Variables);
-
-    const bool isLeader = m_world.Get().GetPartyService().IsLeader(); // Distinguish logs in 2-party      
-    spdlog::info(__FUNCTION__ ": request id: {:X}, cookie: {:X}, entity: {:X}, isLeader: {}", formIdComponent.Id, sCookieSeed, to_integral(aEntity), isLeader);
-
-    if (m_transport.Send(message))
+    catch (...)
     {
-        m_world.emplace<WaitingForAssignmentComponent>(aEntity, sCookieSeed);
-
-        sCookieSeed++;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::RequestServerAssignment");
     }
 }
 
 void CharacterService::CancelServerAssignment(const entt::entity aEntity, const uint32_t aFormId) const noexcept
 {
-    Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
-    const char* pName = (pActor && pActor->baseForm) ? pActor->baseForm->GetName() : "";
-
-    if (m_world.all_of<RemoteComponent>(aEntity))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        if (pActor)
+        Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
+        const char* pName = (pActor && pActor->baseForm) ? pActor->baseForm->GetName() : "";
+
+        if (m_world.all_of<RemoteComponent>(aEntity))
         {
-            if (pActor->IsTemporary())
+            if (pActor)
             {
-                spdlog::info("Temporary Remote Deleted {:X}", aFormId);
-                pActor->Delete();
+                if (pActor->IsTemporary())
+                {
+                    spdlog::info("Temporary Remote Deleted {:X}", aFormId);
+                    pActor->Delete();
+                }
+                else
+                {
+                    pActor->GetExtension()->SetRemote(false);
+                }
             }
-            else
-            {
-                pActor->GetExtension()->SetRemote(false);
-            }
+
+            DeleteRemoteEntityComponents(aEntity);
         }
 
-        DeleteRemoteEntityComponents(aEntity);
-    }
-
-    // Keep the cookie until the server response arrives so awarded ownership can be relinquished.
-    if (m_world.all_of<WaitingForAssignmentComponent>(aEntity))
-    {
-        auto& waitingComponent = m_world.get<WaitingForAssignmentComponent>(aEntity);
-        waitingComponent.Cancelled = true;
-        return;
-    }
-
-    if (m_world.all_of<LocalComponent>(aEntity))
-    {
-        auto& localComponent = m_world.get<LocalComponent>(aEntity);
-
-        RequestOwnershipTransfer request{};
-        request.ServerId = localComponent.Id;
-        request.OwnershipEpoch = localComponent.OwnershipEpoch;
-        request.Reason = OwnershipReleaseReason::Relinquish;
-
-        if (pActor)
+        // Keep the cookie until the server response arrives so awarded ownership can be relinquished.
+        if (m_world.all_of<WaitingForAssignmentComponent>(aEntity))
         {
-            if (!pActor->IsTemporary())
-            {
-                auto& modSystem = m_world.GetModSystem();
-
-                if (TESWorldSpace* pWorldSpace = pActor->GetWorldSpace())
-                {
-                    if (!modSystem.GetServerModId(pWorldSpace->formID, request.WorldSpaceId))
-                        spdlog::error("World space id not found, despite having a world space, {:X}", pWorldSpace->formID);
-                }
-
-                if (TESObjectCELL* pCell = pActor->GetParentCellEx())
-                {
-                    if (!modSystem.GetServerModId(pCell->formID, request.CellId))
-                        spdlog::error("Cell id not found, despite having a cell, {:X}", pCell->formID);
-                }
-
-                request.Position = pActor->position;
-            }
+            auto& waitingComponent = m_world.get<WaitingForAssignmentComponent>(aEntity);
+            waitingComponent.Cancelled = true;
+            return;
         }
 
+        if (m_world.all_of<LocalComponent>(aEntity))
+        {
+            auto& localComponent = m_world.get<LocalComponent>(aEntity);
 
-        spdlog::info(
-            "Transferring ownership of local actor, server id: {:X}, epoch: {}, worldspace: {:X}, cell: {:X}, position: "
-            "({}, {}, {})",
-            request.ServerId, request.OwnershipEpoch, request.WorldSpaceId.BaseId, request.CellId.BaseId, request.Position.x, request.Position.y, request.Position.z);
+            RequestOwnershipTransfer request{};
+            request.ServerId = localComponent.Id;
+            request.OwnershipEpoch = localComponent.OwnershipEpoch;
+            request.Reason = OwnershipReleaseReason::Relinquish;
 
-        m_transport.Send(request);
+            if (pActor)
+            {
+                if (!pActor->IsTemporary())
+                {
+                    auto& modSystem = m_world.GetModSystem();
 
-        m_world.remove<LocalAnimationComponent, LocalComponent>(aEntity);
+                    if (TESWorldSpace* pWorldSpace = pActor->GetWorldSpace())
+                    {
+                        if (!modSystem.GetServerModId(pWorldSpace->formID, request.WorldSpaceId))
+                            spdlog::error("World space id not found, despite having a world space, {:X}", pWorldSpace->formID);
+                    }
+
+                    if (TESObjectCELL* pCell = pActor->GetParentCellEx())
+                    {
+                        if (!modSystem.GetServerModId(pCell->formID, request.CellId))
+                            spdlog::error("Cell id not found, despite having a cell, {:X}", pCell->formID);
+                    }
+
+                    request.Position = pActor->position;
+                }
+            }
+
+
+            spdlog::info(
+                "Transferring ownership of local actor, server id: {:X}, epoch: {}, worldspace: {:X}, cell: {:X}, position: "
+                "({}, {}, {})",
+                request.ServerId, request.OwnershipEpoch, request.WorldSpaceId.BaseId, request.CellId.BaseId, request.Position.x, request.Position.y, request.Position.z);
+
+            m_transport.Send(request);
+
+            m_world.remove<LocalAnimationComponent, LocalComponent>(aEntity);
+        }
+
+        if (pActor)
+            pActor->GetExtension()->SetNakedDeadline();
     }
-
-    if (pActor)
-        pActor->GetExtension()->SetNakedDeadline();
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::CancelServerAssignment");
+    }
 }
 
 Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const noexcept
 {
-    auto* pWaitingFor3D = m_world.try_get<WaitingFor3D>(aEntity);
-    auto* pInterpolationComponent = m_world.try_get<InterpolationComponent>(aEntity);
-
-    if (!pWaitingFor3D || !pInterpolationComponent)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::error(__FUNCTION__ ": could not find WaitingFor3D or InterpolationComponent");
-        return nullptr;
-    }
+        auto* pWaitingFor3D = m_world.try_get<WaitingFor3D>(aEntity);
+        auto* pInterpolationComponent = m_world.try_get<InterpolationComponent>(aEntity);
 
-    auto& acMessage = pWaitingFor3D->SpawnRequest;
-
-    Actor* pActor = nullptr;
-
-    // Custom forms
-    if (acMessage.FormId == GameId{})
-    {
-        TESNPC* pNpc = nullptr;
-
-        if (acMessage.BaseId != GameId{})
+        if (!pWaitingFor3D || !pInterpolationComponent)
         {
-            // Prefer the owner's resolved leveled pick over the lossy template base
-            if (acMessage.LeveledNpcPickId != GameId{})
-                pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.LeveledNpcPickId)));
+            spdlog::error(__FUNCTION__ ": could not find WaitingFor3D or InterpolationComponent");
+            return nullptr;
+        }
 
-            if (!pNpc)
-                pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.BaseId)));
+        auto& acMessage = pWaitingFor3D->SpawnRequest;
 
-            if (!pNpc)
+        Actor* pActor = nullptr;
+
+        // Custom forms
+        if (acMessage.FormId == GameId{})
+        {
+            TESNPC* pNpc = nullptr;
+
+            if (acMessage.BaseId != GameId{})
             {
-                spdlog::error("Failed to retrieve NPC, it will not be spawned, possibly missing mod");
-                return nullptr;
+                // Prefer the owner's resolved leveled pick over the lossy template base
+                if (acMessage.LeveledNpcPickId != GameId{})
+                    pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.LeveledNpcPickId)));
+
+                if (!pNpc)
+                    pNpc = Cast<TESNPC>(TESForm::GetById(m_world.GetModSystem().GetGameId(acMessage.BaseId)));
+
+                if (!pNpc)
+                {
+                    spdlog::error("Failed to retrieve NPC, it will not be spawned, possibly missing mod");
+                    return nullptr;
+                }
+
+                pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+            }
+            else
+            {
+                pNpc = TESNPC::Create(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+                FaceGenSystem::Setup(m_world, aEntity, acMessage.FaceTints);
             }
 
-            pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+            // As in OnCharacterSpawn: this base came off the wire, so the head has to be
+            // generated at runtime once the engine builds the body.
+            SetRemoteFaceGenForce(true);
+
+            pActor = Actor::Create(pNpc);
         }
-        else
+
+        auto& remoteComponent = m_world.get<RemoteComponent>(aEntity);
+
+        if (!pActor)
         {
-            pNpc = TESNPC::Create(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
-            FaceGenSystem::Setup(m_world, aEntity, acMessage.FaceTints);
+            spdlog::error(__FUNCTION__ ": could not spawn actor for remote server id {:X}.", remoteComponent.Id);
+            return nullptr;
         }
 
-        // As in OnCharacterSpawn: this base came off the wire, so the head has to be
-        // generated at runtime once the engine builds the body.
-        SetRemoteFaceGenForce(true);
+        pActor->GetExtension()->SetRemote(true);
+        pActor->rotation.x = acMessage.Rotation.x;
+        pActor->rotation.z = acMessage.Rotation.y;
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+            pActor->MoveTo(pPlayer->GetParentCellEx(), pInterpolationComponent->Position);
+        pActor->SetActorValues(acMessage.InitialActorValues);
 
-        pActor = Actor::Create(pNpc);
+        pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
+        if (acMessage.IsPlayer)
+        {
+            pActor->SetIgnoreFriendlyHit(true);
+            pActor->SetPlayerRespawnMode();
+            m_world.emplace_or_replace<PlayerComponent>(aEntity, acMessage.PlayerId);
+        }
+
+        if (pActor->IsDead() != acMessage.IsDead)
+            acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
+
+        spdlog::info("Spawned character for entity, server id: {:X}", remoteComponent.Id);
+
+        return pActor;
     }
-
-    auto& remoteComponent = m_world.get<RemoteComponent>(aEntity);
-
-    if (!pActor)
+    catch (...)
     {
-        spdlog::error(__FUNCTION__ ": could not spawn actor for remote server id {:X}.", remoteComponent.Id);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::CreateCharacterForEntity");
         return nullptr;
     }
-
-    pActor->GetExtension()->SetRemote(true);
-    pActor->rotation.x = acMessage.Rotation.x;
-    pActor->rotation.z = acMessage.Rotation.y;
-    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        pActor->MoveTo(pPlayer->GetParentCellEx(), pInterpolationComponent->Position);
-    pActor->SetActorValues(acMessage.InitialActorValues);
-
-    pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
-    if (acMessage.IsPlayer)
-    {
-        pActor->SetIgnoreFriendlyHit(true);
-        pActor->SetPlayerRespawnMode();
-        m_world.emplace_or_replace<PlayerComponent>(aEntity, acMessage.PlayerId);
-    }
-
-    if (pActor->IsDead() != acMessage.IsDead)
-        acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
-
-    spdlog::info("Spawned character for entity, server id: {:X}", remoteComponent.Id);
-
-    return pActor;
 }
 
 ActorData CharacterService::BuildActorData(Actor* apActor) const noexcept
@@ -1680,180 +1970,204 @@ ActorData CharacterService::BuildActorData(Actor* apActor) const noexcept
 
 void CharacterService::ApplyLeveledNpcPick(Actor* apActor, const GameId& acPickId) const noexcept
 {
-    if (acPickId == GameId{})
-        return;
-
-    TESNPC* pBase = Cast<TESNPC>(apActor->baseForm);
-    if (!pBase)
-        return;
-
-    // The rebuild needs the placed NPC this actor came from; without one there
-    // is nothing to copy the pick onto, and overwriting the base would throw
-    // away data the pick does not carry (a hold guard's name and outfit).
-    if (!LeveledNpcSystem::GetOriginalBase(apActor))
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        spdlog::warn("Leveled pick {:x}:{:x} received for actor {:X} without an original leveled base, keeping local base", acPickId.ModId, acPickId.BaseId, apActor->formID);
-        return;
-    }
+        if (acPickId == GameId{})
+            return;
 
-    const uint32_t cPickId = World::Get().GetModSystem().GetGameId(acPickId);
-    if (cPickId == 0)
+        TESNPC* pBase = Cast<TESNPC>(apActor->baseForm);
+        if (!pBase)
+            return;
+
+        // The rebuild needs the placed NPC this actor came from; without one there
+        // is nothing to copy the pick onto, and overwriting the base would throw
+        // away data the pick does not carry (a hold guard's name and outfit).
+        if (!LeveledNpcSystem::GetOriginalBase(apActor))
+        {
+            spdlog::warn("Leveled pick {:x}:{:x} received for actor {:X} without an original leveled base, keeping local base", acPickId.ModId, acPickId.BaseId, apActor->formID);
+            return;
+        }
+
+        const uint32_t cPickId = World::Get().GetModSystem().GetGameId(acPickId);
+        if (cPickId == 0)
+        {
+            spdlog::warn("Leveled NPC pick {:X}:{:X} not resolvable, possibly missing mod, keeping local pick", acPickId.ModId, acPickId.BaseId);
+            return;
+        }
+
+        TESNPC* pPick = Cast<TESNPC>(TESForm::GetById(cPickId));
+        if (!pPick)
+        {
+            spdlog::warn("Leveled NPC pick {:X} is not an NPC, keeping local pick", cPickId);
+            return;
+        }
+
+        const TESNPC* pLocalPick = apActor->GetLeveledPick();
+        const uint32_t localPickId = pLocalPick ? pLocalPick->formID : 0;
+
+        // Even a pick matching the current base must supersede pending work.
+        if (pBase->IsTemporary() && localPickId == cPickId && m_pendingLeveledConforms.find(apActor->formID) == m_pendingLeveledConforms.end())
+        {
+            spdlog::info("Leveled actor {:X} already matches owner's pick {:X}", apActor->formID, cPickId);
+            return;
+        }
+
+        spdlog::info("Queued leveled NPC reconciliation for actor {:X}, base: {:X}, local pick: {:X}, owner's pick: {:X}",
+            apActor->formID, pBase->formID, localPickId, cPickId);
+
+        // Defer reference changes to the service update: cell attach may still own the actor here.
+        // Queueing to the runner from a drained task would re-lock its drain mutex.
+        // Preserve the stage when a newer pick arrives during a disable or rebuild.
+        m_pendingLeveledConforms[apActor->formID] = cPickId;
+    }
+    catch (...)
     {
-        spdlog::warn("Leveled NPC pick {:X}:{:X} not resolvable, possibly missing mod, keeping local pick", acPickId.ModId, acPickId.BaseId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::ApplyLeveledNpcPick");
     }
-
-    TESNPC* pPick = Cast<TESNPC>(TESForm::GetById(cPickId));
-    if (!pPick)
-    {
-        spdlog::warn("Leveled NPC pick {:X} is not an NPC, keeping local pick", cPickId);
-        return;
-    }
-
-    const TESNPC* pLocalPick = apActor->GetLeveledPick();
-    const uint32_t localPickId = pLocalPick ? pLocalPick->formID : 0;
-
-    // Even a pick matching the current base must supersede pending work.
-    if (pBase->IsTemporary() && localPickId == cPickId && m_pendingLeveledConforms.find(apActor->formID) == m_pendingLeveledConforms.end())
-    {
-        spdlog::info("Leveled actor {:X} already matches owner's pick {:X}", apActor->formID, cPickId);
-        return;
-    }
-
-    spdlog::info("Queued leveled NPC reconciliation for actor {:X}, base: {:X}, local pick: {:X}, owner's pick: {:X}",
-        apActor->formID, pBase->formID, localPickId, cPickId);
-
-    // Defer reference changes to the service update: cell attach may still own the actor here.
-    // Queueing to the runner from a drained task would re-lock its drain mutex.
-    // Preserve the stage when a newer pick arrives during a disable or rebuild.
-    m_pendingLeveledConforms[apActor->formID] = cPickId;
 }
 
 void CharacterService::ProcessLeveledConforms() noexcept
 {
-    using ReconciliationStage = ActorExtension::ReconciliationStage;
-
-    if (m_pendingLeveledConforms.empty())
-        return;
-
-    // Never touch references while the loading screen is up - the cell attach
-    // owns them and mutating mid-stream crashes the loader
-    UI* pUI = UI::Get();
-    if (pUI && pUI->GetMenuOpen(BSFixedString("Loading Menu")))
-        return;
-
-    for (auto it = m_pendingLeveledConforms.begin(); it != m_pendingLeveledConforms.end();)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        const uint32_t cPickFormId = it->second;
+        using ReconciliationStage = ActorExtension::ReconciliationStage;
 
-        Actor* pActor = Cast<Actor>(TESForm::GetById(it->first));
-        TESNPC* pPick = Cast<TESNPC>(TESForm::GetById(cPickFormId));
-        if (!pActor || pActor->IsDeleted() || !pPick)
+        if (m_pendingLeveledConforms.empty())
+            return;
+
+        // Never touch references while the loading screen is up - the cell attach
+        // owns them and mutating mid-stream crashes the loader
+        UI* pUI = UI::Get();
+        if (pUI && pUI->GetMenuOpen(BSFixedString("Loading Menu")))
+            return;
+
+        for (auto it = m_pendingLeveledConforms.begin(); it != m_pendingLeveledConforms.end();)
         {
-            if (pActor)
-                pActor->GetExtension()->Reconciliation = ReconciliationStage::None;
+            const uint32_t cPickFormId = it->second;
 
-            it = m_pendingLeveledConforms.erase(it);
-            continue;
-        }
-
-        auto& stage = pActor->GetExtension()->Reconciliation;
-        if (stage == ReconciliationStage::WaitingFor3D)
-        {
-            const auto* pCell = pActor->GetParentCellEx();
-            if (!pCell || !pCell->IsAttached())
+            Actor* pActor = Cast<Actor>(TESForm::GetById(it->first));
+            TESNPC* pPick = Cast<TESNPC>(TESForm::GetById(cPickFormId));
+            if (!pActor || pActor->IsDeleted() || !pPick)
             {
-                spdlog::info("Abandoning leveled NPC reconciliation for actor {:X} because its cell is not attached, pick: {:X}, cell state: {}, disabled: {}",
-                    it->first, cPickFormId, pCell ? static_cast<int>(pCell->cellState) : -1, pActor->IsDisabled());
-                stage = ReconciliationStage::None;
+                if (pActor)
+                    pActor->GetExtension()->Reconciliation = ReconciliationStage::None;
+
                 it = m_pendingLeveledConforms.erase(it);
                 continue;
             }
 
-            if (pActor->IsDisabled() || !pActor->GetNiNode())
+            auto& stage = pActor->GetExtension()->Reconciliation;
+            if (stage == ReconciliationStage::WaitingFor3D)
             {
-                ++it;
-                continue;
-            }
-
-            // Completion is read from the extra data the rebuild wrote, which
-            // only exists where the pick write is mapped. Without it the
-            // fallback path below sets the base to the pick itself, and the
-            // base is then the thing to compare - comparing the recorded pick
-            // there would never match and re-disable the actor every update.
-            const bool cMatchesPick = LeveledNpcSystem::CanRecordPick()
-                ? (pActor->baseForm && pActor->baseForm->IsTemporary() && pActor->GetLeveledPick() == pPick)
-                : (pActor->baseForm == pPick);
-
-            if (cMatchesPick)
-            {
-                spdlog::info("Completed leveled NPC reconciliation for actor {:X}, base: {:X}, pick: {:X}", it->first, pActor->baseForm->formID, cPickFormId);
-                stage = ReconciliationStage::None;
-                it = m_pendingLeveledConforms.erase(it);
-                continue;
-            }
-
-            // A newer pick arrived during the rebuild; start its disable now.
-            stage = ReconciliationStage::None;
-        }
-
-        if (stage == ReconciliationStage::WaitingForDisable)
-        {
-            if (!pActor->IsDisabled() || pActor->GetNiNode())
-            {
-                spdlog::debug("Waiting for leveled actor {:X} to finish disabling before applying pick {:X}, disabled: {}, has 3D: {}",
-                    it->first, cPickFormId, pActor->IsDisabled(), pActor->GetNiNode() != nullptr);
-                ++it;
-                continue;
-            }
-
-            // Disable and 3D teardown have completed; rebuild from the original base and the pick.
-            if (LeveledNpcSystem::CanRecordPick())
-            {
-                if (!LeveledNpcSystem::ApplyPick(pActor, pPick))
+                const auto* pCell = pActor->GetParentCellEx();
+                if (!pCell || !pCell->IsAttached())
                 {
-                    spdlog::warn("Could not rebuild leveled actor {:X} from its original base and pick {:X}, keeping local base", it->first, cPickFormId);
-                    pActor->EnableImpl();
+                    spdlog::info("Abandoning leveled NPC reconciliation for actor {:X} because its cell is not attached, pick: {:X}, cell state: {}, disabled: {}",
+                        it->first, cPickFormId, pCell ? static_cast<int>(pCell->cellState) : -1, pActor->IsDisabled());
                     stage = ReconciliationStage::None;
                     it = m_pendingLeveledConforms.erase(it);
                     continue;
                 }
+
+                if (pActor->IsDisabled() || !pActor->GetNiNode())
+                {
+                    ++it;
+                    continue;
+                }
+
+                // Completion is read from the extra data the rebuild wrote, which
+                // only exists where the pick write is mapped. Without it the
+                // fallback path below sets the base to the pick itself, and the
+                // base is then the thing to compare - comparing the recorded pick
+                // there would never match and re-disable the actor every update.
+                const bool cMatchesPick = LeveledNpcSystem::CanRecordPick()
+                    ? (pActor->baseForm && pActor->baseForm->IsTemporary() && pActor->GetLeveledPick() == pPick)
+                    : (pActor->baseForm == pPick);
+
+                if (cMatchesPick)
+                {
+                    spdlog::info("Completed leveled NPC reconciliation for actor {:X}, base: {:X}, pick: {:X}", it->first, pActor->baseForm->formID, cPickFormId);
+                    stage = ReconciliationStage::None;
+                    it = m_pendingLeveledConforms.erase(it);
+                    continue;
+                }
+
+                // A newer pick arrived during the rebuild; start its disable now.
+                stage = ReconciliationStage::None;
             }
-            else
+
+            if (stage == ReconciliationStage::WaitingForDisable)
             {
-                // 1.5.x: the engine call that records the chosen pick has no
-                // address-library mapping, so a rebuild through it could not be
-                // recognised as finished. Keep the pre-1.8.2 path there - the
-                // base becomes the pick, which is what the completion check
-                // above is paired with.
-                pActor->baseForm = pPick;
+                if (!pActor->IsDisabled() || pActor->GetNiNode())
+                {
+                    spdlog::debug("Waiting for leveled actor {:X} to finish disabling before applying pick {:X}, disabled: {}, has 3D: {}",
+                        it->first, cPickFormId, pActor->IsDisabled(), pActor->GetNiNode() != nullptr);
+                    ++it;
+                    continue;
+                }
+
+                // Disable and 3D teardown have completed; rebuild from the original base and the pick.
+                if (LeveledNpcSystem::CanRecordPick())
+                {
+                    if (!LeveledNpcSystem::ApplyPick(pActor, pPick))
+                    {
+                        spdlog::warn("Could not rebuild leveled actor {:X} from its original base and pick {:X}, keeping local base", it->first, cPickFormId);
+                        pActor->EnableImpl();
+                        stage = ReconciliationStage::None;
+                        it = m_pendingLeveledConforms.erase(it);
+                        continue;
+                    }
+                }
+                else
+                {
+                    // 1.5.x: the engine call that records the chosen pick has no
+                    // address-library mapping, so a rebuild through it could not be
+                    // recognised as finished. Keep the pre-1.8.2 path there - the
+                    // base becomes the pick, which is what the completion check
+                    // above is paired with.
+                    pActor->baseForm = pPick;
+                }
+
+                // Recompute the graph descriptor after changing picks; stale variable indices can cause out-of-bounds writes.
+                pActor->GetExtension()->GraphDescriptorHash = 0;
+
+                // Enable can return before the rebuilt 3D is available to discovery.
+                stage = ReconciliationStage::WaitingFor3D;
+                pActor->EnableImpl();
+                spdlog::info("Re-enabled conformed leveled actor {:X}, base: {:X}, pick: {:X}, waiting for 3D",
+                    it->first, pActor->baseForm ? pActor->baseForm->formID : 0, cPickFormId);
+                ++it;
+                continue;
             }
 
-            // Recompute the graph descriptor after changing picks; stale variable indices can cause out-of-bounds writes.
-            pActor->GetExtension()->GraphDescriptorHash = 0;
+            if (!pActor->loadedState && !LeveledNpcSystem::IsLeveledNpcBase(Cast<TESNPC>(pActor->baseForm)))
+            {
+                // Wait for distant actors to load 3D; newer picks replace pending work and disconnects clear it.
+                // Unresolved shells bypass this wait because they need a pick before they can load a model.
+                ++it;
+                continue;
+            }
 
-            // Enable can return before the rebuilt 3D is available to discovery.
-            stage = ReconciliationStage::WaitingFor3D;
-            pActor->EnableImpl();
-            spdlog::info("Re-enabled conformed leveled actor {:X}, base: {:X}, pick: {:X}, waiting for 3D",
-                it->first, pActor->baseForm ? pActor->baseForm->formID : 0, cPickFormId);
+            // DisableImpl() is asynchronous: it only queues a request to disable this actor.
+            // Wait for the disabled flag and old 3D removal before changing the base.
+            pActor->DisableImpl();
+            stage = ReconciliationStage::WaitingForDisable;
             ++it;
-            continue;
         }
-
-        if (!pActor->loadedState && !LeveledNpcSystem::IsLeveledNpcBase(Cast<TESNPC>(pActor->baseForm)))
-        {
-            // Wait for distant actors to load 3D; newer picks replace pending work and disconnects clear it.
-            // Unresolved shells bypass this wait because they need a pick before they can load a model.
-            ++it;
-            continue;
-        }
-
-        // DisableImpl() is asynchronous: it only queues a request to disable this actor.
-        // Wait for the disabled flag and old 3D removal before changing the base.
-        pActor->DisableImpl();
-        stage = ReconciliationStage::WaitingForDisable;
-        ++it;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::ProcessLeveledConforms");
     }
 }
 
@@ -1887,31 +2201,43 @@ void CharacterService::RunLocalUpdates() const noexcept
 
 void CharacterService::SetRemoteFaceGenForce(const bool aForce) const noexcept
 {
-    // bUseFaceGenPreprocessedHeads decides whether the engine loads a head that was
-    // baked to disk or generates one at runtime. It is cleared only while this
-    // client is building an actor whose appearance arrived over the wire, because
-    // no baked head can match a face that was never generated here: the lookup
-    // finds nothing and the head comes up empty, which is the invisible head a
-    // custom race reports - a custom race ships its head as a .nif/.tri and never
-    // as FaceGenData. Upstream #764 removed the unconditional per-frame clear this
-    // fork used to run, and that clear was the only thing asking for runtime
-    // generation; keeping it scoped to wire-built actors is what lets locally
-    // generated characters keep the baked head the flag is wanted for (see the
-    // comment in TiltedOnlineApp::Update).
-    if (m_faceGenForced == aForce)
-        return;
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
+    {
+        // bUseFaceGenPreprocessedHeads decides whether the engine loads a head that was
+        // baked to disk or generates one at runtime. It is cleared only while this
+        // client is building an actor whose appearance arrived over the wire, because
+        // no baked head can match a face that was never generated here: the lookup
+        // finds nothing and the head comes up empty, which is the invisible head a
+        // custom race reports - a custom race ships its head as a .nif/.tri and never
+        // as FaceGenData. Upstream #764 removed the unconditional per-frame clear this
+        // fork used to run, and that clear was the only thing asking for runtime
+        // generation; keeping it scoped to wire-built actors is what lets locally
+        // generated characters keep the baked head the flag is wanted for (see the
+        // comment in TiltedOnlineApp::Update).
+        if (m_faceGenForced == aForce)
+            return;
 
-    auto* pSetting = INISettingCollection::Get()->GetSetting("bUseFaceGenPreprocessedHeads:General");
-    if (!pSetting)
-        return; // nothing to force, and leaving the state alone keeps the next call honest
+        auto* pSetting = INISettingCollection::Get()->GetSetting("bUseFaceGenPreprocessedHeads:General");
+        if (!pSetting)
+            return; // nothing to force, and leaving the state alone keeps the next call honest
 
-    if (aForce)
-        m_faceGenPreprocessedBackup = pSetting->data;
+        if (aForce)
+            m_faceGenPreprocessedBackup = pSetting->data;
 
-    pSetting->data = aForce ? 0 : m_faceGenPreprocessedBackup;
-    m_faceGenForced = aForce;
+        pSetting->data = aForce ? 0 : m_faceGenPreprocessedBackup;
+        m_faceGenForced = aForce;
 
-    spdlog::debug("{}: bUseFaceGenPreprocessedHeads = {} (was {})", __FUNCTION__, pSetting->data, m_faceGenPreprocessedBackup);
+        spdlog::debug("{}: bUseFaceGenPreprocessedHeads = {} (was {})", __FUNCTION__, pSetting->data, m_faceGenPreprocessedBackup);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::SetRemoteFaceGenForce");
+    }
 }
 
 void CharacterService::UpdateRemoteFaceGenWindow() noexcept
@@ -1953,103 +2279,115 @@ void CharacterService::UpdateRemoteFaceGenWindow() noexcept
 
 void CharacterService::RunRemoteUpdates() noexcept
 {
-    // Delay by 300ms to let the interpolation system accumulate interpolation points
-    const auto tick = m_transport.GetClock().GetCurrentTick() - 300;
-
-    // Interpolation has to keep running even if the actor is not in view, otherwise we will never know if we need to spawn it
-    auto interpolatedEntities = m_world.view<RemoteComponent, InterpolationComponent>();
-
-    for (auto entity : interpolatedEntities)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        auto* pFormIdComponent = m_world.try_get<FormIdComponent>(entity);
-        auto& interpolationComponent = interpolatedEntities.get<InterpolationComponent>(entity);
+        // Delay by 300ms to let the interpolation system accumulate interpolation points
+        const auto tick = m_transport.GetClock().GetCurrentTick() - 300;
 
-        Actor* pActor = nullptr;
-        if (pFormIdComponent)
+        // Interpolation has to keep running even if the actor is not in view, otherwise we will never know if we need to spawn it
+        auto interpolatedEntities = m_world.view<RemoteComponent, InterpolationComponent>();
+
+        for (auto entity : interpolatedEntities)
         {
-            auto* pForm = TESForm::GetById(pFormIdComponent->Id);
-            pActor = Cast<Actor>(pForm);
+            auto* pFormIdComponent = m_world.try_get<FormIdComponent>(entity);
+            auto& interpolationComponent = interpolatedEntities.get<InterpolationComponent>(entity);
+
+            Actor* pActor = nullptr;
+            if (pFormIdComponent)
+            {
+                auto* pForm = TESForm::GetById(pFormIdComponent->Id);
+                pActor = Cast<Actor>(pForm);
+            }
+
+            InterpolationSystem::Update(pActor, interpolationComponent, tick);
         }
 
-        InterpolationSystem::Update(pActor, interpolationComponent, tick);
-    }
+        auto animatedView = m_world.view<RemoteComponent, RemoteAnimationComponent, FormIdComponent>();
 
-    auto animatedView = m_world.view<RemoteComponent, RemoteAnimationComponent, FormIdComponent>();
-
-    for (auto entity : animatedView)
-    {
-        auto& animationComponent = animatedView.get<RemoteAnimationComponent>(entity);
-        auto& formIdComponent = animatedView.get<FormIdComponent>(entity);
-
-        auto* pForm = TESForm::GetById(formIdComponent.Id);
-        auto* pActor = Cast<Actor>(pForm);
-
-        // Called even when the actor cannot be resolved: the queue has to be
-        // trimmed either way, and the snapshots keep appending to it.
-        AnimationSystem::Update(m_world, pActor, animationComponent, tick);
-    }
-
-    auto facegenView = m_world.view<FormIdComponent, FaceGenComponent>();
-
-    for (auto entity : facegenView)
-    {
-        auto& formIdComponent = facegenView.get<FormIdComponent>(entity);
-        auto& faceGenComponent = facegenView.get<FaceGenComponent>(entity);
-
-        const auto* pForm = TESForm::GetById(formIdComponent.Id);
-        auto* pActor = Cast<Actor>(pForm);
-        if (!pActor)
-            continue;
-
-        FaceGenSystem::Update(m_world, pActor, faceGenComponent);
-    }
-
-    auto waitingView = m_world.view<FormIdComponent, WaitingFor3D>();
-
-    Vector<entt::entity> readyEntities;
-    for (auto entity : waitingView)
-    {
-        auto& formIdComponent = waitingView.get<FormIdComponent>(entity);
-        auto& waitingFor3D = waitingView.get<WaitingFor3D>(entity);
-
-        Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-        if (!pActor || !pActor->GetNiNode())
-            continue;
-
-        // By now, the actor has materialized in the world and is ready for further setup
-
-        pActor->SetActorInventory(waitingFor3D.SpawnRequest.InventoryContent);
-        pActor->SetFactions(waitingFor3D.SpawnRequest.FactionsContent);
-
-        if (!waitingFor3D.SpawnRequest.ActionsToReplay.Actions.empty())
+        for (auto entity : animatedView)
         {
-            pActor->LoadAnimationVariables(waitingFor3D.SpawnRequest.ActionsToReplay.Actions[0].Variables);
+            auto& animationComponent = animatedView.get<RemoteAnimationComponent>(entity);
+            auto& formIdComponent = animatedView.get<FormIdComponent>(entity);
+
+            auto* pForm = TESForm::GetById(formIdComponent.Id);
+            auto* pActor = Cast<Actor>(pForm);
+
+            // Called even when the actor cannot be resolved: the queue has to be
+            // trimmed either way, and the snapshots keep appending to it.
+            AnimationSystem::Update(m_world, pActor, animationComponent, tick);
         }
 
-        m_weaponDrawUpdates[pActor->formID] = {waitingFor3D.SpawnRequest.IsWeaponDrawn};
+        auto facegenView = m_world.view<FormIdComponent, FaceGenComponent>();
 
-        if (pActor->IsDead() != waitingFor3D.SpawnRequest.IsDead)
-            waitingFor3D.SpawnRequest.IsDead ? pActor->Kill() : pActor->Respawn();
+        for (auto entity : facegenView)
+        {
+            auto& formIdComponent = facegenView.get<FormIdComponent>(entity);
+            auto& faceGenComponent = facegenView.get<FaceGenComponent>(entity);
 
-        if (pActor->IsVampireLord())
-            pActor->FixVampireLordModel();
+            const auto* pForm = TESForm::GetById(formIdComponent.Id);
+            auto* pActor = Cast<Actor>(pForm);
+            if (!pActor)
+                continue;
 
-        // (Re)start naked NPC deadline. Actor MUST be fully constructed before
-        // check clock starts. This line is fork-only; upstream's side of the
-        // merge had only the readyEntities push below.
-        pActor->GetExtension()->SetNakedDeadline();
+            FaceGenSystem::Update(m_world, pActor, faceGenComponent);
+        }
 
-        readyEntities.push_back(entity);
+        auto waitingView = m_world.view<FormIdComponent, WaitingFor3D>();
 
-        spdlog::debug(__FUNCTION__ ": applied 3D for actor, form id: {:X}, name {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
+        Vector<entt::entity> readyEntities;
+        for (auto entity : waitingView)
+        {
+            auto& formIdComponent = waitingView.get<FormIdComponent>(entity);
+            auto& waitingFor3D = waitingView.get<WaitingFor3D>(entity);
+
+            Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+            if (!pActor || !pActor->GetNiNode())
+                continue;
+
+            // By now, the actor has materialized in the world and is ready for further setup
+
+            pActor->SetActorInventory(waitingFor3D.SpawnRequest.InventoryContent);
+            pActor->SetFactions(waitingFor3D.SpawnRequest.FactionsContent);
+
+            if (!waitingFor3D.SpawnRequest.ActionsToReplay.Actions.empty())
+            {
+                pActor->LoadAnimationVariables(waitingFor3D.SpawnRequest.ActionsToReplay.Actions[0].Variables);
+            }
+
+            m_weaponDrawUpdates[pActor->formID] = {waitingFor3D.SpawnRequest.IsWeaponDrawn};
+
+            if (pActor->IsDead() != waitingFor3D.SpawnRequest.IsDead)
+                waitingFor3D.SpawnRequest.IsDead ? pActor->Kill() : pActor->Respawn();
+
+            if (pActor->IsVampireLord())
+                pActor->FixVampireLordModel();
+
+            // (Re)start naked NPC deadline. Actor MUST be fully constructed before
+            // check clock starts. This line is fork-only; upstream's side of the
+            // merge had only the readyEntities push below.
+            pActor->GetExtension()->SetNakedDeadline();
+
+            readyEntities.push_back(entity);
+
+            spdlog::debug(__FUNCTION__ ": applied 3D for actor, form id: {:X}, name {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
+        }
+
+        for (auto entity : readyEntities)
+        {
+            m_world.remove<WaitingFor3D>(entity);
+
+            // Reprocess the remote actor now that an ownership grant can be accepted without immediately declining it.
+            ProcessNewEntity(entity);
+        }
     }
-
-    for (auto entity : readyEntities)
+    catch (...)
     {
-        m_world.remove<WaitingFor3D>(entity);
-
-        // Reprocess the remote actor now that an ownership grant can be accepted without immediately declining it.
-        ProcessNewEntity(entity);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::RunRemoteUpdates");
     }
 }
 
@@ -2149,61 +2487,85 @@ void CharacterService::RunSpawnUpdates() const noexcept
 
 void CharacterService::RunExperienceUpdates() noexcept
 {
-    static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenSnapshots = 1000ms;
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
+    {
+        static std::chrono::steady_clock::time_point lastSendTimePoint;
+        constexpr auto cDelayBetweenSnapshots = 1000ms;
 
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastSendTimePoint < cDelayBetweenSnapshots)
-        return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastSendTimePoint < cDelayBetweenSnapshots)
+            return;
 
-    lastSendTimePoint = now;
+        lastSendTimePoint = now;
 
-    if (m_cachedExperience == 0.f)
-        return;
+        if (m_cachedExperience == 0.f)
+            return;
 
-    if (!World::Get().GetPartyService().IsInParty())
-        return;
+        if (!World::Get().GetPartyService().IsInParty())
+            return;
 
-    SyncExperienceRequest message;
-    message.Experience = m_cachedExperience;
+        SyncExperienceRequest message;
+        message.Experience = m_cachedExperience;
 
-    m_cachedExperience = 0.f;
+        m_cachedExperience = 0.f;
 
-    m_transport.Send(message);
+        m_transport.Send(message);
 
-    spdlog::debug("Sending over experience {}", message.Experience);
+        spdlog::debug("Sending over experience {}", message.Experience);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::RunExperienceUpdates");
+    }
 }
 
 void CharacterService::ApplyCachedWeaponDraws(const UpdateEvent& acUpdateEvent) noexcept
 {
-    std::vector<uint32_t> toRemove{};
-
-    for (auto& [cId, _] : m_weaponDrawUpdates)
+    // This is the densest noexcept surface in the client: every packet handler, the
+    // per-frame remote update pass and the assignment path. Each body allocates -
+    // the reports, the maps and vectors the messages carry, the entity lookups.
+    // What was written before the failure stays; what is left is either re-sent by
+    // the server or recomputed on the next tick.
+    try
     {
-        auto& data = m_weaponDrawUpdates[cId];
+        std::vector<uint32_t> toRemove{};
 
-        data.m_timer += acUpdateEvent.Delta;
-
-        // Remote actors get 2 passes because Skyrim's weapon drawing is the most finnicky thing in existence.
-        double maxTime = data.m_isFirstPass ? 0.5 : 2.0;
-        if (data.m_timer <= maxTime)
-            continue;
-
-        Actor* pActor = Cast<Actor>(TESForm::GetById(cId));
-        if (!pActor || !pActor->GetExtension()->IsRemote())
+        for (auto& [cId, _] : m_weaponDrawUpdates)
         {
-            toRemove.push_back(cId);
-            continue;
+            auto& data = m_weaponDrawUpdates[cId];
+
+            data.m_timer += acUpdateEvent.Delta;
+
+            // Remote actors get 2 passes because Skyrim's weapon drawing is the most finnicky thing in existence.
+            double maxTime = data.m_isFirstPass ? 0.5 : 2.0;
+            if (data.m_timer <= maxTime)
+                continue;
+
+            Actor* pActor = Cast<Actor>(TESForm::GetById(cId));
+            if (!pActor || !pActor->GetExtension()->IsRemote())
+            {
+                toRemove.push_back(cId);
+                continue;
+            }
+
+            pActor->SetWeaponDrawnEx(data.m_drawWeapon);
+
+            if (!data.m_isFirstPass)
+                toRemove.push_back(cId);
+
+            data.m_isFirstPass = false;
         }
 
-        pActor->SetWeaponDrawnEx(data.m_drawWeapon);
-
-        if (!data.m_isFirstPass)
-            toRemove.push_back(cId);
-
-        data.m_isFirstPass = false;
+        for (uint32_t id : toRemove)
+            m_weaponDrawUpdates.erase(id);
     }
-
-    for (uint32_t id : toRemove)
-        m_weaponDrawUpdates.erase(id);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CharacterService::ApplyCachedWeaponDraws");
+    }
 }

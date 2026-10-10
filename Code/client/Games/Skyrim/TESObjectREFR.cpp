@@ -504,199 +504,218 @@ TESObjectCELL* TESObjectREFR::GetParentCellEx() const noexcept
 
 void TESObjectREFR::GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataList* apExtraDataList) noexcept
 {
-    auto& modSystem = World::Get().GetModSystem();
-
-    if (ExtraCount* pExtraCount = Cast<ExtraCount>(apExtraDataList->GetByType(ExtraDataType::Count)))
+    // Reference and inventory helpers. The bodies copy inventories in and out of
+    // engine state and report what they did; the copy that made it in stays.
+    try
     {
-        arEntry.Count = pExtraCount->count;
-    }
+        auto& modSystem = World::Get().GetModSystem();
 
-    if (ExtraCharge* pExtraCharge = Cast<ExtraCharge>(apExtraDataList->GetByType(ExtraDataType::Charge)))
-    {
-        arEntry.ExtraCharge = pExtraCharge->fCharge;
-    }
-
-    if (ExtraEnchantment* pExtraEnchantment = Cast<ExtraEnchantment>(apExtraDataList->GetByType(ExtraDataType::Enchantment)))
-    {
-        TP_ASSERT(pExtraEnchantment->pEnchantment, "Null enchantment in ExtraEnchantment");
-
-        // TP_ASSERT only logs unless a debugger is attached, so it never was the guard
-        // this block needed. The pointer comes from engine extra data, and the effect
-        // setting of an effect item is no more guaranteed than the effect item itself.
-        EnchantmentItem* pEnchantment = pExtraEnchantment->pEnchantment;
-
-        if (pEnchantment)
+        if (ExtraCount* pExtraCount = Cast<ExtraCount>(apExtraDataList->GetByType(ExtraDataType::Count)))
         {
-            modSystem.GetServerModId(pEnchantment->formID, arEntry.ExtraEnchantId);
+            arEntry.Count = pExtraCount->count;
+        }
 
-            if (pEnchantment->formID & 0xFF000000)
+        if (ExtraCharge* pExtraCharge = Cast<ExtraCharge>(apExtraDataList->GetByType(ExtraDataType::Charge)))
+        {
+            arEntry.ExtraCharge = pExtraCharge->fCharge;
+        }
+
+        if (ExtraEnchantment* pExtraEnchantment = Cast<ExtraEnchantment>(apExtraDataList->GetByType(ExtraDataType::Enchantment)))
+        {
+            TP_ASSERT(pExtraEnchantment->pEnchantment, "Null enchantment in ExtraEnchantment");
+
+            // TP_ASSERT only logs unless a debugger is attached, so it never was the guard
+            // this block needed. The pointer comes from engine extra data, and the effect
+            // setting of an effect item is no more guaranteed than the effect item itself.
+            EnchantmentItem* pEnchantment = pExtraEnchantment->pEnchantment;
+
+            if (pEnchantment)
             {
-                for (EffectItem* pEffectItem : pEnchantment->listOfEffects)
+                modSystem.GetServerModId(pEnchantment->formID, arEntry.ExtraEnchantId);
+
+                if (pEnchantment->formID & 0xFF000000)
                 {
-                    TP_ASSERT(pEffectItem, "pEffectItem is null.");
-                    if (!pEffectItem || !pEffectItem->pEffectSetting)
-                        continue;
+                    for (EffectItem* pEffectItem : pEnchantment->listOfEffects)
+                    {
+                        TP_ASSERT(pEffectItem, "pEffectItem is null.");
+                        if (!pEffectItem || !pEffectItem->pEffectSetting)
+                            continue;
 
-                    Inventory::EffectItem effect;
-                    effect.Magnitude = pEffectItem->data.fMagnitude;
-                    effect.Area = pEffectItem->data.iArea;
-                    effect.Duration = pEffectItem->data.iDuration;
-                    effect.RawCost = pEffectItem->fRawCost;
-                    modSystem.GetServerModId(pEffectItem->pEffectSetting->formID, effect.EffectId);
-                    arEntry.EnchantData.Effects.push_back(effect);
+                        Inventory::EffectItem effect;
+                        effect.Magnitude = pEffectItem->data.fMagnitude;
+                        effect.Area = pEffectItem->data.iArea;
+                        effect.Duration = pEffectItem->data.iDuration;
+                        effect.RawCost = pEffectItem->fRawCost;
+                        modSystem.GetServerModId(pEffectItem->pEffectSetting->formID, effect.EffectId);
+                        arEntry.EnchantData.Effects.push_back(effect);
+                    }
+
+                    uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
+                    TESForm* pObject = TESForm::GetById(objectId);
+                    if (pObject)
+                        arEntry.EnchantData.IsWeapon = pObject->formType == FormType::Weapon;
                 }
+            }
+            else
+            {
+                spdlog::error("Null enchantment in ExtraEnchantment.");
+            }
 
-                uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
-                TESForm* pObject = TESForm::GetById(objectId);
-                if (pObject)
-                    arEntry.EnchantData.IsWeapon = pObject->formType == FormType::Weapon;
+            arEntry.ExtraEnchantCharge = pExtraEnchantment->usCharge;
+            arEntry.ExtraEnchantRemoveUnequip = pExtraEnchantment->bRemoveOnUnequip;
+        }
+
+        if (ExtraHealth* pExtraHealth = Cast<ExtraHealth>(apExtraDataList->GetByType(ExtraDataType::Health)))
+        {
+            arEntry.ExtraHealth = pExtraHealth->fHealth;
+        }
+
+        if (ExtraPoison* pExtraPoison = Cast<ExtraPoison>(apExtraDataList->GetByType(ExtraDataType::Poison)))
+        {
+            TP_ASSERT(pExtraPoison->pPoison, "Null poison in ExtraPoison");
+            if (pExtraPoison && pExtraPoison->pPoison)
+            {
+                modSystem.GetServerModId(pExtraPoison->pPoison->formID, arEntry.ExtraPoisonId);
+                arEntry.ExtraPoisonCount = pExtraPoison->uiCount;
             }
         }
-        else
+
+        if (ExtraSoul* pExtraSoul = Cast<ExtraSoul>(apExtraDataList->GetByType(ExtraDataType::Soul)))
         {
-            spdlog::error("Null enchantment in ExtraEnchantment.");
+            arEntry.ExtraSoulLevel = (int32_t)pExtraSoul->cSoul;
         }
 
-        arEntry.ExtraEnchantCharge = pExtraEnchantment->usCharge;
-        arEntry.ExtraEnchantRemoveUnequip = pExtraEnchantment->bRemoveOnUnequip;
-    }
-
-    if (ExtraHealth* pExtraHealth = Cast<ExtraHealth>(apExtraDataList->GetByType(ExtraDataType::Health)))
-    {
-        arEntry.ExtraHealth = pExtraHealth->fHealth;
-    }
-
-    if (ExtraPoison* pExtraPoison = Cast<ExtraPoison>(apExtraDataList->GetByType(ExtraDataType::Poison)))
-    {
-        TP_ASSERT(pExtraPoison->pPoison, "Null poison in ExtraPoison");
-        if (pExtraPoison && pExtraPoison->pPoison)
+        /*
+        if (ExtraTextDisplayData* pExtraTextDisplayData = Cast<ExtraTextDisplayData>(apExtraDataList->GetByType(ExtraDataType::TextDisplayData)))
         {
-            modSystem.GetServerModId(pExtraPoison->pPoison->formID, arEntry.ExtraPoisonId);
-            arEntry.ExtraPoisonCount = pExtraPoison->uiCount;
+            if (pExtraTextDisplayData->DisplayName)
+                arEntry.ExtraTextDisplayName = pExtraTextDisplayData->DisplayName;
+            else
+                arEntry.ExtraTextDisplayName = "";
         }
-    }
+        */
 
-    if (ExtraSoul* pExtraSoul = Cast<ExtraSoul>(apExtraDataList->GetByType(ExtraDataType::Soul)))
+        arEntry.ExtraWorn = apExtraDataList->Contains(ExtraDataType::Worn);
+        arEntry.ExtraWornLeft = apExtraDataList->Contains(ExtraDataType::WornLeft);
+
+        arEntry.IsQuestItem = apExtraDataList->HasQuestObjectAlias();
+    }
+    catch (...)
     {
-        arEntry.ExtraSoulLevel = (int32_t)pExtraSoul->cSoul;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TESObjectREFR::GetItemFromExtraData");
     }
-
-    /*
-    if (ExtraTextDisplayData* pExtraTextDisplayData = Cast<ExtraTextDisplayData>(apExtraDataList->GetByType(ExtraDataType::TextDisplayData)))
-    {
-        if (pExtraTextDisplayData->DisplayName)
-            arEntry.ExtraTextDisplayName = pExtraTextDisplayData->DisplayName;
-        else
-            arEntry.ExtraTextDisplayName = "";
-    }
-    */
-
-    arEntry.ExtraWorn = apExtraDataList->Contains(ExtraDataType::Worn);
-    arEntry.ExtraWornLeft = apExtraDataList->Contains(ExtraDataType::WornLeft);
-
-    arEntry.IsQuestItem = apExtraDataList->HasQuestObjectAlias();
 }
 
 ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEntry) noexcept
 {
-    auto& modSystem = World::Get().GetModSystem();
+    // Reference and inventory helpers. The bodies copy inventories in and out of
+    // engine state and report what they did; the copy that made it in stays.
+    try
+    {
+        auto& modSystem = World::Get().GetModSystem();
 
-    ExtraDataList* pExtraDataList = nullptr;
+        ExtraDataList* pExtraDataList = nullptr;
 
-    if (!arEntry.ContainsExtraData())
+        if (!arEntry.ContainsExtraData())
+            return pExtraDataList;
+
+        pExtraDataList = ExtraDataList::New();
+
+        if (arEntry.ExtraCharge > 0.f)
+        {
+            pExtraDataList->SetChargeData(arEntry.ExtraCharge);
+        }
+
+        if (arEntry.ExtraEnchantId != 0)
+        {
+            EnchantmentItem* pEnchantment = nullptr;
+            if (arEntry.ExtraEnchantId.ModId == 0xFFFFFFFF)
+            {
+                pEnchantment = EnchantmentItem::Create(arEntry.EnchantData);
+            }
+            else
+            {
+                uint32_t enchantId = modSystem.GetGameId(arEntry.ExtraEnchantId);
+                pEnchantment = Cast<EnchantmentItem>(TESForm::GetById(enchantId));
+            }
+
+            TP_ASSERT(pEnchantment, "No Enchantment created or found.");
+
+            // Both branches above can hand back a null: the game id of an enchantment that
+            // arrived over the wire does not have to resolve to a form, and the created
+            // object manager is free to refuse. Passing null into the engine setter crashed.
+            if (pEnchantment)
+            {
+                pExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
+            }
+            else
+            {
+                spdlog::error("{}: Enchantment not found, {:X}:{:X}.", __FUNCTION__, arEntry.ExtraEnchantId.ModId, arEntry.ExtraEnchantId.BaseId);
+            }
+        }
+
+        if (arEntry.ExtraPoisonId != 0)
+        {
+            // TODO: does poison have the same temp problem as enchants?
+            // doesn't seem to be the case, there are only like 3 poisons, and no custom ones
+            TP_ASSERT(arEntry.ExtraPoisonId.ModId != 0xFFFFFFFF, "Poison is sent as temp!");
+
+            uint32_t poisonId = modSystem.GetGameId(arEntry.ExtraPoisonId);
+            if (AlchemyItem* pPoison = Cast<AlchemyItem>(TESForm::GetById(poisonId)))
+            {
+                pExtraDataList->SetPoison(pPoison, arEntry.ExtraPoisonCount);
+            }
+        }
+
+        if (arEntry.ExtraHealth > 0.f)
+        {
+            pExtraDataList->SetHealth(arEntry.ExtraHealth);
+        }
+
+        if (arEntry.ExtraSoulLevel > 0 && arEntry.ExtraSoulLevel <= 5)
+        {
+            pExtraDataList->SetSoulData(static_cast<SOUL_LEVEL>(arEntry.ExtraSoulLevel));
+        }
+
+        if (arEntry.ExtraWorn)
+        {
+            pExtraDataList->SetWorn(false);
+        }
+
+        if (arEntry.ExtraWornLeft)
+        {
+            pExtraDataList->SetWorn(true);
+        }
+
+        // TODO: this is causing crashes
+        /*
+        if (!arEntry.ExtraTextDisplayName.empty())
+        {
+            ExtraTextDisplayData* pExtraText = Memory::Allocate<ExtraTextDisplayData>();
+            *((uint64_t*)pExtraText) = 0x1416244D0;
+            pExtraText->next = nullptr;
+            pExtraText->DisplayName = arEntry.ExtraTextDisplayName.c_str();
+            pExtraText->usCustomNameLength = arEntry.ExtraTextDisplayName.length();
+            pExtraText->iOwnerInstance = -2;
+            pExtraText->fTemperFactor = 1.0F;
+            pExtraDataList->Add(ExtraDataType::TextDisplayData, pExtraText);
+        }
+        */
+
+        if (pExtraDataList->data == nullptr)
+        {
+            Memory::Delete(pExtraDataList->bitfield);
+            Memory::Delete(pExtraDataList);
+            pExtraDataList = nullptr;
+        }
+
         return pExtraDataList;
-
-    pExtraDataList = ExtraDataList::New();
-
-    if (arEntry.ExtraCharge > 0.f)
-    {
-        pExtraDataList->SetChargeData(arEntry.ExtraCharge);
     }
-
-    if (arEntry.ExtraEnchantId != 0)
+    catch (...)
     {
-        EnchantmentItem* pEnchantment = nullptr;
-        if (arEntry.ExtraEnchantId.ModId == 0xFFFFFFFF)
-        {
-            pEnchantment = EnchantmentItem::Create(arEntry.EnchantData);
-        }
-        else
-        {
-            uint32_t enchantId = modSystem.GetGameId(arEntry.ExtraEnchantId);
-            pEnchantment = Cast<EnchantmentItem>(TESForm::GetById(enchantId));
-        }
-
-        TP_ASSERT(pEnchantment, "No Enchantment created or found.");
-
-        // Both branches above can hand back a null: the game id of an enchantment that
-        // arrived over the wire does not have to resolve to a form, and the created
-        // object manager is free to refuse. Passing null into the engine setter crashed.
-        if (pEnchantment)
-        {
-            pExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
-        }
-        else
-        {
-            spdlog::error("{}: Enchantment not found, {:X}:{:X}.", __FUNCTION__, arEntry.ExtraEnchantId.ModId, arEntry.ExtraEnchantId.BaseId);
-        }
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TESObjectREFR::GetExtraDataFromItem");
+        return nullptr;
     }
-
-    if (arEntry.ExtraPoisonId != 0)
-    {
-        // TODO: does poison have the same temp problem as enchants?
-        // doesn't seem to be the case, there are only like 3 poisons, and no custom ones
-        TP_ASSERT(arEntry.ExtraPoisonId.ModId != 0xFFFFFFFF, "Poison is sent as temp!");
-
-        uint32_t poisonId = modSystem.GetGameId(arEntry.ExtraPoisonId);
-        if (AlchemyItem* pPoison = Cast<AlchemyItem>(TESForm::GetById(poisonId)))
-        {
-            pExtraDataList->SetPoison(pPoison, arEntry.ExtraPoisonCount);
-        }
-    }
-
-    if (arEntry.ExtraHealth > 0.f)
-    {
-        pExtraDataList->SetHealth(arEntry.ExtraHealth);
-    }
-
-    if (arEntry.ExtraSoulLevel > 0 && arEntry.ExtraSoulLevel <= 5)
-    {
-        pExtraDataList->SetSoulData(static_cast<SOUL_LEVEL>(arEntry.ExtraSoulLevel));
-    }
-
-    if (arEntry.ExtraWorn)
-    {
-        pExtraDataList->SetWorn(false);
-    }
-
-    if (arEntry.ExtraWornLeft)
-    {
-        pExtraDataList->SetWorn(true);
-    }
-
-    // TODO: this is causing crashes
-    /*
-    if (!arEntry.ExtraTextDisplayName.empty())
-    {
-        ExtraTextDisplayData* pExtraText = Memory::Allocate<ExtraTextDisplayData>();
-        *((uint64_t*)pExtraText) = 0x1416244D0;
-        pExtraText->next = nullptr;
-        pExtraText->DisplayName = arEntry.ExtraTextDisplayName.c_str();
-        pExtraText->usCustomNameLength = arEntry.ExtraTextDisplayName.length();
-        pExtraText->iOwnerInstance = -2;
-        pExtraText->fTemperFactor = 1.0F;
-        pExtraDataList->Add(ExtraDataType::TextDisplayData, pExtraText);
-    }
-    */
-
-    if (pExtraDataList->data == nullptr)
-    {
-        Memory::Delete(pExtraDataList->bitfield);
-        Memory::Delete(pExtraDataList);
-        pExtraDataList = nullptr;
-    }
-
-    return pExtraDataList;
 }
 
 Inventory TESObjectREFR::GetInventory() const noexcept
@@ -706,110 +725,120 @@ Inventory TESObjectREFR::GetInventory() const noexcept
 
 Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) const noexcept
 {
-    auto& modSystem = World::Get().GetModSystem();
-    Inventory inventory{};
-
-    if (TESContainer* pBaseContainer = GetContainer())
+    // Reference and inventory helpers. The bodies copy inventories in and out of
+    // engine state and report what they did; the copy that made it in stays.
+    try
     {
-        for (int i = 0; i < pBaseContainer->count; i++)
+        auto& modSystem = World::Get().GetModSystem();
+        Inventory inventory{};
+
+        if (TESContainer* pBaseContainer = GetContainer())
         {
-            TESContainer::Entry* pGameEntry = pBaseContainer->entries[i];
-            if (!pGameEntry || !pGameEntry->form)
+            for (int i = 0; i < pBaseContainer->count; i++)
             {
-                spdlog::warn("Entry or form for inventory item is null.");
-                continue;
+                TESContainer::Entry* pGameEntry = pBaseContainer->entries[i];
+                if (!pGameEntry || !pGameEntry->form)
+                {
+                    spdlog::warn("Entry or form for inventory item is null.");
+                    continue;
+                }
+
+                if (!aFilter(*pGameEntry->form))
+                    continue;
+
+                Inventory::Entry entry;
+                modSystem.GetServerModId(pGameEntry->form->formID, entry.BaseId);
+                entry.Count = pGameEntry->count;
+
+                inventory.Entries.push_back(std::move(entry));
             }
+        }
+
+        Inventory extraInventory{};
+
+        auto pExtraContChangesEntries = GetContainerChanges()->entries;
+        for (auto pGameEntry : *pExtraContChangesEntries)
+        {
+            if (!pGameEntry)
+                continue;
 
             if (!aFilter(*pGameEntry->form))
                 continue;
 
-            Inventory::Entry entry;
+            Inventory::Entry entry{};
             modSystem.GetServerModId(pGameEntry->form->formID, entry.BaseId);
             entry.Count = pGameEntry->count;
 
-            inventory.Entries.push_back(std::move(entry));
+            for (ExtraDataList* pExtraDataList : *pGameEntry->dataList)
+            {
+                if (!pExtraDataList)
+                    continue;
+
+                Inventory::Entry innerEntry;
+                innerEntry.BaseId = entry.BaseId;
+                innerEntry.Count = 1;
+
+                GetItemFromExtraData(innerEntry, pExtraDataList);
+
+                entry.Count -= innerEntry.Count;
+
+                extraInventory.Entries.push_back(std::move(innerEntry));
+            }
+
+            if (entry.Count != 0)
+                extraInventory.Entries.push_back(std::move(entry));
         }
-    }
 
-    Inventory extraInventory{};
+        spdlog::debug("ExtraInventory count: {}", extraInventory.Entries.size());
 
-    auto pExtraContChangesEntries = GetContainerChanges()->entries;
-    for (auto pGameEntry : *pExtraContChangesEntries)
-    {
-        if (!pGameEntry)
-            continue;
+        Inventory minimizedExtraInventory{};
 
-        if (!aFilter(*pGameEntry->form))
-            continue;
-
-        Inventory::Entry entry{};
-        modSystem.GetServerModId(pGameEntry->form->formID, entry.BaseId);
-        entry.Count = pGameEntry->count;
-
-        for (ExtraDataList* pExtraDataList : *pGameEntry->dataList)
+        for (auto& entry : extraInventory.Entries)
         {
-            if (!pExtraDataList)
+            auto duplicate = std::find_if(minimizedExtraInventory.Entries.begin(), minimizedExtraInventory.Entries.end(), [entry](const Inventory::Entry& newEntry) { return newEntry.CanBeMerged(entry); });
+
+            if (duplicate == std::end(minimizedExtraInventory.Entries))
+            {
+                minimizedExtraInventory.Entries.push_back(entry);
+                continue;
+            }
+
+            duplicate->Count += entry.Count;
+        }
+
+        spdlog::debug("MinExtraInventory count: {}", minimizedExtraInventory.Entries.size());
+
+        for (auto& entry : minimizedExtraInventory.Entries)
+        {
+            if (entry.ContainsExtraData())
                 continue;
 
-            Inventory::Entry innerEntry;
-            innerEntry.BaseId = entry.BaseId;
-            innerEntry.Count = 1;
+            auto duplicate = std::find_if(inventory.Entries.begin(), inventory.Entries.end(), [entry](const Inventory::Entry& newEntry) { return newEntry.CanBeMerged(entry); });
 
-            GetItemFromExtraData(innerEntry, pExtraDataList);
+            if (duplicate == std::end(inventory.Entries))
+                continue;
 
-            entry.Count -= innerEntry.Count;
-
-            extraInventory.Entries.push_back(std::move(innerEntry));
+            entry.Count += duplicate->Count;
+            duplicate->Count = 0;
         }
 
-        if (entry.Count != 0)
-            extraInventory.Entries.push_back(std::move(entry));
+        spdlog::debug("MinExtraInventory count after: {}", minimizedExtraInventory.Entries.size());
+
+        inventory.Entries.insert(inventory.Entries.end(), minimizedExtraInventory.Entries.begin(), minimizedExtraInventory.Entries.end());
+
+        spdlog::debug("Inventory count before: {}", inventory.Entries.size());
+
+        inventory.RemoveByFilter([](const auto& entry) { return entry.Count == 0; });
+
+        spdlog::debug("Inventory count after: {}", inventory.Entries.size());
+
+        return inventory;
     }
-
-    spdlog::debug("ExtraInventory count: {}", extraInventory.Entries.size());
-
-    Inventory minimizedExtraInventory{};
-
-    for (auto& entry : extraInventory.Entries)
+    catch (...)
     {
-        auto duplicate = std::find_if(minimizedExtraInventory.Entries.begin(), minimizedExtraInventory.Entries.end(), [entry](const Inventory::Entry& newEntry) { return newEntry.CanBeMerged(entry); });
-
-        if (duplicate == std::end(minimizedExtraInventory.Entries))
-        {
-            minimizedExtraInventory.Entries.push_back(entry);
-            continue;
-        }
-
-        duplicate->Count += entry.Count;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TESObjectREFR::GetInventory");
+        return {};
     }
-
-    spdlog::debug("MinExtraInventory count: {}", minimizedExtraInventory.Entries.size());
-
-    for (auto& entry : minimizedExtraInventory.Entries)
-    {
-        if (entry.ContainsExtraData())
-            continue;
-
-        auto duplicate = std::find_if(inventory.Entries.begin(), inventory.Entries.end(), [entry](const Inventory::Entry& newEntry) { return newEntry.CanBeMerged(entry); });
-
-        if (duplicate == std::end(inventory.Entries))
-            continue;
-
-        entry.Count += duplicate->Count;
-        duplicate->Count = 0;
-    }
-
-    spdlog::debug("MinExtraInventory count after: {}", minimizedExtraInventory.Entries.size());
-
-    inventory.Entries.insert(inventory.Entries.end(), minimizedExtraInventory.Entries.begin(), minimizedExtraInventory.Entries.end());
-
-    spdlog::debug("Inventory count before: {}", inventory.Entries.size());
-
-    inventory.RemoveByFilter([](const auto& entry) { return entry.Count == 0; });
-
-    spdlog::debug("Inventory count after: {}", inventory.Entries.size());
-
-    return inventory;
 }
 
 Inventory TESObjectREFR::GetArmor() const noexcept
@@ -832,125 +861,162 @@ bool TESObjectREFR::IsItemInInventory(uint32_t aFormID) const noexcept
 
 void TESObjectREFR::SetInventory(const Inventory& aInventory) noexcept
 {
-    spdlog::debug("Setting inventory for {:X}", formID);
-
-    ScopedInventoryOverride _;
-
-    RemoveAllItems();
-
-    for (const Inventory::Entry& entry : aInventory.Entries)
+    // Reference and inventory helpers. The bodies copy inventories in and out of
+    // engine state and report what they did; the copy that made it in stays.
+    try
     {
-        if (entry.Count != 0)
-            AddOrRemoveItem(entry, true);
-    }
-}
+        spdlog::debug("Setting inventory for {:X}", formID);
 
-Vector<uint32_t> TESObjectREFR::RemoveNonQuestItems(Inventory& aCurrentInventory) noexcept
-{
-    ScopedEquipOverride equipOverride_;
+        ScopedInventoryOverride _;
 
-    Vector<uint32_t> questEntries{};
+        RemoveAllItems();
 
-    auto& modSystem = World::Get().GetModSystem();
-
-    for (auto& entry : aCurrentInventory.Entries)
-    {
-        if (entry.IsQuestItem)
-        {
-            uint32_t gameId = modSystem.GetGameId(entry.BaseId);
-            questEntries.emplace_back(gameId);
-            continue;
-        }
-
-        if (entry.Count <= 0)
-            continue;
-
-        entry.Count = -entry.Count;
-        AddOrRemoveItem(entry, true);
-    }
-
-    return questEntries;
-}
-
-void TESObjectREFR::SetInventoryRetainingQuestItems(Inventory& aCurrentInventory, const Inventory& acSourceInventory) noexcept
-{
-    spdlog::debug("Setting inventory for {:X}", formID);
-
-    ScopedInventoryOverride _;
-
-    // Remove all non-quest items first
-    Vector<uint32_t> questItemIds = RemoveNonQuestItems(aCurrentInventory);
-    auto& modSystem = World::Get().GetModSystem();
-
-    for (const auto& entry : acSourceInventory.Entries)
-    {
-        uint32_t gameId = modSystem.GetGameId(entry.BaseId);
-
-        // If the item is not in the list of quest items, add it
-        if (std::find(questItemIds.begin(), questItemIds.end(), gameId) == questItemIds.end())
+        for (const Inventory::Entry& entry : aInventory.Entries)
         {
             if (entry.Count != 0)
                 AddOrRemoveItem(entry, true);
         }
     }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TESObjectREFR::SetInventory");
+    }
+}
+
+Vector<uint32_t> TESObjectREFR::RemoveNonQuestItems(Inventory& aCurrentInventory) noexcept
+{
+    // Reference and inventory helpers. The bodies copy inventories in and out of
+    // engine state and report what they did; the copy that made it in stays.
+    try
+    {
+        ScopedEquipOverride equipOverride_;
+
+        Vector<uint32_t> questEntries{};
+
+        auto& modSystem = World::Get().GetModSystem();
+
+        for (auto& entry : aCurrentInventory.Entries)
+        {
+            if (entry.IsQuestItem)
+            {
+                uint32_t gameId = modSystem.GetGameId(entry.BaseId);
+                questEntries.emplace_back(gameId);
+                continue;
+            }
+
+            if (entry.Count <= 0)
+                continue;
+
+            entry.Count = -entry.Count;
+            AddOrRemoveItem(entry, true);
+        }
+
+        return questEntries;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TESObjectREFR::RemoveNonQuestItems");
+        return {};
+    }
+}
+
+void TESObjectREFR::SetInventoryRetainingQuestItems(Inventory& aCurrentInventory, const Inventory& acSourceInventory) noexcept
+{
+    // Reference and inventory helpers. The bodies copy inventories in and out of
+    // engine state and report what they did; the copy that made it in stays.
+    try
+    {
+        spdlog::debug("Setting inventory for {:X}", formID);
+
+        ScopedInventoryOverride _;
+
+        // Remove all non-quest items first
+        Vector<uint32_t> questItemIds = RemoveNonQuestItems(aCurrentInventory);
+        auto& modSystem = World::Get().GetModSystem();
+
+        for (const auto& entry : acSourceInventory.Entries)
+        {
+            uint32_t gameId = modSystem.GetGameId(entry.BaseId);
+
+            // If the item is not in the list of quest items, add it
+            if (std::find(questItemIds.begin(), questItemIds.end(), gameId) == questItemIds.end())
+            {
+                if (entry.Count != 0)
+                    AddOrRemoveItem(entry, true);
+            }
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TESObjectREFR::SetInventoryRetainingQuestItems");
+    }
 }
 
 void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSettingInventory) noexcept
 {
-    ModSystem& modSystem = World::Get().GetModSystem();
-
-    uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
-    TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
-    if (!pObject)
+    // Reference and inventory helpers. The bodies copy inventories in and out of
+    // engine state and report what they did; the copy that made it in stays.
+    try
     {
-        spdlog::warn("{}: Object to add not found, {:X}:{:X}.", __FUNCTION__, arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
-        return;
-    }
+        ModSystem& modSystem = World::Get().GetModSystem();
 
-    ExtraDataList* pExtraDataList = GetExtraDataFromItem(arEntry);
-
-    if (arEntry.Count > 0)
-    {
-        bool isWorn = false;
-        bool isWornLeft = false;
-        if (pExtraDataList)
+        uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
+        TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
+        if (!pObject)
         {
-            isWorn = pExtraDataList->Contains(ExtraDataType::Worn);
-            isWornLeft = pExtraDataList->Contains(ExtraDataType::WornLeft);
+            spdlog::warn("{}: Object to add not found, {:X}:{:X}.", __FUNCTION__, arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
+            return;
         }
 
-        spdlog::debug("Adding item {:X}, count {}", pObject->formID, arEntry.Count);
-        AddObjectToContainer(pObject, pExtraDataList, arEntry.Count, nullptr);
+        ExtraDataList* pExtraDataList = GetExtraDataFromItem(arEntry);
 
-        // TODO: check Actor cast first?
-        if (isWorn)
-            EquipManager::Get()->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false);
-        else if (isWornLeft)
-            EquipManager::Get()->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().leftEquipSlot, false, true, false, false);
-    }
-    else if (arEntry.Count < 0)
-    {
-        spdlog::debug("Removing item {:X}, count {}", pObject->formID, -arEntry.Count);
-        RemoveItem(pObject, -arEntry.Count, ITEM_REMOVE_REASON::kRemove, pExtraDataList, nullptr);
-    }
-
-    // TODO(cosideci): this is still flawed. Adding the refr to the quest leader is hard.
-    // It is still recommended that the quest leader loots all quest items.
-    if (arEntry.IsQuestItem && arEntry.Count > 0 && !aIsSettingInventory)
-    {
-        // The player is null on the main menu and while a save is loading, and
-        // this path is reached from the inventory messages.
-        PlayerCharacter* pPlayer = PlayerCharacter::Get();
-
-        if (pPlayer && !pPlayer->IsItemInInventory(objectId))
+        if (arEntry.Count > 0)
         {
-            Actor* pActor = Cast<Actor>(this);
-            if (pActor && pActor->GetExtension()->IsRemotePlayer())
-                pPlayer->AddOrRemoveItem(arEntry);
-        }
-    }
+            bool isWorn = false;
+            bool isWornLeft = false;
+            if (pExtraDataList)
+            {
+                isWorn = pExtraDataList->Contains(ExtraDataType::Worn);
+                isWornLeft = pExtraDataList->Contains(ExtraDataType::WornLeft);
+            }
 
-    UpdateItemList(nullptr);
+            spdlog::debug("Adding item {:X}, count {}", pObject->formID, arEntry.Count);
+            AddObjectToContainer(pObject, pExtraDataList, arEntry.Count, nullptr);
+
+            // TODO: check Actor cast first?
+            if (isWorn)
+                EquipManager::Get()->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false);
+            else if (isWornLeft)
+                EquipManager::Get()->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().leftEquipSlot, false, true, false, false);
+        }
+        else if (arEntry.Count < 0)
+        {
+            spdlog::debug("Removing item {:X}, count {}", pObject->formID, -arEntry.Count);
+            RemoveItem(pObject, -arEntry.Count, ITEM_REMOVE_REASON::kRemove, pExtraDataList, nullptr);
+        }
+
+        // TODO(cosideci): this is still flawed. Adding the refr to the quest leader is hard.
+        // It is still recommended that the quest leader loots all quest items.
+        if (arEntry.IsQuestItem && arEntry.Count > 0 && !aIsSettingInventory)
+        {
+            // The player is null on the main menu and while a save is loading, and
+            // this path is reached from the inventory messages.
+            PlayerCharacter* pPlayer = PlayerCharacter::Get();
+
+            if (pPlayer && !pPlayer->IsItemInInventory(objectId))
+            {
+                Actor* pActor = Cast<Actor>(this);
+                if (pActor && pActor->GetExtension()->IsRemotePlayer())
+                    pPlayer->AddOrRemoveItem(arEntry);
+            }
+        }
+
+        UpdateItemList(nullptr);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TESObjectREFR::AddOrRemoveItem");
+    }
 }
 
 void TESObjectREFR::UpdateItemList(TESForm* pUnkForm) noexcept

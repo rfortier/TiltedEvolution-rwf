@@ -243,20 +243,29 @@ void BSScript::NativeFunctionBase::SetCallableFromTasklets(bool aCallable)
 // so bind without the type instead and say so.
 static void* LookUpActorParameterType(const char* acpClassName, const char* acpFunctionName) noexcept
 {
-    auto* pVirtualMachine = GameVM::GetVirtualMachine();
-    if (!pVirtualMachine)
+    // Papyrus registration diagnostics. A report that could not be written costs the
+    // log line, not the registration.
+    try
     {
-        spdlog::error("papyrus native {}::{} is being bound before the vm exists, so its Actor parameter type stays "
-                      "unset and calls into it will not match",
-                      acpClassName, acpFunctionName);
-        return nullptr;
+        auto* pVirtualMachine = GameVM::GetVirtualMachine();
+        if (!pVirtualMachine)
+        {
+            spdlog::error("papyrus native {}::{} is being bound before the vm exists, so its Actor parameter type stays "
+                          "unset and calls into it will not match",
+                          acpClassName, acpFunctionName);
+            return nullptr;
+        }
+
+        BSFixedString actorType("Actor");
+        void* pType = nullptr;
+        pVirtualMachine->GetScriptObjectType1(&actorType, &pType);
+
+        return pType;
     }
-
-    BSFixedString actorType("Actor");
-    void* pType = nullptr;
-    pVirtualMachine->GetScriptObjectType1(&actorType, &pType);
-
-    return pType;
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in LookUpActorParameterType");
+    }
 }
 
 BSScript::IsRemotePlayerFunc::IsRemotePlayerFunc(const char* apFunctionName, const char* apClassName, FunctionType aFunction, Variable::Type aType)

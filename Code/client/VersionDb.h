@@ -555,30 +555,40 @@ template <class T> struct VersionDbPtr
 
     void* GetPtr() const noexcept
     {
-        if (m_pPtr == nullptr)
+        // An address that could not be resolved is reported and then returned as null,
+        // which is the same answer as an offset that has no pointer.
+        try
         {
-            m_pPtr = VersionDb::Get().FindAddressById(m_id);
-
-            // legacy runtimes (1.5.x) have a partial id mapping; unresolved
-            // entries fall back to a zero-returning stub so callers degrade
-            // instead of crashing. Sites that cannot tolerate a stub opt out
-            // via the constructor flag (rtti lookups, ctors, ...).
-            if (m_pPtr == nullptr && m_allowUnresolvedStub && VersionDb::Get().IsLegacyFormat())
+            if (m_pPtr == nullptr)
             {
-                m_pPtr = VersionDb::Get().GetUnresolvedStub();
+                m_pPtr = VersionDb::Get().FindAddressById(m_id);
 
-                // The map knows how many ids are missing, but only the running
-                // game knows which ones a session actually reaches. Naming
-                // them here is what turns "1.5.x is missing something" into a
-                // list that can be worked through - see
-                // Tools/missing_1_5_97_ids.txt for what each one costs.
-                spdlog::warn("address library id {} is not mapped on game {}; every call through it returns zero "
-                             "instead of running",
-                             m_id, VersionDb::Get().GetLoadedVersionString());
+                // legacy runtimes (1.5.x) have a partial id mapping; unresolved
+                // entries fall back to a zero-returning stub so callers degrade
+                // instead of crashing. Sites that cannot tolerate a stub opt out
+                // via the constructor flag (rtti lookups, ctors, ...).
+                if (m_pPtr == nullptr && m_allowUnresolvedStub && VersionDb::Get().IsLegacyFormat())
+                {
+                    m_pPtr = VersionDb::Get().GetUnresolvedStub();
+
+                    // The map knows how many ids are missing, but only the running
+                    // game knows which ones a session actually reaches. Naming
+                    // them here is what turns "1.5.x is missing something" into a
+                    // list that can be worked through - see
+                    // Tools/missing_1_5_97_ids.txt for what each one costs.
+                    spdlog::warn("address library id {} is not mapped on game {}; every call through it returns zero "
+                                 "instead of running",
+                                 m_id, VersionDb::Get().GetLoadedVersionString());
+                }
             }
-        }
 
-        return m_pPtr;
+            return m_pPtr;
+        }
+        catch (...)
+        {
+            Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in GetPtr");
+            return nullptr;
+        }
     }
 
 private:

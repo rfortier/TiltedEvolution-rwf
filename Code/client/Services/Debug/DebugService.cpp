@@ -81,29 +81,39 @@ static void DrawBuildTag()
 
 void __declspec(noinline) DebugService::PlaceActorInWorld() noexcept
 {
-    if (m_actors.size())
-        return;
+    // The debug menu builds an actor, appends to its own lists and draws ImGui, all
+    // from the frame loop. A failure drops the menu for this frame; the next one
+    // tries again.
+    try
+    {
+        if (m_actors.size())
+            return;
 
-    const auto* pPlayer = PlayerCharacter::Get();
-    if (!pPlayer)
-        return;
+        const auto* pPlayer = PlayerCharacter::Get();
+        if (!pPlayer)
+            return;
 
-    const auto pPlayerBaseForm = static_cast<TESNPC*>(pPlayer->baseForm);
-    if (!pPlayerBaseForm)
-        return;
+        const auto pPlayerBaseForm = static_cast<TESNPC*>(pPlayer->baseForm);
+        if (!pPlayerBaseForm)
+            return;
 
-    // Create() has two ways to come back empty: no player anchor, or a
-    // base form that does not cast. Both are reachable from the debug menu.
-    auto pActor = Actor::Create(pPlayerBaseForm);
-    if (!pActor)
-        return;
+        // Create() has two ways to come back empty: no player anchor, or a
+        // base form that does not cast. Both are reachable from the debug menu.
+        auto pActor = Actor::Create(pPlayerBaseForm);
+        if (!pActor)
+            return;
 
-    const Inventory inventory = pPlayer->GetActorInventory();
-    pActor->SetActorInventory(inventory);
+        const Inventory inventory = pPlayer->GetActorInventory();
+        pActor->SetActorInventory(inventory);
 
-    pActor->GetExtension()->SetPlayer(true);
+        pActor->GetExtension()->SetPlayer(true);
 
-    m_actors.emplace_back(pActor);
+        m_actors.emplace_back(pActor);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while placing the debug actor");
+    }
 }
 
 DebugService::DebugService(entt::dispatcher& aDispatcher, World& aWorld, TransportService& aTransport, ImguiService& aImguiService)
@@ -301,177 +311,187 @@ void DebugService::DrawServerView() noexcept
 
 void DebugService::OnDraw() noexcept
 {
-    const auto view = m_world.view<FormIdComponent>();
-    if (view.empty() || !m_showDebugStuff)
-        return;
-
-    // One line per session: the menu bar below only renders if ImGui is being
-    // pumped from the frame end, which is a different failure than the key not
-    // arriving. Without it a blank screen has two possible causes and no way
-    // to tell them apart from the log.
-    static bool s_reportedFirstDraw = false;
-    if (!s_reportedFirstDraw)
+    // The debug menu builds an actor, appends to its own lists and draws ImGui, all
+    // from the frame loop. A failure drops the menu for this frame; the next one
+    // tries again.
+    try
     {
-        s_reportedFirstDraw = true;
-        spdlog::info("debug menu drawing");
-    }
+        const auto view = m_world.view<FormIdComponent>();
+        if (view.empty() || !m_showDebugStuff)
+            return;
 
-    ImGui::BeginMainMenuBar();
-    if (ImGui::BeginMenu("Helpers"))
-    {
-        if (ImGui::Button("Unstuck player"))
+        // One line per session: the menu bar below only renders if ImGui is being
+        // pumped from the frame end, which is a different failure than the key not
+        // arriving. Without it a blank screen has two possible causes and no way
+        // to tell them apart from the log.
+        static bool s_reportedFirstDraw = false;
+        if (!s_reportedFirstDraw)
         {
-            auto* pPlayer = PlayerCharacter::Get();
-            pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+            s_reportedFirstDraw = true;
+            spdlog::info("debug menu drawing");
         }
 
-        if (ImGui::Button("Stop all combat"))
+        ImGui::BeginMainMenuBar();
+        if (ImGui::BeginMenu("Helpers"))
         {
-            auto* pPlayer = PlayerCharacter::Get();
-            pPlayer->PayCrimeGoldToAllFactions();
-
-            ProcessLists* const pProcessLists = ProcessLists::Get();
-            if (pProcessLists)
+            if (ImGui::Button("Unstuck player"))
             {
-                for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
+                auto* pPlayer = PlayerCharacter::Get();
+                pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+            }
+
+            if (ImGui::Button("Stop all combat"))
+            {
+                auto* pPlayer = PlayerCharacter::Get();
+                pPlayer->PayCrimeGoldToAllFactions();
+
+                ProcessLists* const pProcessLists = ProcessLists::Get();
+                if (pProcessLists)
                 {
-                    Actor* const pRefr = Cast<Actor>(TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]));
-                    if (pRefr && pRefr->GetNiNode())
-                        pRefr->StopCombat();
+                    for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
+                    {
+                        Actor* const pRefr = Cast<Actor>(TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]));
+                        if (pRefr && pRefr->GetNiNode())
+                            pRefr->StopCombat();
+                    }
                 }
             }
-        }
 
-        if (ImGui::Button("Clear stuck screen effects"))
-        {
-            Vector<ImageSpaceModifierInstance*> modifiers;
-            for (const auto& modifier : TES::Get()->activeImageSpaceModifiers)
+            if (ImGui::Button("Clear stuck screen effects"))
             {
-                if (modifier.object)
-                    modifiers.push_back(modifier.object);
+                Vector<ImageSpaceModifierInstance*> modifiers;
+                for (const auto& modifier : TES::Get()->activeImageSpaceModifiers)
+                {
+                    if (modifier.object)
+                        modifiers.push_back(modifier.object);
+                }
+
+                for (auto* pModifier : modifiers)
+                {
+                    ImageSpaceModifierInstance::Stop(pModifier);
+                }
+            }
+            ImGui::EndMenu();
+        }
+    #if (!IS_MASTER)
+
+        if (ImGui::BeginMenu("Components"))
+        {
+            ImGui::MenuItem("Show selected entity in world", nullptr, &m_drawComponentsInWorldSpace);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("UI"))
+        {
+            ImGui::MenuItem("Show build tag", nullptr, &m_showBuildTag);
+            if (ImGui::Button("Log all open windows"))
+            {
+                UI* pUI = UI::Get();
+                for (const auto& it : pUI->menuMap)
+                {
+                    if (pUI->GetMenuOpen(it.key))
+                        spdlog::info("{}", it.key.AsAscii());
+                }
             }
 
-            for (auto* pModifier : modifiers)
+            if (ImGui::Button("Close all menus"))
             {
-                ImageSpaceModifierInstance::Stop(pModifier);
+                UI::Get()->CloseAllMenus();
             }
-        }
-        ImGui::EndMenu();
-    }
-#if (!IS_MASTER)
 
-    if (ImGui::BeginMenu("Components"))
-    {
-        ImGui::MenuItem("Show selected entity in world", nullptr, &m_drawComponentsInWorldSpace);
-        ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("UI"))
-    {
-        ImGui::MenuItem("Show build tag", nullptr, &m_showBuildTag);
-        if (ImGui::Button("Log all open windows"))
+            ImGui::EndMenu();
+        }
+    #endif
+        if (ImGui::BeginMenu("Debuggers"))
         {
-            UI* pUI = UI::Get();
-            for (const auto& it : pUI->menuMap)
+            ImGui::MenuItem("Quests", nullptr, &g_enableQuestWindow);
+            ImGui::MenuItem("Entities", nullptr, &g_enableEntitiesWindow);
+            ImGui::MenuItem("Server", nullptr, &g_enableServerWindow);
+            ImGui::MenuItem("Party", nullptr, &g_enablePartyWindow);
+            ImGui::MenuItem("Dragon spawner", nullptr, &g_enableDragonSpawnerWindow);
+
+    #if (!IS_MASTER)
+            ImGui::MenuItem("Network", nullptr, &g_enableNetworkWindow);
+            ImGui::MenuItem("Forms", nullptr, &g_enableFormsWindow);
+            ImGui::MenuItem("Inventory", nullptr, &g_enableInventoryWindow);
+            ImGui::MenuItem("Animations", nullptr, &g_enableAnimWindow);
+            ImGui::MenuItem("Player", nullptr, &g_enablePlayerWindow);
+            ImGui::MenuItem("Skills", nullptr, &g_enableSkillsWindow);
+            ImGui::MenuItem("Cell", nullptr, &g_enableCellWindow);
+            ImGui::MenuItem("Processes", nullptr, &g_enableProcessesWindow);
+            ImGui::MenuItem("Weather", nullptr, &g_enableWeatherWindow);
+            ImGui::MenuItem("Combat", nullptr, &g_enableCombatWindow);
+            ImGui::MenuItem("Calendar", nullptr, &g_enableCalendarWindow);
+    #endif
+
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Misc"))
+        {
+            if (ImGui::Button("Crash Client"))
             {
-                if (pUI->GetMenuOpen(it.key))
-                    spdlog::info("{}", it.key.AsAscii());
+    #if (!IS_MASTER)
+                spdlog::error("Crash client");
+                int* m = 0;
+                *m = 1338;
+    #else
+                ConnectionErrorEvent errorEvent{};
+                errorEvent.ErrorDetail = "Skyrim Together never crashes ;)  With love, Yamashi, Force, Dragonisser, Cosideci.";
+
+                m_world.GetRunner().Trigger(errorEvent);
+    #endif
             }
+            ImGui::EndMenu();
         }
+        ImGui::EndMainMenuBar();
 
-        if (ImGui::Button("Close all menus"))
-        {
-            UI::Get()->CloseAllMenus();
-        }
+        if (g_enableQuestWindow)
+            DrawQuestDebugView();
+        if (g_enableEntitiesWindow)
+            DrawEntitiesView();
+        if (g_enableServerWindow)
+            DrawServerView();
+        if (g_enablePartyWindow)
+            DrawPartyView();
+        if (g_enableDragonSpawnerWindow)
+            DrawDragonSpawnerView();
 
-        ImGui::EndMenu();
+    #if (!IS_MASTER)
+        if (g_enableNetworkWindow)
+            DrawNetworkView();
+        if (g_enableFormsWindow)
+            DrawFormDebugView();
+        if (g_enableInventoryWindow)
+            DrawContainerDebugView();
+        if (g_enableAnimWindow)
+            DrawAnimDebugView();
+        if (g_enablePlayerWindow)
+            DrawPlayerDebugView();
+        if (g_enableSkillsWindow)
+            DrawSkillView();
+        if (g_enableActorValuesWindow)
+            DrawActorValuesView();
+        if (g_enableCellWindow)
+            DrawCellView();
+        if (g_enableProcessesWindow)
+            DrawProcessView();
+        if (g_enableWeatherWindow)
+            DrawWeatherView();
+        if (g_enableCombatWindow)
+            DrawCombatView();
+        if (g_enableCalendarWindow)
+            DrawCalendarView();
+
+        if (m_drawComponentsInWorldSpace)
+            DrawComponentDebugView();
+    #endif
+
+        if (m_showBuildTag)
+            DrawBuildTag();
     }
-#endif
-    if (ImGui::BeginMenu("Debuggers"))
+    catch (...)
     {
-        ImGui::MenuItem("Quests", nullptr, &g_enableQuestWindow);
-        ImGui::MenuItem("Entities", nullptr, &g_enableEntitiesWindow);
-        ImGui::MenuItem("Server", nullptr, &g_enableServerWindow);
-        ImGui::MenuItem("Party", nullptr, &g_enablePartyWindow);
-        ImGui::MenuItem("Dragon spawner", nullptr, &g_enableDragonSpawnerWindow);
-
-#if (!IS_MASTER)
-        ImGui::MenuItem("Network", nullptr, &g_enableNetworkWindow);
-        ImGui::MenuItem("Forms", nullptr, &g_enableFormsWindow);
-        ImGui::MenuItem("Inventory", nullptr, &g_enableInventoryWindow);
-        ImGui::MenuItem("Animations", nullptr, &g_enableAnimWindow);
-        ImGui::MenuItem("Player", nullptr, &g_enablePlayerWindow);
-        ImGui::MenuItem("Skills", nullptr, &g_enableSkillsWindow);
-        ImGui::MenuItem("Cell", nullptr, &g_enableCellWindow);
-        ImGui::MenuItem("Processes", nullptr, &g_enableProcessesWindow);
-        ImGui::MenuItem("Weather", nullptr, &g_enableWeatherWindow);
-        ImGui::MenuItem("Combat", nullptr, &g_enableCombatWindow);
-        ImGui::MenuItem("Calendar", nullptr, &g_enableCalendarWindow);
-#endif
-
-        ImGui::EndMenu();
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while drawing the debug menu");
     }
-    if (ImGui::BeginMenu("Misc"))
-    {
-        if (ImGui::Button("Crash Client"))
-        {
-#if (!IS_MASTER)
-            spdlog::error("Crash client");
-            int* m = 0;
-            *m = 1338;
-#else
-            ConnectionErrorEvent errorEvent{};
-            errorEvent.ErrorDetail = "Skyrim Together never crashes ;)  With love, Yamashi, Force, Dragonisser, Cosideci.";
-
-            m_world.GetRunner().Trigger(errorEvent);
-#endif
-        }
-        ImGui::EndMenu();
-    }
-    ImGui::EndMainMenuBar();
-
-    if (g_enableQuestWindow)
-        DrawQuestDebugView();
-    if (g_enableEntitiesWindow)
-        DrawEntitiesView();
-    if (g_enableServerWindow)
-        DrawServerView();
-    if (g_enablePartyWindow)
-        DrawPartyView();
-    if (g_enableDragonSpawnerWindow)
-        DrawDragonSpawnerView();
-
-#if (!IS_MASTER)
-    if (g_enableNetworkWindow)
-        DrawNetworkView();
-    if (g_enableFormsWindow)
-        DrawFormDebugView();
-    if (g_enableInventoryWindow)
-        DrawContainerDebugView();
-    if (g_enableAnimWindow)
-        DrawAnimDebugView();
-    if (g_enablePlayerWindow)
-        DrawPlayerDebugView();
-    if (g_enableSkillsWindow)
-        DrawSkillView();
-    if (g_enableActorValuesWindow)
-        DrawActorValuesView();
-    if (g_enableCellWindow)
-        DrawCellView();
-    if (g_enableProcessesWindow)
-        DrawProcessView();
-    if (g_enableWeatherWindow)
-        DrawWeatherView();
-    if (g_enableCombatWindow)
-        DrawCombatView();
-    if (g_enableCalendarWindow)
-        DrawCalendarView();
-
-    if (m_drawComponentsInWorldSpace)
-        DrawComponentDebugView();
-#endif
-
-    if (m_showBuildTag)
-        DrawBuildTag();
 }
 
 void DebugService::ArrangeGameWindows(HWND aThisWindow) noexcept

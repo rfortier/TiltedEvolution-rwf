@@ -40,19 +40,29 @@ std::optional<ActorOwnershipToken> GetRemoteOwnershipToken(uint32_t aFormId) noe
 
 template <class T> T* GetByServerId(const uint32_t acServerId) noexcept
 {
-    if (const auto entity = FindEntityByServerId(acServerId))
+    // A form lookup. The report is the only allocation; a null answer is what every
+    // caller of this template already checks.
+    try
     {
-        if (const auto* pFormIdComponent = World::Get().try_get<FormIdComponent>(*entity))
+        if (const auto entity = FindEntityByServerId(acServerId))
         {
-            TESForm* pForm = TESForm::GetById(pFormIdComponent->Id);
+            if (const auto* pFormIdComponent = World::Get().try_get<FormIdComponent>(*entity))
+            {
+                TESForm* pForm = TESForm::GetById(pFormIdComponent->Id);
 
-            if (pForm)
-                return Cast<T>(pForm);
+                if (pForm)
+                    return Cast<T>(pForm);
+            }
         }
-    }
 
-    spdlog::debug("{}: form not found for server id {:X}", __FUNCTION__, acServerId);
-    return nullptr;
+        spdlog::debug("{}: form not found for server id {:X}", __FUNCTION__, acServerId);
+        return nullptr;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in GetByServerId");
+        return nullptr;
+    }
 }
 
 void ShowHudMessage(const TiltedPhoques::String& acMessage);

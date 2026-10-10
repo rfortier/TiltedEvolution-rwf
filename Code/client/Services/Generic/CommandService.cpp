@@ -54,29 +54,38 @@ void CommandService::OnSetTimeResult(const NotifySetTimeResult& acMessage) noexc
 
 void CommandService::OnTeleportCommandResponse(const TeleportCommandResponse& acMessage) noexcept
 {
-    spdlog::info("TeleportCommandResponse: {:X}:{:X} at position {}, {}, {}", acMessage.CellId.ModId, acMessage.CellId.BaseId, acMessage.Position.x, acMessage.Position.y, acMessage.Position.z);
-    auto& modSystem = m_world.GetModSystem();
-
-    const uint32_t cellId = modSystem.GetGameId(acMessage.CellId);
-    TESObjectCELL* pCell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
-    if (!pCell)
+    // The console command table and its reports. A command that could not be run
+    // prints nothing; the console stays usable.
+    try
     {
-        const uint32_t worldSpaceId = modSystem.GetGameId(acMessage.WorldSpaceId);
-        TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(worldSpaceId));
-        if (pWorldSpace)
-        {
-            GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acMessage.Position);
-            pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
-        }
+        spdlog::info("TeleportCommandResponse: {:X}:{:X} at position {}, {}, {}", acMessage.CellId.ModId, acMessage.CellId.BaseId, acMessage.Position.x, acMessage.Position.y, acMessage.Position.z);
+        auto& modSystem = m_world.GetModSystem();
 
+        const uint32_t cellId = modSystem.GetGameId(acMessage.CellId);
+        TESObjectCELL* pCell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
         if (!pCell)
         {
-            spdlog::error("Failed to fetch cell to teleport to.");
-            m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
-            return;
-        }
-    }
+            const uint32_t worldSpaceId = modSystem.GetGameId(acMessage.WorldSpaceId);
+            TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(worldSpaceId));
+            if (pWorldSpace)
+            {
+                GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acMessage.Position);
+                pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
+            }
 
-    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        pPlayer->MoveTo(pCell, acMessage.Position);
+            if (!pCell)
+            {
+                spdlog::error("Failed to fetch cell to teleport to.");
+                m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
+                return;
+            }
+        }
+
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+            pPlayer->MoveTo(pCell, acMessage.Position);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in CommandService::OnTeleportCommandResponse");
+    }
 }

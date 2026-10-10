@@ -118,65 +118,105 @@ void PartyService::OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept
 
 void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
 {
-    if (m_inParty)
+    // Party notifications. The member lists and the reports allocate; the party state
+    // itself lives on the server, so a dropped notification is corrected by the next
+    // one.
+    try
     {
-        spdlog::debug("[PartyService]: Got party info update");
-        m_isLeader = acPartyInfo.IsLeader;
-        m_leaderPlayerId = acPartyInfo.LeaderPlayerId;
-        m_partyMembers = acPartyInfo.PlayerIds;
-
-        // TODO: this can be done a bit prettier
-        if (m_isLeader)
+        if (m_inParty)
         {
-            if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(kWorldEncountersGlobalId)))
-                pWorldEncountersEnabled->f = 1.f;
+            spdlog::debug("[PartyService]: Got party info update");
+            m_isLeader = acPartyInfo.IsLeader;
+            m_leaderPlayerId = acPartyInfo.LeaderPlayerId;
+            m_partyMembers = acPartyInfo.PlayerIds;
+
+            // TODO: this can be done a bit prettier
+            if (m_isLeader)
+            {
+                if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(kWorldEncountersGlobalId)))
+                    pWorldEncountersEnabled->f = 1.f;
+            }
+
+            auto pArguments = CefListValue::Create();
+
+            auto pPlayerIds = CefListValue::Create();
+            for (int i = 0; i < m_partyMembers.size(); i++)
+                pPlayerIds->SetInt(i, m_partyMembers[i]);
+
+            pArguments->SetList(0, pPlayerIds);
+            pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
+
+            if (auto* pApp = m_world.GetOverlayService().GetOverlayApp())
+                pApp->ExecuteAsync("partyInfo", pArguments);
         }
-
-        auto pArguments = CefListValue::Create();
-
-        auto pPlayerIds = CefListValue::Create();
-        for (int i = 0; i < m_partyMembers.size(); i++)
-            pPlayerIds->SetInt(i, m_partyMembers[i]);
-
-        pArguments->SetList(0, pPlayerIds);
-        pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
-
-        if (auto* pApp = m_world.GetOverlayService().GetOverlayApp())
-            pApp->ExecuteAsync("partyInfo", pArguments);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PartyService::OnPartyInfo");
     }
 }
 
 void PartyService::OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcept
 {
-    spdlog::debug("[PartyService]: Got party invite from {}", acPartyInvite.InviterId);
+    // Party notifications. The member lists and the reports allocate; the party state
+    // itself lives on the server, so a dropped notification is corrected by the next
+    // one.
+    try
+    {
+        spdlog::debug("[PartyService]: Got party invite from {}", acPartyInvite.InviterId);
 
-    m_invitations[acPartyInvite.InviterId] = acPartyInvite.ExpiryTick;
+        m_invitations[acPartyInvite.InviterId] = acPartyInvite.ExpiryTick;
 
-    auto pArguments = CefListValue::Create();
-    pArguments->SetInt(0, acPartyInvite.InviterId);
-    if (auto* pApp = m_world.GetOverlayService().GetOverlayApp())
-        pApp->ExecuteAsync("partyInviteReceived", pArguments);
+        auto pArguments = CefListValue::Create();
+        pArguments->SetInt(0, acPartyInvite.InviterId);
+        if (auto* pApp = m_world.GetOverlayService().GetOverlayApp())
+            pApp->ExecuteAsync("partyInviteReceived", pArguments);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PartyService::OnPartyInvite");
+    }
 }
 
 void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept
 {
-    spdlog::debug("[PartyService]: Joined party. LeaderId: {}, IsLeader: {}", acPartyJoined.LeaderPlayerId, acPartyJoined.IsLeader);
+    // Party notifications. The member lists and the reports allocate; the party state
+    // itself lives on the server, so a dropped notification is corrected by the next
+    // one.
+    try
+    {
+        spdlog::debug("[PartyService]: Joined party. LeaderId: {}, IsLeader: {}", acPartyJoined.LeaderPlayerId, acPartyJoined.IsLeader);
 
-    m_inParty = true;
-    m_isLeader = acPartyJoined.IsLeader;
-    m_leaderPlayerId = acPartyJoined.LeaderPlayerId;
-    m_partyMembers = acPartyJoined.PlayerIds;
+        m_inParty = true;
+        m_isLeader = acPartyJoined.IsLeader;
+        m_leaderPlayerId = acPartyJoined.LeaderPlayerId;
+        m_partyMembers = acPartyJoined.PlayerIds;
 
-    m_world.GetDispatcher().trigger(PartyJoinedEvent(m_isLeader));
+        m_world.GetDispatcher().trigger(PartyJoinedEvent(m_isLeader));
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PartyService::OnPartyJoined");
+    }
 }
 
 void PartyService::OnPartyLeft(const NotifyPartyLeft& acPartyLeft) noexcept
 {
-    spdlog::debug("[PartyService]: Left party");
+    // Party notifications. The member lists and the reports allocate; the party state
+    // itself lives on the server, so a dropped notification is corrected by the next
+    // one.
+    try
+    {
+        spdlog::debug("[PartyService]: Left party");
 
-    DestroyParty();
+        DestroyParty();
 
-    m_world.GetDispatcher().trigger(PartyLeftEvent());
+        m_world.GetDispatcher().trigger(PartyLeftEvent());
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PartyService::OnPartyLeft");
+    }
 }
 
 void PartyService::DestroyParty() noexcept

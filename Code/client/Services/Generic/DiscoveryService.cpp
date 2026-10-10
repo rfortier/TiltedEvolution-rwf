@@ -85,155 +85,182 @@ void DiscoveryService::VisitCell(bool aForceTrigger) noexcept
 
 void DiscoveryService::VisitExteriorCell(bool aForceTrigger) noexcept
 {
-    const PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    const auto pWorldSpace = pPlayer->GetWorldSpace();
-
-    m_interiorCellId = 0;
-
-    const TES* pTES = TES::Get();
-    const uint32_t worldSpaceId = pWorldSpace->formID;
-    const GridCellCoords gameCurrentGrid(pTES->currentGridX, pTES->currentGridY);
-    const GridCellCoords gameCenterGrid(pTES->centerGridX, pTES->centerGridY);
-
-    if (m_worldSpaceId != worldSpaceId || aForceTrigger)
+    // The LAN discovery responder, whose reports and peer list allocate. A reply that
+    // could not be built is lost; the next broadcast goes out a second later.
+    try
     {
-        DetectGridCellChange(pWorldSpace, true);
-        // If the world space changes, then we want to send out a CellChangeEvent out too.
-        aForceTrigger = true;
-    }
-    else if (gameCenterGrid != m_centerGrid)
-    {
-        DetectGridCellChange(pWorldSpace, false);
-    }
+        const PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        const auto pWorldSpace = pPlayer->GetWorldSpace();
 
-    if (gameCurrentGrid != m_currentGrid || aForceTrigger)
-    {
-        CellChangeEvent cellChangeEvent{};
+        m_interiorCellId = 0;
 
-        if (!m_world.GetModSystem().GetServerModId(pWorldSpace->formID, cellChangeEvent.WorldSpaceId))
+        const TES* pTES = TES::Get();
+        const uint32_t worldSpaceId = pWorldSpace->formID;
+        const GridCellCoords gameCurrentGrid(pTES->currentGridX, pTES->currentGridY);
+        const GridCellCoords gameCenterGrid(pTES->centerGridX, pTES->centerGridY);
+
+        if (m_worldSpaceId != worldSpaceId || aForceTrigger)
         {
-            spdlog::error("Failed to find world space id for form id {:X}", pWorldSpace->formID);
-            return;
+            DetectGridCellChange(pWorldSpace, true);
+            // If the world space changes, then we want to send out a CellChangeEvent out too.
+            aForceTrigger = true;
+        }
+        else if (gameCenterGrid != m_centerGrid)
+        {
+            DetectGridCellChange(pWorldSpace, false);
         }
 
-        TESObjectCELL* pCell = pPlayer->GetParentCellEx();
-        if (!pCell)
-            pCell = ModManager::Get()->GetCellFromCoordinates(gameCurrentGrid.X, gameCurrentGrid.Y, pWorldSpace, false);
-
-        // The fallback walk can come back empty for a cell that is not attached
-        // yet, which is exactly the state a load leaves behind.
-        if (!pCell)
-            return;
-
-        if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
+        if (gameCurrentGrid != m_currentGrid || aForceTrigger)
         {
-            spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
-            return;
+            CellChangeEvent cellChangeEvent{};
+
+            if (!m_world.GetModSystem().GetServerModId(pWorldSpace->formID, cellChangeEvent.WorldSpaceId))
+            {
+                spdlog::error("Failed to find world space id for form id {:X}", pWorldSpace->formID);
+                return;
+            }
+
+            TESObjectCELL* pCell = pPlayer->GetParentCellEx();
+            if (!pCell)
+                pCell = ModManager::Get()->GetCellFromCoordinates(gameCurrentGrid.X, gameCurrentGrid.Y, pWorldSpace, false);
+
+            // The fallback walk can come back empty for a cell that is not attached
+            // yet, which is exactly the state a load leaves behind.
+            if (!pCell)
+                return;
+
+            if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
+            {
+                spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
+                return;
+            }
+
+            cellChangeEvent.CurrentCoords = gameCurrentGrid;
+
+            m_dispatcher.trigger(cellChangeEvent);
+
+            m_currentGrid = gameCurrentGrid;
         }
-
-        cellChangeEvent.CurrentCoords = gameCurrentGrid;
-
-        m_dispatcher.trigger(cellChangeEvent);
-
-        m_currentGrid = gameCurrentGrid;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in DiscoveryService::VisitExteriorCell");
     }
 }
 
 void DiscoveryService::VisitInteriorCell(bool aForceTrigger) noexcept
 {
-    ResetCachedCellData();
-
-    // The player is between cells during a load, and the interior cell is then
-    // null while the exterior walk above still succeeds. VisitCell() only checks
-    // that this call is reached, not that the cell exists.
-    const auto* pPlayer = PlayerCharacter::Get();
-    const auto* pParentCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
-    if (!pParentCell)
-        return;
-
-    const uint32_t cellId = pParentCell->formID;
-    if (m_interiorCellId != cellId || aForceTrigger)
+    // The LAN discovery responder, whose reports and peer list allocate. A reply that
+    // could not be built is lost; the next broadcast goes out a second later.
+    try
     {
-        CellChangeEvent cellChangeEvent{};
+        ResetCachedCellData();
 
-        if (!m_world.GetModSystem().GetServerModId(cellId, cellChangeEvent.CellId))
-        {
-            spdlog::error("Failed to find cell id {:X}", cellId);
+        // The player is between cells during a load, and the interior cell is then
+        // null while the exterior walk above still succeeds. VisitCell() only checks
+        // that this call is reached, not that the cell exists.
+        const auto* pPlayer = PlayerCharacter::Get();
+        const auto* pParentCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
+        if (!pParentCell)
             return;
-        }
 
-        m_dispatcher.trigger(cellChangeEvent);
-        m_interiorCellId = cellId;
+        const uint32_t cellId = pParentCell->formID;
+        if (m_interiorCellId != cellId || aForceTrigger)
+        {
+            CellChangeEvent cellChangeEvent{};
+
+            if (!m_world.GetModSystem().GetServerModId(cellId, cellChangeEvent.CellId))
+            {
+                spdlog::error("Failed to find cell id {:X}", cellId);
+                return;
+            }
+
+            m_dispatcher.trigger(cellChangeEvent);
+            m_interiorCellId = cellId;
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in DiscoveryService::VisitInteriorCell");
     }
 }
 
 void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNewCellGrid) noexcept
 {
-    GridCellChangeEvent changeEvent{};
-
-    const uint32_t worldSpaceId = aWorldSpace->formID;
-    changeEvent.WorldSpaceId = worldSpaceId;
-
-    const TES* pTES = TES::Get();
-    const int32_t startGridX = pTES->centerGridX - GridCellCoords::m_gridsToLoad / 2;
-    const int32_t startGridY = pTES->centerGridY - GridCellCoords::m_gridsToLoad / 2;
-
-    for (int32_t i = 0; i < GridCellCoords::m_gridsToLoad; ++i)
+    // The LAN discovery responder, whose reports and peer list allocate. A reply that
+    // could not be built is lost; the next broadcast goes out a second later.
+    try
     {
-        for (int32_t j = 0; j < GridCellCoords::m_gridsToLoad; ++j)
+        GridCellChangeEvent changeEvent{};
+
+        const uint32_t worldSpaceId = aWorldSpace->formID;
+        changeEvent.WorldSpaceId = worldSpaceId;
+
+        const TES* pTES = TES::Get();
+        const int32_t startGridX = pTES->centerGridX - GridCellCoords::m_gridsToLoad / 2;
+        const int32_t startGridY = pTES->centerGridY - GridCellCoords::m_gridsToLoad / 2;
+
+        for (int32_t i = 0; i < GridCellCoords::m_gridsToLoad; ++i)
         {
-            // If it is a new cell grid, don't check for previously loaded cells.
-            if (!aNewCellGrid)
+            for (int32_t j = 0; j < GridCellCoords::m_gridsToLoad; ++j)
             {
-                if (GridCellCoords::IsCellInGridCell(m_centerGrid, {startGridX + i, startGridY + j}, false))
+                // If it is a new cell grid, don't check for previously loaded cells.
+                if (!aNewCellGrid)
+                {
+                    if (GridCellCoords::IsCellInGridCell(m_centerGrid, {startGridX + i, startGridY + j}, false))
+                        continue;
+                }
+
+                const TESObjectCELL* pCell = ModManager::Get()->GetCellFromCoordinates(startGridX + i, startGridY + j, aWorldSpace, 0);
+
+                if (!pCell)
+                {
+                    spdlog::warn("Cell not found at coordinates ({}, {}) in worldspace {:X}", startGridX + i, startGridY + j, aWorldSpace->formID);
                     continue;
+                }
+
+                GameId cellId{};
+                if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellId))
+                {
+                    spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
+                    continue;
+                }
+
+                changeEvent.Cells.push_back(cellId);
             }
-
-            const TESObjectCELL* pCell = ModManager::Get()->GetCellFromCoordinates(startGridX + i, startGridY + j, aWorldSpace, 0);
-
-            if (!pCell)
-            {
-                spdlog::warn("Cell not found at coordinates ({}, {}) in worldspace {:X}", startGridX + i, startGridY + j, aWorldSpace->formID);
-                continue;
-            }
-
-            GameId cellId{};
-            if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellId))
-            {
-                spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
-                continue;
-            }
-
-            changeEvent.Cells.push_back(cellId);
         }
+
+        // The player pointer itself is nullable early in a load, the parent cell is
+        // nullable by definition, and the coordinate fallback is nullable too - the
+        // same call is checked two other times in this file. Without this the formID
+        // read below is the third null dereference on one line.
+        auto* pPlayer = PlayerCharacter::Get();
+        TESObjectCELL* pCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
+        if (!pCell)
+            pCell = ModManager::Get()->GetCellFromCoordinates(pTES->currentGridX, pTES->currentGridY, aWorldSpace, false);
+
+        if (!pCell)
+        {
+            spdlog::warn("Grid cell change for worldspace {:X} has no player cell to report", aWorldSpace->formID);
+            return;
+        }
+
+        if (!m_world.GetModSystem().GetServerModId(pCell->formID, changeEvent.PlayerCell))
+        {
+            spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
+            return;
+        }
+
+        changeEvent.CenterCoords = m_centerGrid = {pTES->centerGridX, pTES->centerGridY};
+
+        m_dispatcher.trigger(changeEvent);
+
+        m_worldSpaceId = worldSpaceId;
     }
-
-    // The player pointer itself is nullable early in a load, the parent cell is
-    // nullable by definition, and the coordinate fallback is nullable too - the
-    // same call is checked two other times in this file. Without this the formID
-    // read below is the third null dereference on one line.
-    auto* pPlayer = PlayerCharacter::Get();
-    TESObjectCELL* pCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
-    if (!pCell)
-        pCell = ModManager::Get()->GetCellFromCoordinates(pTES->currentGridX, pTES->currentGridY, aWorldSpace, false);
-
-    if (!pCell)
+    catch (...)
     {
-        spdlog::warn("Grid cell change for worldspace {:X} has no player cell to report", aWorldSpace->formID);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in DiscoveryService::DetectGridCellChange");
     }
-
-    if (!m_world.GetModSystem().GetServerModId(pCell->formID, changeEvent.PlayerCell))
-    {
-        spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
-        return;
-    }
-
-    changeEvent.CenterCoords = m_centerGrid = {pTES->centerGridX, pTES->centerGridY};
-
-    m_dispatcher.trigger(changeEvent);
-
-    m_worldSpaceId = worldSpaceId;
 }
 
 void DiscoveryService::VisitForms() noexcept

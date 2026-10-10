@@ -153,32 +153,41 @@ void DebugService::DrawComponentDebugView()
 void DebugService::DisplayListOfReplayedActions(const ReplayedActionsDebugComponent& aDebugComponent,
                                                 RemoteAnimationComponent* apAnimationComponent) const noexcept
 {
-    const size_t total = aDebugComponent.ActionsReceivedForReplay.Actions.size();
-    const auto header = fmt::format("List of Replayed Actions ({})", total);
-
-    if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+    // A debug view. The formatted label and the replayed action text are the
+    // allocations; a view that cannot build them shows nothing for this frame.
+    try
     {
-        String replayedActionsText;
-        if (aDebugComponent.ActionsReceivedForReplay.ResetAnimationGraph)
-            replayedActionsText += "<Animation graph reset>, ";
+        const size_t total = aDebugComponent.ActionsReceivedForReplay.Actions.size();
+        const auto header = fmt::format("List of Replayed Actions ({})", total);
 
-        for (size_t i = 0; i < total; ++i)
+        if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
         {
-            if (i > 0)
-                replayedActionsText += ", ";
-            replayedActionsText += aDebugComponent.ActionsReceivedForReplay.Actions[i].EventName;
-        }
-        total == 0 ? replayedActionsText = "<None>" : replayedActionsText += '.';
-        ImGui::TextWrapped(replayedActionsText.c_str());
+            String replayedActionsText;
+            if (aDebugComponent.ActionsReceivedForReplay.ResetAnimationGraph)
+                replayedActionsText += "<Animation graph reset>, ";
 
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("Actions that were run (replayed) after this remote Actor received\n"
-                              "spawn data from the server. Right click to replay again.");
+            for (size_t i = 0; i < total; ++i)
+            {
+                if (i > 0)
+                    replayedActionsText += ", ";
+                replayedActionsText += aDebugComponent.ActionsReceivedForReplay.Actions[i].EventName;
+            }
+            total == 0 ? replayedActionsText = "<None>" : replayedActionsText += '.';
+            ImGui::TextWrapped(replayedActionsText.c_str());
+
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Actions that were run (replayed) after this remote Actor received\n"
+                                  "spawn data from the server. Right click to replay again.");
+            }
+            if (ImGui::IsItemClicked(1) && apAnimationComponent && total > 0)
+            {
+                AnimationSystem::AddActionsForReplay(*apAnimationComponent, aDebugComponent.ActionsReceivedForReplay);
+            }
         }
-        if (ImGui::IsItemClicked(1) && apAnimationComponent && total > 0)
-        {
-            AnimationSystem::AddActionsForReplay(*apAnimationComponent, aDebugComponent.ActionsReceivedForReplay);
-        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in DebugService::DisplayListOfReplayedActions");
     }
 }

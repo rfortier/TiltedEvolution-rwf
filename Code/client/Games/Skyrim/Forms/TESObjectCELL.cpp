@@ -3,25 +3,35 @@
 
 Vector<TESObjectREFR*> TESObjectCELL::GetRefsByFormTypes(const Vector<FormType>& aFormTypes) const noexcept
 {
-    Vector<TESObjectREFR*> references{};
-
-    if (!refData.refArray)
-        return references;
-
-    for (uint32_t i = 0; i < refData.capacity; i++)
+    // The result list is the allocation. An empty list is the safe answer: the
+    // caller iterates it and finds nothing to act on.
+    try
     {
-        TESObjectREFR* pRef = refData.refArray[i].Get();
-        if (!pRef)
-            continue;
+        Vector<TESObjectREFR*> references{};
 
-        for (FormType formType : aFormTypes)
+        if (!refData.refArray)
+            return references;
+
+        for (uint32_t i = 0; i < refData.capacity; i++)
         {
-            if (pRef->baseForm->formType == formType)
-                references.push_back(pRef);
-        }
-    }
+            TESObjectREFR* pRef = refData.refArray[i].Get();
+            if (!pRef)
+                continue;
 
-    return references;
+            for (FormType formType : aFormTypes)
+            {
+                if (pRef->baseForm->formType == formType)
+                    references.push_back(pRef);
+            }
+        }
+
+        return references;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TESObjectCELL::GetRefsByFormTypes");
+        return {};
+    }
 }
 
 void TESObjectCELL::GetCOCPlacementInfo(NiPoint3* aOutPos, NiPoint3* aOutRot, bool aAllowCellLoad) noexcept

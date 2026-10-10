@@ -114,17 +114,27 @@ const CSimpleIni& GetSettings() noexcept
 
 bool GetConfiguredRespawnPos(const char* apCellEditorId, NiPoint3& aOutPosition) noexcept
 {
-    const char* pValue = GetSettings().GetValue(kSectionName, apCellEditorId);
-    if (!pValue)
-        return false;
-
-    if (!ReadPosition(pValue, aOutPosition))
+    // A configuration lookup. The report is the only allocation; a value that could
+    // not be reported is still returned.
+    try
     {
-        spdlog::warn("Invalid respawn override for cell '{}': '{}'", apCellEditorId, pValue);
+        const char* pValue = GetSettings().GetValue(kSectionName, apCellEditorId);
+        if (!pValue)
+            return false;
+
+        if (!ReadPosition(pValue, aOutPosition))
+        {
+            spdlog::warn("Invalid respawn override for cell '{}': '{}'", apCellEditorId, pValue);
+            return false;
+        }
+
+        return true;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in GetConfiguredRespawnPos");
         return false;
     }
-
-    return true;
 }
 } // namespace
 

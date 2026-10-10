@@ -37,53 +37,62 @@ void WeatherService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 
 void WeatherService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
 {
-    if (!acEvent.IsLeader)
+    // Weather packets. The reports and the weather override maps allocate; the server
+    // resends the current weather on its next change.
+    try
     {
-        // TODO: why is this loop here? Party should always have a leader.
-        auto view = m_world.view<PlayerComponent>();
-        const auto& partyService = m_world.GetPartyService();
-
-        for (auto entity : view)
+        if (!acEvent.IsLeader)
         {
-            const auto& playerComponent = view.get<PlayerComponent>(entity);
-            if (playerComponent.Id == partyService.GetLeaderPlayerId())
+            // TODO: why is this loop here? Party should always have a leader.
+            auto view = m_world.view<PlayerComponent>();
+            const auto& partyService = m_world.GetPartyService();
+
+            for (auto entity : view)
             {
-                ToggleGameWeatherSystem(false);
-                break;
+                const auto& playerComponent = view.get<PlayerComponent>(entity);
+                if (playerComponent.Id == partyService.GetLeaderPlayerId())
+                {
+                    ToggleGameWeatherSystem(false);
+                    break;
+                }
             }
         }
+        else
+        {
+            Sky* pSky = Sky::Get();
+            if (!pSky)
+                return;
+
+            TESWeather* pWeather = pSky->GetWeather();
+            if (!pWeather)
+            {
+                m_cachedWeatherId = 0;
+                return;
+            }
+
+            // Potentially sets cached weather to map weather.
+            // When the player closes the map, it'll send out the proper weather on the next update.
+            m_cachedWeatherId = pWeather->formID;
+
+            // This is the map weather, should not be synced.
+            if (pWeather->formID == 0xA6858)
+                return;
+
+            RequestWeatherChange request{};
+
+            auto& modSystem = m_world.GetModSystem();
+            if (!modSystem.GetServerModId(pWeather->formID, request.Id))
+            {
+                spdlog::error(__FUNCTION__ ": weather server ID not found, form id: {:X}", pWeather->formID);
+                return;
+            }
+
+            m_transport.Send(request);
+        }
     }
-    else
+    catch (...)
     {
-        Sky* pSky = Sky::Get();
-        if (!pSky)
-            return;
-
-        TESWeather* pWeather = pSky->GetWeather();
-        if (!pWeather)
-        {
-            m_cachedWeatherId = 0;
-            return;
-        }
-
-        // Potentially sets cached weather to map weather.
-        // When the player closes the map, it'll send out the proper weather on the next update.
-        m_cachedWeatherId = pWeather->formID;
-
-        // This is the map weather, should not be synced.
-        if (pWeather->formID == 0xA6858)
-            return;
-
-        RequestWeatherChange request{};
-
-        auto& modSystem = m_world.GetModSystem();
-        if (!modSystem.GetServerModId(pWeather->formID, request.Id))
-        {
-            spdlog::error(__FUNCTION__ ": weather server ID not found, form id: {:X}", pWeather->formID);
-            return;
-        }
-
-        m_transport.Send(request);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in WeatherService::OnPartyJoinedEvent");
     }
 }
 
@@ -121,71 +130,89 @@ void WeatherService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::e
 
 void WeatherService::OnWeatherChange(const NotifyWeatherChange& acMessage) noexcept
 {
-    auto& modSystem = m_world.GetModSystem();
-    const uint32_t weatherId = modSystem.GetGameId(acMessage.Id);
-    TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(weatherId));
-
-    if (!pWeather)
+    // Weather packets. The reports and the weather override maps allocate; the server
+    // resends the current weather on its next change.
+    try
     {
-        spdlog::error(__FUNCTION__ ": weather not found, form id: {:X}", acMessage.Id.ModId + acMessage.Id.BaseId);
-        return;
+        auto& modSystem = m_world.GetModSystem();
+        const uint32_t weatherId = modSystem.GetGameId(acMessage.Id);
+        TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(weatherId));
+
+        if (!pWeather)
+        {
+            spdlog::error(__FUNCTION__ ": weather not found, form id: {:X}", acMessage.Id.ModId + acMessage.Id.BaseId);
+            return;
+        }
+
+        // Same guard the two other readers in this file apply. This path is driven
+        // by a server message, so it can run at a point where the sky singleton has
+        // not been created yet - the earlier version dereferenced it unguarded.
+        Sky* pSky = Sky::Get();
+        if (!pSky)
+            return;
+
+        pSky->ForceWeather(pWeather);
+
+        m_cachedWeatherId = weatherId;
     }
-
-    // Same guard the two other readers in this file apply. This path is driven
-    // by a server message, so it can run at a point where the sky singleton has
-    // not been created yet - the earlier version dereferenced it unguarded.
-    Sky* pSky = Sky::Get();
-    if (!pSky)
-        return;
-
-    pSky->ForceWeather(pWeather);
-
-    m_cachedWeatherId = weatherId;
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in WeatherService::OnWeatherChange");
+    }
 }
 
 void WeatherService::RunWeatherUpdates(const double acDelta) noexcept
 {
-    Sky* pSky = Sky::Get();
-    if (!pSky)
-        return;
-
-    TESWeather* pWeather = pSky->GetWeather();
-    if (!pWeather)
+    // Weather packets. The reports and the weather override maps allocate; the server
+    // resends the current weather on its next change.
+    try
     {
-        if (m_world.GetPartyService().IsLeader())
-            m_cachedWeatherId = 0;
-        else
-            SetCachedWeather();
+        Sky* pSky = Sky::Get();
+        if (!pSky)
+            return;
 
-        return;
-    }
-
-    // This is the map weather, should not be synced.
-    if (pWeather->formID == 0xA6858)
-        return;
-
-    // Have to manually check each frame because there's no singular SetWeather being used in-game.
-    if (pWeather->formID == m_cachedWeatherId)
-        return;
-
-    if (m_world.GetPartyService().IsLeader())
-    {
-        m_cachedWeatherId = pWeather->formID;
-
-        RequestWeatherChange request{};
-
-        auto& modSystem = m_world.GetModSystem();
-        if (!modSystem.GetServerModId(pWeather->formID, request.Id))
+        TESWeather* pWeather = pSky->GetWeather();
+        if (!pWeather)
         {
-            spdlog::error(__FUNCTION__ ": weather server ID not found, form id: {:X}", pWeather->formID);
+            if (m_world.GetPartyService().IsLeader())
+                m_cachedWeatherId = 0;
+            else
+                SetCachedWeather();
+
             return;
         }
 
-        m_transport.Send(request);
+        // This is the map weather, should not be synced.
+        if (pWeather->formID == 0xA6858)
+            return;
+
+        // Have to manually check each frame because there's no singular SetWeather being used in-game.
+        if (pWeather->formID == m_cachedWeatherId)
+            return;
+
+        if (m_world.GetPartyService().IsLeader())
+        {
+            m_cachedWeatherId = pWeather->formID;
+
+            RequestWeatherChange request{};
+
+            auto& modSystem = m_world.GetModSystem();
+            if (!modSystem.GetServerModId(pWeather->formID, request.Id))
+            {
+                spdlog::error(__FUNCTION__ ": weather server ID not found, form id: {:X}", pWeather->formID);
+                return;
+            }
+
+            m_transport.Send(request);
+        }
+        else
+        {
+            SetCachedWeather();
+        }
     }
-    else
+    catch (...)
     {
-        SetCachedWeather();
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in WeatherService::RunWeatherUpdates");
     }
 }
 
@@ -207,21 +234,30 @@ void WeatherService::ToggleGameWeatherSystem(bool aToggle) noexcept
 
 void WeatherService::SetCachedWeather() noexcept
 {
-    if (m_cachedWeatherId == 0)
-        return;
-
-    TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(m_cachedWeatherId));
-
-    if (!pWeather)
+    // Weather packets. The reports and the weather override maps allocate; the server
+    // resends the current weather on its next change.
+    try
     {
-        spdlog::error(__FUNCTION__ ": weather not found, form id: {:X}", m_cachedWeatherId);
-        return;
-    }
+        if (m_cachedWeatherId == 0)
+            return;
 
-    // Both callers are inside RunWeatherUpdates, which returns early when the
-    // sky is missing - so this cannot be null today. Checked anyway: it is a
-    // private helper, and the cost of the check is nothing next to a crash in a
-    // service that already treats the singleton as nullable everywhere else.
-    if (Sky* pSky = Sky::Get())
-        pSky->ForceWeather(pWeather);
+        TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(m_cachedWeatherId));
+
+        if (!pWeather)
+        {
+            spdlog::error(__FUNCTION__ ": weather not found, form id: {:X}", m_cachedWeatherId);
+            return;
+        }
+
+        // Both callers are inside RunWeatherUpdates, which returns early when the
+        // sky is missing - so this cannot be null today. Checked anyway: it is a
+        // private helper, and the cost of the check is nothing next to a crash in a
+        // service that already treats the singleton as nullable everywhere else.
+        if (Sky* pSky = Sky::Get())
+            pSky->ForceWeather(pWeather);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in WeatherService::SetCachedWeather");
+    }
 }

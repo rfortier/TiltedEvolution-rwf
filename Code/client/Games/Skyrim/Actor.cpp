@@ -318,18 +318,28 @@ extern thread_local bool g_forceAnimation;
 
 void Actor::SetWeaponDrawnEx(bool aDraw) noexcept
 {
-    spdlog::debug("Setting weapon drawn: {:X}:{}, current state: {}", formID, aDraw, actorState.IsWeaponDrawn());
-
-    if (actorState.IsWeaponDrawn() == aDraw)
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
     {
-        actorState.SetWeaponDrawn(!aDraw);
+        spdlog::debug("Setting weapon drawn: {:X}:{}, current state: {}", formID, aDraw, actorState.IsWeaponDrawn());
 
-        spdlog::debug("Setting weapon drawn after update: {:X}:{}, current state: {}", formID, aDraw, actorState.IsWeaponDrawn());
+        if (actorState.IsWeaponDrawn() == aDraw)
+        {
+            actorState.SetWeaponDrawn(!aDraw);
+
+            spdlog::debug("Setting weapon drawn after update: {:X}:{}, current state: {}", formID, aDraw, actorState.IsWeaponDrawn());
+        }
+
+        g_forceAnimation = true;
+        SetWeaponDrawn(aDraw);
+        g_forceAnimation = false;
     }
-
-    g_forceAnimation = true;
-    SetWeaponDrawn(aDraw);
-    g_forceAnimation = false;
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::SetWeaponDrawnEx");
+    }
 }
 
 static thread_local bool s_execInitPackage = false;
@@ -420,13 +430,24 @@ void Actor::StopCombat() noexcept
 
 bool Actor::RemoveSpell(MagicItem* apSpell) noexcept
 {
-    if (!apSpell)
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
     {
-        spdlog::error(__FUNCTION__ ": apSpell is null");
+        if (!apSpell)
+        {
+            spdlog::error(__FUNCTION__ ": apSpell is null");
+            return false;
+        }
+        // spdlog::info(__FUNCTION__ ": removing: {} from actor: {}", apSpell->formID, formID);
+        return TiltedPhoques::ThisCall(RealRemoveSpell, this, apSpell);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::RemoveSpell");
         return false;
     }
-    // spdlog::info(__FUNCTION__ ": removing: {} from actor: {}", apSpell->formID, formID);
-    return TiltedPhoques::ThisCall(RealRemoveSpell, this, apSpell);
 }
 
 bool Actor::HasPerk(uint32_t aPerkFormId) const noexcept
@@ -591,41 +612,51 @@ void Actor::SetOutfit(BGSOutfit* apOutfit, bool aIsSleepOutfit)
 
 void Actor::EquipOutfit(bool aIsSleepOutfit) noexcept
 {
-    auto* pBase = Cast<TESNPC>(baseForm);
-    if (!pBase)
-        return;
-
-    BGSOutfit* pDefaultOutfit = aIsSleepOutfit ? pBase->sleepOutfit : pBase->defaultOutfit;
-    if (!pDefaultOutfit)
-        return;
-
-    auto* pEquipManager = EquipManager::Get();
-    for (auto* pItem : pDefaultOutfit->outfitItems)
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
     {
-        TESObjectARMO* pArmor = nullptr;
+        auto* pBase = Cast<TESNPC>(baseForm);
+        if (!pBase)
+            return;
 
-        if (pItem->formType == FormType::Armor)
-            pArmor = Cast<TESObjectARMO>(pItem);
-        else if (pItem->formType == FormType::LeveledItem)
+        BGSOutfit* pDefaultOutfit = aIsSleepOutfit ? pBase->sleepOutfit : pBase->defaultOutfit;
+        if (!pDefaultOutfit)
+            return;
+
+        auto* pEquipManager = EquipManager::Get();
+        for (auto* pItem : pDefaultOutfit->outfitItems)
         {
-            TESLevItem* pLevItem = Cast<TESLevItem>(pItem);
-            if (!pLevItem || !pLevItem->pLeveledListA || !pLevItem->pLeveledListA->pForm)
+            TESObjectARMO* pArmor = nullptr;
+
+            if (pItem->formType == FormType::Armor)
+                pArmor = Cast<TESObjectARMO>(pItem);
+            else if (pItem->formType == FormType::LeveledItem)
+            {
+                TESLevItem* pLevItem = Cast<TESLevItem>(pItem);
+                if (!pLevItem || !pLevItem->pLeveledListA || !pLevItem->pLeveledListA->pForm)
+                    continue;
+
+                pArmor = Cast<TESObjectARMO>(pLevItem->pLeveledListA->pForm);
+            }
+            else
                 continue;
 
-            pArmor = Cast<TESObjectARMO>(pLevItem->pLeveledListA->pForm);
+            if (!pArmor)
+                continue;
+
+            spdlog::debug(__FUNCTION__ ": equipping {:X} on actor {:X} {}", pArmor->formID, formID,
+                          baseForm ? baseForm->GetName() : "<no base form>");
+            pEquipManager->Equip(this, pArmor, nullptr, 1, nullptr, false, true, false, false);  
         }
-        else
-            continue;
 
-        if (!pArmor)
-            continue;
-
-        spdlog::debug(__FUNCTION__ ": equipping {:X} on actor {:X} {}", pArmor->formID, formID,
-                      baseForm ? baseForm->GetName() : "<no base form>");
-        pEquipManager->Equip(this, pArmor, nullptr, 1, nullptr, false, true, false, false);  
+        return;
     }
-
-    return;
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::EquipOutfit");
+    }
 }
 
 // Get owner of a summon or raised corpse
@@ -666,41 +697,52 @@ TESForm* Actor::GetCurrentLocation()
 
 Factions Actor::GetFactions() const noexcept
 {
-    Factions result;
-
-    auto& modSystem = World::Get().GetModSystem();
-
-    auto* pNpc = Cast<TESNPC>(baseForm);
-    if (pNpc)
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
     {
-        auto& factions = pNpc->actorData.factions;
+        Factions result;
 
-        for (auto i = 0u; i < factions.length; ++i)
+        auto& modSystem = World::Get().GetModSystem();
+
+        auto* pNpc = Cast<TESNPC>(baseForm);
+        if (pNpc)
         {
-            Faction faction;
+            auto& factions = pNpc->actorData.factions;
 
-            modSystem.GetServerModId(factions[i].faction->formID, faction.Id);
-            faction.Rank = factions[i].rank;
+            for (auto i = 0u; i < factions.length; ++i)
+            {
+                Faction faction;
 
-            result.NpcFactions.push_back(faction);
+                modSystem.GetServerModId(factions[i].faction->formID, faction.Id);
+                faction.Rank = factions[i].rank;
+
+                result.NpcFactions.push_back(faction);
+            }
         }
-    }
 
-    auto* pChanges = Cast<ExtraFactionChanges>(extraData.GetByType(ExtraDataType::Faction));
-    if (pChanges)
+        auto* pChanges = Cast<ExtraFactionChanges>(extraData.GetByType(ExtraDataType::Faction));
+        if (pChanges)
+        {
+            for (auto i = 0u; i < pChanges->entries.length; ++i)
+            {
+                Faction faction;
+
+                modSystem.GetServerModId(pChanges->entries[i].faction->formID, faction.Id);
+                faction.Rank = pChanges->entries[i].rank;
+
+                result.ExtraFactions.push_back(faction);
+            }
+        }
+
+        return result;
+    }
+    catch (...)
     {
-        for (auto i = 0u; i < pChanges->entries.length; ++i)
-        {
-            Faction faction;
-
-            modSystem.GetServerModId(pChanges->entries[i].faction->formID, faction.Id);
-            faction.Rank = pChanges->entries[i].rank;
-
-            result.ExtraFactions.push_back(faction);
-        }
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::GetFactions");
+        return Factions{};
     }
-
-    return result;
 }
 
 ActorValues Actor::GetEssentialActorValues() const noexcept
@@ -790,46 +832,66 @@ int32_t Actor::GetGoldAmount() const noexcept
 
 void Actor::SetActorInventory(const Inventory& acInventory) noexcept
 {
-    spdlog::info("Setting inventory for actor {:X}", formID);
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
+    {
+        spdlog::info("Setting inventory for actor {:X}", formID);
 
-    // The UnEquipAll() that used to be here is redundant,
-    // as RemoveAllItems() unequips every item if needed.
-    // Placing this UnEquipAll() here seems to trigger a Skyrim bug/race.
+        // The UnEquipAll() that used to be here is redundant,
+        // as RemoveAllItems() unequips every item if needed.
+        // Placing this UnEquipAll() here seems to trigger a Skyrim bug/race.
 
-    Inventory currentInventory = GetActorInventory();
+        Inventory currentInventory = GetActorInventory();
 
-    if (!this->GetExtension()->IsPlayer() && currentInventory.ContainsQuestItems())
-        SetInventoryRetainingQuestItems(currentInventory, acInventory);
-    else
-        SetInventory(acInventory);
+        if (!this->GetExtension()->IsPlayer() && currentInventory.ContainsQuestItems())
+            SetInventoryRetainingQuestItems(currentInventory, acInventory);
+        else
+            SetInventory(acInventory);
 
-    SetMagicEquipment(acInventory.CurrentMagicEquipment);
+        SetMagicEquipment(acInventory.CurrentMagicEquipment);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::SetActorInventory");
+    }
 }
 
 void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
 {
-    auto* pEquipManager = EquipManager::Get();
-    auto& modSystem = World::Get().GetModSystem();
-
-    if (acEquipment.LeftHandSpell)
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
     {
-        uint32_t mainHandWeaponId = modSystem.GetGameId(acEquipment.LeftHandSpell);
-        spdlog::debug("Setting left hand spell: {:X}", mainHandWeaponId);
-        pEquipManager->EquipSpell(this, TESForm::GetById(mainHandWeaponId), 0);
+        auto* pEquipManager = EquipManager::Get();
+        auto& modSystem = World::Get().GetModSystem();
+
+        if (acEquipment.LeftHandSpell)
+        {
+            uint32_t mainHandWeaponId = modSystem.GetGameId(acEquipment.LeftHandSpell);
+            spdlog::debug("Setting left hand spell: {:X}", mainHandWeaponId);
+            pEquipManager->EquipSpell(this, TESForm::GetById(mainHandWeaponId), 0);
+        }
+
+        if (acEquipment.RightHandSpell)
+        {
+            uint32_t secondaryHandWeaponId = modSystem.GetGameId(acEquipment.RightHandSpell);
+            spdlog::debug("Setting right hand spell: {:X}", secondaryHandWeaponId);
+            pEquipManager->EquipSpell(this, TESForm::GetById(secondaryHandWeaponId), 1);
+        }
+
+        if (acEquipment.Shout)
+        {
+            uint32_t shoutId = modSystem.GetGameId(acEquipment.Shout);
+            spdlog::debug("Setting shout: {:X}", shoutId);
+            pEquipManager->EquipShout(this, TESForm::GetById(shoutId));
+        }
     }
-
-    if (acEquipment.RightHandSpell)
+    catch (...)
     {
-        uint32_t secondaryHandWeaponId = modSystem.GetGameId(acEquipment.RightHandSpell);
-        spdlog::debug("Setting right hand spell: {:X}", secondaryHandWeaponId);
-        pEquipManager->EquipSpell(this, TESForm::GetById(secondaryHandWeaponId), 1);
-    }
-
-    if (acEquipment.Shout)
-    {
-        uint32_t shoutId = modSystem.GetGameId(acEquipment.Shout);
-        spdlog::debug("Setting shout: {:X}", shoutId);
-        pEquipManager->EquipShout(this, TESForm::GetById(shoutId));
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::SetMagicEquipment");
     }
 }
 
@@ -983,35 +1045,45 @@ extern thread_local bool g_forceAnimation;
 
 void Actor::FixVampireLordModel() noexcept
 {
-    TESBoundObject* pLordArmor = Cast<TESBoundObject>(TESForm::GetById(0x2011a84));
-    if (!pLordArmor)
-        return;
-
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
     {
-        ScopedInventoryOverride _;
-        AddObjectToContainer(pLordArmor, nullptr, 1, nullptr);
+        TESBoundObject* pLordArmor = Cast<TESBoundObject>(TESForm::GetById(0x2011a84));
+        if (!pLordArmor)
+            return;
+
+        {
+            ScopedInventoryOverride _;
+            AddObjectToContainer(pLordArmor, nullptr, 1, nullptr);
+        }
+
+        EquipManager::Get()->Equip(this, pLordArmor, nullptr, 1, nullptr, false, true, false, false);
+
+        g_forceAnimation = true;
+
+        BSFixedString str("isLevitating");
+        uint32_t isLevitating = GetAnimationVariableInt(&str);
+        spdlog::critical("isLevitating {}", isLevitating);
+
+        // By default, a loaded vampire lord is not levitating.
+        if (isLevitating)
+        {
+            BSFixedString levitation("LevitationToggle");
+            SendAnimationEvent(&levitation);
+        }
+
+        // TODO: weapon draw code does not seem to take care of this
+        //BSFixedString weapEquip("WeapEquip");
+        //SendAnimationEvent(&weapEquip);
+
+        g_forceAnimation = false;
     }
-
-    EquipManager::Get()->Equip(this, pLordArmor, nullptr, 1, nullptr, false, true, false, false);
-
-    g_forceAnimation = true;
-
-    BSFixedString str("isLevitating");
-    uint32_t isLevitating = GetAnimationVariableInt(&str);
-    spdlog::critical("isLevitating {}", isLevitating);
-
-    // By default, a loaded vampire lord is not levitating.
-    if (isLevitating)
+    catch (...)
     {
-        BSFixedString levitation("LevitationToggle");
-        SendAnimationEvent(&levitation);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::FixVampireLordModel");
     }
-
-    // TODO: weapon draw code does not seem to take care of this
-    //BSFixedString weapEquip("WeapEquip");
-    //SendAnimationEvent(&weapEquip);
-
-    g_forceAnimation = false;
 }
 
 char TP_MAKE_THISCALL(HookSetPosition, Actor, NiPoint3& aPosition)
@@ -1237,28 +1309,48 @@ void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* ap
 
 void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLocation, NiPoint3* apRotation) noexcept
 {
-    ExtraDataList* pExtraData = GetExtraDataFromItem(arEntry);
-
-    ModSystem& modSystem = World::Get().GetModSystem();
-
-    uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
-    TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
-    if (!pObject)
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
     {
-        spdlog::warn("Object to drop not found, {:X}:{:X}.", arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
-        return;
-    }
+        ExtraDataList* pExtraData = GetExtraDataFromItem(arEntry);
 
-    if (arEntry.Count < 0)
-        DropObject(pObject, pExtraData, -arEntry.Count, apLocation, apRotation);
-    // TODO: pick up
+        ModSystem& modSystem = World::Get().GetModSystem();
+
+        uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
+        TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
+        if (!pObject)
+        {
+            spdlog::warn("Object to drop not found, {:X}:{:X}.", arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
+            return;
+        }
+
+        if (arEntry.Count < 0)
+            DropObject(pObject, pExtraData, -arEntry.Count, apLocation, apRotation);
+        // TODO: pick up
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::DropOrPickUpObject");
+    }
 }
 
 void Actor::DropObject(TESBoundObject* apObject, ExtraDataList* apExtraData, int32_t aCount, NiPoint3* apLocation, NiPoint3* apRotation) noexcept
 {
-    spdlog::debug("Dropping object, form id: {:X}, count: {}, actor: {:X}", apObject->formID, aCount, formID);
-    BSPointerHandle<TESObjectREFR> result{};
-    TiltedPhoques::ThisCall(RealDropObject, this, &result, apObject, apExtraData, aCount, apLocation, apRotation);
+    // Engine-facing actor helpers. Each body copies an inventory, an outfit or a
+    // spell list into engine state and reports what it did; the copy that made it in
+    // stays, and the report is what gets guarded.
+    try
+    {
+        spdlog::debug("Dropping object, form id: {:X}, count: {}, actor: {:X}", apObject->formID, aCount, formID);
+        BSPointerHandle<TESObjectREFR> result{};
+        TiltedPhoques::ThisCall(RealDropObject, this, &result, apObject, apExtraData, aCount, apLocation, apRotation);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Actor::DropObject");
+    }
 }
 
 TP_THIS_FUNCTION(TUpdateDetectionState, void, ActorKnowledge, void*);

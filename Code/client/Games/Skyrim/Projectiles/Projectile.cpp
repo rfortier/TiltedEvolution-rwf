@@ -15,28 +15,38 @@ static TLaunch* RealLaunch = nullptr;
 
 BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apResult, LaunchData& apLaunchData) noexcept
 {
-    BSPointerHandle<Projectile>* result = TiltedPhoques::ThisCall(RealLaunch, apResult, apLaunchData);
-
-    TP_ASSERT(result, "No projectile handle returned.");
-    if (!result)
+    // The projectile is launched by the engine call; the report after it is what
+    // allocates. Returning the result handle unchanged is the honest answer.
+    try
     {
-        spdlog::error("No projectile handle returned.");
-        return nullptr;
+        BSPointerHandle<Projectile>* result = TiltedPhoques::ThisCall(RealLaunch, apResult, apLaunchData);
+
+        TP_ASSERT(result, "No projectile handle returned.");
+        if (!result)
+        {
+            spdlog::error("No projectile handle returned.");
+            return nullptr;
+        }
+
+        TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
+        Projectile* pProjectile = Cast<Projectile>(pObject);
+
+        TP_ASSERT(pProjectile, "No projectile found.");
+        if (!pProjectile)
+        {
+            spdlog::error("No projectile found.");
+            return nullptr;
+        }
+
+        pProjectile->fPower = apLaunchData.fPower;
+
+        return result;
     }
-
-    TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
-    Projectile* pProjectile = Cast<Projectile>(pObject);
-
-    TP_ASSERT(pProjectile, "No projectile found.");
-    if (!pProjectile)
+    catch (...)
     {
-        spdlog::error("No projectile found.");
-        return nullptr;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Projectile::Launch");
+        return apResult;
     }
-
-    pProjectile->fPower = apLaunchData.fPower;
-
-    return result;
 }
 
 BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projectile>, Projectile::LaunchData& arData)

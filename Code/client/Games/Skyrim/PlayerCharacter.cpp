@@ -73,17 +73,26 @@ void PlayerCharacter::SetDifficulty(const int32_t aDifficulty, bool aForceUpdate
 
 void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noexcept
 {
-    Skills::Skill skill = Skills::GetSkillFromActorValue(aSkill);
-    float oldExperience = GetSkillExperience(skill);
+    // Engine-facing player helpers. The reports are the only allocations in these
+    // bodies; the engine call has already been made by the time either runs.
+    try
+    {
+        Skills::Skill skill = Skills::GetSkillFromActorValue(aSkill);
+        float oldExperience = GetSkillExperience(skill);
 
-    ScopedExperienceOverride _;
+        ScopedExperienceOverride _;
 
-    TiltedPhoques::ThisCall(RealAddSkillExperience, this, aSkill, aExperience);
+        TiltedPhoques::ThisCall(RealAddSkillExperience, this, aSkill, aExperience);
 
-    float newExperience = GetSkillExperience(skill);
-    float deltaExperience = newExperience - oldExperience;
+        float newExperience = GetSkillExperience(skill);
+        float deltaExperience = newExperience - oldExperience;
 
-    spdlog::debug("Added {} experience to skill {}", deltaExperience, aSkill);
+        spdlog::debug("Added {} experience to skill {}", deltaExperience, aSkill);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PlayerCharacter::AddSkillExperience");
+    }
 }
 
 NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
@@ -136,19 +145,28 @@ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
 
 void PlayerCharacter::PayCrimeGoldToAllFactions() noexcept
 {
-    // Yes, yes, this isn't great, but there's no "pay fines everywhere" function
-    const uint32_t crimeFactionIds[]{0x28170, 0x267E3, 0x29DB0, 0x2816D, 0x2816e, 0x2816C, 0x2816B, 0x267EA, 0x2816F, 0x4018279};
-
-    for (uint32_t crimeFactionId : crimeFactionIds)
+    // Engine-facing player helpers. The reports are the only allocations in these
+    // bodies; the engine call has already been made by the time either runs.
+    try
     {
-        TESFaction* pCrimeFaction = Cast<TESFaction>(TESForm::GetById(crimeFactionId));
-        if (!pCrimeFaction)
-        {
-            spdlog::error("This isn't a crime faction! {:X}", crimeFactionId);
-            continue;
-        }
+        // Yes, yes, this isn't great, but there's no "pay fines everywhere" function
+        const uint32_t crimeFactionIds[]{0x28170, 0x267E3, 0x29DB0, 0x2816D, 0x2816e, 0x2816C, 0x2816B, 0x267EA, 0x2816F, 0x4018279};
 
-        PayFine(pCrimeFaction, false, false);
+        for (uint32_t crimeFactionId : crimeFactionIds)
+        {
+            TESFaction* pCrimeFaction = Cast<TESFaction>(TESForm::GetById(crimeFactionId));
+            if (!pCrimeFaction)
+            {
+                spdlog::error("This isn't a crime faction! {:X}", crimeFactionId);
+                continue;
+            }
+
+            PayFine(pCrimeFaction, false, false);
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PlayerCharacter::PayCrimeGoldToAllFactions");
     }
 }
 

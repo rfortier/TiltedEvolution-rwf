@@ -131,22 +131,31 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
 
 void InterpolationSystem::AddPoint(InterpolationComponent& aInterpolationComponent, const InterpolationComponent::TimePoint& acPoint) noexcept
 {
-    auto itor = std::begin(aInterpolationComponent.TimePoints);
-    const auto end = std::cend(aInterpolationComponent.TimePoints);
-
-    while (itor != end)
+    // An interpolation point that could not be stored is not interpolated; the next
+    // packet carries a fresh one.
+    try
     {
-        if (itor->Tick > acPoint.Tick)
-        {
-            aInterpolationComponent.TimePoints.insert(itor, acPoint);
+        auto itor = std::begin(aInterpolationComponent.TimePoints);
+        const auto end = std::cend(aInterpolationComponent.TimePoints);
 
-            return;
+        while (itor != end)
+        {
+            if (itor->Tick > acPoint.Tick)
+            {
+                aInterpolationComponent.TimePoints.insert(itor, acPoint);
+
+                return;
+            }
+
+            ++itor;
         }
 
-        ++itor;
+        aInterpolationComponent.TimePoints.push_back(acPoint);
     }
-
-    aInterpolationComponent.TimePoints.push_back(acPoint);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in InterpolationSystem::AddPoint");
+    }
 }
 
 InterpolationComponent& InterpolationSystem::Setup(World& aWorld, const entt::entity aEntity) noexcept

@@ -19,5 +19,17 @@ struct LocalAnimationComponent
         return Actions[Actions.size() - 1];
     }
 
-    void Append(const ActionEvent& acEvent) noexcept { Actions.push_back(acEvent); }
+    void Append(const ActionEvent& acEvent) noexcept
+    {
+        // The buffer is what the replay below consumes, and an action that could not be
+        // stored is simply not replayed.
+        try
+        {
+            Actions.push_back(acEvent);
+        }
+        catch (...)
+        {
+            Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while buffering an action event");
+        }
+    }
 };

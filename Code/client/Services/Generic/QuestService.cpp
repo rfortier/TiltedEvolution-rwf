@@ -232,164 +232,182 @@ BSTEventResult QuestService::OnEvent(const TESScenePhaseEvent* apEvent, const Ev
 
 void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
 {
-    auto Id = aUpdate.Id;
-    auto formId = World::Get().GetModSystem().GetGameId(aUpdate.Id);
-    TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(formId));
-    if (pQuest == nullptr || !m_world.Get().GetPartyService().IsInParty())
-        return;
-
-    const auto startStop = pQuest->IsStopped() ? "stopped" : "started";
-    const bool isMiscNone = (pQuest->type == TESQuest::Type::None || pQuest->type == TESQuest::Type::Miscellaneous); // If we can't get the GameId we can't sync anyway.
-    const TiltedPhoques::String miscQuest(isMiscNone ? spdfmt::format("none/misc quest gameId {:X},", Id.LogFormat()) : "quest");
-    const bool isLeader = m_world.Get().GetPartyService().IsLeader();
-    const auto playerString = isLeader ? "leader" : "player";
-    const auto isSceneMaster = aUpdate.SceneMaster == PlayerId();
-
-    // Quest OnEvent()s send updates to the server where the Leader deduplicates them,
-    // so most remote updates (QuestService::OnQuestUpdate) are coming from the Leader.
-    //
-    // But when Party Members are all playing a scene, the scene itself is advancing
-    // the quest, so everyone is sending the same quest updates close enough together some
-    // can sneak through the dedup code. That's solved client-side by not allowing rewind
-    // when in a scene.
-    //
-    // The initiator of the scene is remembered as SceneMaster and sent in NotifyQuestUpdate.
-    // Currently only used in experiments & logs, we may end up needing it.
-    //
-    // FIXME: Experiment: To unstick non-SceneMasters if they get stuck on an interaction,
-    // the SceneMaster sends a forced quest stage update at the end of the scene. This may
-    // be unnecessary now that we have fixed scene playing speed sync to be better.
-    bool updateDisabled = pQuest->IsAnyCutscenePlaying() && (aUpdate.Status == NotifyQuestUpdate::StageUpdate && aUpdate.Stage < pQuest->currentStage);
-
-    if (updateDisabled)
+    // Quest and scene notifications. The quest log maps and the reports allocate; the
+    // server resends the state a client missed on its next change.
+    try
     {
-        spdlog::debug(
-            __FUNCTION__ ": suppressing quest stage update while playing a scene: gameId: {:X}, formId: {:X}, "
-                         "questStage: {}, questStatus: {}, questType: {}, SceneMaster {}, "
-                         "isAnyCutscenePlaying {}, player {}, formId: {:X}, name: {}",
-            aUpdate.Id.LogFormat(), formId, aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, PlayerId() == aUpdate.SceneMaster, pQuest->IsAnyCutscenePlaying(), PlayerId(),
-            formId, pQuest->fullName.value.AsAscii());
-        return;
-    }
+        auto Id = aUpdate.Id;
+        auto formId = World::Get().GetModSystem().GetGameId(aUpdate.Id);
+        TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(formId));
+        if (pQuest == nullptr || !m_world.Get().GetPartyService().IsInParty())
+            return;
 
-    bool wasUpdated = false;
-    const bool isRunning = pQuest->getState() == TESQuest::State::Running;
-    switch (aUpdate.Status)
-    {
-    case NotifyQuestUpdate::Started:
-        if (isRunning)
+        const auto startStop = pQuest->IsStopped() ? "stopped" : "started";
+        const bool isMiscNone = (pQuest->type == TESQuest::Type::None || pQuest->type == TESQuest::Type::Miscellaneous); // If we can't get the GameId we can't sync anyway.
+        const TiltedPhoques::String miscQuest(isMiscNone ? spdfmt::format("none/misc quest gameId {:X},", Id.LogFormat()) : "quest");
+        const bool isLeader = m_world.Get().GetPartyService().IsLeader();
+        const auto playerString = isLeader ? "leader" : "player";
+        const auto isSceneMaster = aUpdate.SceneMaster == PlayerId();
+
+        // Quest OnEvent()s send updates to the server where the Leader deduplicates them,
+        // so most remote updates (QuestService::OnQuestUpdate) are coming from the Leader.
+        //
+        // But when Party Members are all playing a scene, the scene itself is advancing
+        // the quest, so everyone is sending the same quest updates close enough together some
+        // can sneak through the dedup code. That's solved client-side by not allowing rewind
+        // when in a scene.
+        //
+        // The initiator of the scene is remembered as SceneMaster and sent in NotifyQuestUpdate.
+        // Currently only used in experiments & logs, we may end up needing it.
+        //
+        // FIXME: Experiment: To unstick non-SceneMasters if they get stuck on an interaction,
+        // the SceneMaster sends a forced quest stage update at the end of the scene. This may
+        // be unnecessary now that we have fixed scene playing speed sync to be better.
+        bool updateDisabled = pQuest->IsAnyCutscenePlaying() && (aUpdate.Status == NotifyQuestUpdate::StageUpdate && aUpdate.Stage < pQuest->currentStage);
+
+        if (updateDisabled)
         {
             spdlog::debug(
-                __FUNCTION__ ": suppressing duplicate start {} formId: {:X}, questStage: {}, "
-                             "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
-                miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-                pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+                __FUNCTION__ ": suppressing quest stage update while playing a scene: gameId: {:X}, formId: {:X}, "
+                             "questStage: {}, questStatus: {}, questType: {}, SceneMaster {}, "
+                             "isAnyCutscenePlaying {}, player {}, formId: {:X}, name: {}",
+                aUpdate.Id.LogFormat(), formId, aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, PlayerId() == aUpdate.SceneMaster, pQuest->IsAnyCutscenePlaying(), PlayerId(),
+                formId, pQuest->fullName.value.AsAscii());
+            return;
         }
-        else
+
+        bool wasUpdated = false;
+        const bool isRunning = pQuest->getState() == TESQuest::State::Running;
+        switch (aUpdate.Status)
         {
-            spdlog::debug(
-                __FUNCTION__ ": remotely started {} formId: {:X}, questStage: {}, "
-                             "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
+        case NotifyQuestUpdate::Started:
+            if (isRunning)
+            {
+                spdlog::debug(
+                    __FUNCTION__ ": suppressing duplicate start {} formId: {:X}, questStage: {}, "
+                                 "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
+                    miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
+                    pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+            }
+            else
+            {
+                spdlog::debug(
+                    __FUNCTION__ ": remotely started {} formId: {:X}, questStage: {}, "
+                                 "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
+                    miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
+                    pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+
+                pQuest->ScriptSetStage(aUpdate.Stage);
+                pQuest->SetActive(true);
+            }
+            wasUpdated = true;
+            break;
+
+        case NotifyQuestUpdate::Reset:
+            spdlog::critical(
+                __FUNCTION__ ": REPORT THIS LOG, experimental remote reset {} formId: {:X}, questStage: {}, questType: {}, "
+                             "isStopped: {}, flags: {:X}, {} {}, name: {}",
                 miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
                 pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
 
-            pQuest->ScriptSetStage(aUpdate.Stage);
-            pQuest->SetActive(true);
+            pQuest->ScriptResetAndUpdate();
+            wasUpdated = true;
+            break;
+
+        case NotifyQuestUpdate::StageUpdate: // TODO? Insert START iff needed?
+            spdlog::debug(
+                __FUNCTION__ ": remotely updated {} formId: {:X}, questStage: {}, questType: {}, "
+                             "isStopped: {}, flags: {:X}, {} {}, name: {}",
+                miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
+                pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+
+            wasUpdated = pQuest->ScriptSetStage(aUpdate.Stage);
+            break;
+
+        case NotifyQuestUpdate::Stopped:
+            spdlog::debug(
+                __FUNCTION__ ": remotely stopped {} formId: {:X}, questStage: {}, questType: {}, "
+                             "isStopped: {}, flags: {:X}, {} {}, name: {}",
+                miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
+                pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+            wasUpdated = StopQuest(formId);
+            break;
+
+        default:
+            spdlog::error(
+                __FUNCTION__ ": unknown remote status {} {} formId: {:X}, questStage: {}, "
+                             "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
+                aUpdate.Status, miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
+                pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+            break;
         }
-        wasUpdated = true;
-        break;
 
-    case NotifyQuestUpdate::Reset:
-        spdlog::critical(
-            __FUNCTION__ ": REPORT THIS LOG, experimental remote reset {} formId: {:X}, questStage: {}, questType: {}, "
-                         "isStopped: {}, flags: {:X}, {} {}, name: {}",
-            miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-            pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
-
-        pQuest->ScriptResetAndUpdate();
-        wasUpdated = true;
-        break;
-
-    case NotifyQuestUpdate::StageUpdate: // TODO? Insert START iff needed?
-        spdlog::debug(
-            __FUNCTION__ ": remotely updated {} formId: {:X}, questStage: {}, questType: {}, "
-                         "isStopped: {}, flags: {:X}, {} {}, name: {}",
-            miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-            pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
-
-        wasUpdated = pQuest->ScriptSetStage(aUpdate.Stage);
-        break;
-
-    case NotifyQuestUpdate::Stopped:
-        spdlog::debug(
-            __FUNCTION__ ": remotely stopped {} formId: {:X}, questStage: {}, questType: {}, "
-                         "isStopped: {}, flags: {:X}, {} {}, name: {}",
-            miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-            pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
-        wasUpdated = StopQuest(formId);
-        break;
-
-    default:
-        spdlog::error(
-            __FUNCTION__ ": unknown remote status {} {} formId: {:X}, questStage: {}, "
-                         "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
-            aUpdate.Status, miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
-            pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
-        break;
+        if (!wasUpdated)
+            spdlog::error(
+                __FUNCTION__ ": failed to remotely update status {} {} formId: {:X}, questStage: "
+                             "{}, questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
+                aUpdate.Status, miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
+                pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
     }
-
-    if (!wasUpdated)
-        spdlog::error(
-            __FUNCTION__ ": failed to remotely update status {} {} formId: {:X}, questStage: "
-                         "{}, questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
-            aUpdate.Status, miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
-            pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in QuestService::OnQuestUpdate");
+    }
 }
 
 void QuestService::OnQuestSceneUpdate(const NotifyQuestSceneUpdate& aUpdate) noexcept
 {
-    ModSystem& modSystem = World::Get().GetModSystem();
-    auto pQuest = Cast<TESQuest>(TESForm::GetById(modSystem.GetGameId(aUpdate.QuestId)));
-    auto pScene = Cast<BGSScene>(TESForm::GetById(modSystem.GetGameId(aUpdate.SceneId)));
-    const bool bIsLeader = m_world.GetPartyService().IsLeader();
-    const auto playerType = bIsLeader ? "leaderId" : "playerId";
+    // Quest and scene notifications. The quest log maps and the reports allocate; the
+    // server resends the state a client missed on its next change.
+    try
+    {
+        ModSystem& modSystem = World::Get().GetModSystem();
+        auto pQuest = Cast<TESQuest>(TESForm::GetById(modSystem.GetGameId(aUpdate.QuestId)));
+        auto pScene = Cast<BGSScene>(TESForm::GetById(modSystem.GetGameId(aUpdate.SceneId)));
+        const bool bIsLeader = m_world.GetPartyService().IsLeader();
+        const auto playerType = bIsLeader ? "leaderId" : "playerId";
 
-    if (!pQuest)
-    {
-        spdlog::error(__FUNCTION__ ": failed to find questId: {:X}, {} {}", aUpdate.QuestId.LogFormat(), playerType, PlayerId());
-        return;
-    }
-    if (!pScene)
-    {
-        spdlog::error(__FUNCTION__ ": failed to find sceneId: {:X}, {} {}", aUpdate.SceneId.LogFormat(), playerType, PlayerId());
-        return;
-    }
-
-    if (aUpdate.SceneType == 0) // Scene Begin
-    {
-        if (pScene->isPlaying)
-            spdlog::debug(
-                __FUNCTION__ ": skip starting scene already playing, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType,
-                PlayerId());
-        else
+        if (!pQuest)
         {
-            spdlog::debug(
-                __FUNCTION__ ": BLOCKED starting scene, causes more bugs than fixed, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType, PlayerId());
-            // pScene->ScriptForceStart();
+            spdlog::error(__FUNCTION__ ": failed to find questId: {:X}, {} {}", aUpdate.QuestId.LogFormat(), playerType, PlayerId());
+            return;
+        }
+        if (!pScene)
+        {
+            spdlog::error(__FUNCTION__ ": failed to find sceneId: {:X}, {} {}", aUpdate.SceneId.LogFormat(), playerType, PlayerId());
+            return;
+        }
+
+        if (aUpdate.SceneType == 0) // Scene Begin
+        {
+            if (pScene->isPlaying)
+                spdlog::debug(
+                    __FUNCTION__ ": skip starting scene already playing, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType,
+                    PlayerId());
+            else
+            {
+                spdlog::debug(
+                    __FUNCTION__ ": BLOCKED starting scene, causes more bugs than fixed, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType, PlayerId());
+                // pScene->ScriptForceStart();
+            }
+        }
+
+        else // Scene End
+        {
+            if (!pScene->isPlaying)
+                spdlog::debug(
+                    __FUNCTION__ ": skip stopping scene not playing, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType,
+                    PlayerId());
+            else
+            {
+                spdlog::warn(__FUNCTION__ ": FIXME/REVIEW stopping scene questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType, PlayerId());
+                pScene->ScriptStop();
+            }
         }
     }
-
-    else // Scene End
+    catch (...)
     {
-        if (!pScene->isPlaying)
-            spdlog::debug(
-                __FUNCTION__ ": skip stopping scene not playing, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType,
-                PlayerId());
-        else
-        {
-            spdlog::warn(__FUNCTION__ ": FIXME/REVIEW stopping scene questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType, PlayerId());
-            pScene->ScriptStop();
-        }
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in QuestService::OnQuestSceneUpdate");
     }
 }
 

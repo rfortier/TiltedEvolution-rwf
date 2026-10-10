@@ -46,6 +46,10 @@ extern void* RipAllocateN(size_t blockLength);
 #define SPDLOG_WCHAR_TO_UTF8_SUPPORT
 #include <entt/entt.hpp>
 #include <spdlog/spdlog.h>
+
+// The client has no shared diagnostic header of its own: every catch handler in
+// this target reports through the same helper the server uses.
+#include <Diagnostics.h>
 #include <glm/glm.hpp>
 #include <glm/gtx/norm.hpp>
 

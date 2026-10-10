@@ -123,11 +123,20 @@ void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) n
 
 void PlayerService::OnNotifyPlayerRespawn(const NotifyPlayerRespawn& acMessage) const noexcept
 {
-    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        pPlayer->PayGold(acMessage.GoldLost);
+    // The respawn notification. The formatted string and the report allocate; the gold
+    // has already been taken by the time either runs.
+    try
+    {
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+            pPlayer->PayGold(acMessage.GoldLost);
 
-    std::string message = fmt::format("You died and lost {} gold.", acMessage.GoldLost);
-    Utils::ShowHudMessage(String(message));
+        std::string message = fmt::format("You died and lost {} gold.", acMessage.GoldLost);
+        Utils::ShowHudMessage(String(message));
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while building the respawn message");
+    }
 }
 
 void PlayerService::OnGridCellChangeEvent(const GridCellChangeEvent& acEvent) const noexcept

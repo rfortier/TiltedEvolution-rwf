@@ -7,25 +7,35 @@ namespace Utils
 
 std::optional<uint32_t> GetServerId(entt::entity aEntity) noexcept
 {
-    const auto* pLocalComponent = World::Get().try_get<LocalComponent>(aEntity);
-    const auto* pRemoteComponent = World::Get().try_get<RemoteComponent>(aEntity);
-    const auto* pObjectComponent = World::Get().try_get<ObjectComponent>(aEntity);
-
-    uint32_t serverId = -1;
-    if (pLocalComponent)
-        serverId = pLocalComponent->Id;
-    else if (pRemoteComponent)
-        serverId = pRemoteComponent->Id;
-    else if (pObjectComponent)
-        serverId = pObjectComponent->Id;
-    else
+    // A server id lookup. The report is the only allocation; "not found" is what the
+    // optional already expresses.
+    try
     {
-        const auto* pFormIdComponent = World::Get().try_get<FormIdComponent>(aEntity);
-        spdlog::debug("{}: This entity has neither a local or remote component: {:X}, form id: {:X}", __FUNCTION__, to_integral(aEntity), pFormIdComponent ? pFormIdComponent->Id : 0);
+        const auto* pLocalComponent = World::Get().try_get<LocalComponent>(aEntity);
+        const auto* pRemoteComponent = World::Get().try_get<RemoteComponent>(aEntity);
+        const auto* pObjectComponent = World::Get().try_get<ObjectComponent>(aEntity);
+
+        uint32_t serverId = -1;
+        if (pLocalComponent)
+            serverId = pLocalComponent->Id;
+        else if (pRemoteComponent)
+            serverId = pRemoteComponent->Id;
+        else if (pObjectComponent)
+            serverId = pObjectComponent->Id;
+        else
+        {
+            const auto* pFormIdComponent = World::Get().try_get<FormIdComponent>(aEntity);
+            spdlog::debug("{}: This entity has neither a local or remote component: {:X}, form id: {:X}", __FUNCTION__, to_integral(aEntity), pFormIdComponent ? pFormIdComponent->Id : 0);
+            return std::nullopt;
+        }
+
+        return {serverId};
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in GetServerId");
         return std::nullopt;
     }
-
-    return {serverId};
 }
 
 std::optional<entt::entity> FindEntityByServerId(const uint32_t aServerId) noexcept

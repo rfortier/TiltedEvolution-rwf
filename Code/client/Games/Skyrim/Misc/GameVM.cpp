@@ -61,40 +61,49 @@ static bool LooksLikeVirtualMachine(const void* acpCandidate) noexcept
 // person which offset to correct.
 static void ReportVirtualMachineOffset(const BSScript::IVirtualMachine* acpVirtualMachine) noexcept
 {
-    auto* pInstance = SkyrimVM::Get();
-    if (!pInstance)
+    // A diagnostic report about a recovered virtual machine offset. Losing the line
+    // does not change the recovery.
+    try
     {
-        spdlog::warn("the game handed us the papyrus vm at {:#x} while the SkyrimVM singleton is still null, so its "
-                     "layout cannot be checked",
-                     reinterpret_cast<uintptr_t>(acpVirtualMachine));
-        return;
-    }
-
-    void* fields[0x400 / sizeof(void*)]{};
-    const size_t got = SafeRead(fields, pInstance, sizeof(fields));
-
-    for (size_t i = 0; i < got / sizeof(void*); i++)
-    {
-        if (fields[i] != acpVirtualMachine)
-            continue;
-
-        const size_t offset = i * sizeof(void*);
-        if (offset == kAssumedVirtualMachineOffset)
+        auto* pInstance = SkyrimVM::Get();
+        if (!pInstance)
+        {
+            spdlog::warn("the game handed us the papyrus vm at {:#x} while the SkyrimVM singleton is still null, so its "
+                         "layout cannot be checked",
+                         reinterpret_cast<uintptr_t>(acpVirtualMachine));
             return;
+        }
 
-        spdlog::warn("the SkyrimVM singleton at {:#x} holds the papyrus vm at +{:#x}, not the +{:#x} this build "
-                     "assumes; every other offset into this struct is suspect for the same reason",
-                     reinterpret_cast<uintptr_t>(pInstance), offset, kAssumedVirtualMachineOffset);
-        return;
+        void* fields[0x400 / sizeof(void*)]{};
+        const size_t got = SafeRead(fields, pInstance, sizeof(fields));
+
+        for (size_t i = 0; i < got / sizeof(void*); i++)
+        {
+            if (fields[i] != acpVirtualMachine)
+                continue;
+
+            const size_t offset = i * sizeof(void*);
+            if (offset == kAssumedVirtualMachineOffset)
+                return;
+
+            spdlog::warn("the SkyrimVM singleton at {:#x} holds the papyrus vm at +{:#x}, not the +{:#x} this build "
+                         "assumes; every other offset into this struct is suspect for the same reason",
+                         reinterpret_cast<uintptr_t>(pInstance), offset, kAssumedVirtualMachineOffset);
+            return;
+        }
+
+        char assumed[MAX_PATH + 48];
+        FormatModuleOffset(reinterpret_cast<uintptr_t>(fields[kAssumedVirtualMachineOffset / sizeof(void*)]), assumed);
+
+        spdlog::warn("the papyrus vm {:#x} is nowhere in the first {:#x} bytes of the SkyrimVM singleton at {:#x}, which "
+                     "holds {} at the assumed +{:#x}; the singleton id or its layout is wrong on this runtime",
+                     reinterpret_cast<uintptr_t>(acpVirtualMachine), sizeof(fields),
+                     reinterpret_cast<uintptr_t>(pInstance), assumed, kAssumedVirtualMachineOffset);
     }
-
-    char assumed[MAX_PATH + 48];
-    FormatModuleOffset(reinterpret_cast<uintptr_t>(fields[kAssumedVirtualMachineOffset / sizeof(void*)]), assumed);
-
-    spdlog::warn("the papyrus vm {:#x} is nowhere in the first {:#x} bytes of the SkyrimVM singleton at {:#x}, which "
-                 "holds {} at the assumed +{:#x}; the singleton id or its layout is wrong on this runtime",
-                 reinterpret_cast<uintptr_t>(acpVirtualMachine), sizeof(fields),
-                 reinterpret_cast<uintptr_t>(pInstance), assumed, kAssumedVirtualMachineOffset);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in ReportVirtualMachineOffset");
+    }
 }
 
 SkyrimVM* SkyrimVM::Get()

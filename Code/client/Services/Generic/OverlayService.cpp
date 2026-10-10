@@ -190,19 +190,29 @@ OverlayService::~OverlayService() noexcept
 
 void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
 {
-    m_pProvider = TiltedPhoques::MakeUnique<D3D11RenderProvider>(apRenderSystem);
-    m_pOverlay = new SkyrimTogetherOverlayApp(m_pProvider.get(), new ::OverlayClient(m_transport, m_pProvider->Create()));
-
-    if (!m_pOverlay->Initialize())
+    // The CEF overlay bridge. Its bodies allocate for the DOM payloads they push into
+    // CEF and for the reports; a message that could not be built is not shown, and the
+    // overlay keeps running.
+    try
     {
-        spdlog::error("Overlay could not be initialized");
-        if (int32_t exitCode = CefGetExitCode())
-        {
-            spdlog::critical("CEF failed to initialize, exit code {} ({})", exitCode, DescribeCefExitCode(exitCode));
-        }
-    }
+        m_pProvider = TiltedPhoques::MakeUnique<D3D11RenderProvider>(apRenderSystem);
+        m_pOverlay = new SkyrimTogetherOverlayApp(m_pProvider.get(), new ::OverlayClient(m_transport, m_pProvider->Create()));
 
-    m_pOverlay->GetClient()->Create();
+        if (!m_pOverlay->Initialize())
+        {
+            spdlog::error("Overlay could not be initialized");
+            if (int32_t exitCode = CefGetExitCode())
+            {
+                spdlog::critical("CEF failed to initialize, exit code {} ({})", exitCode, DescribeCefExitCode(exitCode));
+            }
+        }
+
+        m_pOverlay->GetClient()->Create();
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while creating the overlay");
+    }
 }
 
 void OverlayService::Render() noexcept
@@ -245,22 +255,32 @@ void OverlayService::Initialize() noexcept
 
 void OverlayService::SetActive(bool aActive) noexcept
 {
-    // Activating follows the game state, deactivating is always allowed.
-    // Refusing to deactivate outside the game is what let a UI left open
-    // when the world went away stay stuck open.
-    if (aActive && !m_inGame)
-        return;
+    // The CEF overlay bridge. Its bodies allocate for the DOM payloads they push into
+    // CEF and for the reports; a message that could not be built is not shown, and the
+    // overlay keeps running.
+    try
+    {
+        // Activating follows the game state, deactivating is always allowed.
+        // Refusing to deactivate outside the game is what let a UI left open
+        // when the world went away stay stuck open.
+        if (aActive && !m_inGame)
+            return;
 
-    // Send the event even when the flag already matches. The page can have
-    // been rebuilt since the last one (enter/exit game, reload, renderer
-    // restart) and this is the only thing that puts the C++ flag and the
-    // page back in agreement, instead of leaving the mismatch to be
-    // discovered by the next F2 press.
-    m_active = aActive;
+        // Send the event even when the flag already matches. The page can have
+        // been rebuilt since the last one (enter/exit game, reload, renderer
+        // restart) and this is the only thing that puts the C++ flag and the
+        // page back in agreement, instead of leaving the mismatch to be
+        // discovered by the next F2 press.
+        m_active = aActive;
 
-    spdlog::info("overlay active state: {} (in game: {})", m_active, m_inGame);
+        spdlog::info("overlay active state: {} (in game: {})", m_active, m_inGame);
 
-    m_pOverlay->ExecuteAsync(m_active ? "activate" : "deactivate");
+        m_pOverlay->ExecuteAsync(m_active ? "activate" : "deactivate");
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in OverlayService::SetActive");
+    }
 }
 
 bool OverlayService::GetActive() const noexcept
@@ -274,57 +294,77 @@ bool OverlayService::GetActive() const noexcept
 // freeze game input while nothing is on screen to take it.
 void OverlayService::ForceDeactivate() noexcept
 {
-    if (!m_active)
-        return;
+    // The CEF overlay bridge. Its bodies allocate for the DOM payloads they push into
+    // CEF and for the reports; a message that could not be built is not shown, and the
+    // overlay keeps running.
+    try
+    {
+        if (!m_active)
+            return;
 
-    m_active = false;
-    m_pOverlay->ExecuteAsync("deactivate");
+        m_active = false;
+        m_pOverlay->ExecuteAsync("deactivate");
 
-    spdlog::info("overlay force-deactivated, leaving the game with the UI open");
+        spdlog::info("overlay force-deactivated, leaving the game with the UI open");
 
-    InputService::SetCaptureEnabled(false);
+        InputService::SetCaptureEnabled(false);
 
-    const auto pClient = m_pOverlay->GetClient();
-    if (!pClient)
-        return;
+        const auto pClient = m_pOverlay->GetClient();
+        if (!pClient)
+            return;
 
-    const auto pRenderer = pClient->GetOverlayRenderHandler();
-    if (pRenderer)
-        pRenderer->SetCursorVisible(false);
+        const auto pRenderer = pClient->GetOverlayRenderHandler();
+        if (pRenderer)
+            pRenderer->SetCursorVisible(false);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in OverlayService::ForceDeactivate");
+    }
 }
 
 void OverlayService::SetInGame(bool aInGame) noexcept
 {
-    if (m_inGame == aInGame)
-        return;
-
-    // Close the UI while m_inGame is still true. Doing it after the flip made
-    // SetActive() a no-op, which left m_active set while the page had been
-    // told to tear itself down. The next F2 then hit the "already active"
-    // early return, sent no "activate", and only the software cursor came
-    // back - which is exactly the "F2 shows a cursor and nothing else" report.
-    if (!aInGame)
-        ForceDeactivate();
-
-    m_inGame = aInGame;
-
-    // the F2 toggle is ignored until this flips, so it is worth a line
-    spdlog::info("overlay in-game state: {}", m_inGame);
-
-    if (m_inGame)
+    // The CEF overlay bridge. Its bodies allocate for the DOM payloads they push into
+    // CEF and for the reports; a message that could not be built is not shown, and the
+    // overlay keeps running.
+    try
     {
-        SetVersion(BUILD_COMMIT);
-        m_pOverlay->ExecuteAsync("enterGame");
+        if (m_inGame == aInGame)
+            return;
 
-        // The page may have been rebuilt while the flag stayed set, so push
-        // the activation state again rather than waiting for the next F2 to
-        // disagree with it.
-        if (m_active)
-            m_pOverlay->ExecuteAsync("activate");
+        // Close the UI while m_inGame is still true. Doing it after the flip made
+        // SetActive() a no-op, which left m_active set while the page had been
+        // told to tear itself down. The next F2 then hit the "already active"
+        // early return, sent no "activate", and only the software cursor came
+        // back - which is exactly the "F2 shows a cursor and nothing else" report.
+        if (!aInGame)
+            ForceDeactivate();
+
+        m_inGame = aInGame;
+
+        // the F2 toggle is ignored until this flips, so it is worth a line
+        spdlog::info("overlay in-game state: {}", m_inGame);
+
+        if (m_inGame)
+        {
+            SetVersion(BUILD_COMMIT);
+            m_pOverlay->ExecuteAsync("enterGame");
+
+            // The page may have been rebuilt while the flag stayed set, so push
+            // the activation state again rather than waiting for the next F2 to
+            // disagree with it.
+            if (m_active)
+                m_pOverlay->ExecuteAsync("activate");
+        }
+        else
+        {
+            m_pOverlay->ExecuteAsync("exitGame");
+        }
     }
-    else
+    catch (...)
     {
-        m_pOverlay->ExecuteAsync("exitGame");
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in OverlayService::SetInGame");
     }
 }
 
@@ -358,30 +398,40 @@ void OverlayService::SendSystemMessage(const std::string& acMessage)
 
 void OverlayService::SetPlayerHealthPercentage(uint32_t aFormId) const noexcept
 {
-    Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
-    if (!pActor)
+    // The CEF overlay bridge. Its bodies allocate for the DOM payloads they push into
+    // CEF and for the reports; a message that could not be built is not shown, and the
+    // overlay keeps running.
+    try
     {
-        spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, aFormId);
-        return;
+        Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
+        if (!pActor)
+        {
+            spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, aFormId);
+            return;
+        }
+
+        float percentage = CalculateHealthPercentage(pActor);
+
+        auto view = m_world.view<FormIdComponent, PlayerComponent>();
+        auto entityIt = std::find_if(view.begin(), view.end(), [view, aFormId](auto aEntity) { return view.get<FormIdComponent>(aEntity).Id == aFormId; });
+
+        if (entityIt == view.end())
+        {
+            spdlog::error("{}: cannot find player entity for form id {:X}", __FUNCTION__, aFormId);
+            return;
+        }
+
+        const auto& playerComponent = view.get<PlayerComponent>(*entityIt);
+
+        auto pArguments = CefListValue::Create();
+        pArguments->SetInt(0, playerComponent.Id);
+        pArguments->SetDouble(1, static_cast<double>(percentage));
+        m_pOverlay->ExecuteAsync("setHealth", pArguments);
     }
-
-    float percentage = CalculateHealthPercentage(pActor);
-
-    auto view = m_world.view<FormIdComponent, PlayerComponent>();
-    auto entityIt = std::find_if(view.begin(), view.end(), [view, aFormId](auto aEntity) { return view.get<FormIdComponent>(aEntity).Id == aFormId; });
-
-    if (entityIt == view.end())
+    catch (...)
     {
-        spdlog::error("{}: cannot find player entity for form id {:X}", __FUNCTION__, aFormId);
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in OverlayService::SetPlayerHealthPercentage");
     }
-
-    const auto& playerComponent = view.get<PlayerComponent>(*entityIt);
-
-    auto pArguments = CefListValue::Create();
-    pArguments->SetInt(0, playerComponent.Id);
-    pArguments->SetDouble(1, static_cast<double>(percentage));
-    m_pOverlay->ExecuteAsync("setHealth", pArguments);
 }
 
 void OverlayService::OnUpdate(const UpdateEvent&) noexcept
@@ -409,26 +459,36 @@ void OverlayService::OnDisconnectedEvent(const DisconnectedEvent& acEvent) noexc
 
 void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
 {
-    const auto* pPlayerComponent = m_world.try_get<PlayerComponent>(aEntity);
-    if (!pPlayerComponent)
-        return;
-
-    const auto& formIdComponent = m_world.get<FormIdComponent>(aEntity);
-
-    Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-    if (!pActor)
+    // The CEF overlay bridge. Its bodies allocate for the DOM payloads they push into
+    // CEF and for the reports; a message that could not be built is not shown, and the
+    // overlay keeps running.
+    try
     {
-        spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, formIdComponent.Id);
-        return;
+        const auto* pPlayerComponent = m_world.try_get<PlayerComponent>(aEntity);
+        if (!pPlayerComponent)
+            return;
+
+        const auto& formIdComponent = m_world.get<FormIdComponent>(aEntity);
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+        if (!pActor)
+        {
+            spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, formIdComponent.Id);
+            return;
+        }
+
+        float percentage = CalculateHealthPercentage(pActor);
+
+        auto pArguments = CefListValue::Create();
+        pArguments->SetInt(0, pPlayerComponent->Id);
+        pArguments->SetInt(1, static_cast<int>(percentage));
+
+        m_pOverlay->ExecuteAsync("setPlayer3dLoaded", pArguments);
     }
-
-    float percentage = CalculateHealthPercentage(pActor);
-
-    auto pArguments = CefListValue::Create();
-    pArguments->SetInt(0, pPlayerComponent->Id);
-    pArguments->SetInt(1, static_cast<int>(percentage));
-
-    m_pOverlay->ExecuteAsync("setPlayer3dLoaded", pArguments);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in OverlayService::OnWaitingFor3DRemoved");
+    }
 }
 
 void OverlayService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
@@ -514,30 +574,40 @@ void OverlayService::OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessag
 
 void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
 {
-    auto& modSystem = m_world.GetModSystem();
-
-    const uint32_t cellId = modSystem.GetGameId(acMessage.CellId);
-    TESObjectCELL* pCell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
-    if (!pCell)
+    // The CEF overlay bridge. Its bodies allocate for the DOM payloads they push into
+    // CEF and for the reports; a message that could not be built is not shown, and the
+    // overlay keeps running.
+    try
     {
-        const uint32_t worldSpaceId = modSystem.GetGameId(acMessage.WorldSpaceId);
-        TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(worldSpaceId));
-        if (pWorldSpace)
-        {
-            GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acMessage.Position);
-            pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
-        }
+        auto& modSystem = m_world.GetModSystem();
 
+        const uint32_t cellId = modSystem.GetGameId(acMessage.CellId);
+        TESObjectCELL* pCell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
         if (!pCell)
         {
-            spdlog::error("Failed to fetch cell to teleport to.");
-            m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
-            return;
-        }
-    }
+            const uint32_t worldSpaceId = modSystem.GetGameId(acMessage.WorldSpaceId);
+            TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(worldSpaceId));
+            if (pWorldSpace)
+            {
+                GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acMessage.Position);
+                pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
+            }
 
-    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        pPlayer->MoveTo(pCell, acMessage.Position);
+            if (!pCell)
+            {
+                spdlog::error("Failed to fetch cell to teleport to.");
+                m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
+                return;
+            }
+        }
+
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+            pPlayer->MoveTo(pCell, acMessage.Position);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in OverlayService::OnNotifyTeleport");
+    }
 }
 
 void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept

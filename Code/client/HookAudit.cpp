@@ -102,150 +102,180 @@ static uintptr_t BranchTarget(const uint8_t* acpCode, const uintptr_t aFrom) noe
 
 void HookAudit::Record(void** appTargetSlot) noexcept
 {
-    if (!appTargetSlot || !*appTargetSlot)
+    // The hook audit runs while the client is still installing hooks. Its records
+    // and its reports allocate; a hook that could not be recorded is simply not
+    // audited, which is the state this file already tolerates.
+    try
     {
-        // A null target means the address behind the hook never resolved, so
-        // MinHook has nothing to patch and the hook is lost without a word
-        spdlog::error("hook has no target to install on: the resolved address is null");
-        return;
-    }
-
-    RecordedHook recorded{};
-    recorded.pTarget = *appTargetSlot;
-
-    // An id with no mapping degrades to a shared stub, and hooking it means
-    // patching the stub: the hook "lands" there and never runs, and whoever
-    // calls the stub gets our jump instead of a graceful zero. Say so now,
-    // because later it only looks like a hook that never fires.
-    if (recorded.pTarget == VersionDb::GetUnresolvedStub())
-    {
-        spdlog::error("hook target is the unresolved-id stub: the address library has no mapping for it, so this hook "
-                      "is patched onto the fallback and can never reach the game");
-    }
-
-    for (const auto& previous : Recorded())
-    {
-        if (previous.pTarget == recorded.pTarget)
+        if (!appTargetSlot || !*appTargetSlot)
         {
-            // Both forms, because they answer different questions. The raw
-            // address is what a grep of the address library answers to; the
-            // module+offset is what says *which function* the two hooks landed
-            // on, and that is the whole diagnosis. Two sites that deliberately
-            // share a target look identical to two ids that the map wrongly
-            // resolved to the same address, and on a legacy runtime the second
-            // case is the one that happens: a wrong entry in the id map shows
-            // up here first, as a collision, long before it shows up as a hook
-            // that never runs or as a crash.
-            char where[MAX_PATH + 48];
-            FormatModuleOffset(reinterpret_cast<uintptr_t>(recorded.pTarget), where);
-
-            char idText[32];
-            FormatId(recorded.pTarget, idText);
-
-            spdlog::error("hook target {} ({:#x}, {}) is already claimed by another hook in this mod; one of the two "
-                          "will be installed and one silently dropped",
-                          where, reinterpret_cast<uintptr_t>(recorded.pTarget), idText);
-            break;
+            // A null target means the address behind the hook never resolved, so
+            // MinHook has nothing to patch and the hook is lost without a word
+            spdlog::error("hook has no target to install on: the resolved address is null");
+            return;
         }
+
+        RecordedHook recorded{};
+        recorded.pTarget = *appTargetSlot;
+
+        // An id with no mapping degrades to a shared stub, and hooking it means
+        // patching the stub: the hook "lands" there and never runs, and whoever
+        // calls the stub gets our jump instead of a graceful zero. Say so now,
+        // because later it only looks like a hook that never fires.
+        if (recorded.pTarget == VersionDb::GetUnresolvedStub())
+        {
+            spdlog::error("hook target is the unresolved-id stub: the address library has no mapping for it, so this hook "
+                          "is patched onto the fallback and can never reach the game");
+        }
+
+        for (const auto& previous : Recorded())
+        {
+            if (previous.pTarget == recorded.pTarget)
+            {
+                // Both forms, because they answer different questions. The raw
+                // address is what a grep of the address library answers to; the
+                // module+offset is what says *which function* the two hooks landed
+                // on, and that is the whole diagnosis. Two sites that deliberately
+                // share a target look identical to two ids that the map wrongly
+                // resolved to the same address, and on a legacy runtime the second
+                // case is the one that happens: a wrong entry in the id map shows
+                // up here first, as a collision, long before it shows up as a hook
+                // that never runs or as a crash.
+                char where[MAX_PATH + 48];
+                FormatModuleOffset(reinterpret_cast<uintptr_t>(recorded.pTarget), where);
+
+                char idText[32];
+                FormatId(recorded.pTarget, idText);
+
+                spdlog::error("hook target {} ({:#x}, {}) is already claimed by another hook in this mod; one of the two "
+                              "will be installed and one silently dropped",
+                              where, reinterpret_cast<uintptr_t>(recorded.pTarget), idText);
+                break;
+            }
+        }
+
+        SafeReadCode(recorded.before, recorded.pTarget, sizeof(recorded.before));
+
+        Recorded().push_back(recorded);
     }
-
-    SafeReadCode(recorded.before, recorded.pTarget, sizeof(recorded.before));
-
-    Recorded().push_back(recorded);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in HookAudit::Record");
+    }
 }
 
 void HookAudit::Report() noexcept
 {
-    size_t missing = 0;
-    size_t shared = 0;
-
-    for (const auto& recorded : Recorded())
+    // The hook audit runs while the client is still installing hooks. Its records
+    // and its reports allocate; a hook that could not be recorded is simply not
+    // audited, which is the state this file already tolerates.
+    try
     {
-        const auto target = reinterpret_cast<uintptr_t>(recorded.pTarget);
+        size_t missing = 0;
+        size_t shared = 0;
 
-        char where[MAX_PATH + 48];
-        FormatModuleOffset(target, where);
-
-        // Print every target, not just the failing ones. A hook that is
-        // installed but never reached - which is what both frame-loop hooks
-        // showed on 1.5.97 - looks identical in the summary to one that works;
-        // only the address list tells the two apart. The id is on the line
-        // because the address alone cannot be checked against the map: it is
-        // the id that says which entry to look up.
-        char idText[32];
-        FormatId(recorded.pTarget, idText);
-        spdlog::debug("hook target {} ({})", where, idText);
-
-        uint8_t now[8]{};
-        SafeReadCode(now, recorded.pTarget, sizeof(now));
-
-        // MinHook redirects a function by writing a 5 byte relative jump over
-        // its first bytes, so finding that jump is the proof the hook landed
-        if (now[0] != 0xE9)
+        for (const auto& recorded : Recorded())
         {
-            missing++;
-            spdlog::error("hook did not land on {} ({:#x}): the bytes there are {:02x} {:02x} {:02x} {:02x} {:02x}, "
-                          "so this hook will never run",
-                          where, target, now[0], now[1], now[2], now[3], now[4]);
-            continue;
+            const auto target = reinterpret_cast<uintptr_t>(recorded.pTarget);
+
+            char where[MAX_PATH + 48];
+            FormatModuleOffset(target, where);
+
+            // Print every target, not just the failing ones. A hook that is
+            // installed but never reached - which is what both frame-loop hooks
+            // showed on 1.5.97 - looks identical in the summary to one that works;
+            // only the address list tells the two apart. The id is on the line
+            // because the address alone cannot be checked against the map: it is
+            // the id that says which entry to look up.
+            char idText[32];
+            FormatId(recorded.pTarget, idText);
+            spdlog::debug("hook target {} ({})", where, idText);
+
+            uint8_t now[8]{};
+            SafeReadCode(now, recorded.pTarget, sizeof(now));
+
+            // MinHook redirects a function by writing a 5 byte relative jump over
+            // its first bytes, so finding that jump is the proof the hook landed
+            if (now[0] != 0xE9)
+            {
+                missing++;
+                spdlog::error("hook did not land on {} ({:#x}): the bytes there are {:02x} {:02x} {:02x} {:02x} {:02x}, "
+                              "so this hook will never run",
+                              where, target, now[0], now[1], now[2], now[3], now[4]);
+                continue;
+            }
+
+            const bool wasBranch = recorded.before[0] == 0xE9 || recorded.before[0] == 0xE8 ||
+                                   recorded.before[0] == 0xEB ||
+                                   (recorded.before[0] == 0xFF && recorded.before[1] == 0x25);
+            if (!wasBranch)
+                continue;
+
+            shared++;
+
+            // Following the branch is the whole diagnosis: it names the module
+            // that already owns this function, so a conflict caused by a known
+            // compatibility shim reads as one instead of as an unnamed mod.
+            char earlier[MAX_PATH + 48];
+            strcpy_s(earlier, "not followable");
+            if (const auto previous = BranchTarget(recorded.before, target))
+                FormatModuleOffset(previous, earlier);
+
+            spdlog::warn("hook target {} ({:#x}) already held a branch ({:02x} {:02x} {:02x} {:02x} {:02x}, leading to "
+                         "{}): another mod hooks this function too and ours went on top of it. A target inside "
+                         "EngineFixes.dll is its MemoryManager patch, which Games/Memory.cpp already replaces after "
+                         "initterm; any other module is a real conflict",
+                         where, target, recorded.before[0], recorded.before[1], recorded.before[2], recorded.before[3],
+                         recorded.before[4], earlier);
         }
 
-        const bool wasBranch = recorded.before[0] == 0xE9 || recorded.before[0] == 0xE8 ||
-                               recorded.before[0] == 0xEB ||
-                               (recorded.before[0] == 0xFF && recorded.before[1] == 0x25);
-        if (!wasBranch)
-            continue;
-
-        shared++;
-
-        // Following the branch is the whole diagnosis: it names the module
-        // that already owns this function, so a conflict caused by a known
-        // compatibility shim reads as one instead of as an unnamed mod.
-        char earlier[MAX_PATH + 48];
-        strcpy_s(earlier, "not followable");
-        if (const auto previous = BranchTarget(recorded.before, target))
-            FormatModuleOffset(previous, earlier);
-
-        spdlog::warn("hook target {} ({:#x}) already held a branch ({:02x} {:02x} {:02x} {:02x} {:02x}, leading to "
-                     "{}): another mod hooks this function too and ours went on top of it. A target inside "
-                     "EngineFixes.dll is its MemoryManager patch, which Games/Memory.cpp already replaces after "
-                     "initterm; any other module is a real conflict",
-                     where, target, recorded.before[0], recorded.before[1], recorded.before[2], recorded.before[3],
-                     recorded.before[4], earlier);
+        spdlog::info("hooks: {} recorded, {} did not land, {} shared with another mod", Recorded().size(), missing, shared);
     }
-
-    spdlog::info("hooks: {} recorded, {} did not land, {} shared with another mod", Recorded().size(), missing, shared);
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in HookAudit::Report");
+    }
 }
 
 void HookAudit::Verify(const char* acpWhen) noexcept
 {
-    size_t gone = 0;
-
-    for (const auto& recorded : Recorded())
+    // The hook audit runs while the client is still installing hooks. Its records
+    // and its reports allocate; a hook that could not be recorded is simply not
+    // audited, which is the state this file already tolerates.
+    try
     {
-        const auto target = reinterpret_cast<uintptr_t>(recorded.pTarget);
+        size_t gone = 0;
 
-        uint8_t now[8]{};
-        SafeReadCode(now, recorded.pTarget, sizeof(now));
+        for (const auto& recorded : Recorded())
+        {
+            const auto target = reinterpret_cast<uintptr_t>(recorded.pTarget);
 
-        if (now[0] == 0xE9)
-            continue;
+            uint8_t now[8]{};
+            SafeReadCode(now, recorded.pTarget, sizeof(now));
 
-        gone++;
+            if (now[0] == 0xE9)
+                continue;
 
-        char where[MAX_PATH + 48];
-        FormatModuleOffset(target, where);
+            gone++;
 
-        char leadsTo[MAX_PATH + 48];
-        strcpy_s(leadsTo, "not followable");
-        if (const auto destination = BranchTarget(now, target))
-            FormatModuleOffset(destination, leadsTo);
+            char where[MAX_PATH + 48];
+            FormatModuleOffset(target, where);
 
-        spdlog::error("hook on {} ({:#x}) is gone: the bytes there are now {:02x} {:02x} {:02x} {:02x} {:02x} "
-                      "(leading to {}), so ours has not run since whoever wrote them",
-                      where, target, now[0], now[1], now[2], now[3], now[4], leadsTo);
+            char leadsTo[MAX_PATH + 48];
+            strcpy_s(leadsTo, "not followable");
+            if (const auto destination = BranchTarget(now, target))
+                FormatModuleOffset(destination, leadsTo);
+
+            spdlog::error("hook on {} ({:#x}) is gone: the bytes there are now {:02x} {:02x} {:02x} {:02x} {:02x} "
+                          "(leading to {}), so ours has not run since whoever wrote them",
+                          where, target, now[0], now[1], now[2], now[3], now[4], leadsTo);
+        }
+
+        spdlog::info("hooks re-checked ({}): {} of {} no longer carry our jump", acpWhen, gone, Recorded().size());
     }
-
-    spdlog::info("hooks re-checked ({}): {} of {} no longer carry our jump", acpWhen, gone, Recorded().size());
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in HookAudit::Verify");
+    }
 }
 

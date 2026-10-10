@@ -221,41 +221,62 @@ void TransportService::OnConsume(const void* apData, uint32_t aSize)
 
 void TransportService::DispatchMessage(UniquePtr<ServerMessage>& apMessage) noexcept
 {
-    const auto cOpcode = apMessage->GetOpcode();
-    if (cOpcode >= kServerOpcodeMax)
+    // The transport: the handshake pump, the receive queue and the watchdog. Two of
+    // these run on a thread the game does not own, and none of them has a caller that
+    // could catch a throw.
+    try
     {
-        spdlog::error("Server message opcode {} is outside the handler table", static_cast<int>(cOpcode));
-        return;
-    }
+        const auto cOpcode = apMessage->GetOpcode();
+        if (cOpcode >= kServerOpcodeMax)
+        {
+            spdlog::error("Server message opcode {} is outside the handler table", static_cast<int>(cOpcode));
+            return;
+        }
 
-    auto& handler = m_messageHandlers[cOpcode];
-    if (!handler)
+        auto& handler = m_messageHandlers[cOpcode];
+        if (!handler)
+        {
+            spdlog::error("No handler for server message opcode {}", static_cast<int>(cOpcode));
+            return;
+        }
+
+        handler(apMessage);
+    }
+    catch (...)
     {
-        spdlog::error("No handler for server message opcode {}", static_cast<int>(cOpcode));
-        return;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while reporting a dispatch failure");
     }
-
-    handler(apMessage);
 }
 
 bool TransportService::FlushPendingMessages() noexcept
 {
-    std::vector<UniquePtr<ServerMessage>> batch;
+    // The transport: the handshake pump, the receive queue and the watchdog. Two of
+    // these run on a thread the game does not own, and none of them has a caller that
+    // could catch a throw.
+    try
     {
-        std::lock_guard<std::mutex> lock(m_pendingMutex);
-        if (m_pendingMessages.empty())
-            return false;
+        std::vector<UniquePtr<ServerMessage>> batch;
+        {
+            std::lock_guard<std::mutex> lock(m_pendingMutex);
+            if (m_pendingMessages.empty())
+                return false;
 
-        batch.swap(m_pendingMessages);
+            batch.swap(m_pendingMessages);
+        }
+
+        for (auto& message : batch)
+        {
+            if (message)
+                DispatchMessage(message);
+        }
+
+        return true;
     }
-
-    for (auto& message : batch)
+    catch (...)
     {
-        if (message)
-            DispatchMessage(message);
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while batching the pending messages");
+        return false;
     }
-
-    return true;
 }
 
 bool TransportService::HasPendingMessages() const noexcept
@@ -267,14 +288,24 @@ bool TransportService::HasPendingMessages() const noexcept
 
 void TransportService::ArmConnectionWatchdog(const std::string& acEndpoint) noexcept
 {
-    m_handshakePending = true;
-    m_handshakeDeadline = std::chrono::steady_clock::now() + kHandshakeTimeout;
-    m_pendingEndpoint = acEndpoint;
-    m_attemptErrorReported = false;
-    m_attemptDisconnectReported = false;
+    // The transport: the handshake pump, the receive queue and the watchdog. Two of
+    // these run on a thread the game does not own, and none of them has a caller that
+    // could catch a throw.
+    try
+    {
+        m_handshakePending = true;
+        m_handshakeDeadline = std::chrono::steady_clock::now() + kHandshakeTimeout;
+        m_pendingEndpoint = acEndpoint;
+        m_attemptErrorReported = false;
+        m_attemptDisconnectReported = false;
 
-    spdlog::info("connecting to {}, giving up after {}s if the handshake does not complete",
-                 acEndpoint, kHandshakeTimeout.count());
+        spdlog::info("connecting to {}, giving up after {}s if the handshake does not complete",
+                     acEndpoint, kHandshakeTimeout.count());
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TransportService::ArmConnectionWatchdog");
+    }
 }
 
 void TransportService::OnConnected()
@@ -427,65 +458,97 @@ void TransportService::AbandonAttempt() noexcept
 
 void TransportService::PumpHeartbeat() noexcept
 {
-    const auto cNow = std::chrono::steady_clock::now();
-    if (m_lastPumpHeartbeat.time_since_epoch().count() != 0 && cNow - m_lastPumpHeartbeat < kPumpHeartbeat)
-        return;
+    // The transport: the handshake pump, the receive queue and the watchdog. Two of
+    // these run on a thread the game does not own, and none of them has a caller that
+    // could catch a throw.
+    try
+    {
+        const auto cNow = std::chrono::steady_clock::now();
+        if (m_lastPumpHeartbeat.time_since_epoch().count() != 0 && cNow - m_lastPumpHeartbeat < kPumpHeartbeat)
+            return;
 
-    m_lastPumpHeartbeat = cNow;
+        m_lastPumpHeartbeat = cNow;
 
-    spdlog::info("transport pump heartbeat: update events {}, handshake pending {}, connected {}, owned by handshake "
-                 "pump {}",
-                 m_pumpTicks.load(), m_handshakePending.load(), m_connected.load(), m_handshakeThreadActive.load());
+        spdlog::info("transport pump heartbeat: update events {}, handshake pending {}, connected {}, owned by handshake "
+                     "pump {}",
+                     m_pumpTicks.load(), m_handshakePending.load(), m_connected.load(), m_handshakeThreadActive.load());
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TransportService::PumpHeartbeat");
+    }
 }
 
 bool TransportService::PumpConnectionLocked() noexcept
 {
-    // The watchdog moved out of HandleUpdate with the rest of this function so
-    // that whichever thread pumps the transport also enforces the deadline. A
-    // watchdog that only ticks with the frame loop cannot notice that the frame
-    // loop has stopped.
-    if (m_handshakePending && !m_attemptErrorReported &&
-        std::chrono::steady_clock::now() >= m_handshakeDeadline)
+    // The transport: the handshake pump, the receive queue and the watchdog. Two of
+    // these run on a thread the game does not own, and none of them has a caller that
+    // could catch a throw.
+    try
     {
-        spdlog::error("Handshake with {} timed out after {}s, aborting", m_pendingEndpoint,
-                      kHandshakeTimeout.count());
+        // The watchdog moved out of HandleUpdate with the rest of this function so
+        // that whichever thread pumps the transport also enforces the deadline. A
+        // watchdog that only ticks with the frame loop cannot notice that the frame
+        // loop has stopped.
+        if (m_handshakePending && !m_attemptErrorReported &&
+            std::chrono::steady_clock::now() >= m_handshakeDeadline)
+        {
+            spdlog::error("Handshake with {} timed out after {}s, aborting", m_pendingEndpoint,
+                          kHandshakeTimeout.count());
 
-        // This attempt is over, so state the failure once. Only the *error* is
-        // marked reported here: the disconnect that Close() produces is a
-        // separate channel and still has to fire, because that is what makes
-        // the services drop their session state.
-        m_attemptErrorReported = true;
+            // This attempt is over, so state the failure once. Only the *error* is
+            // marked reported here: the disconnect that Close() produces is a
+            // separate channel and still has to fire, because that is what makes
+            // the services drop their session state.
+            m_attemptErrorReported = true;
 
-        ConnectionErrorEvent errorEvent;
-        errorEvent.ErrorDetail = "{\"error\": \"no_reason\"}";
-        m_dispatcher.trigger(errorEvent);
+            ConnectionErrorEvent errorEvent;
+            errorEvent.ErrorDetail = "{\"error\": \"no_reason\"}";
+            m_dispatcher.trigger(errorEvent);
 
-        Close();
+            Close();
+        }
+
+        Update();
+
+        return m_handshakePending.load();
     }
-
-    Update();
-
-    return m_handshakePending.load();
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TransportService::PumpConnectionLocked");
+        return false;
+    }
 }
 
 bool TransportService::IsLiteralIPV4(const std::string& acEndpoint) noexcept
 {
-    // The port, when there is one, follows the last colon; what precedes it has
-    // to be four dot-separated groups of digits for DNS to be skippable.
-    // Anything else - a name, and the bracketless form of an IPv6 literal
-    // included - still goes through getaddrinfo, which now runs on the same
-    // thread that owns the loop, so it is merely slower and not unsound.
-    const std::string cHost = acEndpoint.substr(0, acEndpoint.find_last_of(':'));
+    // The transport: the handshake pump, the receive queue and the watchdog. Two of
+    // these run on a thread the game does not own, and none of them has a caller that
+    // could catch a throw.
+    try
+    {
+        // The port, when there is one, follows the last colon; what precedes it has
+        // to be four dot-separated groups of digits for DNS to be skippable.
+        // Anything else - a name, and the bracketless form of an IPv6 literal
+        // included - still goes through getaddrinfo, which now runs on the same
+        // thread that owns the loop, so it is merely slower and not unsound.
+        const std::string cHost = acEndpoint.substr(0, acEndpoint.find_last_of(':'));
 
-    if (std::count(cHost.begin(), cHost.end(), '.') != 3)
+        if (std::count(cHost.begin(), cHost.end(), '.') != 3)
+            return false;
+
+        return std::all_of(cHost.begin(), cHost.end(),
+                           [](char aCharacter)
+                           {
+                               return aCharacter == '.' ||
+                                      std::isdigit(static_cast<unsigned char>(aCharacter)) != 0;
+                           });
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while classifying an endpoint");
         return false;
-
-    return std::all_of(cHost.begin(), cHost.end(),
-                       [](char aCharacter)
-                       {
-                           return aCharacter == '.' ||
-                                  std::isdigit(static_cast<unsigned char>(aCharacter)) != 0;
-                       });
+    }
 }
 
 void TransportService::BeginConnect(const std::string& acEndpoint) noexcept
@@ -511,109 +574,119 @@ void TransportService::StopHandshakePump() noexcept
 
 void TransportService::HandshakeThreadMain(const std::string acEndpoint) noexcept
 {
+    // The transport: the handshake pump, the receive queue and the watchdog. Two of
+    // these run on a thread the game does not own, and none of them has a caller that
+    // could catch a throw.
+    try
     {
-        std::lock_guard<std::recursive_mutex> lock(m_clientMutex);
-
-        // A literal address needs no name resolution, and skipping it removes
-        // the one uv request the attempt used to make - uv_getaddrinfo, issued
-        // from the CEF message thread against a loop the frame loop owns and
-        // pumps, which is neither safe nor guaranteed to ever be delivered.
-        const bool cLiteralAddress = IsLiteralIPV4(acEndpoint);
-
-        spdlog::info("handshake pump: {} {}", (cLiteralAddress ? "dialling" : "resolving"), acEndpoint);
-
-        const bool cStarted = cLiteralAddress ? Client::ConnectByIp(acEndpoint) : Client::Connect(acEndpoint);
-        if (!cStarted)
-        {
-            spdlog::warn("handshake pump: {} could not be started", acEndpoint);
-        }
-    }
-
-    auto cLastStateReport = std::chrono::steady_clock::now();
-
-    while (m_handshakePending.load() && !m_handshakeThreadStop.load())
-    {
-        // A frame loop that reached HandleUpdate less than a second ago still
-        // owns the session: whatever arrives next carries world state, and
-        // handling that here instead of there is only ever justified for the
-        // sessions whose tick is not coming. On those - which is what this pump
-        // exists for - nothing here would ever run at all without it.
-        if (NowMs() - m_lastGameThreadTickMs.load() < kGameThreadStallMs)
-        {
-            spdlog::info("handshake pump: frame loop is live, handing {} back to it", acEndpoint);
-            break;
-        }
-
         {
             std::lock_guard<std::recursive_mutex> lock(m_clientMutex);
 
-            PumpConnectionLocked();
+            // A literal address needs no name resolution, and skipping it removes
+            // the one uv request the attempt used to make - uv_getaddrinfo, issued
+            // from the CEF message thread against a loop the frame loop owns and
+            // pumps, which is neither safe nor guaranteed to ever be delivered.
+            const bool cLiteralAddress = IsLiteralIPV4(acEndpoint);
 
-            const auto cNow = std::chrono::steady_clock::now();
-            if (cNow - cLastStateReport >= kPumpHeartbeat)
+            spdlog::info("handshake pump: {} {}", (cLiteralAddress ? "dialling" : "resolving"), acEndpoint);
+
+            const bool cStarted = cLiteralAddress ? Client::ConnectByIp(acEndpoint) : Client::Connect(acEndpoint);
+            if (!cStarted)
             {
-                cLastStateReport = cNow;
-
-                const auto cState = static_cast<int>(GetConnectionStatus().m_eState);
-                spdlog::info("handshake pump: waiting on {}, connection state {} ({}), clock synced {}", acEndpoint,
-                             cState, DescribeConnectionState(cState), GetClock().IsSynchronized());
+                spdlog::warn("handshake pump: {} could not be started", acEndpoint);
             }
         }
 
-        // Anything the pump just parsed is handed to the game thread here. It is
-        // the only correct place for it: the authentication response in
-        // particular becomes a ConnectedEvent, and every service that answers
-        // that walks the world.
-        //
-        // The wait is bounded on purpose. A frame loop that never arrives would
-        // otherwise leave the attempt hanging on a queue nobody drains, which is
-        // the failure this pump was built to escape - so past the deadline the
-        // pump dispatches itself and says so in the log. That is the one case
-        // where game state is touched off the game thread, and it is reserved
-        // for clients whose tick genuinely never came.
+        auto cLastStateReport = std::chrono::steady_clock::now();
+
+        while (m_handshakePending.load() && !m_handshakeThreadStop.load())
+        {
+            // A frame loop that reached HandleUpdate less than a second ago still
+            // owns the session: whatever arrives next carries world state, and
+            // handling that here instead of there is only ever justified for the
+            // sessions whose tick is not coming. On those - which is what this pump
+            // exists for - nothing here would ever run at all without it.
+            if (NowMs() - m_lastGameThreadTickMs.load() < kGameThreadStallMs)
+            {
+                spdlog::info("handshake pump: frame loop is live, handing {} back to it", acEndpoint);
+                break;
+            }
+
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_clientMutex);
+
+                PumpConnectionLocked();
+
+                const auto cNow = std::chrono::steady_clock::now();
+                if (cNow - cLastStateReport >= kPumpHeartbeat)
+                {
+                    cLastStateReport = cNow;
+
+                    const auto cState = static_cast<int>(GetConnectionStatus().m_eState);
+                    spdlog::info("handshake pump: waiting on {}, connection state {} ({}), clock synced {}", acEndpoint,
+                                 cState, DescribeConnectionState(cState), GetClock().IsSynchronized());
+                }
+            }
+
+            // Anything the pump just parsed is handed to the game thread here. It is
+            // the only correct place for it: the authentication response in
+            // particular becomes a ConnectedEvent, and every service that answers
+            // that walks the world.
+            //
+            // The wait is bounded on purpose. A frame loop that never arrives would
+            // otherwise leave the attempt hanging on a queue nobody drains, which is
+            // the failure this pump was built to escape - so past the deadline the
+            // pump dispatches itself and says so in the log. That is the one case
+            // where game state is touched off the game thread, and it is reserved
+            // for clients whose tick genuinely never came.
+            if (HasPendingMessages())
+            {
+                m_world.GetRunner().Queue([this]() { FlushPendingMessages(); });
+
+                const auto cHandoffDeadline = std::chrono::steady_clock::now() + kHandoffTimeout;
+                while (HasPendingMessages() && std::chrono::steady_clock::now() < cHandoffDeadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+
+                if (HasPendingMessages())
+                {
+                    spdlog::warn("handshake pump: the frame loop did not take the queued messages within {}ms, so the "
+                                 "pump is dispatching them itself; game state is being touched off the game thread",
+                                 kHandoffTimeout.count());
+
+                    FlushPendingMessages();
+                }
+            }
+
+            if (!m_handshakePending.load() || m_handshakeThreadStop.load())
+                break;
+
+            std::this_thread::sleep_for(kHandshakePumpInterval);
+        }
+
+        // Whatever arrived after the loop last looked still belongs to the game
+        // thread. Left queued rather than dispatched here: nothing about it is
+        // urgent any more, and a session that is going to live is one whose frame
+        // loop is running.
         if (HasPendingMessages())
         {
             m_world.GetRunner().Queue([this]() { FlushPendingMessages(); });
-
-            const auto cHandoffDeadline = std::chrono::steady_clock::now() + kHandoffTimeout;
-            while (HasPendingMessages() && std::chrono::steady_clock::now() < cHandoffDeadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-            }
-
-            if (HasPendingMessages())
-            {
-                spdlog::warn("handshake pump: the frame loop did not take the queued messages within {}ms, so the "
-                             "pump is dispatching them itself; game state is being touched off the game thread",
-                             kHandoffTimeout.count());
-
-                FlushPendingMessages();
-            }
         }
 
-        if (!m_handshakePending.load() || m_handshakeThreadStop.load())
-            break;
+        // Ownership goes back to the frame loop here, which is why this thread ends
+        // the moment the handshake does either way: what follows carries world
+        // state, and handling that anywhere but on the game thread is a crash
+        // waiting for a busy frame.
+        m_handshakeThreadActive = false;
 
-        std::this_thread::sleep_for(kHandshakePumpInterval);
+        spdlog::info("handshake pump: finished for {}, handshake still pending {}", acEndpoint,
+                     m_handshakePending.load());
     }
-
-    // Whatever arrived after the loop last looked still belongs to the game
-    // thread. Left queued rather than dispatched here: nothing about it is
-    // urgent any more, and a session that is going to live is one whose frame
-    // loop is running.
-    if (HasPendingMessages())
+    catch (...)
     {
-        m_world.GetRunner().Queue([this]() { FlushPendingMessages(); });
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TransportService::HandshakeThreadMain");
     }
-
-    // Ownership goes back to the frame loop here, which is why this thread ends
-    // the moment the handshake does either way: what follows carries world
-    // state, and handling that anywhere but on the game thread is a crash
-    // waiting for a busy frame.
-    m_handshakeThreadActive = false;
-
-    spdlog::info("handshake pump: finished for {}, handshake still pending {}", acEndpoint,
-                 m_handshakePending.load());
 }
 
 void TransportService::HandleUpdate(const UpdateEvent& acEvent) noexcept
@@ -656,118 +729,128 @@ void TransportService::HandleDisconnected(const DisconnectedEvent& acEvent) noex
 
 void TransportService::HandleAuthenticationResponse(const AuthenticationResponse& acMessage) noexcept
 {
-    // Whichever way the server answered, the handshake is over and the
-    // watchdog must not fire on top of the answer.
-    m_handshakePending = false;
-
-    using AR = AuthenticationResponse::ResponseType;
-    if (acMessage.Type == AR::kAccepted)
+    // The transport: the handshake pump, the receive queue and the watchdog. Two of
+    // these run on a thread the game does not own, and none of them has a caller that
+    // could catch a throw.
+    try
     {
-        m_connected = true;
-        m_attemptErrorReported = false;
-        m_attemptDisconnectReported = false;
+        // Whichever way the server answered, the handshake is over and the
+        // watchdog must not fire on top of the answer.
+        m_handshakePending = false;
 
-        spdlog::info("authentication accepted, joined as player {}", acMessage.PlayerId);
-
-        m_world.SetServerSettings(acMessage.Settings);
-
-        m_dispatcher.trigger(acMessage.UserMods);
-        m_dispatcher.trigger(acMessage.Settings);
-        m_dispatcher.trigger(ConnectedEvent(acMessage.PlayerId));
-        return; // quit the function here.
-    }
-
-    // error finding
-
-    TiltedPhoques::String ErrorInfo;
-
-    ErrorInfo = "{";
-
-    switch (acMessage.Type)
-    {
-    case AR::kWrongVersion:
-        // Both versions end up in the UI's error panel and the expected one is
-        // text this side did not write, so neither is spliced in unescaped.
-        ErrorInfo += "\"error\": \"wrong_version\", \"data\": {";
-        ErrorInfo += "\"expectedVersion\": \"";
-        ErrorInfo += JsonEscape::Escape(acMessage.Version);
-        ErrorInfo += "\", \"version\": \"";
-        ErrorInfo += JsonEscape::Escape(BUILD_COMMIT);
-        ErrorInfo += "\"}";
-        break;
-    case AR::kModsMismatch:
-    {
-        ErrorInfo += "\"error\": \"mods_mismatch\", \"data\": {\"mods\": [";
-        bool first = true;
-        for (const auto& m : acMessage.UserMods.ModList)
+        using AR = AuthenticationResponse::ResponseType;
+        if (acMessage.Type == AR::kAccepted)
         {
-            if (!first)
-                ErrorInfo += ",";
-            ErrorInfo += "[\"";
-            ErrorInfo += JsonEscape::Escape(m.Filename);
-            ErrorInfo += "\",\"";
-            ErrorInfo += fmt::format("{}", m.Id);
-            ErrorInfo += "\"]";
-            first = false;
+            m_connected = true;
+            m_attemptErrorReported = false;
+            m_attemptDisconnectReported = false;
+
+            spdlog::info("authentication accepted, joined as player {}", acMessage.PlayerId);
+
+            m_world.SetServerSettings(acMessage.Settings);
+
+            m_dispatcher.trigger(acMessage.UserMods);
+            m_dispatcher.trigger(acMessage.Settings);
+            m_dispatcher.trigger(ConnectedEvent(acMessage.PlayerId));
+            return; // quit the function here.
         }
-        ErrorInfo += "]}";
-        break;
-    }
-    case AR::kClientModsDisallowed:
-    {
-        // The array names the extensions the server actually objected to. It used
-        // to name MO2 unconditionally, so a player who was only running SKSE was
-        // told to remove a mod manager that was not installed.
-        ErrorInfo += "\"error\": \"client_mods_disallowed\", \"data\": { \"mods\": [";
-        bool first = true;
-        if (acMessage.SKSEActive)
+
+        // error finding
+
+        TiltedPhoques::String ErrorInfo;
+
+        ErrorInfo = "{";
+
+        switch (acMessage.Type)
         {
-            ErrorInfo += "\"SKSE\"";
-            first = false;
-        }
-        if (acMessage.MO2Active)
+        case AR::kWrongVersion:
+            // Both versions end up in the UI's error panel and the expected one is
+            // text this side did not write, so neither is spliced in unescaped.
+            ErrorInfo += "\"error\": \"wrong_version\", \"data\": {";
+            ErrorInfo += "\"expectedVersion\": \"";
+            ErrorInfo += JsonEscape::Escape(acMessage.Version);
+            ErrorInfo += "\", \"version\": \"";
+            ErrorInfo += JsonEscape::Escape(BUILD_COMMIT);
+            ErrorInfo += "\"}";
+            break;
+        case AR::kModsMismatch:
         {
-            if (!first)
-                ErrorInfo += ",";
-            ErrorInfo += "\"MO2\"";
+            ErrorInfo += "\"error\": \"mods_mismatch\", \"data\": {\"mods\": [";
+            bool first = true;
+            for (const auto& m : acMessage.UserMods.ModList)
+            {
+                if (!first)
+                    ErrorInfo += ",";
+                ErrorInfo += "[\"";
+                ErrorInfo += JsonEscape::Escape(m.Filename);
+                ErrorInfo += "\",\"";
+                ErrorInfo += fmt::format("{}", m.Id);
+                ErrorInfo += "\"]";
+                first = false;
+            }
+            ErrorInfo += "]}";
+            break;
         }
-        ErrorInfo += "]}";
-        break;
+        case AR::kClientModsDisallowed:
+        {
+            // The array names the extensions the server actually objected to. It used
+            // to name MO2 unconditionally, so a player who was only running SKSE was
+            // told to remove a mod manager that was not installed.
+            ErrorInfo += "\"error\": \"client_mods_disallowed\", \"data\": { \"mods\": [";
+            bool first = true;
+            if (acMessage.SKSEActive)
+            {
+                ErrorInfo += "\"SKSE\"";
+                first = false;
+            }
+            if (acMessage.MO2Active)
+            {
+                if (!first)
+                    ErrorInfo += ",";
+                ErrorInfo += "\"MO2\"";
+            }
+            ErrorInfo += "]}";
+            break;
+        }
+        case AR::kWrongPassword:
+        {
+            ErrorInfo += "\"error\": \"wrong_password\"";
+            break;
+        }
+        case AR::kServerFull:
+        {
+            ErrorInfo += "\"error\": \"server_full\"";
+            break;
+        }
+        default: ErrorInfo += "\"error\": \"no_reason\""; break;
+        }
+
+        ErrorInfo += "}";
+
+        ConnectionErrorEvent errorEvent;
+        if (!ErrorInfo.empty())
+        {
+            spdlog::error(ErrorInfo.c_str());
+            errorEvent.ErrorDetail = std::move(ErrorInfo);
+        }
+
+        // The server rejected us, so this attempt is over and it reports its
+        // failure once: the error carries the reason. Only the error is marked
+        // reported -- the disconnect Close() raises below is a separate channel and
+        // still fires, so the services tear their session state down even though
+        // this attempt never got past authentication.
+        m_attemptErrorReported = true;
+
+        m_dispatcher.trigger(errorEvent);
+
+        // Also tear the transport down here rather than waiting for the server's
+        // close packet, which is not guaranteed to arrive at all.
+        Close();
     }
-    case AR::kWrongPassword:
+    catch (...)
     {
-        ErrorInfo += "\"error\": \"wrong_password\"";
-        break;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in TransportService::HandleAuthenticationResponse");
     }
-    case AR::kServerFull:
-    {
-        ErrorInfo += "\"error\": \"server_full\"";
-        break;
-    }
-    default: ErrorInfo += "\"error\": \"no_reason\""; break;
-    }
-
-    ErrorInfo += "}";
-
-    ConnectionErrorEvent errorEvent;
-    if (!ErrorInfo.empty())
-    {
-        spdlog::error(ErrorInfo.c_str());
-        errorEvent.ErrorDetail = std::move(ErrorInfo);
-    }
-
-    // The server rejected us, so this attempt is over and it reports its
-    // failure once: the error carries the reason. Only the error is marked
-    // reported -- the disconnect Close() raises below is a separate channel and
-    // still fires, so the services tear their session state down even though
-    // this attempt never got past authentication.
-    m_attemptErrorReported = true;
-
-    m_dispatcher.trigger(errorEvent);
-
-    // Also tear the transport down here rather than waiting for the server's
-    // close packet, which is not guaranteed to arrive at all.
-    Close();
 }
 
 void TransportService::HandleNotifySettingsChange(const NotifySettingsChange& acMessage) noexcept

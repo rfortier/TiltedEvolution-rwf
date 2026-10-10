@@ -122,9 +122,18 @@ uint64_t World::GetTick() const noexcept
 
 void World::Create() noexcept
 {
-    if (!entt::locator<World>::has_value())
+    // World::Create builds every service and the player manager. A failure leaves a
+    // partially built world; the client reports it and the game keeps running.
+    try
     {
-        entt::locator<World>::emplace();
+        if (!entt::locator<World>::has_value())
+        {
+            entt::locator<World>::emplace();
+        }
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in World::Create");
     }
 }
 

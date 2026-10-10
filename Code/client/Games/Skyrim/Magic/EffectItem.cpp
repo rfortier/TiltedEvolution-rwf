@@ -35,9 +35,19 @@ bool EffectItem::IsVampireLordEffect() const noexcept
 
 bool EffectItem::IsNightVisionEffect() const noexcept
 {
-    BGSKeyword* pMagicNightEye = Cast<BGSKeyword>(TESForm::GetById(0xad7c6));
-    if (pEffectSetting->keywordForm.count == 0)
-        spdlog::debug(__FUNCTION__ ": correcting BGSKeywordForm::Contains() bug for zero-keyword {:x}, {}", pEffectSetting->formID, pEffectSetting->fullName.value.AsAscii());
-    return pEffectSetting->keywordForm.count > 0 && pEffectSetting->keywordForm.Contains(pMagicNightEye);
+    // A predicate. The report is the only allocation; the answer it accompanies is
+    // still returned.
+    try
+    {
+        BGSKeyword* pMagicNightEye = Cast<BGSKeyword>(TESForm::GetById(0xad7c6));
+        if (pEffectSetting->keywordForm.count == 0)
+            spdlog::debug(__FUNCTION__ ": correcting BGSKeywordForm::Contains() bug for zero-keyword {:x}, {}", pEffectSetting->formID, pEffectSetting->fullName.value.AsAscii());
+        return pEffectSetting->keywordForm.count > 0 && pEffectSetting->keywordForm.Contains(pMagicNightEye);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in EffectItem::IsNightVisionEffect");
+        return false;
+    }
 }
 
