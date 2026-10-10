@@ -14657,3 +14657,363 @@ node -e "<global census>"   # noexcept defs=1514 bodies-with-catch=252  LIVE ung
 > 第三条:**判据要落在「这一层能不能用那个 helper」上,不是「上一节怎么修的」。**
 > 同一批里 8 个客户端站点用 `Diagnostics::ReportFailure`,`es_loader` 那一个只能用本地 `spdlog::error` + 自己的 `try` —— 差别不在缺陷,在这一层的 include 链和 xmake target。
 
+---
+
+## 108. 2026-10-10 场次:1.6.x 上勾选任一可选插件后启动即闪退 —— 判据是「这个模块被加载了,不等于它被选中了」
+
+> **锚点**:`Code/plugins/patches/STRPluginMessagingAPI/0008-do-not-binpatch-the-game-when-the-framework-owns-it.patch`
+> (`src/STRPMFrameworkRuntime.h` + 四个 resolver 文件)。
+
+### 108.1 现象与范围
+
+**现象**:游戏 1.6.x,MO2 加载 SKSE,只要在安装向导里勾了**任意一个**可选插件
+(OStimTogether / MorphSyncTogether / IEDSyncTogether / AnimSyncTogether /
+DAVSyncTogether / TradeTogether),打开游戏**直接闪退**;一个都不勾则正常。
+
+**为什么是「任意一个」**:六个插件的 `payload` 各不相同,但它们**都要**
+`STRPluginMessagingAPI`,而该插件的 `artifacts` 里有**两个** DLL
+(`Code/plugins/plugins.json:63-72`):
+
+```json
+{ "from": "STRPluginMessagingAPI.dll",     "dest": "SKSE/Plugins/STRPluginMessagingAPI.dll" },
+{ "from": "STRPluginMessagingBridge.dll",  "dest": "SKSE/Plugins/STRPluginMessagingBridge.dll" }
+```
+
+`rationale` 写的就是「Installed whenever any companion plugin is selected」。所以
+**勾选数从 0 变成 1** 时,新进进程的不是那一个插件,而是**这三个 DLL**。缺陷在
+第二个上,与用户勾了哪个插件无关 —— 这正是它看起来像「插件各自有 bug」的原因。
+
+向导侧的同一件事,数出来是**十二处**:
+
+```powershell
+Select-String -Path GameFiles\Skyrim\fomod\ModuleConfig.xml -Pattern 'OptionalPlugins/STRPluginMessagingAPI'
+# 61, 90, 103, 116, 129, 142, 322, 351, 364, 377, 390, 403  —— 十二个分支各一行
+<folder source="OptionalPlugins/STRPluginMessagingAPI" destination="" priority="0" />
+```
+
+十二 = 六个可选插件 × 两个语言分支(中/英各一份 `ModuleConfig.xml`)。**没有任何一个
+分支能绕开它**,这也就是「勾任意一个都闪退」的字面解释。
+
+### 108.2 根因:bridge 在 `SKSEPlugin_Load` 里就开扫内存、装 VEH、置 TF、写 INT3
+
+`STRPluginMessagingBridgeSKSE.cpp` 的 `SKSEPlugin_Load` 原本无条件调三个 resolver:
+
+```cpp
+STRPMChatUiSuppressBootstrap::Start();
+STRPMProxyResolverBootstrapV2::Start();
+STRPMProxyResolverTrace::Start();
+```
+
+三者在加载阶段做的事(逐条读出来的,不是推断):
+
+| 行为 | 证据 |
+| --- | --- |
+| 遍历**整个地址空间**的已提交可读/可执行 span | `STRPluginMessagingBridge.cpp:351 EnumerateMemory`,`:371` 过滤 `MEM_COMMIT` |
+| 按字符串锚点 `"Send chat message of type {}: '{}' "` 在**所有**可读 span 里搜 | `:388 FindAnchorCopies`,`:399 std::memcmp` |
+| 按 RIP 相对 xref 反查调用点 | `:405 FindRipRelativeXrefs` |
+| 装**向量化异常处理器** | `:630 AddVectoredExceptionHandler`,`STRPMProxyResolverTrace.h:315` |
+| 在**活线程**上置 Trap Flag(`0x100`) | `STRPMProxyResolverTrace.h:225/261/281` |
+| 把**游戏函数首字节**改成 `0xCC`(INT3) | `:637 PatchByte(address, 0xCC)`,经 `VirtualProtect` 写 `PAGE_EXECUTE_READWRITE` |
+| 恢复时按 `g_originalTransportByte` 写回 | `:594` |
+
+这条链**设计上就是给 STR 1.8.0 那个二进制用的** —— `kTargetBuild` 写死
+`"Skyrim Together Reborn 1.8.0"`(`:27`),`kSendChatOpcode = 38` 写死(`:29`),
+`FunctionContainsImmediate32(*targetBounds, 0x00010000u)` 的注释写的是
+「STR 1.8.0 TransportService::Send constructs Buffer(1 << 16)」(`:554`)。
+
+### 108.3 为什么「框架自己答同一个查询」这件事没有让它停下来
+
+框架运行时**导出同名入口**并且答得更好(`Code/client/Services/PluginMessagingExport.cpp`):
+
+| 查询 | 框架运行时 | bridge |
+| --- | --- | --- |
+| `STRPM_QueryTransportInterface` | `:151`,走 `PluginMessagingService` 自己的会话 | 扫内存找 STR 的 `TransportService::Send` |
+| `STR_QueryPluginMessagingProxyResolver` | `:80`,读框架自己的组件 | 靠 VEH 抓 `ConnectionID -> FormID` |
+
+而且 `0001-prefer-the-framework-transport.patch` 已经让**门面优先挑框架运行时**
+(`GetLoadedFrameworkRuntime()`,只 `GetModuleHandleW` 不 `LoadLibraryW`)。所以
+框架用户在 1.6.x 上**永远走不到 bridge** —— 它的 `Start()` 根本不会被调用。
+
+**缺陷是:没被选中,不等于没被加载。** SKSE 会把 `Data/SKSE/Plugins` 下每个
+DLL 都加载并调用 `SKSEPlugin_Load`;`STRPluginMessagingBridge.dll` 就装在那里。
+于是上面那张表里的**七件事全都在启动期跑了一遍**,而结果没有任何人使用。
+
+### 108.4 为什么它正好在 1.6.x 上炸、而本机(1.5.97)测不出
+
+锚点字符串是**两个运行时都有**的:
+
+```
+Code/client/Services/Generic/OverlayClient.cpp:153   spdlog::info(L"Send chat message of type {}: '{}' ", ...)
+```
+
+所以 `FindAnchorCopies` 在框架自己的运行时里**必定命中**。接着
+`FindRipRelativeXrefs` 会在框架代码里找到一条指向该锚点的 xref,`GetFunctionBounds`
+给出函数边界,`EnumerateDirectCalls` 找到调用点,`:554` 再按「谁含 `0x10000` 立即数」
+挑一个当 `TransportService::Send` —— 这是**在别人的二进制上按 STR 1.8.0 的形状猜地址**。
+猜中与否只影响崩在哪一步:
+
+| 猜的结果 | 后果 |
+| --- | --- |
+| 挑出唯一候选 | `ArmTransportCaptureBreakpoint` 把该函数首字节写成 `0xCC`,游戏下次执行到它就是 `EXCEPTION_BREAKPOINT`;VEH 若因地址不符而 `CONTINUE_SEARCH`,就是未处理异常 → 闪退 |
+| 挑不出唯一候选 | `ResolveProcessChatMessage` 返回 false,循环每 750ms 重扫一次**整个地址空间**(`kBootstrapRetryDelay`,`:36`),启动期持续占用 CPU 并不断 `VirtualQuery` |
+| 命中但时机不对 | `:610` 抓 `Rcx` 当 `this`,`:618` 把 `Rip` 改回函数入口重执行 —— 在非 STR 的 `Send` 上重执行,语义已变 |
+
+**为什么本机 1.5.97 看不到**:本地没有 1.6.x 实机;而**静态门禁全部是绿的** ——
+十个 gate 一个不落地通过(见 108.6)。这条缺陷在**任何一条门禁的口径之外**:
+`check_exports.py` 查的是「契约名有没有被导出」,`check_skse_entry_points.py` 查的是
+「三个入口在不在」,`check_transport_compat.py` 查的是 opcode 序号。**没有一条问
+「这个模块在什么条件下才会真的动手」。**
+
+### 108.5 修法:把「框架在不在」这件事查在**动手的那一刻**
+
+补丁加一个 `src/STRPMFrameworkRuntime.h`,里面是唯一一处判定:
+
+```cpp
+inline bool STRPMFrameworkRuntimeIsMapped() noexcept
+{
+    return GetModuleHandleW(L"SkyrimTogetherRuntime.dll") != nullptr ||
+           GetModuleHandleW(L"SkyrimTogetherRuntime_1_5.dll") != nullptr;
+}
+```
+
+**只 `GetModuleHandleW`,绝不 `LoadLibraryW`**:运行时一个游戏版本族一个名字,两个
+ABI 不同,按名加载会把**跨 ABI 的映像**拉进进程。这与门面自己那句注释是同一条规则。
+
+判定**不是查一次就完**,而是查在四个「即将动手」的点上,因为**这四处各有各的时机**:
+
+| 站点 | 时机 | 为什么不能只在加载期查 |
+| --- | --- | --- |
+| `STRPluginMessagingBridge.cpp` `BootstrapLoop` | 每轮重扫前 | 循环会重试,运行时可能在循环开始之后才出现 |
+| `STRPMProxyResolverBootstrapV2.h` `Worker` | 每轮重扫前 | 同上;它每 2 秒一轮,`SleepInterruptible` 可被打断 |
+| `STRPMProxyResolverTrace.h` `Worker` + `ArmStepOver` + `RearmEntryHookIfNeeded` | 装 VEH 前 / 每次下 TF 前 | 这三处是**在异常处理器里**被调用的,那时 worker 早已跑过 |
+| `STRPMChatUiSuppress.h` `PatchByte` | 每次写 `0xCC` 前 | 全仓 INT3 的唯一出口,四个写入点都经过它 |
+
+最后一处是关键:**`PatchByte` 是这条链上唯一的写口**,所以判在它里面等于一次性盖住
+所有写路径(聊天 UI 候选点、发送捕获断点、单步重挂),不必逐个改调用者。
+
+**恢复必须仍然放行**:`if (value == 0xCC && ...)` —— 只拦「装断点」,不拦「拆断点」。
+否则一个在运行时出现**之前**就装好的断点永远拆不掉,那个 `0xCC` 会留在游戏代码里。
+这是本次唯一一处「同一条路径要放行一半」的地方,写清楚理由而不是顺手一起拦。
+
+### 108.6 两条补丁门禁**口径不同**,而它们都是对的
+
+本轮撞上一个值得记下来的门禁结构:
+
+| 门禁 | 它跑在什么树上 | 它问什么 |
+| --- | --- | --- |
+| `plugin_patches.py verify` | **索引**(钉住的原始内容) | 这个补丁**单独**能不能贴到钉住的 commit 上 |
+| `plugin_patches.py apply`(CI) | **工作树**,按文件名顺序 | 贴完前面几个之后,这个还能不能贴 |
+
+两者都必要,而且**没有一个能替代另一个**:`verify` 防的是「pin 动了而补丁没重写」,
+`apply` 防的是「补丁之间互相打架」。第一版补丁**同时踩了两个坑**,而且是**交替踩的**:
+
+1. 先按工作树(已贴 0001-0007)生成 → `verify` 报「does not apply to the pinned commit」;
+2. 改成按钉住内容生成 → `apply` 在 0002 那一步之后失败,因为 0002 改了同一批行;
+3. 最终解法**不是二选一**,是**换文件**:把判定放进 `src/STRPMFrameworkRuntime.h`
+   这个**没有任何既有补丁碰过**的新头文件,再让四处调用点分别 include 它 ——
+   四个调用文件里 `STRPMChatUiSuppress.h` / `STRPMProxyResolverBootstrapV2.h` /
+   `STRPMProxyResolverTrace.h` / `STRPluginMessagingBridge.cpp` **也都是既无补丁碰过的**。
+   于是两份口径同时成立。
+
+> **判据**:写补丁前先列一张「哪些文件已经被既有补丁占着」的表
+> (`Select-String -Path patches/*.patch -Pattern '^--- a/(.+)$'`),
+> 然后**优先把改动放进没被占的文件**。绕不开时,补丁必须按**最终顺序**生成,
+> 并且要手工跑一次「干净树 + 按名排序全贴」——那是 CI 真正做的事。
+
+### 108.7 验证(可复跑)
+
+```powershell
+# 1. 补丁对钉住的 commit 干净可用,且改的文件确实在构建闭包里
+python Code/plugins/tools/plugin_patches.py verify
+#    PATCH VERIFY OK / 39 patch(es) apply to their pinned commits
+
+# 2. 补丁当前是否都贴在树上
+python Code/plugins/tools/plugin_patches.py check
+#    PATCH CHECK OK
+
+# 3. 【关键】CI 真正做的事:干净树 + 按文件名排序全贴
+#    verify 只证明「每个补丁单独能贴到钉住内容上」,证明不了「它们互相不打架」。
+#    这一步是本轮唯一能发现补丁冲突的测试,务必手工跑一次:
+$sc = "$env:TEMP\strpm-ci"; Remove-Item $sc -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $sc | Out-Null
+Push-Location plugins/STRPluginMessagingAPI
+cmd /c "git archive HEAD | tar -x -C $sc"
+Pop-Location
+Push-Location $sc
+git init -q .; git add -A; git -c user.email=a@b -c user.name=a commit -qm base
+Get-ChildItem "$PWD\..\..\Code\plugins\patches\STRPluginMessagingAPI\*.patch" |
+  Sort-Object Name | ForEach-Object { git apply $_.FullName; "exit=$LASTEXITCODE $($_.Name)" }
+Pop-Location
+#    期望 8/8 exit=0
+
+# 4. 十个门禁全绿(本机)
+foreach ($t in 'plugin_patches.py','check_skse_entry_points.py','check_ostimng_versions.py',
+               'check_ostimng_build.py','check_skse_bootstrap.py','check_exports.py',
+               'check_skee_abi.py','check_transport_compat.py','check_workflow_shell.py',
+               'check_ostim_support_message.py') { python "Code/plugins/tools/$t" }
+
+# 5. bridge 的 CMakeLists 会 READ 该文件再 string(REPLACE),所以锚点必须原样还在:
+#    七个 [=[...]=] 字面量在改动前后逐个比对,无一条被破坏
+```
+
+**改动只落在五个文件上,而它们此前都没有被任何补丁碰过**(这是 108.6 那条判据的结果):
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `src/STRPMFrameworkRuntime.h` | 新增,唯一的判定函数 |
+| `src/STRPMChatUiSuppress.h` | `PatchByte` 拦下装断点(全仓 INT3 的唯一出口) |
+| `src/STRPMProxyResolverBootstrapV2.h` | `Worker` 每轮重扫前停手 |
+| `src/STRPMProxyResolverTrace.h` | `Worker` 装 VEH 前、`ArmStepOver`/`RearmEntryHookIfNeeded` 下 TF 前停手 |
+| `src/STRPluginMessagingBridge.cpp` | `BootstrapLoop` 每轮重扫前停手、`PatchByte` 拦下装断点 |
+
+**未改而经确认不可达/已被覆盖的写点**:`STRPMProxyResolverBridge.h` 的
+`ArmHook`/`ConfigureHooks` 只由已被守卫的 `BootstrapV2::Worker` 调用;
+它自己那个 `Start()`(`:1212`)全仓**零调用者**,是死代码;`STRPMChatUiSuppressV2.h`
+全仓**无人 include**;`STRPMChatUiSuppressV3.h` 的三处写全部经
+`STRPMChatUiSuppress::detail::PatchByte`,即上表第二行。
+
+> **教训**:**「被加载」和「被选中」是两件事,而启动期的副作用只该挂在后者上。**
+> 本次三个 DLL 里,两个是「被选中才做事」,第三个把**扫描内存 + 装 VEH + 置 TF +
+> 写 INT3** 挂在了加载上。用户勾选一个可选插件,买到的是这三个 DLL 全进进程 ——
+> 这就是「勾任何一个都闪退、一个都不勾就正常」的形状。
+> 判据要问的不是「这段代码对不对」,是**「它什么时候跑,而那时候谁需要它」**。
+> 第二条:**门禁的覆盖面要按「什么条件触发」补,不是按「什么名字存在」补。**
+> 十个 gate 全绿而缺陷在线,因为它们问的都是静态存在性;这一条问的是触发条件。
+> 第三条:**判据要落在「动手的那一刻」,不是「加载的那一刻」。**
+> 加载顺序不由我们选(门面与 bootstrap 是两个同目录 DLL),所以任何
+> 「加载时查一次、之后一直信任」的写法都有洞。四处判定各查各的时机,
+> 其中一处(`PatchByte`)是唯一写口,判在那里等于一次盖住所有写路径。
+
+---
+
+## 109. 2026-10-10 场次:插件层同一类缺陷的四个新面孔,以及帧循环上一处每 tick 的整表复制
+
+> **锚点**:`Code/plugins/patches/OStimNG/0007-keep-the-thread-api-off-null-pointers-and-off-its-own-lock.patch`、
+> `Code/client/Services/DiscoveryService.{h,cpp}`。
+
+### 109.1 判据:同族先例就在同一个文件里,而这三处没跟着写
+
+上一节(§108)的判据是「被加载 ≠ 被选中」。这一节是另一条:**同一个抽象层的兄弟函数
+已经判过的空,新加的入口要判同样的空** —— 而这里的「兄弟」就在**同一个仓库的同一个
+目录**里,不是别的项目。
+
+**OStimNG 的 ModAPI 是给外部插件用的 C++ 入口**(`skse/src/ModAPI/`)。它读写三个
+**各自独立、各自可为空**的裸指针:
+
+| 指针 | 谁把它置空 | 证据 |
+| --- | --- | --- |
+| `UIState::currentThread` | 线程结束时 `HandleThreadRemoved` | `UI/UIState.cpp:106-108` |
+| `UIState::currentNode` | 与 thread **不同步**,可单独非空 | `UI/UIState.h:49-50` |
+| `Thread::furnitureType` | 默认 `nullptr`,无家具的线程一直是空 | `Core/Thread.h:38`,`:220` |
+
+**仓库内自带的 UI 三个入口全都判了,而且判的个数不一样**:
+
+```cpp
+UI/Scene/SceneMenu.cpp:130     if (currentNode == nullptr || currentThread == nullptr) return;
+UI/Search/SearchMenu.cpp:153   if (thread == nullptr) { AssignData(data); return; }
+UI/Search/SearchMenu.cpp:160   && furnitureType != nullptr && furnitureType->isChildOf(...)
+UI/Align/AlignMenu.cpp:87      if (currentThread == nullptr || currentNode == nullptr) return;
+```
+
+而 ModAPI 的对应入口**只判了其中一个**。逐处列出(改前):
+
+| 站点 | 判了 | 漏了 | 后果 |
+| --- | --- | --- | --- |
+| `GetNavigationCount` `:134` | `currentNode` | `furnitureType` | `getFurnitureTypeInternal()->isChildOf(...)` 空解引用 |
+| `GetNavigationOptions` `:169` | `currentNode` | `furnitureType`、`nav.nodes` 为空 | 同上 + `nodes.back()` 越界 |
+| `SearchScenes` `:447` | **一个都没判** | `currentThread`、`furnitureType` | `thread->getActorCount()` 空解引用 |
+| `PapyrusThread::GetFurnitureType` `PapyrusThread.h:205` | `thread` | `furnitureType` | 脚本可随时调用 |
+
+`SearchScenes` 那处最直接:`UI/Search/SearchMenu.cpp:147` 的树内同名功能**判了**
+(`:153` 判 thread、`:160` 判 furnitureType),而 ModAPI 那份**两个都没判** ——
+搜索框在场景结束后仍然开着,`HandleThreadRemoved` 把 `currentThread` 置空,
+下一次敲键盘就是一次空读。
+
+**修法**:加一个 `ResolveSceneContext()` 把三个指针**一起**取、一起判
+(`operator bool` 要求 thread 与 node 同时非空),四个入口改用它;
+`furnitureType` 单独再判一次(它合法地可以为空,不能当成"上下文无效");
+`nav.nodes.empty()` 单独跳过一个导航项。返回空而不是崩溃:导航列表为空、
+搜索结果为空,都是这两个查询本来就能表达的答案。
+
+### 109.2 回调在自己的锁里被调用 —— 一个「注销自己」就能自锁
+
+`NotifyEvent` / `NotifyControlInput` 原本**持着 `callbackMutex` 遍历并调用**:
+
+```cpp
+std::lock_guard<std::mutex> lock(callbackMutex);
+for (auto& registration : eventCallbacks)
+    registration.callback(eventType, threadID, registration.userData);   // ← 在锁里
+```
+
+而同一层的 `UnregisterEventCallback` `:258` 与 `UnregisterControlCallback` `:279`
+**也要拿同一把锁**。于是一个在事件回调里注销自己的外部插件 —— 这是最自然的写法,
+「我收到结束了,不用再通知我」—— 就是**同线程重入 `std::mutex`**,`std::mutex`
+不可重入 ⇒ **死锁**。
+
+**修法**:锁内**只拷贝**一份回调列表,锁外调用。拷贝是这两处唯一的分配,
+所以两个函数补 `noexcept` + `try/catch`,与 §92-§101 同一口径(报告自己也不能抛)。
+
+### 109.3 同步形态的 `MigrateThread` 在主线程上等自己
+
+`MigrateThread` 的契约(`ModAPI/OstimNG-API-Thread.h:271`)写着「Without callback:
+blocks until migration completes; returns new thread ID」。实现用 promise/future 等
+`onComplete`。而迁移的完成路径是:
+
+```cpp
+ThreadManager.cpp:393   GameAPI::Game::runSynced([...]{ closingThread->close(); delete closingThread; ... });
+GameAPI/Game.h:20       runSynced(func) { SKSE::GetTaskInterface()->AddTask([func]{func();}); }
+```
+
+`AddTask` 的任务队列**由游戏主线程抽干**。所以**在主线程上**调同步形态:
+`future.get()` 等一个只有主线程才能跑的 lambda,而主线程正卡在 `future.get()` ——
+**永久死锁**,表现就是游戏卡死。
+
+**修法**:加 `Util/MainThread.h`,在 `SKSEPlugin_Load`(`Main.cpp:96`,SKSE 保证主线程)
+记录线程 id;同步分支在阻塞前判一次,是主线程就**直接返回 -1 并记 error**,把调用者
+导向回调形态。**没有**顺手把迁移启动起来 —— 契约是「返回新 id」,返回不了就没有
+通道把结果交给调用者,而在它以为失败时偷偷把场景迁走比失败更糟。
+
+### 109.4 帧循环:`VisitForms` 每 tick 整表复制一遍「已发现的 actor」
+
+`DiscoveryService::VisitForms` 挂在 `PreUpdateEvent` 上(`:53`),即**每个 tick**
+(`World::Update`,`World.cpp:96`)。原实现第一行是:
+
+```cpp
+static Set<uint32_t> s_previousForms;
+s_previousForms = m_forms;        // ← 每 tick 一次整表赋值
+```
+
+两处缺陷叠在一起:
+
+1. **`static` 局部变量活过 `World`**。`World` 是 `entt::locator` 里的单例
+   (`World.cpp:131`),第二个会话/第二次 `World::Create` 时 `m_forms` 是空的,而
+   `s_previousForms` 还留着上一场的 actor 集合 —— 于是那一整批会被当成
+   「这一 tick 消失了的 actor」,逐个走 `ActorRemovedEvent`。
+2. **每 tick 一次与 actor 数成正比的分配**。`Set` 是
+   `TiltedPhoques::Set`(分配器感知容器,`TiltedOnlinePCH.h:75`),
+   `operator=` 重建整个容器。帧循环按 §21.1 是 **8ms 定时器**(~64-125/s),
+   于是这条赋值每秒跑几十到上百次,而它跑在**游戏主线程**上。
+
+**修法**:改成成员 `m_previousForms`(`clear()` + 逐条 `insert`),容量跨 tick 保留 ——
+首次几 tick 之后这条路径不再分配;`static` 消失,跨会话残留随之消失。
+
+> **判据**:「这个变量该是成员还是 static」不是风格问题 —— **static 的寿命比它填自的
+> 对象长**,而这里被填的是每个会话重建的 `World`。同一个判据在 §53(插件缓存跨存档
+> 活着)已经用过一次。
+
+### 109.5 验证与未做
+
+- 三个补丁文件都由 `git diff` **原始重定向**生成,再用
+  `plugin_patches.py verify` 对**索引里的钉住内容**逐个 `git apply --check --cached`
+  通过(§107 的教训:手写的 hunk 上下文会与 `git diff` 的不同而 apply 失败);
+  `check` 确认全部贴在树上。
+- `bridge` 的 `CMakeLists.txt` 会 `file(READ)` 再 `string(REPLACE)` 源文件,
+  所以改完逐个比对了七个 `[=[...]=]` 字面量锚点,无一条被破坏(比对脚本读
+  `git show :<file>` 的原始内容作为基线,避免把既有差异算成自己弄坏的)。
+- **本机不编译**(§0/§1),以上判据都是静态的;1.6.x 实机复现需要 CI 出包后验证。
+
+> **教训**:第四条:**审计要按「同一抽象层的兄弟函数判了什么」横向扫,不是只纵向读缺陷。**
+> 本节四处有三处的正解**就在同一个仓库的相邻文件里**(`SceneMenu.cpp` 判了两个、
+> `SearchMenu.cpp` 判了两个、`ThreadActor.cpp:538` 判了 `furnitureType`)。
+> 新入口漏判,不是因为不知道要判,是因为**加的时候只看了自己**。
+

@@ -271,8 +271,13 @@ void DiscoveryService::VisitForms() noexcept
     // m_forms, which still holds what was found.
     try
     {
-        static Set<uint32_t> s_previousForms;
-        s_previousForms = m_forms;
+        // Clear-and-refill rather than assign: assigning rebuilt the whole set every
+        // tick, which on the game thread meant one allocation proportional to the
+        // loaded-actor count 60-125 times a second. Clearing keeps the capacity, so
+        // after the first few ticks this loop allocates nothing.
+        m_previousForms.clear();
+        for (uint32_t formId : m_forms)
+            m_previousForms.insert(formId);
 
         const auto visitor = [this](TESObjectREFR* apReference)
         {
@@ -285,7 +290,7 @@ void DiscoveryService::VisitForms() noexcept
                 m_dispatcher.enqueue(ActorAddedEvent(formId));
             }
             else
-                s_previousForms.erase(formId);
+                m_previousForms.erase(formId);
         };
 
         ProcessLists* const pProcessLists = ProcessLists::Get();
@@ -311,7 +316,7 @@ void DiscoveryService::VisitForms() noexcept
             visitor(pPlayer);
 
         // We dispatch removal events first to prevent needless reallocations
-        for (uint32_t formId : s_previousForms)
+        for (uint32_t formId : m_previousForms)
         {
             // A conform can remove both the 3D and the high-process handle. Keep the
             // existing discovery entry so rebuilding it does not cancel its assignment.

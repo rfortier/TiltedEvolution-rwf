@@ -1,0 +1,242 @@
+diff --git a/src/STRPMFrameworkRuntime.h b/src/STRPMFrameworkRuntime.h
+new file mode 100644
+index 0000000..f97926f
+--- /dev/null
++++ b/src/STRPMFrameworkRuntime.h
+@@ -0,0 +1,40 @@
++#pragma once
++
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <Windows.h>
++
++// Shared by every resolver in this bridge that finds the STR runtime by scanning
++// memory for its string anchors and then patches what it finds.
++//
++// Skyrim Together Next's own runtime exports the same transport and
++// proxy-resolver queries this bridge exists to answer - STRPM_QueryTransportInterface
++// and STR_QueryPluginMessagingProxyResolver - and answers them from its own
++// components (see Code/client/Services/PluginMessagingExport.cpp and
++// Code/plugins/patches/STRPluginMessagingAPI/0001-prefer-the-framework-transport.patch).
++// When it is mapped, the facade prefers it and this bridge is not the transport.
++//
++// That matters here because the framework runtime is a *different image* that
++// carries the *same* chat anchor strings. A resolver that scans while it is
++// mapped finds those anchors inside the framework's own code, resolves an xref
++// to them, and then treats the function it landed in as STR 1.8.0's
++// TransportService::Send - which it is not. The result is not a no-op: the
++// capture breakpoint writes 0xCC over a live function of the running framework,
++// and the call step-over controller sets the Trap Flag on threads executing it.
++// Both are crashes, and both happen at whatever the game was doing.
++//
++// GetModuleHandleW only, never LoadLibraryW: the runtime has one name per game
++// version family and the two are different ABIs, so loading a name that merely
++// exists on disk would pull a cross-ABI image into the process. This mirrors the
++// facade's own probe of these two names.
++//
++// Checked at the point of use rather than once at load, because SKSE's plugin
++// load order is not ours to choose: the facade that starts these resolvers and
++// the bootstrap that deploys the runtime are separate DLLs in the same
++// directory, so either can run first. A per-use check is correct in both orders.
++inline bool STRPMFrameworkRuntimeIsMapped() noexcept
++{
++    return GetModuleHandleW(L"SkyrimTogetherRuntime.dll") != nullptr ||
++           GetModuleHandleW(L"SkyrimTogetherRuntime_1_5.dll") != nullptr;
++}
+diff --git a/src/STRPMChatUiSuppress.h b/src/STRPMChatUiSuppress.h
+index c73f2c9..40ae02e 100644
+--- a/src/STRPMChatUiSuppress.h
++++ b/src/STRPMChatUiSuppress.h
+@@ -18,6 +18,8 @@
+ #include <string_view>
+ #include <vector>
+ 
++#include "STRPMFrameworkRuntime.h"
++
+ namespace STRPMChatUiSuppress
+ {
+     namespace detail
+@@ -315,6 +317,27 @@ namespace STRPMChatUiSuppress
+ 
+         inline bool PatchByte(std::uintptr_t address, std::uint8_t value) noexcept
+         {
++            // Every INT3 this bridge writes goes through here - the chat-UI
++            // observer's candidates, the transport capture breakpoint and the
++            // call step-over's one-shot traps all reach it - so this is the one
++            // place that can refuse all of them together.
++            //
++            // The refusal is not about the address being wrong: it is about who
++            // owns the code at it. When the framework runtime is mapped it
++            // answers the same transport and proxy-resolver queries this bridge
++            // does, so the facade prefers it and this bridge is not the
++            // transport. The framework's image carries the same chat anchor
++            // strings the resolvers scan for, so an address they resolved here
++            // is a live function of the running framework, and writing 0xCC over
++            // it crashes the game at whatever it was doing - during load, when
++            // it can least afford it.
++            //
++            // Restoring the original byte must still be allowed: a breakpoint
++            // armed before the runtime appeared has to be taken back out, and
++            // refusing that would leave the 0xCC in place forever.
++            if (value == 0xCC && STRPMFrameworkRuntimeIsMapped())
++                return false;
++
+             std::scoped_lock lock(g_patchMutex);
+             DWORD oldProtect = 0;
+             if (!VirtualProtect(reinterpret_cast<void*>(address), 1, PAGE_EXECUTE_READWRITE, &oldProtect))
+diff --git a/src/STRPMProxyResolverBootstrapV2.h b/src/STRPMProxyResolverBootstrapV2.h
+index 2669a18..bac4eb1 100644
+--- a/src/STRPMProxyResolverBootstrapV2.h
++++ b/src/STRPMProxyResolverBootstrapV2.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include "STRPMFrameworkRuntime.h"
+ #include "STRPMProxyResolverBridge.h"
+ 
+ #include <algorithm>
+@@ -253,6 +254,20 @@ namespace STRPMProxyResolverBootstrapV2
+ 
+             while (!token.stop_requested())
+             {
++                // Re-checked every pass, not only when the worker is started: the
++                // facade that starts it and the bootstrap that deploys the
++                // framework runtime are separate DLLs in the same directory, so
++                // either can load first. If the framework runtime is the one in
++                // this process, this loop would otherwise keep scanning it - and
++                // that image carries the same chat anchors this resolver hunts
++                // for, so ResolveTransportAddresses would resolve and then hook
++                // *its* functions as if they were STR 1.8.0's.
++                if (STRPMFrameworkRuntimeIsMapped())
++                {
++                    Log("ProxyResolver: framework runtime mapped, standing down");
++                    return;
++                }
++
+                 const auto module = GetModuleHandleW(nullptr);
+                 const auto spans = EnumerateRuntimeMemory(module);
+                 const auto transport = ResolveTransportAddresses(spans, module);
+diff --git a/src/STRPMProxyResolverTrace.h b/src/STRPMProxyResolverTrace.h
+index a4e3c6e..f3533cc 100644
+--- a/src/STRPMProxyResolverTrace.h
++++ b/src/STRPMProxyResolverTrace.h
+@@ -17,6 +17,8 @@
+ #include <optional>
+ #include <thread>
+ 
++#include "STRPMFrameworkRuntime.h"
++
+ namespace STRPMProxyResolverTrace
+ {
+     namespace detail
+@@ -129,6 +131,17 @@ namespace STRPMProxyResolverTrace
+             if (address < 0x10000 || g_stepOverArmed)
+                 return false;
+ 
++            // This controller patches the instruction after a CALL inside
++            // functions the resolver identified by scanning for STR 1.8.0's
++            // anchors. When the framework runtime owns the process those anchors
++            // are its own, so the address is a live function of the running
++            // framework and an INT3 there - plus the Trap Flag this controller
++            // sets - crashes the game. Refused at the point of the write as well
++            // as at the worker, because this path is reached from the exception
++            // handler after the worker has already armed.
++            if (STRPMFrameworkRuntimeIsMapped())
++                return false;
++
+             std::uint8_t original = 0;
+             if (!STRPMProxyResolverBridge::detail::ReadProcessValue(address, original) ||
+                 original == 0xCC)
+@@ -150,7 +163,7 @@ namespace STRPMProxyResolverTrace
+             if (!hook)
+                 return;
+ 
+-            if (hook->armed.load())
++            if (hook->armed.load() && !STRPMFrameworkRuntimeIsMapped())
+                 STRPMProxyResolverBridge::detail::PatchByte(hook->bounds.begin, 0xCC);
+             hook = nullptr;
+         }
+@@ -312,6 +325,20 @@ namespace STRPMProxyResolverTrace
+             if (token.stop_requested())
+                 return;
+ 
++            // The controller installs a VEH that sets the Trap Flag on live
++            // threads. It is armed from the resolver's hook, and the resolver
++            // only arms when it has resolved addresses for STR 1.8.0 - which it
++            // must not do while the framework runtime owns the process, because
++            // that image carries the same anchors. Checked here as well so a
++            // controller started before the runtime appeared does not arm on top
++            // of it.
++            if (STRPMFrameworkRuntimeIsMapped())
++            {
++                STRPMProxyResolverBridge::detail::Log(
++                    "ProxyResolver call step-over controller: framework runtime mapped, standing down");
++                return;
++            }
++
+             g_handler = AddVectoredExceptionHandler(1, &ExceptionHandler);
+             if (g_handler)
+             {
+diff --git a/src/STRPluginMessagingBridge.cpp b/src/STRPluginMessagingBridge.cpp
+index 982c234..3428310 100644
+--- a/src/STRPluginMessagingBridge.cpp
++++ b/src/STRPluginMessagingBridge.cpp
+@@ -1,5 +1,6 @@
+ #include "STRPluginMessagingAPI/STRPluginMessagingAPI.h"
+ #include "STRPluginMessagingBridgeReceive.h"
++#include "STRPMFrameworkRuntime.h"
+ 
+ #ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN
+@@ -572,6 +573,24 @@ namespace
+ 
+     bool PatchByte(std::uintptr_t address, std::uint8_t value)
+     {
++        // Every INT3 this translation unit writes goes through here: the
++        // transport capture breakpoint and its restore. When the framework
++        // runtime is mapped it answers the same transport query this bridge
++        // does, so the facade prefers it and this bridge is not the transport -
++        // and the framework's image carries the same chat anchor the resolver
++        // scanned for, so the address it produced is a live function of the
++        // running framework rather than STR 1.8.0's TransportService::Send.
++        // Writing 0xCC there crashes the game at whatever it was doing.
++        //
++        // Restoring the original byte stays allowed: a breakpoint armed before
++        // the runtime appeared has to be taken back out.
++        if (value == 0xCC && STRPMFrameworkRuntimeIsMapped())
++        {
++            Log("refusing to arm a breakpoint at 0x%llX: framework runtime owns this process",
++                static_cast<unsigned long long>(address));
++            return false;
++        }
++
+         DWORD oldProtect = 0;
+         if (!VirtualProtect(reinterpret_cast<void*>(address), 1, PAGE_EXECUTE_READWRITE, &oldProtect))
+             return false;
+@@ -950,6 +969,25 @@ namespace
+ 
+         while (!g_bootstrapStop.load())
+         {
++            // The scan below walks every committed private and image span in the
++            // process looking for STR 1.8.0's chat anchors, and everything it
++            // finds is treated as that binary's code. The framework runtime
++            // answers the same transport query this bridge does - so the facade
++            // prefers it and this bridge is not the transport - and its image
++            // carries the same anchors. Scanning it would resolve the framework's
++            // own functions and arm a capture breakpoint inside them.
++            //
++            // Checked here rather than once when the loop starts, because SKSE's
++            // plugin load order is not ours to choose: the facade that calls
++            // Start() and the bootstrap that deploys the runtime are separate
++            // DLLs in the same directory, so either can run first. This loop
++            // retries, so it sees the runtime whenever it appears.
++            if (STRPMFrameworkRuntimeIsMapped())
++            {
++                Log("framework runtime mapped; STRPM bridge binpatch resolvers stand down");
++                return;
++            }
++
+             if (!g_sendResolverReady.load())
+             {
+                 if (ResolveProcessChatMessage())

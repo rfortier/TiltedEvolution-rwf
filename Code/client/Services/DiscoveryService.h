@@ -88,6 +88,15 @@ private:
     //! @brief Cached actor forms detected in the previous frame.
     Set<uint32_t> m_forms;
     /**
+     * The actor forms seen on the previous tick, used to tell an arrival from a form
+     * that was already known. This is a member rather than a function-static on
+     * purpose: a static outlives the World it was filled from, so a second session in
+     * the same process would start from the first one's actor set. Being a member also
+     * lets it be cleared and refilled instead of reassigned, which keeps its capacity
+     * across ticks instead of reallocating the whole set on the game thread every tick.
+     */
+    Set<uint32_t> m_previousForms;
+    /**
      * The center grid coordinates are the coordinates of the cell in the cell grid
      * where the cells around it in a 5 by 5 grid (by default) are loaded.
      */
