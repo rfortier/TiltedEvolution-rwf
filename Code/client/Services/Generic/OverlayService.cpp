@@ -16,6 +16,8 @@
 #include <Services/OverlayClient.h>
 #include <Services/TransportService.h>
 
+#include <WireLimits.h>
+
 #include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/NotifyPlayerList.h>
 #include <Messages/NotifyPlayerLeft.h>
@@ -155,9 +157,14 @@ float CalculateHealthPercentage(Actor* apActor) noexcept
         return 0.f;
     const float health = apActor->GetActorValue(ActorValueInfo::kHealth);
 
-    float percentage = health / (maxHealth + tempModHealth) * 100.f;
-    if (percentage < 0.f)
-        percentage = 0.f;
+    // The divisor is maxHealth plus a modifier the engine writes, and Skyrim's
+    // temporary health modifiers are routinely negative - disease, drain, poison.
+    // A modifier near -maxHealth makes the quotient run away, and one that exactly
+    // cancels maxHealth divides by zero. The old code floored the result at 0 and
+    // never capped it, so the overflow went out over the wire and into the party
+    // bar's CSS width. ClampHealthPercentage handles the non-finite case as well,
+    // which is what a division by zero produces.
+    const float percentage = WireLimits::ClampHealthPercentage(health / (maxHealth + tempModHealth) * 100.f);
 
     return percentage;
 }
@@ -596,7 +603,7 @@ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
             if (!pCell)
             {
                 spdlog::error("Failed to fetch cell to teleport to.");
-                m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
+                m_world.GetOverlayService().SendSystemMessage("SERVICE.COMMANDS.TELEPORT_FAILED");
                 return;
             }
         }
@@ -612,7 +619,11 @@ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
 
 void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept
 {
-    const float percentage = acMessage.Percentage >= 0.f ? acMessage.Percentage : 0.f;
+    // The wire bounds this on read; bounding again here is deliberate, because this
+    // is the value that becomes `style.width = "<n>%"` in the party bar. A width
+    // above 100% is an invalid style rather than a cosmetic difference, and a NaN
+    // would reach the style as the literal text "NaN".
+    const float percentage = WireLimits::ClampHealthPercentage(acMessage.Percentage);
 
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);

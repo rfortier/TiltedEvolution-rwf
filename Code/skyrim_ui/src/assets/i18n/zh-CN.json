@@ -41,7 +41,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "消息自",
       "ACCEPT": "接受",
-      "DECLINE": "拒绝"
+      "DECLINE": "拒绝",
+      "OPEN_GUIDE": "打开指南",
+      "DISMISS": "忽略",
+      "DONT_SHOW": "不再显示"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "接受{{name}}的邀请。",
@@ -187,6 +190,9 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}}邀请您加入其团队"
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "想一起做任务吗？组建团队并保持靠近，即可共享任务进度！详情请查看我们的游玩指南。"
     }
   }
 }

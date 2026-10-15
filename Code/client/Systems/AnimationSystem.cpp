@@ -19,8 +19,6 @@
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESWorldSpace.h>
 
-extern thread_local const char* g_animErrorCode;
-
 namespace
 {
 // Hard bound on the replay queue. It normally drains one action per frame, but
@@ -78,7 +76,15 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
         actionData.idleForm = Cast<TESIdleForm>(TESForm::GetById(first.IdleId));
         actionData.someFlag = ((first.Type & 0x4) != 0) ? 1 : 0;
 
-        const auto result = ActorMediator::Get()->ForceAction(&actionData);
+        // The animation mediator is null before the engine builds it, and no action can
+        // run without it. Returning leaves the action at the front of the queue - the
+        // decrement and the pop below are skipped - so it is retried on every tick until
+        // the mediator appears, the same policy the animation-graph test above uses.
+        auto* pMediator = ActorMediator::Get();
+        if (!pMediator)
+            return;
+
+        const auto result = pMediator->ForceAction(&actionData);
 
         if (aAnimationComponent.ReplayCount > 0)
             aAnimationComponent.ReplayCount--;

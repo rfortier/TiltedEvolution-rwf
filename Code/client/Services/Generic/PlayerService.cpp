@@ -274,15 +274,22 @@ void PlayerService::RunRespawnUpdates() noexcept
         s_startTimer = false;
 
         auto* pEquipManager = EquipManager::Get();
-        TESForm* pSpell = TESForm::GetById(m_cachedMainSpellId);
-        if (pSpell)
-            pEquipManager->EquipSpell(pPlayer, pSpell, 0);
-        pSpell = TESForm::GetById(m_cachedSecondarySpellId);
-        if (pSpell)
-            pEquipManager->EquipSpell(pPlayer, pSpell, 1);
-        pSpell = TESForm::GetById(m_cachedPowerId);
-        if (pSpell)
-            pEquipManager->EquipShout(pPlayer, pSpell);
+
+        // The equip manager is built by the engine during startup; without it the
+        // cached spells cannot be handed back to the engine, and the knockdown window
+        // below is unaffected.
+        if (pEquipManager != nullptr)
+        {
+            TESForm* pSpell = TESForm::GetById(m_cachedMainSpellId);
+            if (pSpell)
+                pEquipManager->EquipSpell(pPlayer, pSpell, 0);
+            pSpell = TESForm::GetById(m_cachedSecondarySpellId);
+            if (pSpell)
+                pEquipManager->EquipSpell(pPlayer, pSpell, 1);
+            pSpell = TESForm::GetById(m_cachedPowerId);
+            if (pSpell)
+                pEquipManager->EquipShout(pPlayer, pSpell);
+        }
 
         m_knockdownDeadline = std::chrono::steady_clock::now() + 1500ms;
         m_knockdownStart = true;

@@ -230,6 +230,12 @@ STRPM::Result PluginMessagingService::Send(const char* acpChannel, STRPM::Target
     if (!transport.IsOnline())
         return STRPM::Result::kNotConnected;
 
+    // The flags are the caller's and travel untouched: the framework only has to
+    // make sure the receiving plugin sees what it would have seen from the
+    // standalone bridge. The sequence is stamped per instance and per send, so a
+    // receiver can tell two payloads from the same sender apart.
+    const auto sequence = m_nextSequence.fetch_add(1);
+
     // The channel name and the payload are both copied into the request, and
     // both copies allocate. A plugin that gets a failure back keeps its own
     // copy of whatever it wanted to send, so a refused send loses nothing.
@@ -237,6 +243,8 @@ STRPM::Result PluginMessagingService::Send(const char* acpChannel, STRPM::Target
     {
         PluginMessagingRequest request{};
         request.Channel = acpChannel;
+        request.Flags = aFlags;
+        request.Sequence = sequence;
 
         switch (aTarget.kind)
         {
@@ -273,6 +281,53 @@ STRPM::Result PluginMessagingService::Send(const char* acpChannel, STRPM::Target
     {
         Log("a plugin send ran out of memory while building the payload");
         return STRPM::Result::kTransportError;
+    }
+
+    // kMessageAllowLoopback asks for the payload to come back to this client too.
+    // The standalone bridge gets that for free - its datagrams reach its own
+    // socket as well - but a session never echoes a message to its sender, so the
+    // copy has to be made here. It borrows the caller's buffers, which outlive
+    // this call, and carries this machine's identity. Collected under the lock,
+    // invoked after it is dropped, exactly like the receive path: a plugin is
+    // allowed to send from inside its own receive handler.
+    if ((aFlags & STRPM::kMessageAllowLoopback) != 0)
+    {
+        TiltedPhoques::Vector<Delivery> deliveries;
+        TiltedPhoques::String displayName;
+
+        try
+        {
+            std::scoped_lock lock(g_pluginMessagingMutex);
+
+            displayName = m_localDisplayName;
+
+            for (const auto& listener : m_listeners)
+            {
+                if (listener.Channel == acpChannel)
+                    deliveries.push_back(Delivery{ listener.Callback, listener.UserData });
+            }
+
+            if (m_transportCallback)
+                deliveries.push_back(Delivery{ m_transportCallback, m_transportUserData });
+        }
+        catch (...)
+        {
+            Log("dropped a loopback plugin payload: ran out of memory while collecting its listeners");
+            return STRPM::Result::kOk;
+        }
+
+        STRPM::Message message{};
+        message.channel = acpChannel;
+        message.data = apData;
+        message.size = aSize;
+        message.sender.connectionID = static_cast<STRPM::ConnectionID>(transport.GetLocalPlayerId());
+        message.sender.displayName = displayName.c_str();
+        message.sender.isHost = false;
+        message.flags = aFlags;
+        message.sequence = sequence;
+
+        for (const auto& delivery : deliveries)
+            delivery.Callback(&message, delivery.UserData);
     }
 
     return STRPM::Result::kOk;
@@ -466,8 +521,11 @@ void PluginMessagingService::OnPluginMessage(const NotifyPluginMessaging& acMess
     message.data = acMessage.PluginData.data();
     message.size = acMessage.PluginData.size();
     message.sender = sender;
-    message.flags = STRPM::kMessageNone;
-    message.sequence = 0;
+    // Relayed from the sender's own message rather than invented here: the
+    // contract hands both fields to the receiving plugin, and a plugin that
+    // filters on flags or orders on sequence must see the real values.
+    message.flags = acMessage.Flags;
+    message.sequence = acMessage.Sequence;
 
     TiltedPhoques::Vector<Delivery> deliveries;
     try

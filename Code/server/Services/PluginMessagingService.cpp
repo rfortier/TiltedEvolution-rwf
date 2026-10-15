@@ -90,6 +90,13 @@ void PluginMessagingService::OnPluginMessage(const PacketEvent<PluginMessagingRe
         // false until the framework has a notion of one, rather than guessing.
         notify.SenderIsHost = false;
 
+        // Relayed verbatim and never interpreted here: the server is a router for
+        // plugin payloads, and these two fields belong to the sender and its
+        // receivers. Dropping them is what made the framework path deliver a
+        // different STRPM::Message than the standalone bridge does.
+        notify.Flags = request.Flags;
+        notify.Sequence = request.Sequence;
+
         switch (request.TargetKind)
         {
         case PluginMessagingRequest::Target::kAllPlayers:

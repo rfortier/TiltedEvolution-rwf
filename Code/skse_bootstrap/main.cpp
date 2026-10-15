@@ -20,6 +20,7 @@
 #include <tlhelp32.h>
 
 #include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -86,6 +87,25 @@ struct SksePluginVersionData
     uint32_t compatibleVersions[16];
     uint32_t seVersionRequired;
 };
+
+// This struct is a hand-written mirror of SKSE64's PluginVersionData
+// (skse64/PluginAPI.h), and SKSE reads it straight out of this dll's exports by
+// offset - it never sees these names. Every other mirrored ABI in this tree pins
+// its layout (the ExtraDataList and GameVM branches assert their offsets, the
+// patch sites carry the build they were measured on), and this one only asserted
+// its flag values. A field added here, or an array resized, would move every
+// field after it and SKSE would read the name as the author and the flags out of
+// the version list - silently, because the export is still present and still
+// called SKSEPlugin_Version. sizeof is the whole check: it is 848 for the layout
+// above and any edit that keeps it is an edit SKSE cannot see.
+static_assert(sizeof(SksePluginVersionData) == 848,
+              "the layout must stay identical to SKSE64's PluginVersionData; a changed size means "
+              "SKSE reads every field after the change from the wrong offset");
+static_assert(offsetof(SksePluginVersionData, name) == 8, "name follows the two version words");
+static_assert(offsetof(SksePluginVersionData, versionIndependenceEx) == 772,
+              "the flags sit after the three strings; moving them changes what SKSE reads");
+static_assert(offsetof(SksePluginVersionData, seVersionRequired) == 844,
+              "the last word is the required game version");
 
 namespace
 {

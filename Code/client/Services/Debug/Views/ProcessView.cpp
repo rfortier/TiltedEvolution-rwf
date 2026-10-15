@@ -7,13 +7,19 @@
 
 void DebugService::DrawProcessView()
 {
+    // The process lists are built by the engine during startup and this window can be
+    // drawn from the main menu. Every control below reads them, and the test has to
+    // come before Begin(): an ImGui::Begin() with no matching End() is a stack
+    // mismatch, so the window is skipped rather than opened empty.
+    ProcessLists* pProcesses = ProcessLists::Get();
+    if (!pProcesses)
+        return;
+
     ImGui::Begin("Processes");
 
     ImGui::PushItemWidth(100.f);
 
     int id = 0;
-
-    ProcessLists* pProcesses = ProcessLists::Get();
 
     ImGui::InputScalar("Processing high?", ImGuiDataType_U8, &pProcesses->bProcessHigh, 0, 0, "%" PRIx8, ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();

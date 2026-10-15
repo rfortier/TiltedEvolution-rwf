@@ -21,9 +21,6 @@ declare namespace SkyrimTogetherTypes {
   /** Player game exit callback */
   type ExitGameCallback = () => void;
 
-  /** Player open/close game menu callback */
-  type OpeningMenuCallback = (openingMenu: boolean) => void;
-
   /** Chat message reception callback */
   type MessageCallback = (
     type: number,
@@ -100,6 +97,8 @@ declare namespace SkyrimTogetherTypes {
   type PartyLeftCallback = (inviterId: number) => void;
 
   type PartyInviteReceivedCallback = (inviterId: number) => void;
+
+  type QuestUpdatedCallback = () => void;
 }
 
 /** Global Skyrim: Together object. */
@@ -124,12 +123,6 @@ interface SkyrimTogether {
 
   /** Add listener to when the player exits a game. */
   on(event: 'exitGame', callback: SkyrimTogetherTypes.ExitGameCallback): void;
-
-  /** Add listener to when the player open/close a game menu. */
-  on(
-    event: 'openingMenu',
-    callback: SkyrimTogetherTypes.OpeningMenuCallback,
-  ): void;
 
   /** Add listener to when a player message is received. */
   on(event: 'message', callback: SkyrimTogetherTypes.MessageCallback): void;
@@ -225,6 +218,11 @@ interface SkyrimTogether {
     callback: SkyrimTogetherTypes.PartyInviteReceivedCallback,
   ): void;
 
+  on(
+    event: 'questUpdated',
+    callback: SkyrimTogetherTypes.QuestUpdatedCallback,
+  ): void;
+
   /** Remove listener from when the application is first initialized. */
   off(event: 'init', callback?: SkyrimTogetherTypes.InitCallback): void;
 
@@ -245,12 +243,6 @@ interface SkyrimTogether {
 
   /** Remove listener from when the player exits a game. */
   off(event: 'exitGame', callback?: SkyrimTogetherTypes.ExitGameCallback): void;
-
-  /** Add listener to when the player open/close a game menu. */
-  off(
-    event: 'openingMenu',
-    callback?: SkyrimTogetherTypes.OpeningMenuCallback,
-  ): void;
 
   /** Remove listener from when a player message is received. */
   off(event: 'message', callback?: SkyrimTogetherTypes.MessageCallback): void;
@@ -355,6 +347,11 @@ interface SkyrimTogether {
     callback?: SkyrimTogetherTypes.PartyInviteReceivedCallback,
   ): void;
 
+  off(
+    event: 'questUpdated',
+    callback?: SkyrimTogetherTypes.QuestUpdatedCallback,
+  ): void;
+
   /**
    * Connect to server at given address and port.
    *
@@ -405,11 +402,6 @@ interface SkyrimTogether {
   teleportToPlayer(playerId: number): void;
 
   /**
-   * Reconnect the client.
-   */
-  reconnect(): void;
-
-  /**
    * Launch a party.
    */
   launchParty(): void;
@@ -446,4 +438,9 @@ interface SkyrimTogether {
    * @param playerId Id of the new leader.
    */
   changePartyLeader(playerId: number): void;
+
+  /**
+   * Open the play guide on the wiki in the default browser.
+   */
+  openPlayGuide(): void;
 }

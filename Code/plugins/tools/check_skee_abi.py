@@ -90,6 +90,17 @@ SOURCES = {
     'OStimTogether': 'plugins/OStimTogether/src/RaceMenuOverlayBridge.cpp',
 }
 
+# Which interfaces each plugin's copy is recorded as declaring. A plugin may
+# legitimately use only some of them, so a class the lookup does not find reads
+# as "not used here" - but that is only true for one this plugin never declared.
+# IOverlayInterface and IOverrideInterface are each declared twice, once per
+# plugin, so renaming one copy leaves the other in `declaring`, no floor fires,
+# and that copy's method order silently leaves the comparison.
+EXPECTED: dict[str, set[str]] = {
+    'MorphSyncTogether': {'IBodyMorphInterface', 'IOverlayInterface', 'IOverrideInterface'},
+    'OStimTogether': {'IOverlayInterface', 'IOverrideInterface'},
+}
+
 
 def class_body(text: str, class_name: str) -> str | None:
     """The text of one class declaration, brace-matched.
@@ -140,13 +151,19 @@ def own_virtuals(body: str) -> list[str]:
 
 failures: list[str] = []
 checked = 0
+declaring: dict[str, list[str]] = {class_name: [] for class_name in REFERENCE}
 
 for plugin, rel in SOURCES.items():
     text = (ROOT / rel).read_text(encoding='utf-8', errors='replace')
+    found_here = 0
+    seen_here: set[str] = set()
     for class_name, reference in REFERENCE.items():
         body = class_body(text, class_name)
         if body is None:
             continue  # this plugin does not use that interface
+        found_here += 1
+        seen_here.add(class_name)
+        declaring[class_name].append(plugin)
         declared = own_virtuals(body)
         checked += 1
 
@@ -179,6 +196,79 @@ for plugin, rel in SOURCES.items():
                 f'{plugin}/{class_name} declares version {guard.group(1)} but the '
                 f'declared layout only matches version {minimum} or newer'
             )
+
+    # A corpus floor, not a magic number: every plugin in SOURCES vendors these
+    # declarations, so a plugin that matches none of them is a scan that lost its
+    # corpus rather than a plugin that uses no interface. The lookup used to read
+    # 'class not found' as 'this plugin does not use that interface' and still
+    # counted the pair, so renaming the declarations read as a pass.
+    if not found_here:
+        failures.append(
+            f'{rel} declares none of {sorted(REFERENCE)}; either {plugin} stopped using '
+            f'SKEE - then drop it from SOURCES - or its declarations were renamed or moved, '
+            f'and this check compared nothing for it'
+        )
+
+    # The floor above only fires when a plugin's declarations vanish entirely,
+    # and the per-interface floor below only when every copy loses a class. A
+    # plugin that stops declaring one interface it is recorded as declaring is
+    # neither: the comparison above skipped it, so its method order was never
+    # checked against RaceMenu.
+    expected = EXPECTED.get(plugin)
+    if expected is None:
+        failures.append(
+            f'{plugin} is listed in SOURCES but not in EXPECTED, so nothing records which '
+            f'interfaces its copy is supposed to declare and one of them can leave the '
+            f'comparison unnoticed'
+        )
+    else:
+        for class_name in sorted(expected - seen_here):
+            failures.append(
+                f'{rel} no longer declares {class_name}, which EXPECTED records for {plugin}: '
+                f'this copy\'s method order was never compared against RaceMenu, and the other '
+                f'copy still declaring it means no floor above or below fires'
+            )
+        for class_name in sorted(seen_here - expected):
+            failures.append(
+                f'{rel} declares {class_name}, which EXPECTED does not record for {plugin}; '
+                f'record it there, otherwise a later rename of that declaration leaves this '
+                f'copy out of the comparison unnoticed'
+            )
+
+# A recorded expectation that no longer corresponds to anything this gate looks
+# at is stale, and a stale record is a failure rather than a note: it claims a
+# plugin covers an interface whose declaration the gate has stopped reading.
+for plugin, expected in EXPECTED.items():
+    if plugin not in SOURCES:
+        failures.append(
+            f'EXPECTED records {plugin}, which SOURCES no longer lists; if the plugin left the '
+            f'repository, drop the entry rather than leaving it claiming a comparison that '
+            f'cannot happen'
+        )
+        continue
+    for class_name in sorted(expected - set(REFERENCE)):
+        failures.append(
+            f'EXPECTED records {class_name} for {plugin}, which REFERENCE does not list; drop '
+            f'the entry or restore the interface rather than leaving it claiming a comparison '
+            f'that cannot happen'
+        )
+
+# One floor per interface REFERENCE lists, because the per-plugin floor above only
+# fires when a whole plugin's declarations vanish: renaming a single class in both
+# copies leaves the other two found and this check silently covering two of three.
+for class_name, plugins_declaring in declaring.items():
+    if not plugins_declaring:
+        failures.append(
+            f'none of {sorted(SOURCES)} declares {class_name}, which REFERENCE lists as a '
+            f'RaceMenu interface: its declaration was renamed or moved, so its method order '
+            f'was never compared. Restore it, or drop it from REFERENCE rather than leaving '
+            f'this check covering nothing')
+
+if not checked:
+    failures.append(
+        f'no SKEE interface declaration was found in {sorted(SOURCES.values())}; the scan '
+        f'found nothing to compare, and finding nothing is a failure rather than a pass'
+    )
 
 print(f'skee interfaces: {checked} declaration(s) checked against RaceMenu')
 

@@ -47,7 +47,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "Bericht van",
       "ACCEPT": "Accepteren",
-      "DECLINE": "Weigeren"
+      "DECLINE": "Weigeren",
+      "OPEN_GUIDE": "Gids openen",
+      "DISMISS": "Sluiten",
+      "DONT_SHOW": "Niet meer tonen"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "Accepteer uitnodiging van {{name}}",
@@ -193,6 +196,9 @@
       "AVAILABLE_COMMANDS": "Beschikbare chatopdrachten: {{cmds}}",
       "COMMAND_NOT_FOUND": "‘{{cmd}}’ is geen bekende opdracht.",
       "NOT_ADMIN": "Je moet beheerder zijn om die opdracht te gebruiken."
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "Wil je samen questen? Maak een groep en blijf dichtbij om questvoortgang te delen! Bekijk onze speelgids voor meer informatie."
     }
   }
 }

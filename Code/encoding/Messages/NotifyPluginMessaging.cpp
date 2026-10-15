@@ -15,6 +15,10 @@ void NotifyPluginMessaging::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter)
     Serialization::WriteVarInt(aWriter, size);
     for (std::uint32_t i = 0; i < size; ++i)
         aWriter.WriteBits(PluginData[i], 8);
+
+    // Trailing envelope metadata, read back in this exact order.
+    Serialization::WriteVarInt(aWriter, Flags);
+    Serialization::WriteVarInt(aWriter, Sequence);
 }
 
 void NotifyPluginMessaging::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -46,6 +50,9 @@ void NotifyPluginMessaging::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
             aReader.ReadBits(byte, 8);
             PluginData[i] = static_cast<std::uint8_t>(byte & 0xFF);
         }
+
+        Flags = static_cast<std::uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFFu);
+        Sequence = Serialization::ReadVarInt(aReader);
     }
     catch (...)
     {

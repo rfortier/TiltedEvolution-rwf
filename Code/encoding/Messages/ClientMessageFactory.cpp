@@ -38,5 +38,17 @@ UniquePtr<ClientMessage> ClientMessageFactory::Extract(TiltedPhoques::Buffer::Re
         return {nullptr};
 
     const auto opcode = static_cast<ClientOpcode>(data);
+
+    // The range check above is not a completeness check. This table is filled by
+    // ClientMessageFactory::Visit, so an opcode the visitor does not name leaves an
+    // EMPTY std::function in its slot, and calling through it throws
+    // std::bad_function_call - inside a noexcept function, which means
+    // std::terminate and the process dies on a packet that merely named a message
+    // this build does not know. A gap is a build error, and
+    // check_message_factories.py fails the tree for one, but the packet that
+    // arrives is not the place to find out.
+    if (!s_clientMessageExtractor[opcode]) [[unlikely]]
+        return {nullptr};
+
     return s_clientMessageExtractor[opcode](aReader);
 }

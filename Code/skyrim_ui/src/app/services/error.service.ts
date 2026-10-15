@@ -23,7 +23,11 @@ export interface WrongVersionErrorEvent extends ErrorEvent {
 
 export interface ModsMismatchErrorEvent extends ErrorEvent {
   error: 'mods_mismatch';
-  data: { mods: [filename: string, id: string][] };
+  // Each entry is [filename, what to do about it]. The second element used to be
+  // the mod's id with 0 meaning "install", and 0 is a real id - the first plugin
+  // in the load order, and the first ESL for a lite one - so a mod the player had
+  // to remove was reported as one to install. It is a direction word now.
+  data: { mods: [filename: string, action: 'install' | 'remove'][] };
 }
 
 export interface ClientModsDisallowedErrorEvent extends ErrorEvent {
@@ -70,7 +74,7 @@ export class ErrorService {
           // never opened at all.
           const mismatched: any[] = Array.isArray(error.data?.mods) ? error.data.mods : [];
           const install = mismatched
-            .filter(mod => mod[1] === '0')
+            .filter(mod => mod[1] === 'install')
             .map(mod => mod[0]);
           if (install.length > 0) {
             mods += '\n\n<hr>\n';
@@ -82,7 +86,7 @@ export class ErrorService {
             );
           }
           const remove = mismatched
-            .filter(mod => mod[1] !== '0')
+            .filter(mod => mod[1] === 'remove')
             .map(mod => mod[0]);
           if (remove.length > 0) {
             mods += '\n\n<hr>\n';

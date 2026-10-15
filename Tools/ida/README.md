@@ -58,6 +58,23 @@ address libraries are injective (778674 ids -> 778674 distinct offsets, and
 428461 -> 428461), so a correct id map must be injective too. See
 docs/PITFALLS.md section 11 for what a duplicate cost when it shipped.
 
+**What the generator cannot emit.** A map is a translation through the pre-AE id
+namespace: an AE id names a pre-AE id, and each library spells that id as its own
+RVA. So a build's map can only carry the ids *that build's library names*, and
+the ten libraries do not name the same set - the space evolved rather than grew.
+1.5.3 names 791088 ids, 15376 of which 1.5.97 does not have, while missing 2962
+that it does. That is why id 16113 (`ExtraContainerChanges::Data::GetArmor`) is
+in seven of the ten maps and absent from `version-1-5-{3,16,23}-0.bin`'s three:
+pre-AE id 15873, the one the other seven translate from, does not exist there.
+Re-running this generator cannot fill those in, and an override cannot either -
+the value has to be measured per build. The seven that do carry it are the proof
+of the rule: each value equals `version-<build>.bin[15873]` exactly (0x1e7750 on
+1.5.39, 0x1e7760 on 1.5.50-1.5.62, 0x1e7570 from 1.5.73 on). The gap is declared
+in Tools/missing_ids_by_runtime.tsv and held to the maps by
+Tools/Scripts/check_map_coverage.py, which also checks that every map names the
+same pre-AE symbol for the same AE id - the invariant that holds across builds
+even though the RVAs legitimately differ.
+
 Feed the result into the map generator:
 
     python3 Tools/Scripts/gen_se_map_from_history.py \
@@ -110,7 +127,7 @@ reports where each site moved to, refusing any result whose instruction
 mnemonic or length disagrees. Output: `st_patch_offsets_1597.tsv`, consumed by
 hand into the `GamePatch::Site` entries in the client.
 
-Status: 3069/3082 codebase ids mapped (99.6%), 3698/3698 offsets validated
+Status: 3050/3063 codebase ids mapped (99.6%), 3698/3698 offsets validated
 against version-1-5-97-0.bin, all 10 1.5.x maps regenerated. The 13 that remain
 and what they cost are listed in Tools/missing_1_5_97_ids.txt. The totals are
 checked against this file by Tools/Scripts/check_docs.py, so they cannot drift

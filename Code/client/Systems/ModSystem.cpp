@@ -88,11 +88,26 @@ void ModSystem::HandleMods(const Mods& acMods) noexcept
         std::memset(m_standardToServer, 0, sizeof(m_standardToServer));
         m_standardToServer[0xFF] = std::numeric_limits<uint32_t>::max();
 
+        // The mod manager is built by the engine during startup, so it can still be
+        // missing here. Every entry then falls into the "not found locally" branch
+        // below, which is what an unresolvable mod is reported as.
         const auto pModManager = ModManager::Get();
+
+        // Counted and reported for the same reason the reporting loop names what
+        // it drops (Code/client/Services/Generic/TransportService.cpp): whether a
+        // lite file survives IsLoaded() is not established in this repository, and
+        // this pair of lines answers it from one player's log. Zero lite entries
+        // beside a reported lite file is the defect; a non-zero count with a
+        // non-zero mapping count is the path working end to end.
+        uint32_t liteListed = 0;
+        uint32_t unmapped = 0;
 
         for (const auto& mod : acMods.ModList)
         {
-            if (Mod* pMod = pModManager->GetByName(mod.Filename.c_str()))
+            if (mod.IsLite)
+                ++liteListed;
+
+            if (Mod* pMod = pModManager ? pModManager->GetByName(mod.Filename.c_str()) : nullptr)
             {
                 if (mod.IsLite)
                 {
@@ -107,9 +122,13 @@ void ModSystem::HandleMods(const Mods& acMods) noexcept
             }
             else
             {
+                ++unmapped;
                 spdlog::error("Failed to find mod {}, is lite? {}, id: {:X}", mod.Filename.c_str(), mod.IsLite, mod.Id);
             }
         }
+
+        spdlog::info("server mod list: {} entries, {} lite; lite mappings established: {}, not found locally: {}",
+                     acMods.ModList.size(), liteListed, m_liteToServer.size(), unmapped);
     }
     catch (...)
     {

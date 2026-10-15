@@ -32,6 +32,140 @@ on:
       - 'Code/client/Games/**'
       - 'Code/client/TiltedOnlineApp.cpp'
       - 'Tools/Scripts/check_facegen_scope.py'
+      # The null-accessor gate reads every client source file, so any of them can
+      # introduce an unguarded dereference; it also reads its own exceptions list.
+      - 'Code/client/**'
+      - 'Tools/Scripts/check_null_accessors.py'
+      # The crash-diagnostics gate reads the handler, the pitfalls doc and the
+      # branch definition in xmake.lua, so a change to any of the three matters.
+      - 'Tools/Scripts/check_crash_diagnostics.py'
+      - 'xmake.lua'
+      # The allocation-guard gate reads the hand-rolled engine helpers.
+      - 'Tools/Scripts/check_allocation_guards.py'
+      # The wire-symmetry gate reads every message under Code/encoding/Messages.
+      - 'Code/encoding/**'
+      - 'Tools/Scripts/check_wire_symmetry.py'
+      # The flags-parity gate reads the plugin messaging service on both sides plus
+      # the two wire messages that carry the envelope.
+      - 'Tools/Scripts/check_message_flags_parity.py'
+      # The patch-offset gate reads the client's At() call sites and the checked-in
+      # measurement they must agree with.
+      - 'Tools/Scripts/check_patch_offsets.py'
+      - 'Tools/ida/st_patch_offsets_1597.tsv'
+      # The override gate reads the override table and the address library and
+      # shipped map it must stay consistent with.
+      - 'Tools/Scripts/check_ae_to_se_overrides.py'
+      - 'Tools/ida/st_overrides_all.tsv'
+      - 'GameFiles/Skyrim/SKSE/Plugins/**'
+      # The target-metadata gate reads the recorded targets, the client bindings
+      # they name, and every AE address library.
+      - 'Tools/Scripts/check_target_meta.py'
+      - 'Tools/ida/st_target_meta_1170.json'
+      # The RTTI-coverage gate reads the client's RttiLocator table, every cast
+      # site under Code, and every shipped address library.
+      - 'Tools/Scripts/check_rtti_coverage.py'
+      # The capstone gate reads the matching log and the shipped map.
+      - 'Tools/Scripts/check_capstone_report.py'
+      - 'Tools/ida/st_capstone_report.json'
+      # The library-scan gate reads the client bootstrap, its build file, and the
+      # address libraries on disk.
+      - 'Tools/Scripts/check_library_scan.py'
+      - 'Code/skse_client/**'
+      # The version-query gate reads all three implementations of the query.
+      - 'Tools/Scripts/check_version_queries.py'
+      - 'Code/immersive_launcher/**'
+      # The package-metadata gate reads the installer metadata and the tag list.
+      - 'Tools/Scripts/check_package_metadata.py'
+      - 'GameFiles/Skyrim/fomod/**'
+      # The map-coverage gate reads every shipped pre-AE map, both id manifests
+      # and the client sources it counts ids in, so any of them can change it.
+      - 'Tools/Scripts/check_map_coverage.py'
+      - 'Tools/missing_ids_by_runtime.tsv'
+      - 'Tools/missing_1_5_97_ids.txt'
+      - 'GameFiles/Skyrim/SKSE/Plugins/versionlib-ae-to-se-*.map'
+      - 'GameFiles/Skyrim/SKSE/Plugins/version-*.bin'
+      - 'Code/client/**'
+      # The branch-layout gate reads every client file that branches on the
+      # target macro, and both targets are built from those same sources.
+      - 'Tools/Scripts/check_branch_layouts.py'
+      - 'Code/client/**'
+      # The UI-contract gate reads the C++ payload builders, the language files
+      # and the TS that switches on what they send.
+      - 'Tools/Scripts/check_ui_contract.py'
+      - 'Code/server/**'
+      - 'Code/encoding/Structs/Mods.h'
+      - 'Code/skyrim_ui/src/**'
+      # The lite-mod gate reads the auth-request builder, the mod table builder
+      # and the struct fields the diagnostic prints.
+      - 'Tools/Scripts/check_lite_mod_path.py'
+      - 'docs/FOLLOW-UP.md'
+      # The overlay-bridge gate reads all three layers of the UI to game bridge:
+      # the typings, the render-process registrations and the game-side dispatch.
+      - 'Tools/Scripts/check_overlay_bridge.py'
+      - 'Code/tp_process/**'
+      # The wire-field-read gate reads the two scene-update messages and the
+      # handlers they arrive in.
+      - 'Tools/Scripts/check_wire_field_reads.py'
+      - 'Code/encoding/Messages/RequestQuestSceneUpdate.*'
+      - 'Code/encoding/Messages/NotifyQuestSceneUpdate.*'
+      - 'Code/encoding/Structs/ServerSettings.*'
+      # The setting-name gate reads every Console::Setting declaration; a name
+      # declared twice resolves to whichever registers first.
+      - 'Tools/Scripts/check_console_settings.py'
+      # The log-format gate reads every spdlog call in the tree, so any source
+      # file can carry a call whose placeholders and arguments disagree.
+      - 'Tools/Scripts/check_log_format_args.py'
+      - 'Code/**'
+      # The i18n parameter gate reads the catalogs, the templates and the services
+      # that render a key; transloco prints a placeholder it was not handed.
+      - 'Tools/Scripts/check_i18n_params.py'
+      - 'Code/skyrim_ui/src/**'
+      # The message-factory gate reads the opcode enums, the visitor type lists and
+      # the message headers that declare an opcode.
+      - 'Tools/Scripts/check_message_factories.py'
+      # The message-use gate reads every message type and both sides' sources: a
+      # message nobody sends, or nobody handles, is a feature that is simply absent.
+      - 'Tools/Scripts/check_message_use.py'
+      # The SKSE ABI gate reads the hand-written mirrors of SKSE's plugin structs,
+      # which SKSE reads by offset out of this dll's exports. The module-scan gate
+      # reads both copies of the game-version scan - one of them in the client,
+      # which the library-scan gate above already covers - and the
+      # noexcept-allocation gate reads the plugin load path in every companion
+      # plugin (covered by plugins/**) plus the OStimNG Thread API.
+      - 'Tools/Scripts/check_skse_abi.py'
+      - 'Code/skse_bootstrap/**'
+      - 'Tools/Scripts/check_skse_module_scan.py'
+      - 'Code/plugins/tools/check_noexcept_allocations.py'
+      - 'Code/plugins/patches/**'
+      # The layout-assert gate reads the game structs' offsetof assertions and the
+      # preprocessor branches they sit in.
+      - 'Tools/Scripts/check_layout_asserts.py'
+      - 'Code/client/Games/**'
+      # The Papyrus type gate reads the loader's chunk table and the client's VM
+      # table, which number the same tag space with no name in common.
+      - 'Tools/Scripts/check_papyrus_types.py'
+      # The wizard gate reads both language branches of the installer XML; the
+      # xmake gate reads the version the build requires and the one the workflows
+      # install; the integrity gate reads these workflows themselves, so it has to
+      # run when they change or it would never see its own subject.
+      - 'Tools/Scripts/check_fomod_languages.py'
+      - 'Tools/Scripts/check_xmake_version.py'
+      - 'Tools/Scripts/check_gate_integrity.py'
+      # The shipped-.pex gate pairs each script under GameFiles/Skyrim/scripts/source
+      # with the .pex committed beside it. The .pex is what actually ships, nothing
+      # else in the tree reads it, and it was never compared against its source.
+      - 'Tools/Scripts/check_shipped_pex.py'
+      - 'GameFiles/Skyrim/scripts/**'
+      # The Papyrus native gate pairs each .psc `native` declaration with the C++
+      # registration that answers it, in both directions, plus the parameter count
+      # the VM checks. The scripts live under plugins/** and GameFiles/**; the
+      # registrations under Code/client/** and plugins/*/src.
+      - 'Tools/Scripts/check_papyrus_natives.py'
+      - '.github/workflows/**'
+      - 'Code/components/es_loader/Records/Chunks.*'
+      - 'Code/client/Games/Skyrim/Misc/BSScript.*'
+      - 'Code/encoding/**'
+      - 'Code/admin_protocol/**'
       # The documentation gate reads these, so a change to any of them has to
       # run it - otherwise a stale number can be pushed without CI noticing.
       - 'Tools/Scripts/check_docs.py'
@@ -61,6 +195,140 @@ on:
       - 'Code/client/Games/**'
       - 'Code/client/TiltedOnlineApp.cpp'
       - 'Tools/Scripts/check_facegen_scope.py'
+      # Same for the null-accessor gate: it reads every client source file.
+      - 'Code/client/**'
+      - 'Tools/Scripts/check_null_accessors.py'
+      # And the crash-diagnostics gate, which reads the handler, the pitfalls
+      # doc and the branch definition.
+      - 'Tools/Scripts/check_crash_diagnostics.py'
+      - 'xmake.lua'
+      # And the allocation-guard gate, which reads the hand-rolled engine helpers.
+      - 'Tools/Scripts/check_allocation_guards.py'
+      # And the wire-symmetry gate, which reads every message.
+      - 'Code/encoding/**'
+      - 'Tools/Scripts/check_wire_symmetry.py'
+      # And the flags-parity gate, which reads the plugin messaging service on both
+      # sides plus the two wire messages that carry the envelope.
+      - 'Tools/Scripts/check_message_flags_parity.py'
+      # And the patch-offset gate, which reads the client's patch sites and the
+      # measurement file they must agree with.
+      - 'Tools/Scripts/check_patch_offsets.py'
+      - 'Tools/ida/st_patch_offsets_1597.tsv'
+      # And the override gate, which reads the override table and the library and
+      # shipped map it must stay consistent with.
+      - 'Tools/Scripts/check_ae_to_se_overrides.py'
+      - 'Tools/ida/st_overrides_all.tsv'
+      - 'GameFiles/Skyrim/SKSE/Plugins/**'
+      # And the target-metadata gate, which reads the recorded targets, the
+      # client bindings they name, and every AE address library.
+      - 'Tools/Scripts/check_target_meta.py'
+      - 'Tools/ida/st_target_meta_1170.json'
+      # And the RTTI-coverage gate, which reads the client's RttiLocator table,
+      # every cast site under Code, and every shipped address library.
+      - 'Tools/Scripts/check_rtti_coverage.py'
+      # And the capstone gate, which reads the matching log and the shipped map.
+      - 'Tools/Scripts/check_capstone_report.py'
+      - 'Tools/ida/st_capstone_report.json'
+      # And the library-scan gate, which reads the client bootstrap, its build
+      # file, and the address libraries on disk.
+      - 'Tools/Scripts/check_library_scan.py'
+      - 'Code/skse_client/**'
+      # And the version-query gate, which reads all three implementations.
+      - 'Tools/Scripts/check_version_queries.py'
+      - 'Code/immersive_launcher/**'
+      # And the package-metadata gate, which reads the installer metadata and the
+      # tag list.
+      - 'Tools/Scripts/check_package_metadata.py'
+      - 'GameFiles/Skyrim/fomod/**'
+      # And the map-coverage gate, which reads every shipped pre-AE map, both id
+      # manifests and the client sources it counts ids in.
+      - 'Tools/Scripts/check_map_coverage.py'
+      - 'Tools/missing_ids_by_runtime.tsv'
+      - 'Tools/missing_1_5_97_ids.txt'
+      - 'GameFiles/Skyrim/SKSE/Plugins/versionlib-ae-to-se-*.map'
+      - 'GameFiles/Skyrim/SKSE/Plugins/version-*.bin'
+      - 'Code/client/**'
+      # And the branch-layout gate, which reads every client file that branches
+      # on the target macro.
+      - 'Tools/Scripts/check_branch_layouts.py'
+      - 'Code/client/**'
+      # And the UI-contract gate, which reads the C++ payload builders, the
+      # language files and the TS that switches on what they send.
+      - 'Tools/Scripts/check_ui_contract.py'
+      - 'Code/server/**'
+      - 'Code/encoding/Structs/Mods.h'
+      - 'Code/skyrim_ui/src/**'
+      # The lite-mod gate reads the auth-request builder, the mod table builder
+      # and the struct fields the diagnostic prints.
+      - 'Tools/Scripts/check_lite_mod_path.py'
+      - 'docs/FOLLOW-UP.md'
+      # The overlay-bridge gate reads all three layers of the UI to game bridge:
+      # the typings, the render-process registrations and the game-side dispatch.
+      - 'Tools/Scripts/check_overlay_bridge.py'
+      - 'Code/tp_process/**'
+      # The wire-field-read gate reads the two scene-update messages and the
+      # handlers they arrive in.
+      - 'Tools/Scripts/check_wire_field_reads.py'
+      - 'Code/encoding/Messages/RequestQuestSceneUpdate.*'
+      - 'Code/encoding/Messages/NotifyQuestSceneUpdate.*'
+      - 'Code/encoding/Structs/ServerSettings.*'
+      # The setting-name gate reads every Console::Setting declaration; a name
+      # declared twice resolves to whichever registers first.
+      - 'Tools/Scripts/check_console_settings.py'
+      # The log-format gate reads every spdlog call in the tree, so any source
+      # file can carry a call whose placeholders and arguments disagree.
+      - 'Tools/Scripts/check_log_format_args.py'
+      - 'Code/**'
+      # The i18n parameter gate reads the catalogs, the templates and the services
+      # that render a key; transloco prints a placeholder it was not handed.
+      - 'Tools/Scripts/check_i18n_params.py'
+      - 'Code/skyrim_ui/src/**'
+      # The message-factory gate reads the opcode enums, the visitor type lists and
+      # the message headers that declare an opcode.
+      - 'Tools/Scripts/check_message_factories.py'
+      # The message-use gate reads every message type and both sides' sources: a
+      # message nobody sends, or nobody handles, is a feature that is simply absent.
+      - 'Tools/Scripts/check_message_use.py'
+      # The SKSE ABI gate reads the hand-written mirrors of SKSE's plugin structs,
+      # which SKSE reads by offset out of this dll's exports. The module-scan gate
+      # reads both copies of the game-version scan - one of them in the client,
+      # which the library-scan gate above already covers - and the
+      # noexcept-allocation gate reads the plugin load path in every companion
+      # plugin (covered by plugins/**) plus the OStimNG Thread API.
+      - 'Tools/Scripts/check_skse_abi.py'
+      - 'Code/skse_bootstrap/**'
+      - 'Tools/Scripts/check_skse_module_scan.py'
+      - 'Code/plugins/tools/check_noexcept_allocations.py'
+      - 'Code/plugins/patches/**'
+      # The layout-assert gate reads the game structs' offsetof assertions and the
+      # preprocessor branches they sit in.
+      - 'Tools/Scripts/check_layout_asserts.py'
+      - 'Code/client/Games/**'
+      # The Papyrus type gate reads the loader's chunk table and the client's VM
+      # table, which number the same tag space with no name in common.
+      - 'Tools/Scripts/check_papyrus_types.py'
+      # The wizard gate reads both language branches of the installer XML; the
+      # xmake gate reads the version the build requires and the one the workflows
+      # install; the integrity gate reads these workflows themselves, so it has to
+      # run when they change or it would never see its own subject.
+      - 'Tools/Scripts/check_fomod_languages.py'
+      - 'Tools/Scripts/check_xmake_version.py'
+      - 'Tools/Scripts/check_gate_integrity.py'
+      # The shipped-.pex gate pairs each script under GameFiles/Skyrim/scripts/source
+      # with the .pex committed beside it. The .pex is what actually ships, nothing
+      # else in the tree reads it, and it was never compared against its source.
+      - 'Tools/Scripts/check_shipped_pex.py'
+      - 'GameFiles/Skyrim/scripts/**'
+      # The Papyrus native gate pairs each .psc `native` declaration with the C++
+      # registration that answers it, in both directions, plus the parameter count
+      # the VM checks. The scripts live under plugins/** and GameFiles/**; the
+      # registrations under Code/client/** and plugins/*/src.
+      - 'Tools/Scripts/check_papyrus_natives.py'
+      - '.github/workflows/**'
+      - 'Code/components/es_loader/Records/Chunks.*'
+      - 'Code/client/Games/Skyrim/Misc/BSScript.*'
+      - 'Code/encoding/**'
+      - 'Code/admin_protocol/**'
       # The documentation gate reads these, so a change to any of them has to
       # run it - otherwise a stale number can be pushed without CI noticing.
       - 'Tools/Scripts/check_docs.py'
@@ -153,6 +421,15 @@ jobs:
         shell: pwsh
         run: python Code/plugins/tools/check_skee_abi.py
 
+      # The contract header is vendored into each companion plugin, and its
+      # interface structs are function-pointer tables whose ABI is the member
+      # order. Nothing in the language, the linker or the exchange protocol
+      # compares the copies, so a member inserted in one of them dispatches every
+      # later call through the wrong slot inside a third-party DLL.
+      - name: Verify every vendored contract copy is ABI-identical
+        shell: pwsh
+        run: python Code/plugins/tools/check_contract_copies.py
+
       # The refusal message is the only thing a player whose OStim runtime was
       # rejected ever reads, and nothing else binds it to the selector that
       # rejects them. The patch that added OStimNG 7.5.1.x support left it
@@ -187,6 +464,30 @@ jobs:
         shell: pwsh
         run: python Code/plugins/tools/check_skse_entry_points.py
 
+      # The game version is resolved from three sources, and the SKSE module
+      # name is the authoritative one: SKSE is version-locked to the game, so the
+      # module name survives the repacks and downgrades whose exe version
+      # resource is missing or false. The scan looks for `skse64_*` and parses
+      # the version out of the name - but `skse64_steam_loader.dll` carries that
+      # prefix while naming no version, so a scan that stops on the prefix
+      # instead of on the parse returns nothing whenever the loader is enumerated
+      # first, and silently falls back to the two sources this step replaces. Two
+      # translation units ask this of the same module list, so both are checked.
+      - name: Verify the SKSE module-name scan keeps looking
+        shell: pwsh
+        run: python Tools/Scripts/check_skse_module_scan.py
+
+      # A noexcept frame that allocates ends the game with no crash dump when the
+      # allocation fails, and the companion plugins are separate DLLs whose
+      # copies of the same helper were never compared: the plugin load path
+      # builds a std::wstring to look beside itself, and four plugins carry their
+      # own copy of it. The OStimNG Thread API is the same shape - noexcept entry
+      # points in a vtable OStimTogether copies verbatim, with bodies that grow
+      # containers.
+      - name: Verify no plugin load path can terminate the game
+        shell: pwsh
+        run: python Code/plugins/tools/check_noexcept_allocations.py
+
       # OStimNG is the prerequisite OStim Together drives, and it resolves
       # engine addresses through the SKSE address library. An id absent from the
       # library for the runtime actually running does not degrade: REL::ID()
@@ -218,9 +519,15 @@ jobs:
       # block, the step exited before running a command, and three workflows
       # failed with no CMake output to explain why. Every other gate passed,
       # because none of them read the workflow files.
+      # pyyaml is installed here, in the job that runs the gate. It used to be
+      # installed only in `wizard`, and the gate used to print SKIPPED and exit 0
+      # when the import failed - so in this job it checked nothing and reported
+      # success. The gate now fails without pyyaml, and this step supplies it.
       - name: Verify every PowerShell workflow block parses
         shell: pwsh
-        run: python Code/plugins/tools/check_workflow_shell.py
+        run: |
+          python -m pip install --quiet --disable-pip-version-check pyyaml
+          python Code/plugins/tools/check_workflow_shell.py
 
       # CODE_GUIDELINES.md makes documentation part of every version change.
       # This is what enforces it: the coverage figures in prose must match the
@@ -245,6 +552,291 @@ jobs:
       - name: Verify the documentation matches the code
         shell: pwsh
         run: python Tools/Scripts/check_docs.py
+
+      # The engine singletons this client reaches through are null before the
+      # engine builds them, and on a legacy runtime an unmapped id resolves to
+      # an executable stub instead. A call site that dereferences one without a
+      # guard is a crash on every game version, so every one of them is checked.
+      - name: Verify no engine singleton is dereferenced unchecked
+        shell: pwsh
+        run: python Tools/Scripts/check_null_accessors.py
+
+      # The docs tell a player reporting a crash to send in crash_*.dmp. The
+      # dump used to be behind IS_MASTER, which is 1 in every build this repo
+      # ships (its release branch is `main`), so the artifact the docs promised
+      # could not exist. Both sides were internally consistent, which is why
+      # neither noticed; this compares them.
+      - name: Verify the documented crash artifacts are produced
+        shell: pwsh
+        run: python Tools/Scripts/check_crash_diagnostics.py
+
+      # ExtraDataList is this client's own reimplementation of an engine
+      # structure. Its read side treated an absent bitfield as "no bits set"
+      # while its write side dereferenced it, and New() wrote through both of
+      # its allocations without checking either. Both are crash classes on
+      # every game version.
+      - name: Verify hand-rolled engine helpers check what they allocate
+        shell: pwsh
+        run: python Tools/Scripts/check_allocation_guards.py
+
+      # A message is defined twice, once per direction, and nothing ties the two
+      # together. A field written but not read shifts every later field by its
+      # width, and the reader still has bytes, so the symptom is a message with
+      # wrong values rather than a decode failure.
+      - name: Verify every message writes and reads the same fields
+        shell: pwsh
+        run: python Tools/Scripts/check_wire_symmetry.py
+
+      # A plugin send carries a flag set and a sequence number, and the contract
+      # promises the receiver sees them back. The framework transport took the flags
+      # argument and dropped it, then reported kMessageNone and 0 to every receiver -
+      # a value invented at the far end is indistinguishable from one that arrived,
+      # so only the sender and receiver together can prove the envelope survives.
+      - name: Verify the plugin message flags and sequence survive the round trip
+        shell: pwsh
+        run: python Tools/Scripts/check_message_flags_parity.py
+
+      # The 1.5.x patch offsets are measurements, checked in as a tsv. Nothing
+      # connected that file to the call sites that use the numbers, so a row
+      # could be regenerated or a site edited and both sides keep their own
+      # story - and a 1.5.x offset no row backs is a number nobody measured
+      # written into a running game.
+      - name: Verify the patch offsets agree with their measurements
+        shell: pwsh
+        run: python Tools/Scripts/check_patch_offsets.py
+
+      # The override table is the input the shipped AE-to-SE map is generated
+      # from, and its reader keeps the last value for a repeated id. That is how
+      # it came to hold two RVAs for id 35086 with the map agreeing with
+      # whichever was last; the stale one was nine bytes into a function that
+      # Actor.cpp resolves a live pointer through.
+      - name: Verify the AE-to-SE override table is a valid map input
+        shell: pwsh
+        run: python Tools/Scripts/check_ae_to_se_overrides.py
+
+      # st_target_meta_1170.json is the evidence behind the address-library ids
+      # the client resolves, and nothing read it. It makes three checkable
+      # claims: the recorded address, the client binding, and that the id
+      # resolves on every AE runtime rather than only the one it is named for.
+      - name: Verify the recorded engine targets still describe the client
+        shell: pwsh
+        run: python Tools/Scripts/check_target_meta.py
+
+      # Cast<T>() resolves its ids through the official address libraries, which
+      # this repo ships but cannot edit - rewriting one breaks the hash
+      # CheckAddressLibrary verifies. A handful of ids are therefore missing on a
+      # few runtimes, and a cast to one of those types returns nullptr instead of
+      # crashing, so nothing local would notice it. This holds the registration
+      # table against every shipped library and fails the moment a call site
+      # reaches a gap that was recorded rather than closed.
+      - name: Verify every cast resolves on every shipped address library
+        shell: pwsh
+        run: python Tools/Scripts/check_rtti_coverage.py
+
+      # st_capstone_report.json is the matching log behind the 1.5.97 offsets,
+      # and two of its candidates disagree with the map that ships. Both were
+      # checked against the real executable and the map is right in both, so the
+      # rejections are recorded - which is what this pins, along with the
+      # correlation that every disagreement is in a low similarity band.
+      - name: Verify the 1.5.97 matching report against the shipped map
+        shell: pwsh
+        run: python Tools/Scripts/check_capstone_report.py
+
+      # The address-library fallback used to return the first file a directory
+      # enumeration produced, and a modlist ships many: the installed game has
+      # ten pre-AE libraries from 1.5.3 to 1.5.97, and 98.7% of the ids they
+      # share resolve to different RVAs. It is now family-scoped and takes the
+      # highest version, and this checks both.
+      - name: Verify the address-library fallback cannot pick another game's library
+        shell: pwsh
+        run: python Tools/Scripts/check_library_scan.py
+
+      # The same resource query - ProductVersion, falling back to FileVersion -
+      # is written out three times, and one copy tested one thing less than the
+      # others: an empty ProductVersion counted as a version, so the launcher
+      # aborted with "Failed to query game version" while FileVersion was there
+      # to be read.
+      - name: Verify the three game-version queries test the same things
+        shell: pwsh
+        run: python Tools/Scripts/check_version_queries.py
+
+      # The installer wizard's metadata is player-facing: the version MO2 shows
+      # and the game versions the description claims. The version had drifted
+      # four releases behind, because "keep it in step with the newest tag" was
+      # only a comment.
+      - name: Verify the installer metadata matches the release
+        shell: pwsh
+        run: python Tools/Scripts/check_package_metadata.py
+
+      # Ten pre-AE maps ship, one per 1.5.x build, and only the 1.5.97 one was
+      # ever accounted for: an id the table does not carry resolves to the
+      # zero-returning stub on legacy runtimes, so "1.5.x is supported" is a
+      # claim about each of the ten. Id 16113 was missing from three of them
+      # while the other seven carried it, and nothing compared the results
+      # because the check that existed read one map.
+      - name: Verify every shipped address map covers the ids the client resolves
+        shell: pwsh
+        run: python Tools/Scripts/check_map_coverage.py
+
+      # The client is built twice from one set of sources, and the two targets do
+      # NOT agree on where the engine's fields live. PITFALLS section 2 calls the
+      # resulting hand-written offsets the most dangerous area in the repository,
+      # and it has bitten three times, always by one branch adopting the other
+      # target's number and silently reading the neighbouring field. The defence
+      # is a static_assert per branch - which was a checklist item nothing ran.
+      - name: Verify every target-dependent struct layout stays pinned
+        shell: pwsh
+        run: python Tools/Scripts/check_branch_layouts.py
+
+      # The overlay is a CEF browser, so the client talks to it by building JSON
+      # text: no type, no schema, no compiler between the two languages. Two
+      # vocabularies cross that boundary - the connection-failure codes (turned
+      # into translation keys by concatenation, so a code with no entry shows the
+      # player a raw key) and the mods-mismatch direction (which was carried by
+      # "Id == 0", and 0 is a real id: the first plugin, and the first ESL).
+      - name: Verify the C++ UI vocabulary matches the strings and translations
+        shell: pwsh
+        run: python Tools/Scripts/check_ui_contract.py
+
+      # Whether a lite (ESL) file survives Mod::IsLoaded() is not answered in this
+      # repository - the engine headers are not here - and the two answers differ
+      # by a lot: a dropped ESL is a mod the server never registers, so every form
+      # it adds loses its server id. So the decision is instrumented rather than
+      # guessed at, and this keeps the instrument (and the lite path under it)
+      # from quietly disappearing.
+      - name: Verify the lite-mod question is still answerable
+        shell: pwsh
+        run: python Tools/Scripts/check_lite_mod_path.py
+
+      # A UI button reaches the game through three separately written lists: the
+      # typings, the render-process registrations (a name that is not registered
+      # throws in the browser) and the game-side dispatch (a registered name with
+      # no branch is dropped silently). Nothing compared them, and both shipped
+      # defects were exactly that: the play guide's registration was missing while
+      # its dispatch and ShellExecuteW existed, and the reconnect call was declared
+      # and mocked but implemented in neither layer.
+      - name: Verify the overlay bridge agrees across all three layers
+        shell: pwsh
+        run: python Tools/Scripts/check_overlay_bridge.py
+
+      # check_wire_symmetry proves the two directions transfer the same fields. It
+      # does not ask whether the value means anything to the receiver, and a field
+      # transferred and dropped is the quietest defect in the protocol: the bytes
+      # are consumed, every check passes, and the feature behind it never happens.
+      # RequestQuestSceneUpdate carried one (see docs/PITFALLS.md section 135).
+      - name: Verify the scene-update fields are read where they arrive
+        shell: pwsh
+        run: python Tools/Scripts/check_wire_field_reads.py
+
+      # Console settings self-register into one global list in construction order,
+      # and a name resolves with std::find_if - so two declarations of one name are
+      # two objects where only the first receives the ini value, and which one that
+      # is depends on static initialisation order across translation units.
+      # LiveServices:bAnnounceServer was declared twice and read by both.
+      - name: Verify no console setting name is declared twice
+        shell: pwsh
+        run: python Tools/Scripts/check_console_settings.py
+
+      # spdlog formats through fmt, which throws when a format string asks for an
+      # argument that was not passed. The throw happens as the line is written, so
+      # a log call that only fires on a rare path is exactly the one that is never
+      # exercised until it matters. A line with arguments its format never uses is
+      # the quieter half: the values it computed are simply not in the log.
+      - name: Verify every log call passes the arguments its format asks for
+        shell: pwsh
+        run: python Tools/Scripts/check_log_format_args.py
+
+      # Transloco substitutes the parameters it is handed and leaves the rest as
+      # literal text, so a key that asks for {{length}} and a call site that passes
+      # nothing means the player reads "{{length}}". Three ways to get it wrong:
+      # a translation that drops the placeholder, a call site that passes the wrong
+      # name, and the error panel, which builds its key at runtime from the code.
+      - name: Verify translation placeholders and the parameters handed to them agree
+        shell: pwsh
+        run: python Tools/Scripts/check_i18n_params.py
+
+      # Each factory fills a table of extractors from a hand-written type list, and
+      # Extract() checks the opcode's range but not that its slot was ever filled. A
+      # slot the list does not name holds an empty std::function: calling through it
+      # throws from a noexcept function, so one byte on the wire ends the process.
+      - name: Verify every opcode has an extractor and every message an opcode
+        shell: pwsh
+        run: python Tools/Scripts/check_message_factories.py
+
+      # A message can be complete in every mechanical sense - opcode, extractor,
+      # serialisation, a handler on the other side - and still be dead because
+      # nothing constructs it. That is how NotifyDrawWeapon shipped: the client sent
+      # DrawWeaponRequest, the server applied it and broadcast nothing, so a player
+      # who drew after spawning was invisible to everyone who had them loaded.
+      - name: Verify every wire message is either sent or handled
+        shell: pwsh
+        run: python Tools/Scripts/check_message_use.py
+
+      # SksePluginVersionData is written out by hand because the plugin does not
+      # link SKSE's headers, and SKSE reads it out of this dll's exports by offset -
+      # it never sees the field names. A field added or an array resized moves every
+      # field after it and SKSE then reads the name as the author, silently, because
+      # the export is still present and still called SKSEPlugin_Version.
+      - name: Verify the hand-written SKSE ABI mirrors still match SKSE's layout
+        shell: pwsh
+        run: python Tools/Scripts/check_skse_abi.py
+
+      # The game structs mirror the engine's memory and their layouts differ between
+      # the pre-AE and AE runtimes, so the assertions come in #ifdef pairs. Within one
+      # branch an offset identifies one field and a field has one offset; a
+      # copy-pasted assert with a stale number breaks one of those, and the runtime it
+      # breaks on is the branch it sits in.
+      - name: Verify the game structs' layout assertions are self-consistent
+        shell: pwsh
+        run: python Tools/Scripts/check_layout_asserts.py
+
+      # The Papyrus variable type tag is defined twice: once in the loader that parses
+      # .pex chunks and once in the client that registers natives with the VM. Same
+      # numbers, no name in common (INVALID/OBJECT/... against kEmpty/kObject/...),
+      # and nothing held them together.
+      - name: Verify the Papyrus type tables still agree
+        shell: pwsh
+        run: python Tools/Scripts/check_papyrus_types.py
+
+      # The installer wizard ships every option in two languages as parallel
+      # branches of one XML. A file added to the English branch and not the Chinese
+      # one installs a different mod depending on the language the player picked,
+      # and nothing in the build reads both branches.
+      - name: Verify both installer wizard languages offer the same options
+        shell: pwsh
+        run: python Tools/Scripts/check_fomod_languages.py
+
+      # The build requires a minimum xmake in xmake.lua and the workflows install a
+      # pinned one. Those are different numbers with a real invariant between them -
+      # installed >= required - and nothing compared them, so raising the requirement
+      # past the pin would break every workflow at configure time.
+      - name: Verify the workflows install an xmake the build accepts
+        shell: pwsh
+        run: python Tools/Scripts/check_xmake_version.py
+
+      # A shipping script compiles to a .pex that is committed and packaged, while
+      # the .psc is the only record of what it came from. Nothing in the tree reads
+      # the .pex, so editing the source without recompiling ships a script that does
+      # not do what the source says - and the source is what a reader trusts.
+      - name: Verify every shipped .pex still names what its .psc declares
+        shell: pwsh
+        run: python Tools/Scripts/check_shipped_pex.py
+
+      # A Papyrus `native` is a promise that some C++ registers that class and name.
+      # Nothing compares the two lists: an unregistered native returns the return
+      # type's default forever, and a renamed registration leaves the script calling
+      # a function that no longer exists. The parameter count is checked too, because
+      # the VM refuses a call whose argument count does not match.
+      - name: Verify every Papyrus native is registered under its own name
+        shell: pwsh
+        run: python Tools/Scripts/check_papyrus_natives.py
+
+      # A gate that exits 0 when it cannot run is worse than no gate: CI shows a
+      # green step and nobody learns the check never happened. check_workflow_shell.py
+      # did exactly that for a missing pyyaml, in a job that never installed it.
+      - name: Verify no gate reports success when it cannot check
+        shell: pwsh
+        run: python Tools/Scripts/check_gate_integrity.py
 
   wizard:
     runs-on: windows-latest

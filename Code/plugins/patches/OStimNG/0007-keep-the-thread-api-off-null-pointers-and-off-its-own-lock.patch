@@ -1,29 +1,5 @@
-diff --git a/skse/src/Main.cpp b/skse/src/Main.cpp
-index 6020f1f..28bc391 100644
---- a/skse/src/Main.cpp
-+++ b/skse/src/Main.cpp
-@@ -10,6 +10,7 @@
- #include "PluginInterfaceImplementation/InterfaceMapImpl.h"
- #include "Serial/Manager.h"
- #include "UI/UIState.h"
-+#include "Util/MainThread.h"
- #include "Util/RNGUtil.h"
- 
- using namespace SKSE;
-@@ -89,6 +90,11 @@ namespace {
- }  // namespace
- 
- SKSE_EXPORT bool SKSEPlugin_Load(const LoadInterface* skse) {
-+    // SKSE calls this on the game's main thread. Several API entry points need to
-+    // know whether they are already on it before they wait on a task that only the
-+    // main thread can run, so the id is recorded here, before anything can ask.
-+    Util::RecordMainThread();
-+
-     InitializeLogging();
- 
-     auto* plugin = PluginDeclaration::GetSingleton();
-diff --git a/skse/src/ModAPI/OstimNG-API-Thread.cpp b/skse/src/ModAPI/OstimNG-API-Thread.cpp
-index acb8140..674ebd3 100644
+diff --git diff --git a/skse/src/ModAPI/OstimNG-API-Thread.cpp b/skse/src/ModAPI/OstimNG-API-Thread.cpp
+index acb8140..5ae69b5 100644
 --- a/skse/src/ModAPI/OstimNG-API-Thread.cpp
 +++ b/skse/src/ModAPI/OstimNG-API-Thread.cpp
 @@ -5,6 +5,7 @@
@@ -89,8 +65,7 @@ index acb8140..674ebd3 100644
 -            std::lock_guard<std::mutex> lock(callbackMutex);
 -            for (auto& registration : eventCallbacks)
 +            try
-             {
--                registration.callback(eventType, threadID, registration.userData);
++            {
 +                std::vector<CallbackRegistration> snapshot;
 +                {
 +                    std::lock_guard<std::mutex> lock(callbackMutex);
@@ -103,7 +78,8 @@ index acb8140..674ebd3 100644
 +                }
 +            }
 +            catch (...)
-+            {
+             {
+-                registration.callback(eventType, threadID, registration.userData);
 +                // The notification is advisory: a listener that could not be told
 +                // finds out from the next event or from polling IsThreadValid.
 +                SKSE::log::error("NotifyEvent: could not dispatch thread event");
@@ -135,178 +111,471 @@ index acb8140..674ebd3 100644
              }
          }
  
-@@ -116,22 +181,28 @@ namespace OstimNG_API::Thread
-             auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
-             if (!thread) return 0;
+@@ -113,73 +178,104 @@ namespace OstimNG_API::Thread
+ 
+         uint32_t GetNavigationCount(uint32_t threadID) noexcept override
+         {
+-            auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+-            if (!thread) return 0;
++            // The IThreadInterface methods are declared noexcept in
++            // OstimNG-API-Thread.h and OStimTogether keeps a verbatim copy of that
++            // vtable in ModThreadControl.h, so the promise cannot be withdrawn
++            // from this side alone. Every allocating body in this file therefore
++            // catches its own allocation failure: an exception escaping a noexcept
++            // frame terminates the process with no crash dump, while returning the
++            // empty answer lets the caller show an empty list.
++            try
++            {
++                auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
++                if (!thread) return 0;
  
 -            auto state = UI::UIState::GetSingleton();
 -            auto currentNode = state->currentNode;
--
--            if (!currentNode || currentNode->isTransition || thread->isInSequence() ||
-+            const auto context = ResolveSceneContext();
-+            if (!context) return 0;
-+            if (context.node->isTransition || thread->isInSequence() ||
-                 (thread->getThreadFlags() & Threading::ThreadFlag::NO_PLAYER_CONTROL))
-             {
-                 return 0;
-             }
- 
-+            // Both the furniture type and the navigation destination are nullable:
-+            // this entry point is reachable from an external plugin at any time, and
-+            // the in-tree equivalent guards both (SceneMenu.cpp:139-140).
-+            if (!context.furnitureType) return 0;
-+
-             std::vector<Trait::ActorCondition> conditions = thread->getActorConditions();
-             uint32_t count = 0;
- 
--            for (auto& nav : currentNode->navigations)
-+            for (auto& nav : context.node->navigations)
-             {
-+                if (nav.nodes.empty()) continue;
-+
-                 if (nav.fulfilledBy(conditions) &&
--                    thread->getFurnitureTypeInternal()->isChildOf(nav.nodes.back()->furnitureType))
-+                    context.furnitureType->isChildOf(nav.nodes.back()->furnitureType))
-                 {
-                     count++;
-                 }
-@@ -147,26 +218,28 @@ namespace OstimNG_API::Thread
-             auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
-             if (!thread) return 0;
- 
--            auto state = UI::UIState::GetSingleton();
--            auto currentNode = state->currentNode;
--
--            if (!currentNode || currentNode->isTransition || thread->isInSequence() ||
-+            const auto context = ResolveSceneContext();
-+            if (!context) return 0;
-+            if (context.node->isTransition || thread->isInSequence() ||
-                 (thread->getThreadFlags() & Threading::ThreadFlag::NO_PLAYER_CONTROL))
-             {
-                 return 0;
-             }
- 
-+            if (!context.furnitureType) return 0;
-+
-             std::vector<Trait::ActorCondition> conditions = thread->getActorConditions();
-             m_navDescCache.clear();
--            m_navDescCache.reserve(currentNode->navigations.size());
-+            m_navDescCache.reserve(context.node->navigations.size());
-             uint32_t count = 0;
- 
--            for (auto& nav : currentNode->navigations)
-+            for (auto& nav : context.node->navigations)
-             {
-                 if (count >= bufferSize) break;
-+                if (nav.nodes.empty()) continue;
- 
-                 if (nav.fulfilledBy(conditions) &&
--                    thread->getFurnitureTypeInternal()->isChildOf(nav.nodes.back()->furnitureType))
-+                    context.furnitureType->isChildOf(nav.nodes.back()->furnitureType))
-                 {
-                     m_navDescCache.push_back(nav.getDescription(thread));
-                     buffer[count].sceneId = nav.nodes.front()->scene_id.c_str();
-@@ -438,13 +511,25 @@ namespace OstimNG_API::Thread
- 
-             auto thread = UI::UIState::GetSingleton()->currentThread;
- 
-+            // A search is issued from a text box, which stays live after the scene
-+            // ends. HandleThreadRemoved nulls currentThread while the search menu is
-+            // still open, and this loop dereferenced it unconditionally - one search
-+            // after that was a null read. The in-tree search menu checks the same
-+            // pointer for the same reason (SearchMenu.cpp:153).
-+            if (!thread) return 0;
-+
-+            // The furniture type is nullable on the same thread (Thread.h:38), and
-+            // the in-tree menu guards it (SearchMenu.cpp:160).
-+            auto furnitureType = thread->getFurnitureTypeInternal();
-+            if (!furnitureType) return 0;
-+
-             uint32_t count = 0;
-             for (auto* node : results)
-             {
-                 if (count >= bufferSize) break;
- 
-                 if (node->actors.size() != thread->getActorCount()) continue;
--                if (!thread->getFurnitureTypeInternal()->isChildOf(node->furnitureType)) continue;
-+                if (!furnitureType->isChildOf(node->furnitureType)) continue;
-                 if (node->isTransition) continue;
- 
-                 buffer[count].sceneId = node->scene_id.c_str();
-@@ -615,7 +700,29 @@ namespace OstimNG_API::Thread
-                     [onComplete, context](int32_t id) { onComplete(id, context); }, startDelayMs);
-                 return scheduled ? 0 : -1;
-             } else {
--                // Sync: block on a promise/future to get the real new thread ID
-+                // Sync: block on a promise/future to get the real new thread ID.
-+                //
-+                // The migration completes through runSynced(), which posts a task to
-+                // SKSE's task interface, and that queue is drained by the game's main
-+                // thread. Blocking here while already on the main thread therefore
-+                // waits for a task that cannot run until this call returns: the
-+                // future is never fulfilled and the game locks up permanently.
-+                //
-+                // Refusing is the only honest answer, because the synchronous
-+                // contract is "return the new id" and there is no channel to deliver
-+                // it on. The migration is deliberately NOT started: a caller that
-+                // believes it failed must not be left with a scene that was migrated
-+                // underneath it. Callers that need migration from the main thread use
-+                // the callback form, which returns immediately and reports the id
-+                // through onComplete.
-+                if (Util::IsMainThread()) {
-+                    SKSE::log::error(
-+                        "MigrateThread: the synchronous form cannot be used on the main thread - the "
-+                        "migration completes on that same thread, so waiting for it would deadlock the "
-+                        "game. Pass an onComplete callback, or call this from a worker thread.");
-+                    return -1;
++                const auto context = ResolveSceneContext();
++                if (!context) return 0;
++                if (context.node->isTransition || thread->isInSequence() ||
++                    (thread->getThreadFlags() & Threading::ThreadFlag::NO_PLAYER_CONTROL))
++                {
++                    return 0;
 +                }
+ 
+-            if (!currentNode || currentNode->isTransition || thread->isInSequence() ||
+-                (thread->getThreadFlags() & Threading::ThreadFlag::NO_PLAYER_CONTROL))
+-            {
+-                return 0;
+-            }
++                // Both the furniture type and the navigation destination are nullable:
++                // this entry point is reachable from an external plugin at any time, and
++                // the in-tree equivalent guards both (SceneMenu.cpp:139-140).
++                if (!context.furnitureType) return 0;
+ 
+-            std::vector<Trait::ActorCondition> conditions = thread->getActorConditions();
+-            uint32_t count = 0;
++                std::vector<Trait::ActorCondition> conditions = thread->getActorConditions();
++                uint32_t count = 0;
+ 
+-            for (auto& nav : currentNode->navigations)
+-            {
+-                if (nav.fulfilledBy(conditions) &&
+-                    thread->getFurnitureTypeInternal()->isChildOf(nav.nodes.back()->furnitureType))
++                for (auto& nav : context.node->navigations)
+                 {
+-                    count++;
++                    if (nav.nodes.empty()) continue;
 +
-                 auto promise = std::make_shared<std::promise<int32_t>>();
-                 auto future = promise->get_future();
-                 bool scheduled = Threading::ThreadManager::GetSingleton()->migrateThread(threadID, actors,
-diff --git a/skse/src/Papyrus/PapyrusThread.h b/skse/src/Papyrus/PapyrusThread.h
-index be398d4..e420641 100644
---- a/skse/src/Papyrus/PapyrusThread.h
-+++ b/skse/src/Papyrus/PapyrusThread.h
-@@ -202,7 +202,13 @@ namespace PapyrusThread {
-     std::string GetFurnitureType(RE::StaticFunctionTag*, int threadID) {
-         Threading::Thread* thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
-         if (thread) {
--            return thread->getFurnitureTypeInternal()->getListTypeInternal()->id;
-+            // A thread with no furniture leaves this null (Thread.h:38), and the
-+            // callers of this Papyrus function run it from script at any time. The
-+            // in-tree C++ path guards the same pointer (ThreadActor.cpp:538).
-+            auto* furnitureType = thread->getFurnitureTypeInternal();
-+            if (furnitureType) {
-+                return furnitureType->getListTypeInternal()->id;
++                    if (nav.fulfilledBy(conditions) &&
++                        context.furnitureType->isChildOf(nav.nodes.back()->furnitureType))
++                    {
++                        count++;
++                    }
+                 }
+-            }
+ 
+-            return count;
++                return count;
++            }
++            catch (...)
++            {
++                SKSE::log::error("Thread API: GetNavigationCount failed with an exception");
++                return 0;
 +            }
          }
-         return "";
-     }
-diff --git a/skse/src/Util/MainThread.h b/skse/src/Util/MainThread.h
-new file mode 100644
-index 0000000..c2f50f1
---- /dev/null
-+++ b/skse/src/Util/MainThread.h
-@@ -0,0 +1,21 @@
-+#pragma once
+ 
+         uint32_t GetNavigationOptions(uint32_t threadID, NavigationData* buffer, uint32_t bufferSize) noexcept override
+         {
+             if (!buffer || bufferSize == 0) return 0;
+ 
+-            auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+-            if (!thread) return 0;
+-
+-            auto state = UI::UIState::GetSingleton();
+-            auto currentNode = state->currentNode;
+-
+-            if (!currentNode || currentNode->isTransition || thread->isInSequence() ||
+-                (thread->getThreadFlags() & Threading::ThreadFlag::NO_PLAYER_CONTROL))
++            try
+             {
+-                return 0;
+-            }
++                auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
++                if (!thread) return 0;
+ 
+-            std::vector<Trait::ActorCondition> conditions = thread->getActorConditions();
+-            m_navDescCache.clear();
+-            m_navDescCache.reserve(currentNode->navigations.size());
+-            uint32_t count = 0;
++                const auto context = ResolveSceneContext();
++                if (!context) return 0;
++                if (context.node->isTransition || thread->isInSequence() ||
++                    (thread->getThreadFlags() & Threading::ThreadFlag::NO_PLAYER_CONTROL))
++                {
++                    return 0;
++                }
+ 
+-            for (auto& nav : currentNode->navigations)
+-            {
+-                if (count >= bufferSize) break;
++                if (!context.furnitureType) return 0;
+ 
+-                if (nav.fulfilledBy(conditions) &&
+-                    thread->getFurnitureTypeInternal()->isChildOf(nav.nodes.back()->furnitureType))
++                std::vector<Trait::ActorCondition> conditions = thread->getActorConditions();
++                m_navDescCache.clear();
++                m_navDescCache.reserve(context.node->navigations.size());
++                uint32_t count = 0;
 +
-+#include <windows.h>
++                for (auto& nav : context.node->navigations)
+                 {
+-                    m_navDescCache.push_back(nav.getDescription(thread));
+-                    buffer[count].sceneId = nav.nodes.front()->scene_id.c_str();
+-                    buffer[count].destinationId = nav.nodes.back()->scene_id.c_str();
+-                    buffer[count].icon = nav.icon.c_str();
+-                    buffer[count].description = m_navDescCache.back().c_str();
+-                    buffer[count].border = nav.border.c_str();
+-                    buffer[count].isTransition = nav.isTransition;
+-                    count++;
++                    if (count >= bufferSize) break;
++                    if (nav.nodes.empty()) continue;
 +
-+namespace Util {
-+    // The thread SKSEPlugin_Load() runs on, which is the game's main thread.
-+    //
-+    // Several subsystems complete their work by dispatching through SKSE's task
-+    // interface, and that queue is drained by the main thread. A caller that waits
-+    // for such a completion while already running on the main thread is therefore
-+    // waiting for itself: the queued task cannot run until the wait returns. That
-+    // makes "am I on the main thread" the deciding question before any such wait,
-+    // so the id is captured once at load time instead of being guessed per call.
-+    inline DWORD g_mainThreadId = 0;
++                    if (nav.fulfilledBy(conditions) &&
++                        context.furnitureType->isChildOf(nav.nodes.back()->furnitureType))
++                    {
++                        m_navDescCache.push_back(nav.getDescription(thread));
++                        buffer[count].sceneId = nav.nodes.front()->scene_id.c_str();
++                        buffer[count].destinationId = nav.nodes.back()->scene_id.c_str();
++                        buffer[count].icon = nav.icon.c_str();
++                        buffer[count].description = m_navDescCache.back().c_str();
++                        buffer[count].border = nav.border.c_str();
++                        buffer[count].isTransition = nav.isTransition;
++                        count++;
++                    }
+                 }
+-            }
+ 
+-            return count;
++                return count;
++            }
++            catch (...)
++            {
++                SKSE::log::error("Thread API: GetNavigationOptions failed with an exception");
++                return 0;
++            }
+         }
+ 
+         APIResult NavigateToScene(uint32_t threadID, const char* sceneID) noexcept override
+@@ -189,26 +285,34 @@ namespace OstimNG_API::Thread
+                 return APIResult::Invalid;
+             }
+ 
+-            auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+-            if (!thread) {
+-                SKSE::log::warn("NavigateToScene: Thread not found for ID {}", threadID);
+-                return APIResult::Invalid;
+-            }
+-
+-            SKSE::GetTaskInterface()->AddTask([threadID, sceneID = std::string(sceneID)]()
++            try
+             {
+                 auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+-                if (thread)
+-                {
+-                    thread->Navigate(sceneID);
++                if (!thread) {
++                    SKSE::log::warn("NavigateToScene: Thread not found for ID {}", threadID);
++                    return APIResult::Invalid;
+                 }
+-                else
+-                {
+-                    SKSE::log::warn("NavigateToScene (Task): Thread {} no longer exists", threadID);
+-                }
+-            });
+ 
+-            return APIResult::OK;
++                SKSE::GetTaskInterface()->AddTask([threadID, sceneID = std::string(sceneID)]()
++                {
++                    auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
++                    if (thread)
++                    {
++                        thread->Navigate(sceneID);
++                    }
++                    else
++                    {
++                        SKSE::log::warn("NavigateToScene (Task): Thread {} no longer exists", threadID);
++                    }
++                });
 +
-+    inline void RecordMainThread() noexcept { g_mainThreadId = ::GetCurrentThreadId(); }
++                return APIResult::OK;
++            }
++            catch (...)
++            {
++                SKSE::log::error("Thread API: NavigateToScene failed with an exception");
++                return APIResult::Invalid;
++            }
+         }
+ 
+         bool IsTransition(uint32_t threadID) noexcept override
+@@ -250,9 +354,20 @@ namespace OstimNG_API::Thread
+         {
+             if (!callback) return;
+ 
+-            std::lock_guard<std::mutex> lock(callbackMutex);
+-            eventCallbacks.push_back({callback, userData});
+-            SKSE::log::info("Registered thread event callback");
++            // The push_back allocates and this frame is noexcept, so the failure
++            // is contained here rather than escaping to std::terminate. A
++            // registration that could not be recorded is logged: a caller that
++            // assumes it succeeded simply never receives the event.
++            try
++            {
++                std::lock_guard<std::mutex> lock(callbackMutex);
++                eventCallbacks.push_back({callback, userData});
++                SKSE::log::info("Registered thread event callback");
++            }
++            catch (...)
++            {
++                SKSE::log::error("RegisterEventCallback: could not record the callback");
++            }
+         }
+ 
+         void UnregisterEventCallback(ThreadEventCallback callback) noexcept override
+@@ -271,9 +386,17 @@ namespace OstimNG_API::Thread
+         {
+             if (!callback) return;
+ 
+-            std::lock_guard<std::mutex> lock(callbackMutex);
+-            controlCallbacks.push_back({callback, userData});
+-            SKSE::log::info("Registered control event callback");
++            // Same shape as RegisterEventCallback above.
++            try
++            {
++                std::lock_guard<std::mutex> lock(callbackMutex);
++                controlCallbacks.push_back({callback, userData});
++                SKSE::log::info("Registered control event callback");
++            }
++            catch (...)
++            {
++                SKSE::log::error("RegisterControlCallback: could not record the callback");
++            }
+         }
+ 
+         void UnregisterControlCallback(ControlEventCallback callback) noexcept override
+@@ -427,33 +550,55 @@ namespace OstimNG_API::Thread
+         {
+             if (!query || !buffer || bufferSize == 0) return 0;
+ 
+-            std::string name(query);
+-            std::vector<Graph::Node*> results;
+-            Graph::GraphTable::searchNodesByName(name, results);
++            // Two containers are grown here before anything is written to the
++            // caller's buffer, and this frame is noexcept.
++            try
++            {
++                std::string name(query);
++                std::vector<Graph::Node*> results;
++                Graph::GraphTable::searchNodesByName(name, results);
 +
-+    // False until RecordMainThread() has run, so a caller that cannot tell must not
-+    // treat itself as the main thread and block.
-+    inline bool IsMainThread() noexcept { return g_mainThreadId != 0 && ::GetCurrentThreadId() == g_mainThreadId; }
-+}
++                // Sort results alphabetically by scene name
++                std::sort(results.begin(), results.end(), [](Graph::Node* a, Graph::Node* b) {
++                    return a->scene_name < b->scene_name;
++                });
++
++                auto thread = UI::UIState::GetSingleton()->currentThread;
++
++                // A search is issued from a text box, which stays live after the scene
++                // ends. HandleThreadRemoved nulls currentThread while the search menu is
++                // still open, and this loop dereferenced it unconditionally - one search
++                // after that was a null read. The in-tree search menu checks the same
++                // pointer for the same reason (SearchMenu.cpp:153).
++                if (!thread) return 0;
++
++                // The furniture type is nullable on the same thread (Thread.h:38), and
++                // the in-tree menu guards it (SearchMenu.cpp:160).
++                auto furnitureType = thread->getFurnitureTypeInternal();
++                if (!furnitureType) return 0;
++
++                uint32_t count = 0;
++                for (auto* node : results)
++                {
++                    if (count >= bufferSize) break;
+ 
+-            // Sort results alphabetically by scene name
+-            std::sort(results.begin(), results.end(), [](Graph::Node* a, Graph::Node* b) {
+-                return a->scene_name < b->scene_name;
+-            });
++                    if (node->actors.size() != thread->getActorCount()) continue;
++                    if (!furnitureType->isChildOf(node->furnitureType)) continue;
++                    if (node->isTransition) continue;
+ 
+-            auto thread = UI::UIState::GetSingleton()->currentThread;
++                    buffer[count].sceneId = node->scene_id.c_str();
++                    buffer[count].name = node->scene_name.c_str();
++                    buffer[count].actorCount = node->numActors;
++                    count++;
++                }
+ 
+-            uint32_t count = 0;
+-            for (auto* node : results)
++                return count;
++            }
++            catch (...)
+             {
+-                if (count >= bufferSize) break;
+-
+-                if (node->actors.size() != thread->getActorCount()) continue;
+-                if (!thread->getFurnitureTypeInternal()->isChildOf(node->furnitureType)) continue;
+-                if (node->isTransition) continue;
+-
+-                buffer[count].sceneId = node->scene_id.c_str();
+-                buffer[count].name = node->scene_name.c_str();
+-                buffer[count].actorCount = node->numActors;
+-                count++;
++                SKSE::log::error("Thread API: SearchScenes failed with an exception");
++                return 0;
+             }
+-
+-            return count;
+         }
+ 
+         bool GetSceneInfo(const char* sceneID, SceneSearchResult* outInfo) noexcept override
+@@ -567,28 +712,40 @@ namespace OstimNG_API::Thread
+         bool HasCompatibleNode(uint32_t threadID, const uint32_t* actorFormIDs, uint32_t actorCount) noexcept override
+         {
+             if (!actorFormIDs || actorCount == 0) return false;
+-            auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
+-            if (!thread) return false;
+ 
+-            std::vector<GameAPI::GameActor> actors;
+-            for (uint32_t i = 0; i < actorCount; i++) {
+-                auto actor = RE::TESForm::LookupByID<RE::Actor>(actorFormIDs[i]);
+-                if (!actor) return false;
+-                actors.push_back(GameAPI::GameActor(actor));
+-            }
++            // Three containers are grown below - the actor list, the condition list
++            // and the vector convertVector builds inside it - and this frame is
++            // noexcept, so a failure has to answer "no" rather than terminate.
++            try
++            {
++                auto thread = Threading::ThreadManager::GetSingleton()->GetThread(threadID);
++                if (!thread) return false;
+ 
+-            if (actors.size() != thread->getActorCount()) {
+-                std::vector<GameAPI::GameActor> dominants;
+-                ActorUtil::sort(actors, dominants, -1);
+-            }
++                std::vector<GameAPI::GameActor> actors;
++                for (uint32_t i = 0; i < actorCount; i++) {
++                    auto actor = RE::TESForm::LookupByID<RE::Actor>(actorFormIDs[i]);
++                    if (!actor) return false;
++                    actors.push_back(GameAPI::GameActor(actor));
++                }
++
++                if (actors.size() != thread->getActorCount()) {
++                    std::vector<GameAPI::GameActor> dominants;
++                    ActorUtil::sort(actors, dominants, -1);
++                }
+ 
+-            std::vector<Trait::ActorCondition> conditions;
+-            for (auto& a : actors) conditions.push_back(Trait::ActorCondition::create(a.form));
++                std::vector<Trait::ActorCondition> conditions;
++                for (auto& a : actors) conditions.push_back(Trait::ActorCondition::create(a.form));
+ 
+-            auto node = Graph::GraphTable::getRandomNode(
+-                thread->getFurnitureTypeInternal(), conditions,
+-                [](Graph::Node* n) { return !n->isTransition; });
+-            return node != nullptr;
++                auto node = Graph::GraphTable::getRandomNode(
++                    thread->getFurnitureTypeInternal(), conditions,
++                    [](Graph::Node* n) { return !n->isTransition; });
++                return node != nullptr;
++            }
++            catch (...)
++            {
++                SKSE::log::error("Thread API: HasCompatibleNode failed with an exception");
++                return false;
++            }
+         }
+ 
+         int32_t MigrateThread(uint32_t threadID, const uint32_t* actorFormIDs, uint32_t actorCount,
+@@ -600,28 +757,62 @@ namespace OstimNG_API::Thread
+                 if (onComplete) onComplete(-1, context);
+                 return -1;
+             }
+-            std::vector<GameAPI::GameActor> actors;
+-            for (uint32_t i = 0; i < actorCount; i++) {
+-                auto actor = RE::TESForm::LookupByID<RE::Actor>(actorFormIDs[i]);
+-                if (!actor) {
+-                    if (onComplete) onComplete(-1, context);
+-                    return -1;
++            try
++            {
++                std::vector<GameAPI::GameActor> actors;
++                for (uint32_t i = 0; i < actorCount; i++) {
++                    auto actor = RE::TESForm::LookupByID<RE::Actor>(actorFormIDs[i]);
++                    if (!actor) {
++                        if (onComplete) onComplete(-1, context);
++                        return -1;
++                    }
++                    actors.push_back(GameAPI::GameActor(actor));
++                }
++                if (onComplete) {
++                    // Async: wrap raw pointer into a lambda internally (safe — doesn't cross ABI boundary)
++                    bool scheduled = Threading::ThreadManager::GetSingleton()->migrateThread(threadID, actors,
++                        [onComplete, context](int32_t id) { onComplete(id, context); }, startDelayMs);
++                    return scheduled ? 0 : -1;
++                } else {
++                    // Sync: block on a promise/future to get the real new thread ID.
++                    //
++                    // The migration completes through runSynced(), which posts a task to
++                    // SKSE's task interface, and that queue is drained by the game's main
++                    // thread. Blocking here while already on the main thread therefore
++                    // waits for a task that cannot run until this call returns: the
++                    // future is never fulfilled and the game locks up permanently.
++                    //
++                    // Refusing is the only honest answer, because the synchronous
++                    // contract is "return the new id" and there is no channel to deliver
++                    // it on. The migration is deliberately NOT started: a caller that
++                    // believes it failed must not be left with a scene that was migrated
++                    // underneath it. Callers that need migration from the main thread use
++                    // the callback form, which returns immediately and reports the id
++                    // through onComplete.
++                    if (Util::IsMainThread()) {
++                        SKSE::log::error(
++                            "MigrateThread: the synchronous form cannot be used on the main thread - the "
++                            "migration completes on that same thread, so waiting for it would deadlock the "
++                            "game. Pass an onComplete callback, or call this from a worker thread.");
++                        return -1;
++                    }
++
++                    auto promise = std::make_shared<std::promise<int32_t>>();
++                    auto future = promise->get_future();
++                    bool scheduled = Threading::ThreadManager::GetSingleton()->migrateThread(threadID, actors,
++                        [promise](int32_t id) { promise->set_value(id); }, startDelayMs);
++                    if (!scheduled) return -1;
++                    return future.get();  // blocks calling thread until async migration completes
+                 }
+-                actors.push_back(GameAPI::GameActor(actor));
+             }
+-            if (onComplete) {
+-                // Async: wrap raw pointer into a lambda internally (safe — doesn't cross ABI boundary)
+-                bool scheduled = Threading::ThreadManager::GetSingleton()->migrateThread(threadID, actors,
+-                    [onComplete, context](int32_t id) { onComplete(id, context); }, startDelayMs);
+-                return scheduled ? 0 : -1;
+-            } else {
+-                // Sync: block on a promise/future to get the real new thread ID
+-                auto promise = std::make_shared<std::promise<int32_t>>();
+-                auto future = promise->get_future();
+-                bool scheduled = Threading::ThreadManager::GetSingleton()->migrateThread(threadID, actors,
+-                    [promise](int32_t id) { promise->set_value(id); }, startDelayMs);
+-                if (!scheduled) return -1;
+-                return future.get();  // blocks calling thread until async migration completes
++            catch (...)
++            {
++                // A migration that could not be prepared is reported through the
++                // same channel a refused one uses, so the caller is not left
++                // waiting on a callback that will never arrive.
++                SKSE::log::error("Thread API: MigrateThread failed with an exception");
++                if (onComplete) onComplete(-1, context);
++                return -1;
+             }
+         }
+ 

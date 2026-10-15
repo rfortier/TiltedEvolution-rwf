@@ -11,6 +11,8 @@ verifies has already drifted at least once:
     after the generator was fixed
   * v1.1.4 shipped with no README row in either language, so the version table
     and the changelog disagreed about which versions exist
+  * CHANGELOG.md was found with multi-byte characters truncated mid-sequence,
+    which a strict reader could only report by raising from inside a check
 
 Each check below compares a claim in prose against the file that owns the value,
 rather than against another paragraph. Where a number has a single source, the
@@ -120,6 +122,52 @@ def readme_stable_versions(rel: str) -> list[str]:
         r'^\|\s*\*{0,2}([0-9]+\.[0-9]+\.[0-9]+)\*{0,2}\s*\u2b50\s*'
         r'\*\*(?:\u7a33\u5b9a\u7248|stable)\*\*',
         read(rel), re.M)
+
+
+# Suffixes that mean "a text file a gate can read" in this repository. Anything
+# else is either a real binary (.bin, .pex, .png, .ico, .wav ...) or a document
+# no check parses. git ls-files is the corpus, so this list is what decides which
+# tracked bytes have to be readable.
+TEXT_SUFFIXES = (
+    '.as', '.bat', '.cfg', '.cmake', '.cpp', '.css', '.csv', '.def', '.h',
+    '.hpp', '.html', '.ini', '.inl', '.js', '.json', '.lua', '.map', '.md',
+    '.patch', '.ps1', '.psc', '.py', '.rc', '.scss', '.sh', '.svg', '.toml',
+    '.ts', '.tsv', '.txt', '.v', '.xml', '.yaml', '.yml',
+)
+
+
+def check_text_integrity(failures: list[str]) -> None:
+    """Every tracked text file must be readable UTF-8, not decodable with holes."""
+    out = subprocess.run(['git', 'ls-files'], cwd=str(ROOT),
+                         capture_output=True, text=True)
+    # No index means no corpus, and a check that cannot see what it checks must
+    # not report success - the same refusal as the empty tag list below.
+    if out.returncode != 0:
+        failures.append(
+            f'git ls-files failed (exit {out.returncode}), so the tracked text '
+            f'files cannot be enumerated; without that corpus this check cannot '
+            f'run - refusing to pass vacuously')
+        return
+
+    for rel in out.stdout.splitlines():
+        if Path(rel).suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        path = ROOT / rel
+        # A tracked path that is missing from the worktree is a dirty checkout,
+        # not a text problem; reporting it here would fail the gate on one.
+        if not path.is_file():
+            continue
+        blob = path.read_bytes()
+        try:
+            blob.decode('utf-8')
+        except UnicodeDecodeError as e:
+            # The readers that matter are the lenient ones: they decode the same
+            # bytes with errors='ignore' or errors='replace' and carry on, so a
+            # corrupted document arrives at a rule as a shorter, quieter one.
+            failures.append(
+                f'{rel}: byte {e.start} is not valid UTF-8 ({e.reason}); every '
+                f"gate that reads it with errors='ignore' or errors='replace' is "
+                f'comparing a degraded copy and can report OK while doing so')
 
 
 def check_coverage(failures: list[str]) -> None:
@@ -314,6 +362,9 @@ def check_recommended_version(failures: list[str]) -> None:
 
 
 CHECKS = {
+    # Integrity runs first: the checks after it read their documents through
+    # read(), which raises on the same bytes this one reports by name.
+    'text-integrity': check_text_integrity,
     'coverage': check_coverage,
     'version-tables': check_version_tables,
     'tags-have-sections': check_tags_have_sections,
@@ -334,8 +385,14 @@ def main() -> int:
         return 0
 
     failures: list[str] = []
-    for fn in CHECKS.values():
+    for name, fn in CHECKS.items():
         fn(failures)
+        # Text integrity is a precondition, not a peer: the other checks read
+        # their documents through read(), which raises on the same bytes, so
+        # carrying on would trade the line naming the corrupt file for a
+        # UnicodeDecodeError traceback from inside an unrelated check.
+        if name == 'text-integrity' and failures:
+            break
 
     if failures:
         print(f'DOC CHECK FAILED ({len(failures)})')

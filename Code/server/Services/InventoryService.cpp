@@ -10,6 +10,7 @@
 #include <Messages/RequestEquipmentChanges.h>
 #include <Messages/NotifyEquipmentChanges.h>
 #include <Messages/DrawWeaponRequest.h>
+#include <Messages/NotifyDrawWeapon.h>
 
 #include <Setting.h>
 namespace
@@ -178,6 +179,21 @@ void InventoryService::OnWeaponDrawnRequest(const PacketEvent<DrawWeaponRequest>
             auto& characterComponent = characterView.get<CharacterComponent>(*it);
             characterComponent.SetWeaponDrawn(message.IsWeaponDrawn);
             spdlog::debug("Updating weapon drawn state {:x}:{}", message.Id, message.IsWeaponDrawn);
+
+            // The drawn state was only replicated when the character spawned
+            // (CharacterSpawnRequest.IsWeaponDrawn / AssignCharacterResponse), so a
+            // player who drew or sheathed after that was never seen doing it by
+            // anyone who already had them loaded: the request updated the server's
+            // own component and stopped there, while NotifyDrawWeapon sat unused in
+            // the factory. Same shape as the equipment broadcast above - everyone
+            // in range except the sender, who already knows.
+            NotifyDrawWeapon notify;
+            notify.Id = message.Id;
+            notify.IsWeaponDrawn = message.IsWeaponDrawn;
+
+            const entt::entity cOrigin = static_cast<entt::entity>(message.Id);
+            if (!GameServer::Get()->SendToPlayersInRange(notify, cOrigin, acMessage.GetSender()))
+                spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
         }
     }
     catch (...)

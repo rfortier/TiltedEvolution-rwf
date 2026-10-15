@@ -1,6 +1,6 @@
 # Skyrim Together Next - 1.5.97 missing address manifest (13 ids)
 #
-# Coverage 3069/3082 codebase ids (99.6%), and all 3698 map entries validate
+# Coverage 3050/3063 codebase ids (99.6%), and all 3698 map entries validate
 # against version-1-5-97-0.bin. Tools/ida/recover_1597.py closed 20 of the
 # previous 29 by identifying the 1.6.1170 function on its own terms (referenced
 # string literals, call-graph position, globals it touches) instead of
@@ -13,6 +13,12 @@
 # VersionDbPtr. Its old "*.[ch]pp" glob silently skipped all 301 .h files, and
 # it read commented-out calls as live ones; both are fixed, which is why the
 # totals here moved from 3075 to 3080 without the code gaining that many ids.
+#
+# The totals moved again, from 3069/3082 to 3050/3063, when the upstream v1.8.3
+# sync deleted Games/Skyrim/AnimationExperiments.cpp: that dead reverse
+# engineering file held 19 id references and nothing else. The id GAP is
+# unchanged at 13 - the file contributed no missing ids - so only the two
+# totals moved, not this list.
 #
 # What the remaining 11 cost, in order of how much anyone would notice:
 #

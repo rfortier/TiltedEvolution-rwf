@@ -29,6 +29,7 @@ struct RespawnOverride
 };
 
 const std::array kDefaultOverrides{
+    RespawnOverride{"DLC1DimHollowCrypt02", glm::vec3(944.f, -957.f, -27.f)},
     RespawnOverride{"HaltedStreamCamp01", glm::vec3(-515.f, -501.f, 603.f)},
     RespawnOverride{"Korvanjund01", glm::vec3(-287.f, -5619.f, 608.f)},
     RespawnOverride{"Korvanjund02", glm::vec3(1201.f, -636.f, -400.f)},

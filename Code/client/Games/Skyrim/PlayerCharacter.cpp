@@ -112,7 +112,9 @@ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
     {
         // TP to Whiterun temple when killed in world space
         TES* pTes = TES::Get();
-        pCell = ModManager::Get()->GetCellFromCoordinates(pTes->centerGridX, pTes->centerGridY, GetWorldSpace(), false);
+        auto* pModManager = ModManager::Get();
+        if (pTes && pModManager)
+            pCell = pModManager->GetCellFromCoordinates(pTes->centerGridX, pTes->centerGridY, GetWorldSpace(), false);
     }
     else
     {

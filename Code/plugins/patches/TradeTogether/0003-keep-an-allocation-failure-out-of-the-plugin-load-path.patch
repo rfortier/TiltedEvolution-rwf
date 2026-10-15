@@ -1,0 +1,28 @@
+diff --git a/src/STRPluginMessagingAPI.cpp b/src/STRPluginMessagingAPI.cpp
+index 098b69f..d2e91b9 100644
+--- a/src/STRPluginMessagingAPI.cpp
++++ b/src/STRPluginMessagingAPI.cpp
+@@ -17,9 +17,20 @@ namespace STRPM
+                 module = LoadLibraryW(a_moduleName);
+             }
+             if (!module) {
+-                std::wstring pluginPath = L"Data\\SKSE\\Plugins\\";
+-                pluginPath += a_moduleName;
+-                module = LoadLibraryW(pluginPath.c_str());
++                // This function sits on the plugin's own load path and is
++                // noexcept, so the two string operations below are the only steps
++                // here that can end the process: a std::wstring allocation
++                // failure escaping this frame calls std::terminate, which kills
++                // the game with no crash dump and nothing in any log. Falling
++                // through to "not loaded" is what the code already does when the
++                // module is not in Data\SKSE\Plugins, and every caller reads a
++                // null module as "the messaging API is unavailable".
++                try {
++                    std::wstring pluginPath = L"Data\\SKSE\\Plugins\\";
++                    pluginPath += a_moduleName;
++                    module = LoadLibraryW(pluginPath.c_str());
++                } catch (...) {
++                }
+             }
+             return module;
+         }

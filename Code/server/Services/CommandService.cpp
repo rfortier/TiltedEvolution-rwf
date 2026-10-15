@@ -11,10 +11,15 @@
 
 #include <Setting.h>
 
-namespace
-{
-Console::Setting bAnnounceServer{"LiveServices:bAnnounceServer", "Whether to list the server on the public server list", false};
-}
+// This file used to declare its own
+//   Console::Setting bAnnounceServer{"LiveServices:bAnnounceServer", ...};
+// while GameServer.cpp declared the same name for the same question. Settings
+// self-register into one global list in static-initialisation order - unspecified
+// across translation units - and ConsoleRegistry::FindSetting takes the FIRST
+// match by name, so exactly one of the two objects ever received the ini value and
+// the other kept its default forever. Which one won was not even stable between
+// builds. There is one setting now, and it lives with the other server settings in
+// GameServer.cpp, where IsPublicServer() is the accessor both readers use.
 
 CommandService::CommandService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -65,9 +70,10 @@ void CommandService::OnSetTimeCommand(const PacketEvent<SetTimeCommandRequest>& 
         return;
     }
 
-    // Party leader allowed on private servers only
+    // Party leader allowed on private servers only. Asked through the one setting
+    // rather than a per-file copy: see the note at the top of this file.
     const auto* pPartyService = &m_world.GetPartyService();
-    if (pPartyService->IsPlayerLeader(acMessage.pPlayer) && !bAnnounceServer)
+    if (pPartyService->IsPlayerLeader(acMessage.pPlayer) && !GameServer::Get()->IsPublicServer())
     {
         const auto cHours = static_cast<int>(acMessage.Packet.Hours);
         const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);

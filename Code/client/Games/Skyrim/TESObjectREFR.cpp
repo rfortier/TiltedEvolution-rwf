@@ -621,6 +621,15 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
 
         pExtraDataList = ExtraDataList::New();
 
+        // New() returns null when either of its two allocations fails, and every
+        // line below dereferences the result. The single caller of this function
+        // already handles a null return, so failing here is the correct answer.
+        if (!pExtraDataList)
+        {
+            spdlog::error(__FUNCTION__ ": could not allocate an extra data list for item {:X}", arEntry.BaseId.BaseId);
+            return nullptr;
+        }
+
         if (arEntry.ExtraCharge > 0.f)
         {
             pExtraDataList->SetChargeData(arEntry.ExtraCharge);
@@ -984,10 +993,17 @@ void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSet
             AddObjectToContainer(pObject, pExtraDataList, arEntry.Count, nullptr);
 
             // TODO: check Actor cast first?
-            if (isWorn)
-                EquipManager::Get()->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false);
-            else if (isWornLeft)
-                EquipManager::Get()->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().leftEquipSlot, false, true, false, false);
+            // The equip manager can still be null here: this runs from the
+            // inventory sync path, which the server drives. The item has already
+            // been added above, so skipping only the equip leaves it in the
+            // container, which is recoverable - a null dereference is not.
+            if (auto* pEquipManager = EquipManager::Get())
+            {
+                if (isWorn)
+                    pEquipManager->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false);
+                else if (isWornLeft)
+                    pEquipManager->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().leftEquipSlot, false, true, false, false);
+            }
         }
         else if (arEntry.Count < 0)
         {

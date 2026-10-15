@@ -40,5 +40,12 @@ UniquePtr<ServerAdminMessage> ServerAdminMessageFactory::Extract(TiltedPhoques::
         return {nullptr};
 
     const auto opcode = static_cast<ServerAdminOpcode>(data);
+
+    // The range check is not a completeness check: a slot the visitor never filled
+    // is an empty std::function, and calling through it throws from a noexcept
+    // function. See ClientMessageFactory::Extract.
+    if (!s_serverAdminMessageExtractor[opcode]) [[unlikely]]
+        return {nullptr};
+
     return s_serverAdminMessageExtractor[opcode](aReader);
 }

@@ -7,9 +7,15 @@
 
 void DebugService::DrawCalendarView()
 {
-    ImGui::Begin("Calendar");
-
+    // The time manager is built by the engine during startup and this window can be
+    // drawn before it exists. Every field below reads the clock, and the test has to
+    // come before Begin(): an ImGui::Begin() with no matching End() is a stack
+    // mismatch, so the window is skipped rather than opened empty.
     auto* pGameTime = TimeData::Get();
+    if (!pGameTime)
+        return;
+
+    ImGui::Begin("Calendar");
 
     auto year = pGameTime->GameYear->f;
     ImGui::InputFloat("Year", &year, 0, 0, "%.3f", ImGuiInputTextFlags_ReadOnly);

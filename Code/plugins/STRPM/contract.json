@@ -42,6 +42,76 @@
     "TargetKind",
     "TransportInterface"
   ],
+  "interfaceLayouts": {
+    "DiagnosticsInterface": [
+      "std::uint32_t version",
+      "Result (STRPM_CALL*getRuntimeStatus)"
+    ],
+    "Interface": [
+      "std::uint32_t version",
+      "Result (STRPM_CALL*registerChannel)",
+      "Result (STRPM_CALL*unregisterChannel)",
+      "Result (STRPM_CALL*send)",
+      "Result (STRPM_CALL*getLocalConnectionID)",
+      "Result (STRPM_CALL*setLogCallback)",
+      "Result (STRPM_CALL*setLocalDisplayName)"
+    ],
+    "ListenerHandle": [
+      "std::uint64_t value"
+    ],
+    "Message": [
+      "const char* channel",
+      "const void* data",
+      "std::size_t size",
+      "Sender sender",
+      "std::uint32_t flags",
+      "std::uint64_t sequence"
+    ],
+    "ProxyMappingEvent": [
+      "ProxyMappingEventType type",
+      "ConnectionID connectionID",
+      "ProxyFormID oldFormID",
+      "ProxyFormID newFormID"
+    ],
+    "ProxyResolverInterface": [
+      "std::uint32_t version",
+      "Result (STRPM_CALL*resolve)",
+      "Result (STRPM_CALL*registerListener)",
+      "Result (STRPM_CALL*unregisterListener)"
+    ],
+    "RuntimeStatus": [
+      "std::uint32_t version",
+      "std::uint32_t knownPeerCount",
+      "std::uint32_t configuredPeerCount",
+      "std::uint32_t autoDiscovery",
+      "std::uint32_t relayMode",
+      "std::uint32_t requireKnownPeer",
+      "std::uint16_t localPort",
+      "std::uint16_t reserved",
+      "RuntimeBackend activeBackend",
+      "RuntimeBackendMode configuredBackendMode",
+      "std::uint32_t strBridgeAvailable",
+      "std::uint32_t strBridgeActive"
+    ],
+    "Sender": [
+      "ConnectionID connectionID",
+      "const char* displayName",
+      "bool isHost"
+    ],
+    "Target": [
+      "TargetKind kind",
+      "ConnectionID connectionID",
+      "const char* displayName"
+    ],
+    "TransportInterface": [
+      "std::uint32_t version",
+      "Result (STRPM_CALL*start)",
+      "Result (STRPM_CALL*stop)",
+      "Result (STRPM_CALL*send)",
+      "Result (STRPM_CALL*getLocalConnectionID)",
+      "Result (STRPM_CALL*setLocalDisplayName)"
+    ]
+  },
   "consumers": {
     "AnimSyncTogether": {
       "root": "plugins/AnimSyncTogether",

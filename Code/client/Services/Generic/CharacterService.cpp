@@ -16,6 +16,7 @@
 
 #include <BranchInfo.h>
 #include <Components.h>
+#include <WireLimits.h>
 
 #include <Systems/InterpolationSystem.h>
 #include <Systems/AnimationSystem.h>
@@ -149,7 +150,22 @@ void CharacterService::ReconcileActorData(
     }
 
     if (apActor->IsDead() != acActorData.IsDead)
-        acActorData.IsDead ? apActor->Kill() : apActor->Respawn();
+    {
+        if (acActorData.IsDead)
+        {
+            spdlog::info("Killing actor {:X} to match server state, local owner: {}", apActor->formID, aIsLocalOwner);
+            apActor->Kill();
+        }
+        // Respawn resets the reference, which re-rolls leveled actors and reloads their 3D. The owner would
+        // rediscover it as a new actor, so keep the local death and let the death state sync report it.
+        else if (aIsLocalOwner)
+            spdlog::warn("Keeping actor {:X} dead although the server has it alive", apActor->formID);
+        else
+        {
+            spdlog::info("Respawning actor {:X} to match server state", apActor->formID);
+            apActor->Respawn();
+        }
+    }
 
     if (aIsLocalOwner)
     {
@@ -476,8 +492,14 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         {
             spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
 
-            pActor->GetExtension()->SetRemote(true);
-            ReconcileActorData(cEntity, pActor, acMessage.OwnershipEpoch, actorData, true, true);
+            // We are the authority, and the server's data is only an echo of our own request snapshot, which can already be stale.
+            // Applying it would e.g. Respawn() (Resurrect + Reset) an actor that was killed while the request was in flight,
+            // which re-rolls leveled temporary actors, removes them, and makes them get rediscovered as new entities endlessly.
+            // Any local change since the request (e.g. death) is picked up by the usual LocalComponent diffing instead.
+            if (pActor->IsDead() != acMessage.IsDead)
+                spdlog::info("Local actor {:X} death state changed while its assignment was in flight (server: {}, local: {}), keeping local state", pActor->formID, acMessage.IsDead, pActor->IsDead());
+
+            m_weaponDrawUpdates.erase(pActor->formID);
 
             auto& localAnimationComponent = m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
 
@@ -1257,7 +1279,14 @@ void CharacterService::OnNotifyNewPackage(const NotifyNewPackage& acMessage) con
 
 void CharacterService::OnAddExperienceEvent(const AddExperienceEvent& acEvent) noexcept
 {
-    m_cachedExperience += acEvent.Experience;
+    // Bounded on the way in, because this is where a local measurement becomes a
+    // number another player's game will apply. The event carries
+    // `newExperience - oldExperience` around the engine's own AddSkillExperience,
+    // which a mod can drive past what a float holds and a load/save transition
+    // between the two reads can turn meaningless. The wire clamps the magnitude on
+    // read as well; bounding here keeps the accumulator from carrying a value that
+    // only the receiver would reject.
+    m_cachedExperience += WireLimits::ClampExperienceDelta(acEvent.Experience);
 }
 
 void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMessage) noexcept
@@ -1269,7 +1298,13 @@ void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMess
     if (PlayerCharacter::LastUsedCombatSkill == -1)
         return;
 
-    pPlayer->AddSkillExperience(PlayerCharacter::LastUsedCombatSkill, acMessage.Experience);
+    // The wire already bounded this on read; bounding again at the call that hands
+    // it to the engine is deliberate. This is the last point before the value
+    // becomes a skill's stored xp, and the engine compares that against a per-level
+    // threshold - so a value it cannot compare against leaves the skill in a state
+    // no later award can fix.
+    pPlayer->AddSkillExperience(PlayerCharacter::LastUsedCombatSkill,
+                                WireLimits::ClampExperienceDelta(acMessage.Experience));
 }
 
 void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
@@ -1448,8 +1483,15 @@ void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcep
                       pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>",
                       acMessage.Text);
 
-        SubtitleManager::Get()->HideSubtitle(pActor);   // Subtitle conflicts can hang, this makes it beter at least.
-        SubtitleManager::Get()->ShowSubtitle(pActor, acMessage.Text.c_str(), pInfo);
+        // The subtitle singleton is only filled once the engine's dialogue
+        // system is up, and this handler runs off a wire packet, so it can
+        // arrive before that. Both calls are best-effort cosmetics: a null
+        // manager means no subtitles yet, not a fault.
+        if (auto* pSubtitles = SubtitleManager::Get())
+        {
+            pSubtitles->HideSubtitle(pActor);   // Subtitle conflicts can hang, this makes it beter at least.
+            pSubtitles->ShowSubtitle(pActor, acMessage.Text.c_str(), pInfo);
+        }
     }
     catch (...)
     {
@@ -2222,15 +2264,37 @@ void CharacterService::SetRemoteFaceGenForce(const bool aForce) const noexcept
         if (m_faceGenForced == aForce)
             return;
 
-        auto* pSetting = INISettingCollection::Get()->GetSetting("bUseFaceGenPreprocessedHeads:General");
+        auto* pCollection = INISettingCollection::Get();
+        auto* pSetting = pCollection ? pCollection->GetSetting("bUseFaceGenPreprocessedHeads:General") : nullptr;
         if (!pSetting)
+        {
+            // Null is the engine's answer both for a setting this runtime does not define
+            // and for a runtime whose INISettingCollection is not the layout TES.h asserts.
+            // The offsets behind that layout were measured on 1.5.97 only, so only this
+            // line tells a user report which of the two they are looking at.
+            spdlog::warn("{}: bUseFaceGenPreprocessedHeads is not in the engine's ini collection, so the "
+                         "preprocessed-head flag cannot be forced for wire-built actors on this runtime",
+                         __FUNCTION__);
             return; // nothing to force, and leaving the state alone keeps the next call honest
+        }
 
         if (aForce)
             m_faceGenPreprocessedBackup = pSetting->data;
 
         pSetting->data = aForce ? 0 : m_faceGenPreprocessedBackup;
         m_faceGenForced = aForce;
+
+        // One line per session, not one per call: the first write is the only one a user
+        // log needs, and the pointer and the value it prints are the whole answer to
+        // whether the 1.5.97-only offsets in TES.h resolved the setting here. Anything
+        // below info is invisible in a shipped build - TiltedOnlineApp leaves
+        // set_level(debug) commented out.
+        static bool s_reportedFirstForce = false;
+        if (!s_reportedFirstForce)
+        {
+            s_reportedFirstForce = true;
+            spdlog::info("{}: bUseFaceGenPreprocessedHeads at {} = {} (was {})", __FUNCTION__, fmt::ptr(pSetting), pSetting->data, m_faceGenPreprocessedBackup);
+        }
 
         spdlog::debug("{}: bUseFaceGenPreprocessedHeads = {} (was {})", __FUNCTION__, pSetting->data, m_faceGenPreprocessedBackup);
     }
@@ -2372,6 +2436,20 @@ void CharacterService::RunRemoteUpdates() noexcept
             // merge had only the readyEntities push below.
             pActor->GetExtension()->SetNakedDeadline();
 
+            // Clearing the flag is only half of it: the value is read inside the
+            // engine's own facegen pass, and nothing here ever asked for that pass.
+            // Left alone, the engine reaches its head decision on a schedule this
+            // client does not control, and the window that holds the flag down is
+            // closed on the tick the body appears.
+            //
+            // Ask for the pass explicitly, while the window is still open. QueueUpdate
+            // is the call the engine itself brackets with a save-clear-restore of that
+            // flag when it wants a runtime head (SkyrimSE.exe+0x31c1ca), so it is the
+            // engine-blessed way to request one. Scoped like the window: an actor whose
+            // base came out of the local load order keeps its baked head.
+            if (waitingFor3D.SpawnRequest.FormId == GameId{})
+                pActor->QueueUpdate();
+
             readyEntities.push_back(entity);
 
             spdlog::debug(__FUNCTION__ ": applied 3D for actor, form id: {:X}, name {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<no base form>");
@@ -2450,7 +2528,12 @@ void CharacterService::RunSpawnUpdates() const noexcept
             float characterX = interpolationComponent.Position.x;
             float characterY = interpolationComponent.Position.y;
             const auto characterCoords = GridCellCoords::CalculateGridCellCoords(characterX, characterY);
+            // The game data is not up on the main menu or while a save is loading,
+            // where there is no grid to place the remote player in.
             const TES* pTES = TES::Get();
+            if (!pTES)
+                continue;
+
             const auto playerCoords = GridCellCoords(pTES->centerGridX, pTES->centerGridY);
 
             // TODO(cosideci): IsDragon probably shouldn't be straight up false here.

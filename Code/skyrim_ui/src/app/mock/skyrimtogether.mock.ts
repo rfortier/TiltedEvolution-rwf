@@ -63,10 +63,10 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
             error: 'mods_mismatch',
             data: {
               mods: [
-                ['missing.esp', '0'],
-                ['remove.esp', '12'],
-                ['missing_2.esp', '0'],
-                ['remove_2.esp', '12'],
+                ['missing.esp', 'install'],
+                ['remove.esp', 'remove'],
+                ['missing_2.esp', 'install'],
+                ['remove_2.esp', 'remove'],
               ],
             },
           };
@@ -318,6 +318,17 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
   inviteToPlayerMockParty(playerId: number) {
     playerStore.update(updateEntities(playerId, { invitedLocalPlayer: true }));
     this.emit('partyInviteReceived', playerId);
+  }
+
+  openPlayGuide(): void {
+    window.open(
+      'https://wiki.tiltedphoques.com/tilted-online/general-information/playguide',
+      '_blank',
+    );
+  }
+
+  mockQuestUpdate() {
+    this.emit('questUpdated');
   }
 
   startPlayerMockParty(playerId: number) {

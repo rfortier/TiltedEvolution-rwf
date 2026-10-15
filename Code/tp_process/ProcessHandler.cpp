@@ -27,6 +27,14 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
     m_pCoreObject->SetValue("kickPartyMember", CefV8Value::CreateFunction("kickPartyMember", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
     m_pCoreObject->SetValue("changePartyLeader", CefV8Value::CreateFunction("changePartyLeader", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
     m_pCoreObject->SetValue("teleportToPlayer", CefV8Value::CreateFunction("teleportToPlayer", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+    // The play guide is the one call whose C++ end already existed while this
+    // line did not: OverlayClient dispatches "openPlayGuide" and
+    // ProcessOpenPlayGuide() shells out to the wiki, but a name that is not
+    // registered here never leaves the render process, so the button threw
+    // "skyrimtogether.openPlayGuide is not a function" before reaching any of it.
+    // Tools/Scripts/check_overlay_bridge.py now compares this list against the
+    // typings and against OverlayClient's dispatch chain.
+    m_pCoreObject->SetValue("openPlayGuide", CefV8Value::CreateFunction("openPlayGuide", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
     m_pCoreObject->SetValue("toggleDebugUI", CefV8Value::CreateFunction("toggleDebugUI", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
 }
 

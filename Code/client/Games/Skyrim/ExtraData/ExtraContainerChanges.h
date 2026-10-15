@@ -28,6 +28,18 @@ struct ExtraContainerChanges : BSExtraData
         void Load(BGSLoadFormBuffer* apBuffer);
         TESObjectARMO* GetArmor(uint32_t aSlotId) noexcept;
 
+        // False when the running runtime's address library does not map the id
+        // GetArmor resolves through. That lookup does not fail loudly: it falls
+        // back to a stub returning zero, so GetArmor then answers "no armour in
+        // that slot" whatever the actor is wearing. A caller that acts on that
+        // answer must ask this first, because "not mapped" and "not wearing"
+        // are indistinguishable in the return value alone.
+        //
+        // 1.5.3, 1.5.16 and 1.5.23 are the shipped runtimes where this is false;
+        // Tools/missing_ids_by_runtime.tsv records them and
+        // Tools/Scripts/check_map_coverage.py keeps that record honest.
+        [[nodiscard]] static bool CanQueryArmor() noexcept;
+
         GameList<Entry>* entries;
         TESObjectREFR* parent;
         float totalWeight;

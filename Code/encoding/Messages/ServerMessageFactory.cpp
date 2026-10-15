@@ -38,5 +38,12 @@ UniquePtr<ServerMessage> ServerMessageFactory::Extract(TiltedPhoques::Buffer::Re
         return {nullptr};
 
     const auto opcode = static_cast<ServerOpcode>(data);
+
+    // See ClientMessageFactory::Extract: the range check is not a completeness
+    // check, and a slot the visitor never filled is an empty std::function whose
+    // call would terminate the process from a noexcept function.
+    if (!s_serverMessageExtractor[opcode]) [[unlikely]]
+        return {nullptr};
+
     return s_serverMessageExtractor[opcode](aReader);
 }

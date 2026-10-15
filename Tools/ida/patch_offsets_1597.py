@@ -57,6 +57,19 @@ PATCH_SITES = [
     (77246, 9, 5, "frame end (call site, 1.6 only)"),
 ]
 
+# Sites whose 1.5.x counterpart does not exist at all, and why. The alignment can
+# still find a matching instruction there - on 1.5.97 a `call` sits at the same
+# distance inside the same function - but the client does not want it: for frame
+# end the pre-AE path hooks the anchor function itself (TP_HOOK_IMMEDIATE in
+# BSGraphicsRenderer.cpp) instead of swapping the inner call, so an offset for it
+# is an offset nothing uses. Writing one into the table is worse than writing "-":
+# a reader comparing the two would "restore" the number, and GamePatch::SwapCall
+# only checks that the byte is 0xE8, so a different call would be redirected
+# silently. Keyed by (id, offset) so it cannot drift onto another site.
+MODERN_ONLY: dict[tuple[int, int], str] = {
+    (77246, 9): "no 1.5.x patch site: the pre-AE path hooks the anchor itself",
+}
+
 
 def disasm(pe, starts, fn, cap=0x4000):
     """[(offset, mnemonic, size, token)] for the function at `fn`."""
@@ -124,6 +137,12 @@ def main():
 
     rows, ok = [], 0
     for ae_id, ae_off, width, what in PATCH_SITES:
+        # A site the client deliberately does not patch on 1.5.x records no
+        # offset, whatever the alignment found: the row is what a reader trusts.
+        modern_only = MODERN_ONLY.get((ae_id, ae_off))
+        if modern_only is not None:
+            rows.append((ae_id, ae_off, None, modern_only, what))
+            continue
         ae_rva, se_rva = ae_lib.get(ae_id), anchor.get(ae_id)
         if ae_rva is None or se_rva is None:
             rows.append((ae_id, ae_off, None, "id not mapped on 1.5.97", what))

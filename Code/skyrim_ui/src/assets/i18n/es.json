@@ -42,7 +42,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "Mensaje de",
       "ACCEPT": "Aceptar",
-      "DECLINE": "Rechazar"
+      "DECLINE": "Rechazar",
+      "OPEN_GUIDE": "Abrir guía",
+      "DISMISS": "Descartar",
+      "DONT_SHOW": "No mostrar"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "Aceptar invitación de {{name}}",
@@ -187,6 +190,9 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}} te invitó para unirte a un grupo"
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "¿Quieres hacer misiones en grupo? ¡Crea un grupo y manteneos cerca para compartir el progreso de las misiones! Consulta nuestra guía de juego para saber más."
     }
   }
 }

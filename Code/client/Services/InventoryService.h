@@ -6,6 +6,7 @@ struct TransportService;
 struct UpdateEvent;
 struct NotifyObjectInventoryChanges;
 struct NotifyInventoryChanges;
+struct NotifyDrawWeapon;
 struct InventoryChangeEvent;
 struct EquipmentChangeEvent;
 struct NotifyEquipmentChanges;
@@ -49,6 +50,13 @@ struct InventoryService
      * @brief Applies equipment changes sent by the server.
      */
     void OnNotifyEquipmentChanges(const NotifyEquipmentChanges& acMessage) noexcept;
+    /**
+     * @brief Applies a remote actor's weapon drawn state sent by the server.
+     *
+     * The state arrives with the spawn message, so this only carries changes made
+     * after the actor was already loaded.
+     */
+    void OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noexcept;
 
 private:
     /**
@@ -73,4 +81,5 @@ private:
     entt::scoped_connection m_equipmentConnection;
     entt::scoped_connection m_inventoryChangeConnection;
     entt::scoped_connection m_equipmentChangeConnection;
+    entt::scoped_connection m_drawWeaponConnection;
 };

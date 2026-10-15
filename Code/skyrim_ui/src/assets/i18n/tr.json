@@ -40,7 +40,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "Gelen mesaj",
       "ACCEPT": "Kabul Et",
-      "DECLINE": "Reddet"
+      "DECLINE": "Reddet",
+      "OPEN_GUIDE": "Rehberi aç",
+      "DISMISS": "Kapat",
+      "DONT_SHOW": "Bir daha gösterme"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "{{name}} oyuncusundan parti daveti",
@@ -185,6 +188,9 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}} parti daveti attı!"
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "Birlikte görev yapmak ister misiniz? Bir grup kurun ve görev ilerlemesini paylaşmak için yakın durun! Daha fazlası için oyun rehberimize göz atın."
     }
   }
 }

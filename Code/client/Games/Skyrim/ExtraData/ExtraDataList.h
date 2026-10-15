@@ -49,3 +49,21 @@ struct ExtraDataList
     Bitfield* bitfield{};
     mutable BSRecursiveLock lock{};
 };
+
+// The vtable above is the entire reason this file branches, and it is also why
+// every struct that embeds an ExtraDataList (Actor, TESObjectREFR,
+// TESObjectCELL, ...) sits 8 bytes later on 1.6.x/1.7.x. Until this was written
+// nothing named this type in an assertion at all - its size was only implied by
+// TESObjectREFR's sizeof, so an edit here would have been caught one structure
+// late, in whichever assert happened to consume the change. These values are the
+// declaration's own arithmetic: BSExtraData* + Bitfield* + BSRecursiveLock
+// (DWORD m_tid + LONG m_counter = 8), plus the vptr on the AE side.
+#ifdef SKYRIM_TARGET_LEGACY
+static_assert(offsetof(ExtraDataList, data) == 0x0);
+static_assert(offsetof(ExtraDataList, bitfield) == 0x8);
+static_assert(sizeof(ExtraDataList) == 0x18);
+#else
+static_assert(offsetof(ExtraDataList, data) == 0x8);
+static_assert(offsetof(ExtraDataList, bitfield) == 0x10);
+static_assert(sizeof(ExtraDataList) == 0x20);
+#endif

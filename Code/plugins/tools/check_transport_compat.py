@@ -74,10 +74,20 @@ if broadcast_index >= 0 and broadcast_index != CHAT_BROADCAST_INDEX:
 if request_index >= 0 and 'kSetTimeCommandRequest' in client:
     if request_index <= client.index('kSetTimeCommandRequest'):
         failures.append('kPluginMessagingRequest was inserted before existing client opcodes')
+elif request_index >= 0:
+    failures.append(
+        f'kSetTimeCommandRequest is not declared in {OPCODES_REL}, so "kPluginMessagingRequest '
+        f'was appended" cannot be evaluated at all; renaming the anchor must not read as the '
+        f'rule holding')
 
 if notify_index >= 0 and 'kNotifySetTimeResult' in server:
     if notify_index <= server.index('kNotifySetTimeResult'):
         failures.append('kNotifyPluginMessaging was inserted before existing server opcodes')
+elif notify_index >= 0:
+    failures.append(
+        f'kNotifySetTimeResult is not declared in {OPCODES_REL}, so "kNotifyPluginMessaging was '
+        f'appended" cannot be evaluated at all; renaming the anchor must not read as the rule '
+        f'holding')
 
 # The packaged ini decides which transport a companion plugin actually lands
 # on, and this document states which one that is. They drifted apart once

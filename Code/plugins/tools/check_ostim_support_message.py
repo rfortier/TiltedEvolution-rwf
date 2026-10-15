@@ -88,6 +88,19 @@ def main() -> int:
         else:
             claimed_exact.add(triple)
 
+    # The corpus floor: both sides of every comparison below are extracted from
+    # the source above. If either extraction comes back empty - the version
+    # checks rewritten in another spelling, the message reworded - the four
+    # loops below iterate over nothing and the run passes on nothing.
+    if not accepted_exact and not accepted_prefix:
+        failures.append(
+            f'{SOURCE_REL}: SelectGraphLayout no longer states any accepted version, so the '
+            f'comparisons below would run against an empty selector side and pass on nothing')
+    if not claimed_exact and not claimed_prefix:
+        failures.append(
+            f'{SOURCE_REL}: the refusal message no longer names any version, so the comparisons '
+            f'below would run against an empty message side and pass on nothing')
+
     # Every version the message names must actually be accepted, or the refusal
     # sends the player to a runtime that is refused too.
     for version in sorted(claimed_exact):

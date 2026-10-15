@@ -39,6 +39,12 @@ void CommandService::OnSetTimeCommand(const SetTimeCommandEvent& acEvent) const 
 // The server always answers /settime, including when it refuses. Without this
 // the refusal was indistinguishable from the command not existing at all: the
 // server logged it, the player saw nothing, and the clock did not move.
+//
+// Both messages are translation KEYS, not prose. The chat renders a system
+// message with `content | transloco`, so a sentence here is looked up as a key,
+// found nowhere, and shown in English to every language - which is why these two
+// now use the keys the catalogs already carry, translated into all fourteen.
+// Tools/Scripts/check_ui_contract.py fails when a literal is sent instead.
 void CommandService::OnSetTimeResult(const NotifySetTimeResult& acMessage) noexcept
 {
     using RT = NotifySetTimeResult::SetTimeResult;
@@ -47,9 +53,9 @@ void CommandService::OnSetTimeResult(const NotifySetTimeResult& acMessage) noexc
         return; // the calendar update that follows is the visible result
 
     if (acMessage.Result == RT::kNoPermission)
-        m_world.GetOverlayService().SendSystemMessage("Only an admin, or the party leader on a private server, can change the time.");
+        m_world.GetOverlayService().SendSystemMessage("SERVICE.COMMANDS.NOT_ADMIN");
     else
-        m_world.GetOverlayService().SendSystemMessage("That is not a time. Use /settime HH MM, with hours 0-23 and minutes 0-59.");
+        m_world.GetOverlayService().SendSystemMessage("COMPONENT.CHAT.SET_TIME_INVALID_ARGUMENTS");
 }
 
 void CommandService::OnTeleportCommandResponse(const TeleportCommandResponse& acMessage) noexcept
@@ -76,7 +82,7 @@ void CommandService::OnTeleportCommandResponse(const TeleportCommandResponse& ac
             if (!pCell)
             {
                 spdlog::error("Failed to fetch cell to teleport to.");
-                m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
+                m_world.GetOverlayService().SendSystemMessage("SERVICE.COMMANDS.TELEPORT_FAILED");
                 return;
             }
         }

@@ -10,12 +10,19 @@ void DebugService::DrawWeatherView()
 {
     ImGui::Begin("Weather");
 
+    // Sky::Get() is null outside an exterior cell and this window can be drawn from
+    // the main menu, so the weather section is skipped without it. The window still
+    // opens and closes, because an ImGui::Begin() with no matching End() is a stack
+    // mismatch.
     Sky* pSky = Sky::Get();
 
-    TESWeather* pCurrentWeather = pSky->GetWeather();
-    if (pCurrentWeather)
+    if (pSky != nullptr)
     {
-        ImGui::InputScalar("Current weather ID", ImGuiDataType_U32, &pCurrentWeather->formID, 0, 0, "%" PRIx32, ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_ReadOnly);
+        TESWeather* pCurrentWeather = pSky->GetWeather();
+        if (pCurrentWeather)
+        {
+            ImGui::InputScalar("Current weather ID", ImGuiDataType_U32, &pCurrentWeather->formID, 0, 0, "%" PRIx32, ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_ReadOnly);
+        }
     }
 
     ImGui::Separator();
@@ -30,25 +37,28 @@ void DebugService::DrawWeatherView()
     static uint32_t s_weatherId = 0;
     ImGui::InputScalar("New weather ID", ImGuiDataType_U32, &s_weatherId, 0, 0, "%" PRIx32, ImGuiInputTextFlags_CharsHexadecimal);
 
-    if (ImGui::Button("Set weather"))
+    if (pSky != nullptr)
     {
-        TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(s_weatherId));
-        if (pWeather)
-            pSky->SetWeather(pWeather);
-    }
+        if (ImGui::Button("Set weather"))
+        {
+            TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(s_weatherId));
+            if (pWeather)
+                pSky->SetWeather(pWeather);
+        }
 
-    if (ImGui::Button("Force weather"))
-    {
-        TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(s_weatherId));
-        if (pWeather)
-            pSky->ForceWeather(pWeather);
-    }
+        if (ImGui::Button("Force weather"))
+        {
+            TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(s_weatherId));
+            if (pWeather)
+                pSky->ForceWeather(pWeather);
+        }
 
-    ImGui::Separator();
+        ImGui::Separator();
 
-    if (ImGui::Button("Reset weather"))
-    {
-        pSky->ResetWeather();
+        if (ImGui::Button("Reset weather"))
+        {
+            pSky->ResetWeather();
+        }
     }
 
     ImGui::End();

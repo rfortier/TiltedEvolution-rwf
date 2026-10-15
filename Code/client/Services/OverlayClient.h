@@ -30,6 +30,8 @@ private:
     void ProcessSetTimeCommand(CefRefPtr<CefListValue> aEventArgs);
     void ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs);
     void ProcessToggleDebugUI();
+    void ProcessOpenPlayGuide();
+    void ProcessDeactivateMessage();
     void SetUIVisible(bool aVisible) noexcept;
 
     TransportService& m_transport;

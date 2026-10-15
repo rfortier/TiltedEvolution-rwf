@@ -23,9 +23,6 @@ export class ClientService implements OnDestroy {
   /** InGame state change. */
   public inGameStateChange = new BehaviorSubject(!environment.game);
 
-  /** Opening/close menu change. */
-  public openingMenuChange = new BehaviorSubject(false);
-
   /** Connection state change. */
   public connectionStateChange = new BehaviorSubject(false);
 
@@ -54,6 +51,9 @@ export class ClientService implements OnDestroy {
 
   /** Connect party invite received. */
   public partyInviteReceivedChange = new Subject<number>();
+
+  /** Local quest started or updated while not in a party. */
+  public questUpdatedChange = new Subject<void>();
 
   /** Disconnect player to server change. */
   public playerDisconnectedChange = new Subject<Player>();
@@ -127,7 +127,6 @@ export class ClientService implements OnDestroy {
     skyrimtogether.on('deactivate', this.onDeactivate.bind(this));
     skyrimtogether.on('enterGame', this.onEnterGame.bind(this));
     skyrimtogether.on('exitGame', this.onExitGame.bind(this));
-    skyrimtogether.on('openingMenu', this.onOpeningMenu.bind(this));
     skyrimtogether.on('connect', this.onConnect.bind(this));
     skyrimtogether.on('disconnect', this.onDisconnect.bind(this));
     skyrimtogether.on('setName', this.onSetName.bind(this)); //not wanted, we dont sync name changes
@@ -158,6 +157,7 @@ export class ClientService implements OnDestroy {
       'partyInviteReceived',
       this.onPartyInviteReceived.bind(this),
     );
+    skyrimtogether.on('questUpdated', this.onQuestUpdated.bind(this));
   }
 
   /**
@@ -169,7 +169,6 @@ export class ClientService implements OnDestroy {
     skyrimtogether.off('deactivate');
     skyrimtogether.off('enterGame');
     skyrimtogether.off('exitGame');
-    skyrimtogether.off('openingMenu');
     skyrimtogether.off('connect');
     skyrimtogether.off('disconnect');
     skyrimtogether.off('setName');
@@ -191,6 +190,7 @@ export class ClientService implements OnDestroy {
     skyrimtogether.off('partyCreated');
     skyrimtogether.off('partyLeft');
     skyrimtogether.off('partyInviteReceived');
+    skyrimtogether.off('questUpdated');
   }
 
   /**
@@ -267,6 +267,13 @@ export class ClientService implements OnDestroy {
   }
 
   /**
+   * Open the play guide on the wiki in the default browser.
+   */
+  public openPlayGuide(): void {
+    skyrimtogether.openPlayGuide();
+  }
+
+  /**
    * Deactivate UI and release control.
    */
   public deactivate(): void {
@@ -274,10 +281,25 @@ export class ClientService implements OnDestroy {
   }
 
   /**
-   * Reconnect
+   * Reconnect to the server this client last tried.
+   *
+   * There is no "reconnect" method on the overlay object, and there never was one:
+   * the browser side registers the calls it forwards (ProcessHandler), and the
+   * game side dispatches them by name (OverlayClient) - that list has connect,
+   * disconnect and abandonAttempt, and no reconnect. Calling one that is not
+   * registered throws inside the overlay and does nothing else, which is what this
+   * method used to do while also clearing the retry budget below.
+   *
+   * It now does what the automatic path already does, with the two calls that are
+   * registered: drop the transport of the attempt that ended, then connect again
+   * to the address, port and password we last used.
    */
   public reconnect(): void {
-    skyrimtogether.reconnect();
+    skyrimtogether.abandonAttempt();
+    this.connect(this._host, this._port, this._password);
+
+    // An explicit reconnect is the player taking over, so the automatic retries
+    // stop here: if this attempt fails they can press it again.
     this._remainingReconnectionAttempt = 0;
   }
 
@@ -333,16 +355,6 @@ export class ClientService implements OnDestroy {
   }
 
   /**
-   * Called when the player open/close a game menu
-   * @param openingMenu
-   */
-  private onOpeningMenu(openingMenu: boolean): void {
-    this.zone.run(() => {
-      this.openingMenuChange.next(openingMenu);
-    });
-  }
-
-  /**
    * Called when a connection is made.
    */
   private onConnect(): void {
@@ -371,7 +383,13 @@ export class ClientService implements OnDestroy {
         // drop the panel out of "connecting" while a retry is still running.
         skyrimtogether.abandonAttempt();
         this._remainingReconnectionAttempt--;
-        this.chatService.pushSystemMessage('SERVICE.CLIENT.CONNECTION_LOST');
+        // The text asks for the number of attempts left, in every language, and
+        // transloco prints a placeholder it was not handed as literal text - so
+        // without this argument the player reads "{{remainingReconnectionAttempt}}
+        // attempts left" on every reconnect. The counter was already here.
+        this.chatService.pushSystemMessage('SERVICE.CLIENT.CONNECTION_LOST', {
+          remainingReconnectionAttempt: this._remainingReconnectionAttempt,
+        });
         this.connect(this._host, this._port, this._password);
       } else {
         this.chatService.pushSystemMessage('SERVICE.CLIENT.DISCONNECTED');
@@ -660,6 +678,12 @@ export class ClientService implements OnDestroy {
     }
     this.zone.run(() => {
       this.partyInviteReceivedChange.next(inviterId);
+    });
+  }
+
+  private onQuestUpdated() {
+    this.zone.run(() => {
+      this.questUpdatedChange.next();
     });
   }
 }

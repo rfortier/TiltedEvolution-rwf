@@ -14,4 +14,4 @@
 69554	0x63	-	id not mapped on 1.5.97	tasklet thread names (call site)
 34452	0x374	0x397	HAND ALIGNED: same instruction run, slot 0x50->0x58, field 0x12c->0x124, frame 0x138->0x158	projectile null check (jump out)
 34452	0x379	0x39c	HAND ALIGNED: five bytes after the jump-out site	projectile null check (jump back)
-77246	0x9	0x9	aligned on call (+0 into it)	frame end (call site, 1.6 only)
+77246	0x9	-	no 1.5.x patch site: the pre-AE path hooks the anchor itself	frame end (call site, 1.6 only)

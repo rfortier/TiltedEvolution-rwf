@@ -38,12 +38,25 @@ POWERSHELL_SHELLS = {'pwsh', 'powershell'}
 
 def blocks() -> list[dict]:
     """Every run: block with its shell, via the YAML the runner reads."""
+    # pyyaml is required, not optional. This gate used to print
+    # 'POWERSHELL PARSE CHECK SKIPPED' and exit 0 when the import failed, with a
+    # comment saying CI installs it first - and the job that runs this gate,
+    # `contract`, installs nothing. A gate that cannot check must not report
+    # success: 'skipped' and 'everything is fine' are the same output to every
+    # caller, so the check would sit in CI looking like a guard while checking
+    # nothing. Failing loudly is the only honest outcome, and it is also what
+    # makes the missing dependency visible instead of mysterious.
     try:
         import yaml  # noqa: PLC0415
-    except ImportError:
-        print('POWERSHELL PARSE CHECK SKIPPED')
-        print('  pyyaml is not installed; CI installs it before this gate')
-        return []
+    except ImportError as exc:
+        raise SystemExit(
+            'WORKFLOW SHELL CHECK CANNOT RUN\n'
+            f'  {exc}\n'
+            '  This gate parses the workflows with the same YAML the runner reads, so\n'
+            '  pyyaml is a requirement and not an optimisation. Install it in the job\n'
+            '  that runs this gate (`python -m pip install pyyaml`); do not downgrade\n'
+            '  this to a skip, because a skip is indistinguishable from a pass.'
+        ) from exc
 
     found: list[dict] = []
     for path in sorted(WORKFLOWS.glob('*.yml')):
@@ -111,7 +124,11 @@ def parse_all(scripts: list[dict]) -> list[str]:
 def main() -> int:
     scripts = blocks()
     if not scripts:
-        return 0
+        print('WORKFLOW SHELL CHECK FAILED')
+        print('  no PowerShell block was found in any workflow')
+        print('  Either the workflows moved, or the shell keys stopped being read;')
+        print('  an empty result means this gate compared nothing.')
+        return 1
     failures = parse_all(scripts)
     print(f'  {len(scripts)} PowerShell block(s) across the workflows')
     if failures:

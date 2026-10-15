@@ -1,0 +1,66 @@
+# Which address-library ids each shipped pre-AE runtime cannot resolve.
+#
+# The client resolves every game address through an AE-era address library id.
+# On a 1.5.x runtime it instead loads a translation table,
+# GameFiles/Skyrim/SKSE/Plugins/versionlib-ae-to-se-<version>.map, because the
+# pre-AE libraries use a different id namespace (VersionDb::Load). An id that
+# table does not carry does not fail loudly: VersionDbPtr asks for the
+# zero-returning stub on legacy runtimes, so every call through it returns 0
+# instead of running, and the client warns once
+# ("address library id N is not mapped on game N.N.N.N").
+#
+# Ten of those maps ship, one per pre-AE build, and until now only the 1.5.97
+# one was accounted for: Tools/missing_1_5_97_ids.txt declares its gap and
+# Tools/Scripts/check_docs.py compares the declaration against the map. Nothing
+# looked at the other nine, which is how id 16113 came to be missing from
+# three of them while the other seven carry it. This file is that record, and
+# Tools/Scripts/check_map_coverage.py is what holds it to the maps.
+#
+# Columns: runtime <TAB> ae_id <TAB> why. '* <TAB> ae_id' means every shipped
+# pre-AE runtime. Every shipped map's gap must be exactly the set declared for
+# it, and every id declared here must really be absent from it - so this file
+# cannot rot into claiming an id is missing after it has been recovered.
+#
+# The cost of the '*' rows, one by one, is in Tools/missing_1_5_97_ids.txt; that
+# file stays the 1.5.97 declaration and the two are cross-checked rather than
+# trusted to follow each other.
+*	14774	BSRandom::GetGenerator. Not folded into the map on purpose - see Tools/ida/README.md; nothing calls it.
+*	36460	GarbageCollector::Add(TESBoundObject*)
+*	400329	GarbageCollector singleton
+*	389089	physics timestep global
+*	39856	AIProcess::GetCharController
+*	21600	isFirstPerson
+*	32883	InternalRevertAnimationGraphManager - the only one here with gameplay effect
+*	20231	TESObjectREFR::SetLeveledCreature
+*	36548	patch anchor (skip startup movie)
+*	68276	BSRandom::unsignedInt
+*	69554	patch anchor (tasklet thread names)
+*	82088	s_CloseAll
+*	400180	BSWin32GameDataSystemUtility RTTI
+#
+# The three rows below are the 1.5.3/1.5.16/1.5.23-only gap, and it is not an
+# oversight - it is not closable from anything in this repository. A map is a
+# translation through the pre-AE namespace: an AE id names a pre-AE id, and each
+# library spells that id as its own RVA. The other seven maps prove the rule -
+# they all carry 16113, and every one of those values is exactly
+# version-<build>.bin[15873] (0x1e7750 on 1.5.39, 0x1e7760 on 1.5.50-1.5.62,
+# 0x1e7570 from 1.5.73 on). Those three libraries have no id 15873 at all: the
+# pre-AE id space evolved rather than grew, so 1.5.3 names 791088 ids - 15376 of
+# them unknown to 1.5.97 - while not naming 2962 that 1.5.97 does, 15873 among
+# them. There is therefore no value to translate to and no override that could
+# supply one: a value must be measured per build, and 0x1e7570 is not even an
+# offset the 1.5.3 library lists. Regenerating cannot help either; VersionDb
+# falls through to the zero-returning stub instead.
+#
+# It is live: ExtraContainerChanges::Data::GetArmor resolves it, and
+# Actor::IsWearingBodyPiece() reads it. Unmapped, GetArmor can only answer
+# "nullptr", which that predicate reads as "not wearing a body piece", and
+# InventoryService::RunNakedNPCBugChecks re-dresses the actor on that answer.
+# The call site was changed to require a definite answer instead, so those three
+# runtimes degrade to "no repair" rather than "repairs the wrong way"; restoring
+# the repair needs the three RVAs measured off the executables, which nothing
+# here can do - see docs/FOLLOW-UP.md section 5. check_map_coverage.py's
+# agreement rule is what keeps the other seven honest in the meantime.
+1-5-3-0	16113	TGetArmor (ExtraContainerChanges::Data::GetArmor) - pre-AE id 15873 is absent from this library
+1-5-16-0	16113	TGetArmor (ExtraContainerChanges::Data::GetArmor) - pre-AE id 15873 is absent from this library
+1-5-23-0	16113	TGetArmor (ExtraContainerChanges::Data::GetArmor) - pre-AE id 15873 is absent from this library

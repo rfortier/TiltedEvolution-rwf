@@ -53,7 +53,12 @@ DiscoveryService::DiscoveryService(World& aWorld, entt::dispatcher& aDispatcher)
     m_preUpdateConnection = m_dispatcher.sink<PreUpdateEvent>().connect<&DiscoveryService::OnUpdate>(this);
     m_connectedConnection = m_dispatcher.sink<ConnectedEvent>().connect<&DiscoveryService::OnConnected>(this);
 
-    EventDispatcherManager::Get()->loadGameEvent.RegisterSink(this);
+    // The event dispatcher is built by the engine during startup, and this
+    // service is constructed from World's own initialisation, so the order is
+    // not guaranteed. Registering no sink means the cell visit simply never
+    // fires; dereferencing a null dispatcher takes the process down instead.
+    if (auto* pEventList = EventDispatcherManager::Get())
+        pEventList->loadGameEvent.RegisterSink(this);
 }
 
 void DiscoveryService::VisitCell(bool aForceTrigger) noexcept
@@ -90,11 +95,16 @@ void DiscoveryService::VisitExteriorCell(bool aForceTrigger) noexcept
     try
     {
         const PlayerCharacter* pPlayer = PlayerCharacter::Get();
-        const auto pWorldSpace = pPlayer->GetWorldSpace();
+        const auto pWorldSpace = pPlayer ? pPlayer->GetWorldSpace() : nullptr;
 
         m_interiorCellId = 0;
 
         const TES* pTES = TES::Get();
+        // Both singletons are null until the engine builds them, and the reply cannot be
+        // built without them; the next broadcast goes out a second later.
+        if (!pWorldSpace || !pTES)
+            return;
+
         const uint32_t worldSpaceId = pWorldSpace->formID;
         const GridCellCoords gameCurrentGrid(pTES->currentGridX, pTES->currentGridY);
         const GridCellCoords gameCenterGrid(pTES->centerGridX, pTES->centerGridY);
@@ -122,7 +132,14 @@ void DiscoveryService::VisitExteriorCell(bool aForceTrigger) noexcept
 
             TESObjectCELL* pCell = pPlayer->GetParentCellEx();
             if (!pCell)
-                pCell = ModManager::Get()->GetCellFromCoordinates(gameCurrentGrid.X, gameCurrentGrid.Y, pWorldSpace, false);
+            {
+                // The mod manager owns the cell lookup and is null before the
+                // engine builds it, so fall through to the same "no cell" path
+                // the code already handles below.
+                auto* pModManager = ModManager::Get();
+                if (pModManager)
+                    pCell = pModManager->GetCellFromCoordinates(gameCurrentGrid.X, gameCurrentGrid.Y, pWorldSpace, false);
+            }
 
             // The fallback walk can come back empty for a cell that is not attached
             // yet, which is exactly the state a load leaves behind.
@@ -197,6 +214,16 @@ void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNe
         changeEvent.WorldSpaceId = worldSpaceId;
 
         const TES* pTES = TES::Get();
+
+        // The game data is not up yet on the main menu and while a save loads, where
+        // there are no centre coordinates to walk. This degrades the same way the
+        // missing player cell below does: the change is warned about and dropped.
+        if (pTES == nullptr)
+        {
+            spdlog::warn("Grid cell change for worldspace {:X} has no player cell to report", aWorldSpace->formID);
+            return;
+        }
+
         const int32_t startGridX = pTES->centerGridX - GridCellCoords::m_gridsToLoad / 2;
         const int32_t startGridY = pTES->centerGridY - GridCellCoords::m_gridsToLoad / 2;
 
@@ -211,7 +238,8 @@ void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNe
                         continue;
                 }
 
-                const TESObjectCELL* pCell = ModManager::Get()->GetCellFromCoordinates(startGridX + i, startGridY + j, aWorldSpace, 0);
+                auto* pModManager = ModManager::Get();
+                const TESObjectCELL* pCell = pModManager ? pModManager->GetCellFromCoordinates(startGridX + i, startGridY + j, aWorldSpace, 0) : nullptr;
 
                 if (!pCell)
                 {
@@ -237,7 +265,11 @@ void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNe
         auto* pPlayer = PlayerCharacter::Get();
         TESObjectCELL* pCell = pPlayer ? pPlayer->GetParentCellEx() : nullptr;
         if (!pCell)
-            pCell = ModManager::Get()->GetCellFromCoordinates(pTES->currentGridX, pTES->currentGridY, aWorldSpace, false);
+        {
+            auto* pModManager = ModManager::Get();
+            if (pModManager)
+                pCell = pModManager->GetCellFromCoordinates(pTES->currentGridX, pTES->currentGridY, aWorldSpace, false);
+        }
 
         if (!pCell)
         {
@@ -360,7 +392,8 @@ void DiscoveryService::OnUpdate(const PreUpdateEvent& acUpdateEvent) noexcept
 void DiscoveryService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
     // uGridsToLoad should always be 5, as this is what the server enforces
-    auto* pSetting = INISettingCollection::Get()->GetSetting("uGridsToLoad:General");
+    auto* pCollection = INISettingCollection::Get();
+    auto* pSetting = pCollection ? pCollection->GetSetting("uGridsToLoad:General") : nullptr;
     if (pSetting && pSetting->data != 5)
     {
         ConnectionErrorEvent errorEvent{};
@@ -376,13 +409,17 @@ BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDis
 {
     spdlog::info("Finished loading, triggering visit cell");
 
-    if (!IsDefaultModlist(ModManager::Get()->mods))
-    {
-        ConnectionErrorEvent errorEvent{};
-        errorEvent.ErrorDetail = "{\"error\": \"non_default_install\"}";
-
-        m_world.GetRunner().Trigger(errorEvent);
-    }
+    // Upstream raises a "your installation is not purely vanilla" error here and
+    // shows it to the player. That check demands exactly the eight vanilla/AE
+    // plugins, so on this fork it would fire for every player running a modpack -
+    // which is the audience this repository exists for. The information is still
+    // worth having when someone reports instability, so it is logged instead of
+    // popped up.
+    // Without a manager there is no list to compare against, so the vanilla check has
+    // nothing to say; staying quiet is what the cell lookup above does too.
+    const auto* pModManager = ModManager::Get();
+    if (pModManager && !IsDefaultModlist(pModManager->mods))
+        spdlog::info("Mod list is not the default one; this is expected when playing with a modpack");
 
     VisitCell(true);
 

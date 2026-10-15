@@ -84,6 +84,21 @@ std::string QueryGameVersion()
 // overwrite the exe and can strip its version resource, so this is the most
 // reliable signal; the exe strings and the address library scan are
 // fallbacks.
+//
+// The prefix alone does not identify the runtime. skse64_steam_loader.dll is
+// mapped into the game process as well - it is what patches the game's IAT and
+// hooks its WinMain before the runtime is loaded - and it carries the same
+// skse64_ prefix while naming no version. So the scan has to keep looking when a
+// candidate does not parse instead of stopping at the first name it recognises:
+// a scan that broke there returned no version at all whenever the loader came
+// first, and the enumeration order of the module list is not ours to choose.
+// That silently demoted the authoritative signal to the two fallbacks this
+// function exists to replace, on exactly the repacks and downgrades whose exe
+// version resource is missing or false.
+//
+// Code/skse_bootstrap/main.cpp asks the same question of the same list for the
+// same reason - it picks which per-version runtime DLL to load - and it already
+// continues past a name it cannot parse. The two must not disagree.
 std::string GetSKSEModuleVersion()
 {
     std::string result;
@@ -102,8 +117,8 @@ std::string GetSKSEModuleVersion()
             char buf[64];
             sprintf_s(buf, "%d.%d.%d.0", a, b, c);
             result = buf;
+            break;
         }
-        break;
     }
     CloseHandle(snap);
     return result;
@@ -124,14 +139,41 @@ void AppendBootLog(const std::filesystem::path& acGameRoot, const std::string& a
 }
 
 // Fall back to the address library file names when the exe version resource
-// is missing or tampered with (common on repacks): Data/SKSE/Plugins ships
-// exactly one set of bins for the installed game version.
+// is missing or tampered with (common on repacks). The address library a modlist
+// carries is the one for the game version it was built against, and this
+// repository ships 24 of them, so "the first one found" is not an answer: the
+// enumeration order of a directory is not defined, and on the installed game the
+// ten pre-AE libraries alone range from 1.5.3 to 1.5.97.
+//
+// Picking the wrong one is not a near miss. The 1.5.x libraries are not
+// interchangeable - comparing 1.5.16 against 1.5.97 over the 777,719 ids they
+// share, 767,644 of them (98.7%) resolve to a *different* RVA. That is the same
+// fact GamePatch.h records when it refuses to apply a 1.5.97 offset to 1.5.3.
+//
+// The family is not a guess: this translation unit is compiled twice, once per
+// runtime DLL, and the legacy build carries SKYRIM_TARGET_LEGACY. So the file
+// this looks at is the one whose name matches the build it is in - every
+// `version-*.bin` in the tree is 1.5.x and every `versionlib-*.bin` is
+// 1.6.x/1.7.x, and neither build may read the other's.
+//
+// Within the family, take the highest version present. An address library newer
+// than the running game is inert, because the client only resolves the ids it
+// knows; an older one resolves them to the wrong addresses. It is still a guess,
+// which is why it stays last in the chain and the caller logs what it resolved.
 std::string ScanLibraryVersion(const std::filesystem::path& acGameRoot)
 {
     const auto plugins = acGameRoot / "Data" / "SKSE" / "Plugins";
     std::error_code ec;
     if (!std::filesystem::exists(plugins, ec))
         return {};
+
+#ifdef SKYRIM_TARGET_LEGACY
+    constexpr bool kLegacy = true;
+#else
+    constexpr bool kLegacy = false;
+#endif
+
+    int best[4] = {-1, -1, -1, -1};
     for (auto it = std::filesystem::directory_iterator(plugins, ec);
          it != std::filesystem::directory_iterator(); it.increment(ec))
     {
@@ -139,16 +181,36 @@ std::string ScanLibraryVersion(const std::filesystem::path& acGameRoot)
             break;
         const std::string name = it->path().filename().string();
         int a = 0, b = 0, c = 0, d = 0;
-        // versionlib-1-6-1170-0.bin  or  version-1-5-97-0.bin
-        if (sscanf_s(name.c_str(), "versionlib-%d-%d-%d-%d.bin", &a, &b, &c, &d) == 4 ||
-            sscanf_s(name.c_str(), "version-%d-%d-%d-%d.bin", &a, &b, &c, &d) == 4)
+        const bool legacyName = sscanf_s(name.c_str(), "version-%d-%d-%d-%d.bin", &a, &b, &c, &d) == 4;
+        const bool modernName = sscanf_s(name.c_str(), "versionlib-%d-%d-%d-%d.bin", &a, &b, &c, &d) == 4;
+        if (!legacyName && !modernName)
+            continue;
+        if (legacyName != kLegacy)
+            continue;
+
+        const int candidate[4] = {a, b, c, d};
+        for (int i = 0; i < 4; i++)
         {
-            char buf[64];
-            sprintf_s(buf, "%d.%d.%d.%d", a, b, c, d);
-            return buf;
+            if (candidate[i] != best[i])
+            {
+                if (candidate[i] > best[i])
+                {
+                    best[0] = a;
+                    best[1] = b;
+                    best[2] = c;
+                    best[3] = d;
+                }
+                break;
+            }
         }
     }
-    return {};
+
+    if (best[0] < 0)
+        return {};
+
+    char buf[64];
+    sprintf_s(buf, "%d.%d.%d.%d", best[0], best[1], best[2], best[3]);
+    return buf;
 }
 } // namespace
 

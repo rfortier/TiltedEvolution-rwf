@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <ExtraData/ExtraContainerChanges.h>
+#include <VersionDb.h>
 
 void ExtraContainerChanges::Data::Save(BGSSaveFormBuffer* apBuffer)
 {
@@ -36,4 +37,13 @@ TESObjectARMO* ExtraContainerChanges::Data::GetArmor(uint32_t aSlotId) noexcept
     POINTER_SKYRIMSE(TGetArmor, s_getArmor, 16113);
 
     return TiltedPhoques::ThisCall(s_getArmor, this, aSlotId);
+}
+
+bool ExtraContainerChanges::Data::CanQueryArmor() noexcept
+{
+    // FindAddressById rather than the VersionDbPtr above: the pointer asks for
+    // the stub on legacy runtimes, and telling "not mapped" from "mapped and
+    // empty" is the entire question. The id is written out here and in
+    // GetArmor; Tools/Scripts/check_map_coverage.py fails if the two disagree.
+    return VersionDb::Get().FindAddressById(16113) != nullptr;
 }

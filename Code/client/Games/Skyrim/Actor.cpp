@@ -210,16 +210,26 @@ void Actor::ForcePosition(const NiPoint3& acPosition) noexcept
 
 void Actor::QueueUpdate() noexcept
 {
-    auto* pSetting = INISettingCollection::Get()->GetSetting("bUseFaceGenPreprocessedHeads:General");
-    const auto originalValue = pSetting->data;
-    pSetting->data = 0;
+    auto* pCollection = INISettingCollection::Get();
+    auto* pSetting = pCollection ? pCollection->GetSetting("bUseFaceGenPreprocessedHeads:General") : nullptr;
+
+    // The setting is the engine's, and this call now sits on a live path: a game
+    // that does not define it must not fault here. Without it the pass still runs,
+    // on whatever value the player's own ini holds.
+    uint64_t originalValue = 0;
+    if (pSetting)
+    {
+        originalValue = pSetting->data;
+        pSetting->data = 0;
+    }
 
     TP_THIS_FUNCTION(TQueueUpdate, void, Actor, bool);
     POINTER_SKYRIMSE(TQueueUpdate, QueueUpdate, 40255);
 
     TiltedPhoques::ThisCall(QueueUpdate, this, true);
 
-    pSetting->data = originalValue;
+    if (pSetting)
+        pSetting->data = originalValue;
 }
 
 GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
@@ -231,6 +241,18 @@ GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
     const auto pPlayer = static_cast<Actor*>(GetById(0x14));
     if (!pPlayer)
         return nullptr;
+
+    // The mod manager owns the cell lookup the spawn needs, and it is built by
+    // the engine during startup. Spawning without it would place the actor with
+    // no parent cell, so fail closed instead of dereferencing a null. Tested up
+    // here for the same reason as the player above: past New() an early return
+    // leaks the actor the engine has already constructed.
+    auto* pModManager = ModManager::Get();
+    if (!pModManager)
+    {
+        spdlog::error(__FUNCTION__ ": mod manager unavailable, cannot spawn actor for form {:X}", apBaseForm ? apBaseForm->formID : 0);
+        return nullptr;
+    }
 
     auto pActor = New();
     // Prevent saving
@@ -251,7 +273,7 @@ GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
     if (pCell && !(pCell->cellFlags & 1))
         pCell = nullptr;
 
-    ModManager::Get()->Spawn(position, rotation, pCell, pWorldSpace, pActor);
+    pModManager->Spawn(position, rotation, pCell, pWorldSpace, pActor);
 
     pActor->ForcePosition(position);
 
@@ -626,6 +648,13 @@ void Actor::EquipOutfit(bool aIsSleepOutfit) noexcept
             return;
 
         auto* pEquipManager = EquipManager::Get();
+
+        // The equip manager is built by the engine during startup and this runs from
+        // World's own initialisation, so it can still be missing here. The whole
+        // default outfit is skipped without it: there is nothing to equip into.
+        if (!pEquipManager)
+            return;
+
         for (auto* pItem : pDefaultOutfit->outfitItems)
         {
             TESObjectARMO* pArmor = nullptr;
@@ -880,25 +909,37 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
         auto* pEquipManager = EquipManager::Get();
         auto& modSystem = World::Get().GetModSystem();
 
+        // The equip manager is built by the engine during startup and this path runs
+        // from World's own initialisation, so it can still be missing here. The spell
+        // ids below are still resolved and logged; only the engine calls need it, and
+        // the failure report at the end of the try block is unchanged.
+        const bool hasEquipManager = pEquipManager != nullptr;
+
         if (acEquipment.LeftHandSpell)
         {
             uint32_t mainHandWeaponId = modSystem.GetGameId(acEquipment.LeftHandSpell);
             spdlog::debug("Setting left hand spell: {:X}", mainHandWeaponId);
-            pEquipManager->EquipSpell(this, TESForm::GetById(mainHandWeaponId), 0);
+
+            if (hasEquipManager)
+                pEquipManager->EquipSpell(this, TESForm::GetById(mainHandWeaponId), 0);
         }
 
         if (acEquipment.RightHandSpell)
         {
             uint32_t secondaryHandWeaponId = modSystem.GetGameId(acEquipment.RightHandSpell);
             spdlog::debug("Setting right hand spell: {:X}", secondaryHandWeaponId);
-            pEquipManager->EquipSpell(this, TESForm::GetById(secondaryHandWeaponId), 1);
+
+            if (hasEquipManager)
+                pEquipManager->EquipSpell(this, TESForm::GetById(secondaryHandWeaponId), 1);
         }
 
         if (acEquipment.Shout)
         {
             uint32_t shoutId = modSystem.GetGameId(acEquipment.Shout);
             spdlog::debug("Setting shout: {:X}", shoutId);
-            pEquipManager->EquipShout(this, TESForm::GetById(shoutId));
+
+            if (hasEquipManager)
+                pEquipManager->EquipShout(this, TESForm::GetById(shoutId));
         }
     }
     catch (...)
@@ -961,12 +1002,20 @@ void Actor::SetPlayerTeammate(bool aSet) noexcept
 
 void Actor::UnEquipAll() noexcept
 {
-    EquipManager::Get()->UnequipAll(this);
+    // The equip manager is a singleton the engine builds during startup, so it
+    // can still be null while this runs - and this runs from the equipment sync
+    // path, which the server drives. Skipping the unequip leaves the actor as it
+    // was; dereferencing a null manager is a fault.
+    auto* pEquipManager = EquipManager::Get();
+    if (!pEquipManager)
+        return;
+
+    pEquipManager->UnequipAll(this);
 
     // Taken from skyrim's code shouts can be two form types apparently
     if (equippedShout && ((int)equippedShout->formType - 41) <= 1)
     {
-        EquipManager::Get()->UnEquipShout(this, equippedShout);
+        pEquipManager->UnEquipShout(this, equippedShout);
         equippedShout = nullptr;
     }
 }
@@ -1071,7 +1120,8 @@ void Actor::FixVampireLordModel() noexcept
             AddObjectToContainer(pLordArmor, nullptr, 1, nullptr);
         }
 
-        EquipManager::Get()->Equip(this, pLordArmor, nullptr, 1, nullptr, false, true, false, false);
+        if (auto* pEquipManager = EquipManager::Get())
+            pEquipManager->Equip(this, pLordArmor, nullptr, 1, nullptr, false, true, false, false);
 
         g_forceAnimation = true;
 

@@ -39,6 +39,7 @@ export class TranslocoHttpLoader implements TranslocoLoader {
           { id: 'tr', label: 'Türkçe' },
           { id: 'cs', label: 'Čeština' },
           { id: 'pl', label: 'Polski' },
+          { id: 'sv', label: 'Svenska' },
           { id: 'overwrite', label: 'Custom' },
         ],
         defaultLang: 'en',

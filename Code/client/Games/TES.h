@@ -95,6 +95,23 @@ struct Mod
 
     [[nodiscard]] uint16_t GetId() const noexcept { return IsLite() ? liteId : standardId; }
 
+    // NOTE for whoever reads IsLoaded() next: what the engine puts in standardId
+    // for a LITE file is not established anywhere in this repository, and the two
+    // candidates are opposites. 0xFF is its "not a standard file" value and a
+    // lite file is by definition not one, so IsLoaded() may be answering false
+    // for every ESL - which would matter, because TransportService uses it to
+    // decide what to report to the server: an ESL missing from that list is a mod
+    // the server never registers, so every form it adds loses its server id (and
+    // with the mod policy on, the server asks the player to install a mod they
+    // already have, which is a refusal they cannot resolve).
+    //
+    // The engine headers that would settle it are not in this tree, so the
+    // decision is not guessed at here: the reporting loop names every file it
+    // skips, with isLite/standardId/liteId, at the level the shipped build logs.
+    // One player log with an ESL installed answers it either way - see
+    // docs/FOLLOW-UP.md section 6 - and Tools/Scripts/check_lite_mod_path.py is
+    // what keeps that instrument, and the lite path below it, from disappearing.
+
     [[nodiscard]] uint32_t GetFormId(uint32_t aBaseId) const noexcept;
 };
 
@@ -147,3 +164,15 @@ struct INISettingCollection
     uint8_t unk0[0x118];
     Entry head;
 };
+
+// The three offsets the client walks by hand to reach bUseFaceGenPreprocessedHeads:
+// data is the value the engine reads to choose a baked head over a runtime one, and
+// head is the list GetSetting searches. They were measured on SkyrimSE.exe 1.5.97 and
+// never on the 1.6.x or 1.7.x runtimes, where a wrong one is silent rather than fatal -
+// the walk ends on nothing or on some other setting, the flag is never cleared, and the
+// invisible head this fix exists for comes back. The asserts below only pin this
+// repository's own layout; they cannot ask the engine, and the info line in
+// CharacterService::SetRemoteFaceGenForce is what answers it from a user log.
+static_assert(offsetof(Setting, data) == 0x8);
+static_assert(offsetof(Setting, name) == 0x10);
+static_assert(offsetof(INISettingCollection, head) == 0x118);

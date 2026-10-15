@@ -40,7 +40,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "Zpráva od",
       "ACCEPT": "Přijmout",
-      "DECLINE": "Odmítnout"
+      "DECLINE": "Odmítnout",
+      "OPEN_GUIDE": "Otevřít průvodce",
+      "DISMISS": "Zavřít",
+      "DONT_SHOW": "Nezobrazovat"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "Přijmout pozvánku od {{name}}",
@@ -185,6 +188,9 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}} vás pozval do skupiny."
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "Chcete plnit úkoly společně? Založte skupinu a zůstaňte poblíž, abyste sdíleli postup v úkolech! Více najdete v našem průvodci hrou."
     }
   }
 }

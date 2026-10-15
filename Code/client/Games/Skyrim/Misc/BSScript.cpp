@@ -285,7 +285,17 @@ bool BSScript::IsRemotePlayerFunc::MarshallAndDispatch(Variable* apBaseVar, IVir
     BSScript::Variable* pArg1 = apStackFrame->GetStackFrameVariable(0, page);
     Actor* pActor = pArg1->ExtractComplexType<Actor>();
     if (!pActor)
-        return false;
+    {
+        // A None argument is an answer, not a failure. The shipped callers cast
+        // an ObjectReference with `as Actor` and never check it
+        // (HallofStoriesDiskScript.psc, ResourceFurnitureScript.psc,
+        // TempleBlessingScript.psc), so None arrives on ordinary activations.
+        // Returning false here would report a marshalling failure for a question
+        // that has a perfectly good answer: something that is not an Actor is
+        // not a remote player.
+        apResult->Set<bool>(false);
+        return true;
+    }
 
     bool result = ((FunctionType*)pFunction)(pActor);
 
@@ -311,7 +321,12 @@ bool BSScript::IsPlayerFunc::MarshallAndDispatch(Variable* apBaseVar, IVirtualMa
     BSScript::Variable* pArg1 = apStackFrame->GetStackFrameVariable(0, page);
     Actor* pActor = pArg1->ExtractComplexType<Actor>();
     if (!pActor)
-        return false;
+    {
+        // See IsRemotePlayerFunc: the callers pass an unchecked `as Actor` cast,
+        // so None is a normal argument and "not an Actor" is not a player.
+        apResult->Set<bool>(false);
+        return true;
+    }
 
     bool result = ((FunctionType*)pFunction)(pActor);
 

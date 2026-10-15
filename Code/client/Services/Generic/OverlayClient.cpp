@@ -83,6 +83,10 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
             ProcessTeleportMessage(eventArgs);
         else if (eventName == "toggleDebugUI")
             ProcessToggleDebugUI();
+        else if (eventName == "openPlayGuide")
+            ProcessOpenPlayGuide();
+        else if (eventName == "deactivate")
+            ProcessDeactivateMessage();
 
         return true;
     }
@@ -175,6 +179,27 @@ void OverlayClient::ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs)
 void OverlayClient::ProcessToggleDebugUI()
 {
     World::Get().GetDebugService().m_showDebugStuff = !World::Get().GetDebugService().m_showDebugStuff;
+}
+
+void OverlayClient::ProcessOpenPlayGuide()
+{
+    ShellExecuteW(nullptr, L"open", LR"(https://wiki.tiltedphoques.com/tilted-online/general-information/playguide)", nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void OverlayClient::ProcessDeactivateMessage()
+{
+    // The overlay object documents this call as "deactivate UI and release
+    // control", and SetUIVisible is that pair: it releases the input capture, tells
+    // the page it is no longer active and hides the cursor. It has to be the same
+    // pair the game side performs when it hides the overlay itself, or the two ways
+    // of closing the overlay would disagree about the capture state. Called
+    // directly from this handler like ProcessRevealPlayersMessage above does.
+    //
+    // It used to be registered in ProcessHandler with no branch here, so the UI's
+    // request crossed the process boundary and the if-chain dropped it: no error,
+    // no effect. Tools/Scripts/check_overlay_bridge.py now requires every
+    // registered name the UI calls to have its branch.
+    SetUIVisible(false);
 }
 
 void OverlayClient::SetUIVisible(bool aVisible) noexcept

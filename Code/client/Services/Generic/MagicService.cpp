@@ -810,7 +810,13 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
 
     // When active
 
-    Mod* pSkyrimTogether = ModManager::Get()->GetByName("SkyrimTogether.esp");
+    // The mod manager is null before the engine builds it, and this runs on a
+    // timer, so it can fire during startup.
+    auto* pModManager = ModManager::Get();
+    if (!pModManager)
+        return;
+
+    Mod* pSkyrimTogether = pModManager->GetByName("SkyrimTogether.esp");
     if (!pSkyrimTogether)
         return;
 

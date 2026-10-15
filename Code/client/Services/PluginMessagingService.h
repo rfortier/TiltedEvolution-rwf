@@ -9,6 +9,7 @@
 
 #include <TiltedCore/Stl.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -133,4 +134,10 @@ private:
     World* m_pWorld{ nullptr };
     std::uint64_t m_nextHandle{ 1 };
     TiltedPhoques::String m_localDisplayName;
+
+    // Per-instance send counter handed to plugins as STRPM::Message::sequence.
+    // The standalone bridge stamps its own datagrams the same way; the value is
+    // opaque to the framework, which only has to keep it monotonic per sender.
+    // Atomic because a plugin may send from any thread it likes.
+    std::atomic<std::uint64_t> m_nextSequence{ 1 };
 };

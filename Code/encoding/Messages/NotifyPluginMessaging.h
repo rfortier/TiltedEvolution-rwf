@@ -38,4 +38,11 @@ struct NotifyPluginMessaging final : ServerMessage
     std::uint32_t SenderPlayerId{ 0 };
     bool SenderIsHost{ false };
     Vector<std::uint8_t> PluginData;
+
+    // Envelope metadata relayed verbatim from the request that carried the
+    // payload. The server does not interpret either field; it exists so the
+    // receiving plugin sees the same STRPM::Message the standalone bridge would
+    // have handed it.
+    std::uint32_t Flags{ 0 };
+    std::uint64_t Sequence{ 0 };
 };

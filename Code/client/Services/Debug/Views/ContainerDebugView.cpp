@@ -58,7 +58,10 @@ void DebugService::DrawContainerDebugView()
                         if (!pActor || !pItem)
                             return;
 
-                        EquipManager::Get()->Equip(pActor, pItem, nullptr, entry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false);
+                        // Debug view: the equip manager is null before the engine
+                        // builds it, so do nothing rather than fault.
+                        if (auto* pEquipManager = EquipManager::Get())
+                            pEquipManager->Equip(pActor, pItem, nullptr, entry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false);
                     });
             }
             if (ImGui::Button("Unequip"))
@@ -73,7 +76,8 @@ void DebugService::DrawContainerDebugView()
                         if (!pActor || !pItem)
                             return;
 
-                        EquipManager::Get()->UnEquip(pActor, pItem, nullptr, entry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false, nullptr);
+                        if (auto* pEquipManager = EquipManager::Get())
+                            pEquipManager->UnEquip(pActor, pItem, nullptr, entry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false, nullptr);
                     });
             }
 

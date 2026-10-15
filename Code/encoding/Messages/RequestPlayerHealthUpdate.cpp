@@ -11,5 +11,5 @@ void RequestPlayerHealthUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aR
 {
     ClientMessage::DeserializeRaw(aReader);
 
-    Percentage = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+    Percentage = WireLimits::ClampHealthPercentage(Serialization::ReadFloat(aReader));
 }

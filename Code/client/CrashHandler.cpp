@@ -433,11 +433,20 @@ LONG WINAPI VectoredExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo)
 
         WriteCrashReport(pExceptionInfo->ExceptionRecord, pExceptionInfo->ContextRecord);
 
-#if (IS_MASTER)
-        volatile static bool bMiniDump = false;
-#else
+        // A minidump is written on every build, including the one players run.
+        //
+        // This used to be `#if (IS_MASTER) false #else true #endif`, inherited
+        // from upstream where the flag tracks "is this the release branch". It
+        // does not mean that here: IS_MASTER comes from the git branch name and
+        // this repository's release branch IS `main` (xmake.lua), so the macro
+        // is 1 in every build this project ships - the branch is recorded in the
+        // binary as "Build: v1.1.8 main EVO". The dump was therefore dead code
+        // in exactly the builds whose crashes need reporting, while
+        // docs/PITFALLS.md told players to send in `crash_*.dmp`.
+        //
+        // The cost is one file in the game root per crash, and
+        // RemovePreviousDump below keeps only the newest.
         volatile static bool bMiniDump = true;
-#endif
         if (bMiniDump)
         {
             HANDLE hDumpFile = INVALID_HANDLE_VALUE;
@@ -559,11 +568,30 @@ CrashHandler::~CrashHandler()
 
 void CrashHandler::RemovePreviousDump(std::filesystem::path path)
 {
-    for (auto& entry : std::filesystem::directory_iterator(path))
+    // Only files this handler itself wrote: the dump name is
+    // "crash_<UTC stamp>.dmp", so match that shape rather than the substring
+    // "crash" anywhere in the full path.
+    //
+    // The old predicate was `entry.path().string().find("crash") != npos` over
+    // the WHOLE path, which is not specific to us at all: it also matched a mod
+    // named "CrashLogger.dll", a folder "Crash Fixes", or any path that merely
+    // contains the word - and then deleted it. Deleting a player's files on a
+    // crash is a far worse outcome than keeping one stale dump.
+    std::error_code ec;
+    for (auto it = std::filesystem::directory_iterator(path, ec);
+         !ec && it != std::filesystem::directory_iterator(); it.increment(ec))
     {
-        if (entry.path().string().find("crash") != std::string::npos)
-        {
-            DeleteFileA(entry.path().string().c_str());
-        }
+        if (!it->is_regular_file(ec))
+            continue;
+
+        const std::string name = it->path().filename().string();
+        const bool isOurDump = name.size() > 4 && name.rfind("crash_", 0) == 0 &&
+                               name.compare(name.size() - 4, 4, ".dmp") == 0;
+        if (!isOurDump)
+            continue;
+
+        // Best effort: a dump the game still has open simply stays.
+        std::error_code removeEc;
+        std::filesystem::remove(it->path(), removeEc);
     }
 }

@@ -10,5 +10,5 @@ void SyncExperienceRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
 {
     ClientMessage::DeserializeRaw(aReader);
 
-    Experience = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+    Experience = WireLimits::ClampExperienceDelta(Serialization::ReadFloat(aReader));
 }

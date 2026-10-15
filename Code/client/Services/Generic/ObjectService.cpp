@@ -40,7 +40,11 @@ ObjectService::ObjectService(World& aWorld, entt::dispatcher& aDispatcher, Trans
     m_scriptAnimationConnection = aDispatcher.sink<ScriptAnimationEvent>().connect<&ObjectService::OnScriptAnimationEvent>(this);
     m_scriptAnimationNotifyConnection = aDispatcher.sink<NotifyScriptAnimation>().connect<&ObjectService::OnNotifyScriptAnimation>(this);
 
-    EventDispatcherManager::Get()->activateEvent.RegisterSink(this);
+    // Same order dependency as DiscoveryService: the dispatcher may not exist
+    // yet when this service is constructed. No sink means object activation is
+    // not observed; a null dereference here is a startup crash.
+    if (auto* pEventList = EventDispatcherManager::Get())
+        pEventList->activateEvent.RegisterSink(this);
 }
 
 bool IsPlayerHome(const TESObjectCELL* pCell) noexcept

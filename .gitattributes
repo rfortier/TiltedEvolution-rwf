@@ -37,5 +37,17 @@ GameFiles/Skyrim/fomod/ModuleConfig.xml text eol=lf
 # reason as the two files above.
 Code/plugins/patches/**/*.patch text eol=lf
 
+# ...but a patch has to match the endings its own target is *stored* with, and
+# the pinned submodules disagree with each other: OstimNG-API-Thread.cpp is
+# stored CRLF while Main.cpp and PapyrusThread.h are stored LF. So the LF pin
+# above is right for every patch whose targets are LF and wrong for
+# OStimNG/0007, which edits the thread file - normalizing it to LF makes
+# 'plugin_patches.py verify' (a CI step) fail with "does not apply to the
+# pinned commit" on exactly the checkout CI makes. Measured, not assumed: the
+# CRLF copy exits 0, the same content with LF context exits 128. Kept
+# byte-exact instead, and this line must stay after the pin above, because the
+# later rule wins.
+Code/plugins/patches/OStimNG/0007-*.patch -text
+
 # Batch files must stay CRLF for cmd.exe
 *.bat text eol=crlf

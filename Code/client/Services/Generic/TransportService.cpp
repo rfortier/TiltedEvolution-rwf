@@ -87,6 +87,15 @@ static constexpr wchar_t kMO2DllName[] = L"usvfs_x64.dll";
 // that a wrong address does not look like a freeze.
 static constexpr std::chrono::seconds kHandshakeTimeout{10};
 
+// The mod list this client reports is built from every loaded file in the game's
+// own array, so the count of files it drops is a property of the mod list, not of
+// a bug: a 400-plugin list can drop a lot of them. The names are reported to
+// answer one yes/no question about lite files (see the loop in
+// TryConnect/HandleAuthenticationRequest), and eight of them answer it - the rest
+// are only a number, so a large list cannot turn one connection into a wall of
+// lines.
+static constexpr uint32_t kMaxReportedSkips = 8;
+
 using TiltedPhoques::Packet;
 
 TransportService::TransportService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
@@ -338,16 +347,51 @@ void TransportService::OnConnected()
 
     auto* const cpModManager = ModManager::Get();
 
-    for (auto* pMod : cpModManager->mods)
-    {
-        if (!pMod->IsLoaded())
-            continue;
+    // IsLoaded() asks whether standardId is 0xFF, and 0xFF is also the engine's
+    // value for "not in the standard space" - which is what a lite (ESL) file is.
+    // Whether a loaded ESL therefore survives the test below is not established
+    // anywhere in this repository, and the two answers differ by a lot: a file
+    // this loop drops is a mod the server never registers, so every form it adds
+    // loses its server id, and with the mod policy on the server then asks the
+    // player to install a mod they already have - a refusal they cannot resolve.
+    //
+    // So the loop reports what it drops, with the three fields that decide the
+    // question, and it does so at info rather than debug: the shipped build logs
+    // at info (TiltedOnlineApp leaves set_level(debug) commented out), so a debug
+    // line here would be invisible in exactly the logs that are collected.
+    uint32_t liteReported = 0;
+    uint32_t skipped = 0;
 
-        auto& entry = request.UserMods.ModList.emplace_back();
-        entry.Id = pMod->GetId();
-        entry.IsLite = pMod->IsLite();
-        entry.Filename = pMod->filename;
+    // The manager is null before the engine builds it, and there is no list to walk
+    // then; the summary below still runs, so the log keeps its shape either way.
+    if (cpModManager != nullptr)
+    {
+        for (auto* pMod : cpModManager->mods)
+        {
+            if (!pMod->IsLoaded())
+            {
+                ++skipped;
+                if (skipped <= kMaxReportedSkips)
+                    spdlog::info("mod '{}' is not loaded by the standard id rule: isLite={} standardId={:#04x} liteId={:#06x}",
+                                 pMod->filename, pMod->IsLite(), pMod->standardId, pMod->liteId);
+                continue;
+            }
+
+            auto& entry = request.UserMods.ModList.emplace_back();
+            entry.Id = pMod->GetId();
+            entry.IsLite = pMod->IsLite();
+            entry.Filename = pMod->filename;
+
+            if (pMod->IsLite())
+                ++liteReported;
+        }
     }
+
+    // One line that answers it in either direction: a lite count of zero beside a
+    // dropped file whose isLite is true is the defect, and a non-zero one closes
+    // the question. tools/Scripts/check_lite_mod_path.py keeps this line alive.
+    spdlog::info("mod list: {} reported ({} lite), {} dropped by the standard id rule", request.UserMods.ModList.size(),
+                 liteReported, skipped);
 
     auto& modSystem = m_world.GetModSystem();
     if (pPlayer)
@@ -364,11 +408,18 @@ void TransportService::OnConnected()
     }
 
     auto* pGameTime = TimeData::Get();
-    request.PlayerTime.TimeScale = pGameTime->TimeScale->f;
-    request.PlayerTime.Time = pGameTime->GameHour->f;
-    request.PlayerTime.Year = pGameTime->GameYear->f;
-    request.PlayerTime.Month = pGameTime->GameMonth->f;
-    request.PlayerTime.Day = pGameTime->GameDay->f;
+
+    // The time manager is built by the engine during startup and the handshake can go
+    // out before it exists. PlayerTime then keeps the TimeModel defaults the request
+    // was built with, the same way everything else above degrades to a default.
+    if (pGameTime != nullptr)
+    {
+        request.PlayerTime.TimeScale = pGameTime->TimeScale->f;
+        request.PlayerTime.Time = pGameTime->GameHour->f;
+        request.PlayerTime.Year = pGameTime->GameYear->f;
+        request.PlayerTime.Month = pGameTime->GameMonth->f;
+        request.PlayerTime.Day = pGameTime->GameDay->f;
+    }
 
     // The transport is up and the clock is synced; what remains is the server's
     // answer to this request, so the watchdog now covers the auth round trip.
@@ -775,6 +826,12 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
             break;
         case AR::kModsMismatch:
         {
+            // The pair's second element is the direction, not an id. It is written
+            // as the word the UI switches on rather than as Mods::Id, because the
+            // UI's rule used to be "0 means install" and 0 is a real id - the first
+            // plugin and the first ESL both carry it (see Mods.h). Turning the
+            // marker into a word here keeps the marker out of the UI, which is the
+            // side that cannot see Mods.h.
             ErrorInfo += "\"error\": \"mods_mismatch\", \"data\": {\"mods\": [";
             bool first = true;
             for (const auto& m : acMessage.UserMods.ModList)
@@ -784,7 +841,7 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
                 ErrorInfo += "[\"";
                 ErrorInfo += JsonEscape::Escape(m.Filename);
                 ErrorInfo += "\",\"";
-                ErrorInfo += fmt::format("{}", m.Id);
+                ErrorInfo += (m.Id == Mods::kInstallMarker) ? "install" : "remove";
                 ErrorInfo += "\"]";
                 first = false;
             }

@@ -147,7 +147,23 @@ def main() -> int:
     # with 'failed to `git show` versions/baseline.json'. The glob was
     # 'plugins/*/vcpkg.json' and missed exactly this one.
     for plugin in prerequisites:
-        for manifest in sorted((ROOT / plugin['submodule']).rglob('vcpkg.json')):
+        root = ROOT / plugin['submodule']
+        if not root.is_dir():
+            # A submodule that was never checked out is legitimately absent - the
+            # same reason check_ostimng_versions.py is allowed to skip - so the
+            # missing checkout is not a failure here. A checkout that IS present and
+            # holds no manifest is a different thing: the rule below has nothing left
+            # to bind the workflow's glob to, and that glob is what this gate exists
+            # for, so an empty scan must not read as a satisfied one.
+            continue
+        manifests = sorted(root.rglob('vcpkg.json'))
+        if not manifests:
+            failures.append(
+                f'{plugin["submodule"]} is checked out but holds no vcpkg.json; the setup '
+                f'step derives the baselines to fetch from these manifests, so an empty scan '
+                f'means they moved - not that the workflow glob still covers them'
+            )
+        for manifest in manifests:
             relative = manifest.relative_to(ROOT).as_posix()
             try:
                 pinned_baseline = json.loads(manifest.read_text(encoding='utf-8')).get('builtin-baseline')

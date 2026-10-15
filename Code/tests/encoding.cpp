@@ -98,6 +98,60 @@ TEST_CASE("Encoding factory", "[encoding.factory]")
     }
 }
 
+TEST_CASE("An opcode the factory has no message for is dropped, not fatal", "[encoding.factory]")
+{
+    // Extract() checks the range and then calls the slot. The range check is not a
+    // completeness check: a slot the visitor never named holds an empty
+    // std::function, and calling through one throws std::bad_function_call - out of
+    // a noexcept function, so the process terminates on a packet that merely named
+    // an opcode this build does not have. Both halves are pinned here: an opcode
+    // past the end, and one inside the enum's range.
+    const ClientMessageFactory clientFactory;
+    const ServerMessageFactory serverFactory;
+
+    {
+        Buffer buff(16);
+        Buffer::Writer writer(&buff);
+        Serialization::WriteVarInt(writer, static_cast<uint64_t>(kClientOpcodeMax));
+
+        Buffer::Reader reader(&buff);
+        REQUIRE(clientFactory.Extract(reader) == nullptr);
+    }
+
+    {
+        Buffer buff(16);
+        Buffer::Writer writer(&buff);
+        Serialization::WriteVarInt(writer, static_cast<uint64_t>(kClientOpcodeMax) + 0x40);
+
+        Buffer::Reader reader(&buff);
+        REQUIRE(clientFactory.Extract(reader) == nullptr);
+    }
+
+    {
+        Buffer buff(16);
+        Buffer::Writer writer(&buff);
+        Serialization::WriteVarInt(writer, static_cast<uint64_t>(kServerOpcodeMax));
+
+        Buffer::Reader reader(&buff);
+        REQUIRE(serverFactory.Extract(reader) == nullptr);
+    }
+
+    // And a message that does exist still decodes, so the guard cannot be satisfied
+    // by refusing everything.
+    {
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        AuthenticationRequest request;
+        request.Token = "stillWorks";
+        request.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+        auto pMessage = clientFactory.Extract(reader);
+        REQUIRE(pMessage);
+        REQUIRE(pMessage->GetOpcode() == request.GetOpcode());
+    }
+}
+
 TEST_CASE("Static structures", "[encoding.static]")
 {
     GIVEN("GameId")
@@ -1714,6 +1768,47 @@ TEST_CASE("A packet larger than any sender can produce is rejected before it is 
     REQUIRE(WireLimits::kMaxPacketBytes > WireLimits::kMaxChatMessageBytes);
 }
 
+TEST_CASE("A stalled frame cannot hand an enormous delta to every subscriber", "[encoding.frame_delta]")
+{
+    // The delta is measured with a steady clock and then delivered to every UpdateEvent
+    // subscriber: the client's runner, its weapon-draw timers (0.5s and 2.0s) and its
+    // calendar; the server's Lua `onUpdate` callback. The measurement is of *real* time, so
+    // a stall inside the process does not shrink the delta, it grows it - suspending the
+    // machine, breaking in a debugger or a long page fault all deliver one huge value.
+    //
+    // A working tick has to pass through untouched, or the bound would change behaviour on
+    // every server. The client refuses to tick faster than 8ms and the dedicated server's
+    // loop has no sleep, so both are milliseconds in practice; 100ms is well past any
+    // honest tick and still must not be clamped.
+    REQUIRE(WireLimits::ClampFrameDelta(0.008) == 0.008);
+    REQUIRE(WireLimits::ClampFrameDelta(0.1) == 0.1);
+    REQUIRE(WireLimits::ClampFrameDelta(0.0) == 0.0);
+
+    // The boundary itself, both sides.
+    REQUIRE(WireLimits::ClampFrameDelta(WireLimits::kMaxFrameDeltaSeconds) ==
+            WireLimits::kMaxFrameDeltaSeconds);
+    REQUIRE(WireLimits::ClampFrameDelta(WireLimits::kMaxFrameDeltaSeconds + 0.0001) ==
+            WireLimits::kMaxFrameDeltaSeconds);
+
+    // A stall is bounded rather than passed through, and the bound has to be small enough
+    // that the weapon-draw timer's 2.0s window still means something.
+    REQUIRE(WireLimits::ClampFrameDelta(30.0) == WireLimits::kMaxFrameDeltaSeconds);
+    REQUIRE(WireLimits::ClampFrameDelta(7200.0) == WireLimits::kMaxFrameDeltaSeconds);
+    REQUIRE(WireLimits::kMaxFrameDeltaSeconds < 2.0);
+
+    // A broken clock reads as zero rather than reaching a consumer. A NaN would survive
+    // every comparison downstream, which is the reason ClampFinite exists for wire floats.
+    REQUIRE(WireLimits::ClampFrameDelta(std::numeric_limits<double>::quiet_NaN()) == 0.0);
+    REQUIRE(WireLimits::ClampFrameDelta(std::numeric_limits<double>::infinity()) == 0.0);
+    REQUIRE(WireLimits::ClampFrameDelta(-std::numeric_limits<double>::infinity()) == 0.0);
+
+    // A clock that went backwards is not a negative elapsed time.
+    REQUIRE(WireLimits::ClampFrameDelta(-5.0) == 0.0);
+
+    // The bound is a duration, so it sits in a different unit from the byte bounds.
+    REQUIRE(WireLimits::kMaxFrameDeltaSeconds > 0.0);
+}
+
 TEST_CASE("A quest log cannot make the reader allocate what it never sent", "[encoding.quest_log]")
 {
     // The count travels in 16 bits, so a peer can name 65535 entries while the writer
@@ -1777,4 +1872,63 @@ TEST_CASE("A quest log cannot make the reader allocate what it never sent", "[en
 
     REQUIRE(reused.Entries.size() == 1);
     REQUIRE(reused.Entries.front().Stage == 7);
+}
+
+TEST_CASE("A skill experience delta cannot leave the engine with an uncomparable value",
+          "[encoding.experience_delta]")
+{
+    // Experience is the one number here a *local* measurement produces and a remote player
+    // then applies: the sender measures `newExperience - oldExperience` around the engine's
+    // own AddSkillExperience, and the receiver feeds what arrives straight back into its own
+    // AddSkillExperience. The engine compares a skill's stored xp against a per-level
+    // threshold, so a value it cannot compare against leaves the skill in a state no later
+    // award can fix - and the wire only bounded finiteness, never magnitude.
+    //
+    // A real award has to pass through untouched, or the bound would change ordinary play.
+    REQUIRE(WireLimits::ClampExperienceDelta(0.f) == 0.f);
+    REQUIRE(WireLimits::ClampExperienceDelta(1.f) == 1.f);
+    REQUIRE(WireLimits::ClampExperienceDelta(12.5f) == 12.5f);
+    REQUIRE(WireLimits::ClampExperienceDelta(-12.5f) == -12.5f);
+
+    // The boundary itself, both signs. A negative delta is meaningful (a skill can lose
+    // progress), so this is a range clamp and not a floor.
+    REQUIRE(WireLimits::ClampExperienceDelta(WireLimits::kMaxExperienceDelta) ==
+            WireLimits::kMaxExperienceDelta);
+    REQUIRE(WireLimits::ClampExperienceDelta(-WireLimits::kMaxExperienceDelta) ==
+            -WireLimits::kMaxExperienceDelta);
+    REQUIRE(WireLimits::ClampExperienceDelta(WireLimits::kMaxExperienceDelta * 2.f) ==
+            WireLimits::kMaxExperienceDelta);
+    REQUIRE(WireLimits::ClampExperienceDelta(-WireLimits::kMaxExperienceDelta * 2.f) ==
+            -WireLimits::kMaxExperienceDelta);
+
+    // The overflow case the comment names: an arithmetic result past what the engine can
+    // absorb is bounded rather than delivered.
+    REQUIRE(WireLimits::ClampExperienceDelta(std::numeric_limits<float>::max()) ==
+            WireLimits::kMaxExperienceDelta);
+
+    // A broken measurement reads as zero rather than reaching the engine, for the same
+    // reason ClampFinite exists: a NaN survives every comparison made against it.
+    REQUIRE(WireLimits::ClampExperienceDelta(std::numeric_limits<float>::quiet_NaN()) == 0.f);
+    REQUIRE(WireLimits::ClampExperienceDelta(std::numeric_limits<float>::infinity()) == 0.f);
+    REQUIRE(WireLimits::ClampExperienceDelta(-std::numeric_limits<float>::infinity()) == 0.f);
+
+    // The bound is a magnitude, so it is positive and generous compared with a real award.
+    REQUIRE(WireLimits::kMaxExperienceDelta > 0.f);
+    REQUIRE(WireLimits::kMaxExperienceDelta > 1000.f);
+
+    // The wire carries the clamped value: a hostile reader cannot put an unbounded delta
+    // into the struct the receiver applies.
+    Buffer buff(64);
+    Buffer::Writer writer(&buff);
+    Serialization::WriteFloat(writer, std::numeric_limits<float>::max());
+    Serialization::WriteFloat(writer, std::numeric_limits<float>::quiet_NaN());
+
+    Buffer::Reader reader(&buff);
+    NotifySyncExperience notify{};
+    notify.DeserializeRaw(reader);
+    REQUIRE(notify.Experience == WireLimits::kMaxExperienceDelta);
+
+    NotifySyncExperience second{};
+    second.DeserializeRaw(reader);
+    REQUIRE(second.Experience == 0.f);
 }

@@ -4,6 +4,10 @@
 
 #include <Services/QuestService.h>
 #include <Services/ImguiService.h>
+#include <Services/OverlayService.h>
+#include <Services/TransportService.h>
+
+#include <OverlayApp.hpp>
 
 #include <PlayerCharacter.h>
 #include <Forms/TESQuest.h>
@@ -22,7 +26,14 @@ namespace spdfmt = spdlog::fmt_lib;
 
 static TESQuest* FindQuestByNameId(const String& name)
 {
-    auto& questRegistry = ModManager::Get()->quests;
+    // The mod manager owns the quest registry and is null before the engine
+    // builds it; this helper is reachable from the command path, which a player
+    // can invoke at any time.
+    auto* pModManager = ModManager::Get();
+    if (!pModManager)
+        return nullptr;
+
+    auto& questRegistry = pModManager->quests;
     auto it = std::find_if(questRegistry.begin(), questRegistry.end(), [name](auto* it) { return std::strcmp(it->idName.AsAscii(), name.c_str()); });
 
     return it != questRegistry.end() ? *it : nullptr;
@@ -41,6 +52,17 @@ QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
     // TESQuestInitEvent can be instead managed by start stop quest management.
     // bind game event listeners
     auto* pEventList = EventDispatcherManager::Get();
+    if (!pEventList)
+    {
+        // The dispatcher is built by the engine during startup and this service
+        // is constructed from World's initialisation, so the order is not
+        // guaranteed. Without it no quest event is observed - the same
+        // degradation the legacy runtime already accepts for unmapped ids -
+        // whereas dereferencing a null one takes the process down.
+        spdlog::warn(__FUNCTION__ ": event dispatcher not available yet, quest sync will not observe events");
+        return;
+    }
+
     pEventList->questStartStopEvent.RegisterSink(this);
     pEventList->questStageEvent.RegisterSink(this);
 
@@ -69,8 +91,21 @@ BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent,
 {
     GameId Id;
     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId));
-    if (pQuest == nullptr || IsNonSyncableQuest(pQuest) || !m_world.Get().GetPartyService().IsInParty() || !m_world.GetModSystem().GetServerModId(pQuest->formID, Id))
-        return BSTEventResult::kOk; // pQuest == nullptr shouldn't happen, nor should getting GameId fail.
+    if (pQuest == nullptr || IsNonSyncableQuest(pQuest))
+        return BSTEventResult::kOk; // pQuest == nullptr shouldn't happen.
+
+    if (!m_world.Get().GetPartyService().IsInParty())
+    {
+        // Questing alone on a populated server is exactly when a party is worth
+        // suggesting. A stop event is not progress, so only a start gets the hint.
+        if (!pQuest->IsStopped())
+            NotifyOverlayOfQuestUpdate(pQuest);
+
+        return BSTEventResult::kOk;
+    }
+
+    if (!m_world.GetModSystem().GetServerModId(pQuest->formID, Id))
+        return BSTEventResult::kOk; // nor should getting GameId fail.
 
     const auto startStop = pQuest->IsStopped() ? "stopped" : "started";
     const bool isMiscNone = (pQuest->type == TESQuest::Type::None || pQuest->type == TESQuest::Type::Miscellaneous);
@@ -105,8 +140,17 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
 {
     GameId Id;
     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId));
-    if (pQuest == nullptr || IsNonSyncableQuest(pQuest) || !m_world.Get().GetPartyService().IsInParty() || !m_world.GetModSystem().GetServerModId(pQuest->formID, Id))
-        return BSTEventResult::kOk; // pQuest == nullptr shouldn't happen, nor should getting GameId fail.
+    if (pQuest == nullptr || IsNonSyncableQuest(pQuest))
+        return BSTEventResult::kOk; // pQuest == nullptr shouldn't happen.
+
+    if (!m_world.Get().GetPartyService().IsInParty())
+    {
+        NotifyOverlayOfQuestUpdate(pQuest);
+        return BSTEventResult::kOk;
+    }
+
+    if (!m_world.GetModSystem().GetServerModId(pQuest->formID, Id))
+        return BSTEventResult::kOk; // nor should getting GameId fail.
 
     const auto startStop = pQuest->IsStopped() ? "stopped" : "started";
     const bool isMiscNone = (pQuest->type == TESQuest::Type::None || pQuest->type == TESQuest::Type::Miscellaneous);
@@ -185,7 +229,6 @@ BSTEventResult QuestService::OnEvent(const TESSceneEvent* apEvent, const EventDi
                 update.SceneId = sceneGameId;
                 update.QuestId = questGameId;
                 update.Stage = stageId;
-                update.Status = stageId == RequestQuestUpdate::StageUpdateForced;
                 update.ClientQuestType = static_cast<std::underlying_type_t<TESQuest::Type>>(type);
                 update.SceneType = sceneType;
 
@@ -228,6 +271,28 @@ BSTEventResult QuestService::OnEvent(const TESScenePhaseEvent* apEvent, const Ev
         OnEvent(&event, nullptr);
 
     return BSTEventResult::kOk;
+}
+
+void QuestService::NotifyOverlayOfQuestUpdate(TESQuest* apQuest) noexcept
+{
+    if (apQuest == nullptr)
+        return;
+
+    if (!m_world.GetTransport().IsOnline())
+        return;
+
+    // Nobody else is around to party with, or an invite toast is already asking.
+    const auto remotePlayerView = m_world.view<PlayerComponent, RemoteComponent>();
+    if (m_world.GetPartyService().HasPendingInvitations() || remotePlayerView.begin() == remotePlayerView.end())
+        return;
+
+    // Hidden background quests and minor misc tasks advance constantly and are
+    // not worth prompting about.
+    if (apQuest->type == TESQuest::Type::None || apQuest->type == TESQuest::Type::Miscellaneous)
+        return;
+
+    if (auto* pApp = m_world.GetOverlayService().GetOverlayApp())
+        pApp->ExecuteAsync("questUpdated");
 }
 
 void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
@@ -454,7 +519,14 @@ bool QuestService::IsNonSyncableQuest(TESQuest* apQuest)
 
 void QuestService::DebugDumpQuests()
 {
-    auto& quests = ModManager::Get()->quests;
+    auto* pModManager = ModManager::Get();
+    if (!pModManager)
+    {
+        spdlog::warn(__FUNCTION__ ": mod manager unavailable, no quest registry to dump");
+        return;
+    }
+
+    auto& quests = pModManager->quests;
     for (TESQuest* pQuest : quests)
         spdlog::info("{:X}|{}|{}|{}", pQuest->formID, (uint8_t)pQuest->type, pQuest->priority, pQuest->idName.AsAscii());
 }

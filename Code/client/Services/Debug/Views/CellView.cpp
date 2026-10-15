@@ -11,9 +11,14 @@
 
 void DebugService::DrawCellView()
 {
-    ImGui::Begin("Cell");
-
+    // The player is null on the main menu and while a save is loading, and both the
+    // world space and the parent cell section below read it. The test has to come
+    // before Begin(): an ImGui::Begin() with no matching End() is a stack mismatch.
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
+    ImGui::Begin("Cell");
 
     if (auto* pWorldSpace = pPlayer->GetWorldSpace())
     {

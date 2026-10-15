@@ -4,10 +4,27 @@
 
 ExtraDataList* ExtraDataList::New() noexcept
 {
+    // Both allocations are checked. Memory::Allocate returns null on failure,
+    // and every one of the three members is dereferenced by a caller:
+    // `data` by Add/GetByType/GetCount, `bitfield` by Contains/SetType, `lock`
+    // by GetByType/Add. The old body wrote through both pointers immediately
+    // (`pExtraDataList->data = nullptr` and the memset), so a failed allocation
+    // faulted here rather than being reported - and the one caller already
+    // handles a null return (TESObjectREFR::GetExtraDataFromItem).
     ExtraDataList* pExtraDataList = Memory::Allocate<ExtraDataList>();
+    if (!pExtraDataList)
+        return nullptr;
+
     pExtraDataList->data = nullptr;
     pExtraDataList->lock.m_counter = pExtraDataList->lock.m_tid = 0;
+
     pExtraDataList->bitfield = Memory::Allocate<ExtraDataList::Bitfield>();
+    if (!pExtraDataList->bitfield)
+    {
+        Memory::Delete(pExtraDataList);
+        return nullptr;
+    }
+
     memset(pExtraDataList->bitfield, 0, 0x18);
     return pExtraDataList;
 }
@@ -53,6 +70,12 @@ BSExtraData* ExtraDataList::GetByType(ExtraDataType aType) const
 
 bool ExtraDataList::Add(ExtraDataType aType, BSExtraData* apNewData)
 {
+    // `apNewData` is linked in, so a null one cannot be stored - the list walk
+    // in GetByType and the count in GetCount both dereference every node. The
+    // old body wrote `apNewData->next` unconditionally.
+    if (!apNewData)
+        return false;
+
     if (Contains(aType))
         return false;
 
@@ -82,6 +105,14 @@ uint32_t ExtraDataList::GetCount() const
 
 void ExtraDataList::SetType(ExtraDataType aType, bool aClear)
 {
+    // Contains() already treats a null bitfield as "no bits set" and returns
+    // false; this is the write side of the same member and used to dereference
+    // it outright, so an ExtraDataList whose bitfield allocation failed (or an
+    // engine-built one that never had a bitfield) faulted here instead of
+    // behaving like the empty set the read side reports.
+    if (!bitfield)
+        return;
+
     uint32_t index = static_cast<uint8_t>(aType) >> 3;
     uint8_t bitmask = 1 << (static_cast<uint8_t>(aType) % 8);
     uint8_t& flag = bitfield->data[index];

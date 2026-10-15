@@ -40,7 +40,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "メッセージが届いていますー＞",
       "ACCEPT": "承認",
-      "DECLINE": "否認"
+      "DECLINE": "否認",
+      "OPEN_GUIDE": "ガイドを開く",
+      "DISMISS": "閉じる",
+      "DONT_SHOW": "今後表示しない"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "{{name}}からの招待を承認する",
@@ -185,6 +188,9 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}} がパーティーに招待しました。"
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "一緒にクエストを進めませんか?パーティーを組んで近くにいることで、クエストの進行状況を共有できます!詳しくはプレイガイドをご覧ください。"
     }
   }
 }

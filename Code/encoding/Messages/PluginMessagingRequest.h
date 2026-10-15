@@ -51,4 +51,11 @@ struct PluginMessagingRequest final : ClientMessage
     // address with.
     std::uint32_t TargetPlayerId{ 0 };
     Vector<std::uint8_t> PluginData;
+
+    // Envelope metadata, carried end to end and never interpreted by the
+    // framework. A receiving plugin must see the same STRPM::Message it would
+    // have seen from the standalone bridge, whose datagrams carry both fields,
+    // so they travel with the payload instead of being invented at the receiver.
+    std::uint32_t Flags{ 0 };
+    std::uint64_t Sequence{ 0 };
 };

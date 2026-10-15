@@ -40,6 +40,10 @@ private:
     void OnQuestUpdate(const NotifyQuestUpdate&) noexcept;
     void OnQuestSceneUpdate(const NotifyQuestSceneUpdate&) noexcept;
 
+    // Tells the overlay that local quest progress happened outside a party, so it
+    // can suggest forming one.
+    void NotifyOverlayOfQuestUpdate(TESQuest* apQuest) noexcept;
+
     bool CanAdvanceQuestForParty() const noexcept;
 
     World& m_world;

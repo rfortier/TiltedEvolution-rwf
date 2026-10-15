@@ -13,5 +13,5 @@ void NotifyPlayerHealthUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRe
     ServerMessage::DeserializeRaw(aReader);
 
     PlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-    Percentage = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+    Percentage = WireLimits::ClampHealthPercentage(Serialization::ReadFloat(aReader));
 }

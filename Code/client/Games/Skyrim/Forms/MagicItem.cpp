@@ -34,12 +34,21 @@ bool MagicItem::IsInvisibilitySpell() const noexcept
     static uint32_t bosFormID = 0;      // Can be an array if more are found.
     if (runonce)
     {
-        runonce = false;  
         Mod* pBOSMod = nullptr;
         MagicItem* pSpell  = nullptr;
-        if (   (pBOSMod = ModManager::Get()->GetByName("ccbgssse038-bowofshadows.esl")) 
-            && (pSpell  = Cast<MagicItem>(TESForm::GetById(pBOSMod->GetFormId(0x805)))))
-            bosFormID = pSpell->formID;
+
+        // The mod manager is built by the engine during startup, so it can still be
+        // missing on an early call. `runonce` is only spent when the manager is there
+        // to answer: spending it on a null manager would leave bosFormID at 0 for
+        // good, with no second attempt.
+        if (auto* pModManager = ModManager::Get())
+        {
+            runonce = false;
+
+            if (   (pBOSMod = pModManager->GetByName("ccbgssse038-bowofshadows.esl")) 
+                && (pSpell  = Cast<MagicItem>(TESForm::GetById(pBOSMod->GetFormId(0x805)))))
+                bosFormID = pSpell->formID;
+        }
     }
 
     if (formID == bosFormID)

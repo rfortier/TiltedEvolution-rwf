@@ -337,13 +337,15 @@ void DebugService::OnDraw() noexcept
             if (ImGui::Button("Unstuck player"))
             {
                 auto* pPlayer = PlayerCharacter::Get();
-                pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+                if (pPlayer != nullptr)
+                    pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
             }
 
             if (ImGui::Button("Stop all combat"))
             {
                 auto* pPlayer = PlayerCharacter::Get();
-                pPlayer->PayCrimeGoldToAllFactions();
+                if (pPlayer != nullptr)
+                    pPlayer->PayCrimeGoldToAllFactions();
 
                 ProcessLists* const pProcessLists = ProcessLists::Get();
                 if (pProcessLists)
@@ -360,7 +362,13 @@ void DebugService::OnDraw() noexcept
             if (ImGui::Button("Clear stuck screen effects"))
             {
                 Vector<ImageSpaceModifierInstance*> modifiers;
-                for (const auto& modifier : TES::Get()->activeImageSpaceModifiers)
+                // The game-data singleton is null before the game data loads;
+                // this is a debug menu, so doing nothing is the right answer.
+                const auto* pTES = TES::Get();
+                if (!pTES)
+                    return;
+
+                for (const auto& modifier : pTES->activeImageSpaceModifiers)
                 {
                     if (modifier.object)
                         modifiers.push_back(modifier.object);
@@ -386,6 +394,9 @@ void DebugService::OnDraw() noexcept
             if (ImGui::Button("Log all open windows"))
             {
                 UI* pUI = UI::Get();
+                if (!pUI)
+                    return;
+
                 for (const auto& it : pUI->menuMap)
                 {
                     if (pUI->GetMenuOpen(it.key))
@@ -395,7 +406,8 @@ void DebugService::OnDraw() noexcept
 
             if (ImGui::Button("Close all menus"))
             {
-                UI::Get()->CloseAllMenus();
+                if (auto* pUI = UI::Get())
+                    pUI->CloseAllMenus();
             }
 
             ImGui::EndMenu();

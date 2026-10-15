@@ -28,27 +28,27 @@ constexpr size_t kMaxServerNameLength = 128u;
 // -- Cvars --
 Console::Setting uServerPort{"GameServer:uPort", "Which port to host the server on", 10578u};
 Console::Setting uMaxPlayerCount{"GameServer:uMaxPlayerCount", "Maximum number of players allowed on the server (going over the default of 8 is not recommended)", 8u};
-Console::Setting bPremiumTickrate{"GameServer:bPremiumMode", "Use premium tick rate", true};
+Console::Setting bPremiumTickrate{"GameServer:bPremiumMode", "Server tick rate: 60 updates per second if true, 30 if false", true};
 
 Console::StringSetting sServerName{"GameServer:sServerName", "Name that shows up in the server list", "Dedicated Together Server"};
-Console::StringSetting sAdminPassword{"GameServer:sAdminPassword", "Admin authentication password", ""};
-Console::StringSetting sPassword{"GameServer:sPassword", "Server password", ""};
+Console::StringSetting sAdminPassword{"GameServer:sAdminPassword", "Password for server admins. Joining with it gives admin rights. Leave empty to disable", ""};
+Console::StringSetting sPassword{"GameServer:sPassword", "Password players need to join the server. Leave empty to let anyone join", ""};
 Console::Setting bAnnounceServer{"LiveServices:bAnnounceServer", "Whether to list the server on the public server list", false};
 
 // Gameplay
 // TODO: to make this easier for users, use game names for difficulty instead of int
-Console::Setting uDifficulty{"Gameplay:uDifficulty", "In game difficulty (0 to 5)", 4u};
+Console::Setting uDifficulty{"Gameplay:uDifficulty", "Difficulty for all players: 0 Novice, 1 Apprentice, 2 Adept, 3 Expert, 4 Master, 5 Legendary", 4u};
 Console::Setting bEnableGreetings{"Gameplay:bEnableGreetings", "Enables NPC greetings (disabled by default since they can be spammy with dialogue sync)", false};
 Console::Setting bEnablePvp{"Gameplay:bEnablePvp", "Enables pvp", false};
 Console::Setting bSyncPlayerHomes{"Gameplay:bSyncPlayerHomes", "Sync chests and displays in player homes and other NoResetZones", false};
-Console::Setting bEnableDeathSystem{"Gameplay:bEnableDeathSystem", "Enables the custom multiplayer death system", true};
+Console::Setting bEnableDeathSystem{"Gameplay:bEnableDeathSystem", "Enables the custom multiplayer death system. Only disable it if you use another mod that replaces death", true};
 Console::Setting uTimeScale{"Gameplay:uTimeScale", "How many seconds pass ingame for every real second (0 to 1000). Changing this can make the game unstable", 20u};
 Console::Setting bSyncPlayerCalendar{"Gameplay:bSyncPlayerCalendar", "Syncs up all player calendars to be the same day, month, and year. This uses the date of the player with the furthest ahead date at connection.", false};
 Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
 // ModPolicy Stuff
 Console::Setting bEnableModCheck{"ModPolicy:bEnableModCheck", "Bypass the checking of mods on the server", false, Console::SettingsFlags::kLocked};
-Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow clients with SKSE active to join", true, Console::SettingsFlags::kLocked};
-Console::Setting bAllowMO2{"ModPolicy:bAllowMO2", "Allow clients running Mod Organizer 2 to join", true, Console::SettingsFlags::kLocked};
+Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow players using SKSE to join. Applies even when bEnableModCheck is off", true, Console::SettingsFlags::kLocked};
+Console::Setting bAllowMO2{"ModPolicy:bAllowMO2", "Allow players using Mod Organizer 2 to join. Applies even when bEnableModCheck is off", true, Console::SettingsFlags::kLocked};
 
 // -- Commands --
 Console::Command<> TogglePremium(
@@ -560,7 +560,8 @@ void GameServer::OnUpdate()
     const auto cDelta = cNow - m_lastFrameTime;
     m_lastFrameTime = cNow;
 
-    const auto cDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<float>>(cDelta).count();
+    const auto cDeltaSeconds = WireLimits::ClampFrameDelta(
+        std::chrono::duration_cast<std::chrono::duration<float>>(cDelta).count());
 
     auto& dispatcher = m_pWorld->GetDispatcher();
 
@@ -931,6 +932,13 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
 
         if (IsMoPoActive())
         {
+            // Two comparisons, two lists: the reply is one list, so each entry
+            // has to say which comparison it came from. That used to be
+            // "Id == 0 means install", and 0 is a real id (the first plugin in the
+            // load order, and the first ESL for a lite one) - see the markers in
+            // Mods.h. The lists are kept apart here so the marker is applied once
+            // per list rather than inferred per entry.
+
             // mods that exist on the client, but not on the server
             // modscomponent contains a list filled in by the recordcollection
             Mods modsToRemove;
@@ -941,7 +949,9 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
                 // if the client has more mods than the server..
                 if (!modsComponent.IsInstalled(mod.Filename))
                 {
-                    modsToRemove.ModList.push_back(mod);
+                    Mods::Entry entry = mod;
+                    entry.Id = Mods::kRemoveMarker;
+                    modsToRemove.ModList.push_back(entry);
                 }
             }
 
@@ -951,27 +961,32 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
             // but requires essential mods?
 
             // mods that may exist on the server, but not on the client
+            Mods modsToInstall;
             for (const auto& entry : modsComponent.GetServerMods())
             {
                 const auto it = std::find_if(userMods.begin(), userMods.end(), [&](const Mods::Entry& it) { return it.Filename == entry.first; });
 
                 if (it == userMods.end())
                 {
-                    Mods::Entry removeEntry;
-                    removeEntry.Filename = entry.first;
-                    removeEntry.Id = 0;
-                    modsToRemove.ModList.push_back(removeEntry);
+                    Mods::Entry installEntry;
+                    installEntry.Filename = entry.first;
+                    installEntry.Id = Mods::kInstallMarker;
+                    modsToInstall.ModList.push_back(installEntry);
                 }
             }
 
-            if (modsToRemove.ModList.size() > 0)
+            if (modsToRemove.ModList.size() > 0 || modsToInstall.ModList.size() > 0)
             {
-                String text = PrettyPrintModList(modsToRemove.ModList);
-                // "ModPolicy: refusing connection {:x} because essential mods are missing: {}"
-                // for future reference ^
-                spdlog::info("ModPolicy: refusing connection {:x} because the following mods are installed on the client: {}", aConnectionId, text.c_str());
+                // The old line called the whole list "installed on the client",
+                // which was already inaccurate for half of it; now that the two
+                // halves are separate, name each one.
+                spdlog::info("ModPolicy: refusing connection {:x}: the client must remove [{}] and install [{}]",
+                             aConnectionId, PrettyPrintModList(modsToRemove.ModList).c_str(),
+                             PrettyPrintModList(modsToInstall.ModList).c_str());
 
                 serverResponse.UserMods.ModList = std::move(modsToRemove.ModList);
+                for (auto& entry : modsToInstall.ModList)
+                    serverResponse.UserMods.ModList.push_back(std::move(entry));
                 sendKick(RT::kModsMismatch);
                 return;
             }

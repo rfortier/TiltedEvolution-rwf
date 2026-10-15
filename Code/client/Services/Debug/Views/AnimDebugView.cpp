@@ -91,7 +91,11 @@ void DebugService::DrawAnimDebugView()
      if (ImGui::Button("Show cached hash"))
     {
         spdlog::info("{}", pActor->GetExtension()->GraphDescriptorHash);
-        BehaviorVar::Get()->Debug();
+
+        // Null unless the optional behaviour-mod compat layer loaded, which is
+        // the normal case when no behaviour mod is installed.
+        if (auto* pBehaviorVar = BehaviorVar::Get())
+            pBehaviorVar->Debug();
     }
 
     if (ImGui::Button("Clear all"))

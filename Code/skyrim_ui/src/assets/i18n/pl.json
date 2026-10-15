@@ -42,7 +42,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "Wiadomość od",
       "ACCEPT": "Zaakceptuj",
-      "DECLINE": "Odrzuć"
+      "DECLINE": "Odrzuć",
+      "OPEN_GUIDE": "Otwórz poradnik",
+      "DISMISS": "Zamknij",
+      "DONT_SHOW": "Nie pokazuj"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "Zaakceptuj zaproszenie od {{name}}",
@@ -187,6 +190,9 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}} Zaprosił cię do drużyny"
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "Chcecie robić zadania razem? Załóżcie drużynę i trzymajcie się blisko, aby dzielić postępy w zadaniach! Więcej informacji znajdziesz w naszym poradniku."
     }
   }
 }

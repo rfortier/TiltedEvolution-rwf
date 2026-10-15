@@ -23,6 +23,7 @@
 #include <Games/TES.h>
 #include <Games/Overrides.h>
 #include <EquipManager.h>
+#include <ExtraData/ExtraContainerChanges.h>
 #include <Games/ActorExtension.h>
 #include <Forms/TESNPC.h>
 #include <Forms/BGSOutfit.h>
@@ -38,6 +39,7 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
     m_equipmentConnection = m_dispatcher.sink<EquipmentChangeEvent>().connect<&InventoryService::OnEquipmentChangeEvent>(this);
     m_inventoryChangeConnection = m_dispatcher.sink<NotifyInventoryChanges>().connect<&InventoryService::OnNotifyInventoryChanges>(this);
     m_equipmentChangeConnection = m_dispatcher.sink<NotifyEquipmentChanges>().connect<&InventoryService::OnNotifyEquipmentChanges>(this);
+    m_drawWeaponConnection = m_dispatcher.sink<NotifyDrawWeapon>().connect<&InventoryService::OnNotifyDrawWeapon>(this);
 }
 
 void InventoryService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
@@ -296,6 +298,13 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
 
         auto* pEquipManager = EquipManager::Get();
 
+        // The equip manager is built by the engine during startup, so an equipment
+        // update can arrive before it exists. Nothing below can be applied without it;
+        // the server is authoritative for the state and sends it again on the next
+        // change.
+        if (!pEquipManager)
+            return;
+
         if (acMessage.IsSpell)
         {
             if (acMessage.Unequip)
@@ -350,6 +359,46 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
     catch (...)
     {
         Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in InventoryService::OnNotifyEquipmentChanges");
+    }
+}
+
+void InventoryService::OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noexcept
+{
+    // Applying a remote actor's weapon state. The actor lookup allocates for its
+    // reports only; a state that could not be applied is retried by the next
+    // message rather than left half-applied.
+    try
+    {
+        auto view = m_world.view<RemoteComponent, FormIdComponent>(entt::exclude<LocalComponent>);
+        const auto it = std::find_if(view.begin(), view.end(), [view, &acMessage](const entt::entity aEntity)
+        {
+            return view.get<RemoteComponent>(aEntity).Id == acMessage.Id;
+        });
+
+        if (it == view.end())
+        {
+            // Not an error: the sender may be out of range, or this client may not
+            // have the actor loaded yet - in which case the spawn message carries
+            // the current state anyway.
+            spdlog::debug("Discarded a weapon drawn update for actor {:X}: not loaded here", acMessage.Id);
+            return;
+        }
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(view.get<FormIdComponent>(*it).Id));
+        if (!pActor)
+        {
+            spdlog::debug("Discarded a weapon drawn update for actor {:X}: no game form", acMessage.Id);
+            return;
+        }
+
+        // SetWeaponDrawnEx rather than a raw engine write: it forces the animation
+        // to replay, which is what makes the draw visible to this client at all.
+        if (pActor->actorState.IsWeaponDrawn() != acMessage.IsWeaponDrawn)
+            pActor->SetWeaponDrawnEx(acMessage.IsWeaponDrawn);
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while applying a weapon drawn state");
     }
 }
 
@@ -451,7 +500,7 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
                 spdlog::debug(__FUNCTION__ ": actorId {:X} naked check deadline expires {}", pActor->formID, pActorName);
                 if (m_world.try_get<WaitingForAssignmentComponent>(entity))
                 {
-                    spdlog::debug(__FUNCTION__ ": but still WaitingForAssignment", pActor->formID, pActorName);
+                    spdlog::debug(__FUNCTION__ ": actorId {:X} but still WaitingForAssignment {}", pActor->formID, pActorName);
                     pActor->GetExtension()->SetNakedDeadline();
                     continue;
                 }
@@ -467,8 +516,16 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
 
             // If somehow inventory was damaged despite fixes, dress actor. Belt and suspenders.
             // Note if the outfit items have been removed from inventory, they aren't regenerated.
+            //
+            // EquipOutfit() is a repair, so it may only fire on a definite answer.
+            // Three of the ten shipped pre-AE libraries do not map the id behind
+            // the query (Tools/missing_ids_by_runtime.tsv), and an unmapped
+            // lookup falls back to a stub returning zero - "not wearing a body
+            // piece" - for an actor that is wearing one. Without this guard the
+            // branch re-dresses a dressed actor on every pass on 1.5.3, 1.5.16
+            // and 1.5.23, which is worse than not running the repair at all.
             TESNPC* pBase = Cast<TESNPC>(pActor->baseForm);
-            if (!pActor->IsWearingBodyPiece() && pBase)
+            if (ExtraContainerChanges::Data::CanQueryArmor() && !pActor->IsWearingBodyPiece() && pBase)
             {
                 spdlog::warn(__FUNCTION__ ": actorId {:X} naked check fires {}", pActor->formID, pActorName);
                 pActor->EquipOutfit();

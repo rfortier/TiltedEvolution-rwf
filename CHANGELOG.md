@@ -9,6 +9,1421 @@
 
 ## v1.1.9(2026-10-01)
 
+### 修复:经验值只挡了「非有限」,没挡**量级** —— 而它会被另一个玩家的引擎直接吃下
+
+**怎么找到的**:按 §128 的判据 —— **「这个值的来源可不可控」**,
+而不是「它是不是别人发来的」。于是找**累加器**(只增不减、且值会喂给比较或索引的成员):
+
+```text
+m_cachedExperience += acEvent.Experience;     <- CharacterService.cpp:1281
+data.m_timer       += acUpdateEvent.Delta;    <- 上一轮已修
+m_fadeTimer        += updateDelta;            <- CalendarService.cpp:114
+```
+
+**`m_cachedExperience` 是这一族里最特别的一个**:它是**本地测量出来的数**,
+却会被**另一个玩家**的引擎直接吃下。
+
+链路逐段查过:
+
+```text
+PlayerCharacter.cpp:245   float deltaExperience = newExperience - oldExperience;   <- 本地测量,无界
+        ↓ AddExperienceEvent
+CharacterService.cpp:1281 m_cachedExperience += acEvent.Experience;               <- 累加,无界
+        ↓ SyncExperienceRequest(每 4s 发一次)
+服务端 CharacterService.cpp:643  notify.Experience = acMessage.Packet.Experience;  <- 原样转发
+        ↓ NotifySyncExperience
+接收方 CharacterService.cpp:1300 pPlayer->AddSkillExperience(..., acMessage.Experience);  <- 进引擎
+```
+
+**而线上只挡了「非有限」,没挡量级**:
+
+```cpp
+Experience = WireLimits::ClampFinite(Serialization::ReadFloat(aReader));
+```
+
+`ClampFinite` 把 NaN/Inf 换成 0,但**一个 `1e30` 会原样通过**。
+
+**为什么量级才是问题**:引擎把技能已存 xp 当成一个**浮点**,
+再拿它与**每级的阈值**比较。一个它**没法比较**的值不会「让技能升很多级」——
+它会让那个技能**进入一个后续任何奖励都修不回来的状态**。
+
+**而这个测量本身可以出错,且对端拦不住**:
+
+- 一次奖励把技能的浮点 xp 推到溢出;
+- 两次读取之间发生**读档/存档切换**,让那个减法**失去意义**。
+
+两者都不是对端能做对什么就能避免的 —— 所以**界必须加在发送侧**,
+而不是只加在接收侧。
+
+**修法**:在 `WireLimits.h`(该仓库放这类常量的地方)新增
+`kMaxExperienceDelta = 100000.f` 与 `ClampExperienceDelta()`,并在**四处**应用:
+
+| 位置 | 为什么 |
+| --- | --- |
+| `CharacterService::OnAddExperienceEvent` | **本地测量变成别人游戏里的数**的地方 —— 加在入口 |
+| `SyncExperienceRequest::DeserializeRaw` | 线上读入 |
+| `NotifySyncExperience::DeserializeRaw` | 线上读入 |
+| `CharacterService::OnNotifySyncExperience` | **进引擎前的最后一点** —— 纵深防御 |
+
+**为什么是 100000**:技能整条进度线是**每级几百点**,单次奖励是**不到一级**,
+所以这个数**远在任何真实奖励之上**;它与 `kMaxHealthDelta` **取同一个数**,
+因为两者都是「引擎自己的尺度,宽裕地加上界」而不是游戏常量。
+
+**是区间截断而不是下限**,因为**负的经验是有意义的**(技能可以掉进度)。
+
+**新增单元测试** `[encoding.experience_delta]`(本轮三个新用例之一:测试套件 **22 → 25**):
+
+| 断言 | 为什么 |
+| --- | --- |
+| `0` / `1` / `±12.5` **原样通过** | 否则这个界会改变**正常游玩** |
+| 边界两侧、**正负都测** | 这是区间截断,不是下限 |
+| `±kMax * 2` 截到 `±kMax` | 越界被限住 |
+| `float::max()` → `kMax` | 注释里点名的溢出情形 |
+| NaN / ±Inf → **0** | 与 `ClampFinite` 同理:NaN 会在下游每次比较里存活 |
+| `kMax > 1000` | 界要**宽裕**,否则会削掉真实奖励 |
+| 线上往返:写入 `float::max()` 后读回 == `kMax`;再写 NaN 读回 == `0` | **线上那一层也真的截断了** |
+
+最后一条是**线上往返测试**而不只是常量测试 —— 它证明的是
+「接收方拿到的值已经被截断」,而不是「那个函数本身没问题」。
+
+### 修复:每帧的 delta **没有上界** —— 一次挂起就把一个巨大的时间差发给每一个订阅者
+
+**怎么找到的**:查服务端的主循环(`GameServer::OnUpdate`)。它测的是**真实经过时间**:
+
+```cpp
+const auto cDelta = cNow - m_lastFrameTime;
+const auto cDeltaSeconds = std::chrono::duration_cast<...>(cDelta).count();
+dispatcher.trigger(UpdateEvent{cDeltaSeconds});
+```
+
+而**客户端的 `World.cpp` 是同一个形状**(只挡下界,不挡上界):
+
+```cpp
+// 一次被跳过的调用不会推进 m_lastFrameTime,所以下一次被接受的调用
+// 测到的是「距上一次真正更新的整段时间」。
+if (m_hasTicked && cDelta < std::chrono::milliseconds(8))
+    return;
+```
+
+**注释自己说出了机制**:被跳过的调用**不推进** `m_lastFrameTime`,
+所以下一次测到的 delta **跨越整个间隔**。
+
+**而真实时间的测量不会因为进程内卡住而变小,只会变大**:
+挂起机器、在调试器里断下、一次长页错误、一次 hitch —— 都会在下一 tick
+**送来一个巨大的值**。服务端的循环是 **`while` 里没有任何 sleep**
+(`DediRunner::RunGSThread`),所以它完全取决于这两次迭代之间真实过了多久。
+
+**先核对「仓库里有没有已有的判据」**(§111/§114 的做法):
+
+| 查法 | 结果 |
+| --- | --- |
+| 全仓搜 `std::min`/`clamp` 作用在 delta 上 | **0 处** |
+| 全仓搜 `kMaxDelta`/`kMaxFrame` 类常量 | **0 处** |
+| 而同一仓库对**线上来的浮点**有整套约定 | `WireLimits::ClampFinite`、`kMaxHealthDelta`、`TimeModel::kMaxTimeScale` |
+
+也就是说:**这个仓库已经建立了「外部/不可控的数值要有界」的约定,
+而 delta 是唯一漏掉的那个** —— 而它比线上来的值更不可控(它来自真实时间)。
+
+**消费方**(逐个查过):
+
+| 消费方 | 怎么用 delta |
+| --- | --- |
+| `CharacterService::ApplyCachedWeaponDraws` | `data.m_timer += acUpdateEvent.Delta;` 再与 **0.5s / 2.0s** 比较 |
+| `CalendarService::HandleUpdate` | 读 delta,但实际推进用的是 `GetTick()` 差值(**安全**) |
+| `RunnerService::OnUpdate` | 忽略 delta |
+| 服务端 `ScriptService::OnUpdate` | `CallEvent("onUpdate", acEvent.Delta)` —— **原样交给 Lua** |
+
+**修法**:在 `WireLimits.h`(该仓库放这类常量的地方)新增
+`kMaxFrameDeltaSeconds = 1.0` 与 `ClampFrameDelta()`,
+并在**两处测量点**(客户端 `World.cpp`、服务端 `GameServer.cpp`)应用。
+
+**上界取 1 秒的理由**:
+
+- **在正常服务端上不可能触发** —— 客户端最快 8ms 一 tick,服务端循环无 sleep,诚实的一 tick 是毫秒级;
+- **1 秒正是消费方思考的单位** —— 武器拔出计时器等 0.5s / 2.0s,日历按游戏分钟推进;
+  所以被截断后的值仍然意味着「大约过了一秒」,而不是「什么都没发生」。
+
+**截断而不是丢弃**是有意的:每个订阅者**本来就已经容忍漏 tick**
+(客户端的 `m_hasTicked` 路径、服务端的事件循环都会丢工作),
+而**丢掉整个 update 会跳过 runner 的 drain**,那正是排队工作所依赖的。
+
+**顺带处理**:非有限值与负数一律归零 —— 与 `ClampFinite` 存在的理由相同
+(NaN 会在下游每一次比较里存活),而「时钟倒退」不是负的经过时间。
+
+**新增单元测试** `[encoding.frame_delta]`(本轮三个新用例之一:测试套件 **22 → 25**),
+按仓库既有风格逐条断言:
+
+| 断言 | 为什么 |
+| --- | --- |
+| 8ms / 100ms / 0 **原样通过** | 否则这个界会改变**每个**正常服务端的行为 |
+| 边界两侧 | 1.0 通过,1.0001 截到 1.0 |
+| 30s / 7200s 截到 1.0 | 挂起被限住 |
+| `kMaxFrameDeltaSeconds < 2.0` | 否则武器拔出计时器的 2.0s 窗口就失去意义 |
+| NaN / ±Inf / -5.0 → **0.0** | 坏时钟读作 0,而不是送进下游 |
+| `kMaxFrameDeltaSeconds > 0` | 界本身是正的时长 |
+
+### 修复:安装器元数据里的版本号**落后四个版本** —— 而它自己的注释就写着「要与最新 tag 保持一致」
+
+**怎么找到的**:按 §126 的新判据问 ——**「这个仓库里还有哪些机器可读的规则文件,
+而没有任何门禁读它?」** 逐个查 manifest,其中一个引出了这条线:
+
+```text
+Code/plugins/plugins.json          <- 被 5 处读,其中 check_ostimng_build.py 是门禁
+Code/plugins/tools/merge_fomod.py  <- 由它生成向导 XML,有 check 模式且已接进 CI
+GameFiles/Skyrim/fomod/info.xml    <- MO2 向导顶部显示的元数据
+```
+
+`merge_fomod.py check` 跑通了(`FOMOD OK … 55 folder sources`),
+`plugins.json` 的内部交叉引用也逐条查过(7 个插件 + 1 个前置,
+`requires` 指向存在,8 个子模块目录都在)。**这些都正确。**
+
+**但 `info.xml` 里有一处**:
+
+```xml
+<!-- The Version element is stamped from the release tag while the release zip
+     is assembled (release.yml); the number below is only what a hand-made
+     package shows. Keep it in step with the newest tag. -->
+<Version>1.1.5</Version>
+```
+
+**它自己的注释写着「要与最新 tag 保持一致」** —— 而本仓库最新的 tag 是 **v1.1.9**。
+**落后四个版本。**
+
+**为什么这条算缺陷,而不是「反正发布时会被 stamp」**:
+
+- 注释自己说了 stamp 只在**发布 zip 组装时**发生,所以**手工打包**用的是这个数;
+- 而**手工打包是这个仓库支持的路径**(`Tools/Packaging/New-STNModPackage.ps1`
+  就接受 `-Version` 参数,不传就用文件里的值);
+- 更直接的是:**任何读这个文件来判断「这个包是哪个版本」的人,会得到四个版本前的答案**。
+- 而「保持一致」这句话**只是注释 —— 注释不会运行**。
+
+**修法**:版本号改成 `1.1.9`,并把「它曾经落后四个版本」这件事写进注释 ——
+因为注释的下一句现在指向了门禁(`check_package_metadata.py`),
+**让下一个人知道这句约定是被检查的,而不是被期望的**。
+
+**新增门禁** `Tools/Scripts/check_package_metadata.py`,三条:
+
+1. **版本号等于本仓库自己那条 tag 序列的最新值**。
+   注意**不能取「全局最新 tag」**:tag 命名空间与上游共享
+   (上游发 v1.0.x…v1.8.x,而本仓库 merge 了那些提交),
+   所以本地 clone 里**两家的 tag 都在**。这条与 `check_docs.py` 的
+   `OWN_TAG_SERIES` 是**同一条判断**,沿用同一个序列(`1.1.`)与同一个理由。
+2. **描述里必须列出运行时真正接受的游戏版本**(`1.5.x / 1.6.x / 1.7.x`,
+   即 `Code/client/main.cpp` 那个前缀门禁的三项),**且不得声称运行时拒绝的版本** ——
+   这是**玩家在安装前读到的那句兼容性声明**,而它是散文,没有别的东西查它。
+3. **向导要显示的字段非空**(`Name` / `Author`),因为空字段正是这个文件当初被加进来的原因。
+
+**变异测试**,四种形状各自被精确指名:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| **还原原始缺陷**(版本改回 `1.1.5`) | `says version 1.1.5 but the newest tag of this repository's series is v1.1.9. A hand-made package, or anyone reading the file, then gets a version from an older release` |
+| 从描述里去掉 `1.6.x` | `does not name the supported game version prefix(es) ['1.6.']; the runtime accepts ['1.5.', '1.6.', '1.7.'], so a player on one of them is told the package is not for them` |
+| 声称支持 `1.9.x` | `claims support for ['1.9'], which the runtime's version gate does not accept (['1.5', '1.6', '1.7'])` |
+| 把 `Author` 置空 | `has no <Author>; the wizard shows that field blank` |
+| 未变异的对照组 | **通过** |
+
+第二条与第三条是**同一个兼容性声明的两个方向**:
+少了会漏掉一个版本,多了会承诺一个跑不起来的版本。
+
+### 修复:契约门禁只覆盖 **6 个消费者,而契约自己列了 7 个** —— 并且只认一种调用约定拼写
+
+**怎么找到的**:查 `Code/plugins/STRPM/` 时发现一个此前没注意的文件:**`contract.json`**。
+它是一份**机器可读的契约清单**,包含:
+
+```json
+{
+  "header": "Code/plugins/STRPM/include/.../STRPluginMessagingAPI.h",
+  "headerSha256": "8fdcf481…",
+  "interfaceVersion": 2,
+  "exportNames": [...],
+  "interfaceConstants": { ... },
+  "interfaceTypes": [...],
+  "consumers": { "AnimSyncTogether": {...}, ..., "TradeTogether": {...} }
+}
+```
+
+**它列了 7 个消费者**,而 §120 加的门禁**硬编码了 6 个副本**。
+逐条对照后,**两个消费者从未被任何门禁读过**:
+
+| 消费者 | 它 vendor 的文件 |
+| --- | --- |
+| `MorphSyncTogether` | `plugins/MorphSyncTogether/src/STRPMCompat.h` |
+| `OStimTogether` | `plugins/OStimTogether/src/STRPMApi.h` |
+
+**这正是 §113/§116/§119 那个错误的第四次**:清单写在发现地点,而不是按规则搜出来。
+**而这次连「规则」都早就写在仓库里了** —— `contract.json` 就是那份规则,
+我上一轮却**手写了一份清单**。
+
+**第二处缺陷**:门禁的成员提取正则只认 `STRPM_CALL` 这一种拼写:
+
+```python
+re.finditer(r'STRPM_CALL\s*\*\s*(\w+)\s*\)', body)
+```
+
+而 `OStimTogether` 直接写 **`__cdecl`**。在 x64 上两者**完全等价**
+(`STRPluginMessagingAPI.h:7` 就是 `#define STRPM_CALL __cdecl`),但正则匹配不到 ——
+于是那个文件的**函数指针成员会被数成 0**。
+**「数成 0」比「数错」更危险**:0 个成员意味着**没有东西可比对**,
+门禁会**通过**。这是**假通过**,不是假失败。
+
+**修法**:三条,都是「让规则来自契约而不是手写」:
+
+1. **消费者清单改为从 `contract.json` 读**(`copies()` 函数),
+   正本用 `header` 字段,其余用每个消费者的 `root` + `vendored`;
+2. **调用约定宏与直接拼写都认**(`STRPM_CALL|__cdecl|__fastcall|__stdcall`);
+3. **新增 `headerSha256` 校验** —— 契约公布了正本的哈希(供消费者判断自己
+   vendor 的是不是同一修订版),而**没有任何东西查它**。
+
+**覆盖从 6 个副本 / 20 个布局升到 8 个副本 / 25 个布局。**
+
+**顺带查清的两件事(都不是缺陷)**:
+
+- **`headerSha256` 一开始报不匹配,查清后是行尾问题**:记录的是 **LF 形式**
+  (7,424 字节,即 git 存的形式),而工作区在 Windows 上是 **CRLF**(7,686 字节)。
+  两者内容相同。所以门禁**按 LF 归一化后再算哈希**,并在 `--list` 里
+  **同时打印三种哈希**(记录值 / LF 形式 / 磁盘原样),让归一化**看得见**而不是隐含。
+- **`OStimTogether` 用 `__cdecl` 而正本用 `STRPM_CALL` 不是 ABI 差异** ——
+  x64 上 `STRPM_CALL` 就是 `__cdecl`。
+
+**还有一处必须记的自我纠正**:加宽覆盖后门禁**报了 4 条错,全是假阳性** ——
+它要求每个消费者声明**全部**常量与类型。而消费者**只声明它用到的**是合法的:
+契约说明哪些结构体**存在**,不是每个插件都用全部。
+核对确认那两个消费者**从未提到**那些名字(`TransportInterface`、`RuntimeStatus`、
+`kTransportInterfaceVersion` 等)。所以规则改成:
+**用到却没声明**才报错,**没用到就不要求** ——
+否则「把能工作的代码报成坏的」,而假阳性会让判据被放弃(§115.3)。
+
+**变异测试**:三个变异**都打在上一版从不读的那两个副本上**:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| 在 `OStimTogether` 里交换两个成员 | `OStimTogether/Interface declares 8 member(s) but the runtime copy declares 7: … Every call after the difference dispatches through the wrong slot` |
+| 在 `MorphSyncTogether` 里改常量 | `MorphSyncTogether sets kInterfaceVersion = 9 but the runtime copy sets 2` |
+| 把 `headerSha256` 改成全 0 | `contract.json records headerSha256 000… but the canonical header hashes to 8fdcf481… (LF form). A consumer cannot tell which revision it vendored` |
+| 未变异的对照组 | **通过** |
+
+### 核对:加载路径的其余部分**经查无缺陷** —— 三项形似缺陷实则不是,以及两条门禁范围正确
+
+本轮把 §123/§124 那条加载路径**走完**,并把「形似缺陷」的三处**逐条查清**。
+**没有发现新缺陷** —— 这一节记录的是**核对结果**,而不是修复。
+之所以值得记:这三处的形状都像 bug,**只有查过才能说不是**。
+
+**① `_base = GetModuleHandleA(NULL)` 在启动器模式下对不对?**
+
+`VersionDb.h` 在三处把镜像基址设成 `GetModuleHandleA(NULL)`。
+而启动器是**手动映射** exe 的(`ExeLoader::Load`),于是问题很具体:
+手动映射的镜像**不是**进程的 exe 模块,那 `GetModuleHandleA(NULL)` 会不会返回**启动器**的基址,
+从而让每个地址都算错?
+
+**查法**:读 `ExeLoader::Load` 的实现。
+
+```cpp
+bool ExeLoader::Load(const uint8_t* apProgramBuffer)
+{
+    m_pBinary = apProgramBuffer;
+    m_moduleHandle = GetModuleHandleW(nullptr);      // <- 就是启动器自己
+    ...
+    auto* sourceNtHeader = GetTargetRVA<IMAGE_NT_HEADERS>(...);   // 启动器自己的头
+```
+
+**结论:不是缺陷。** 启动器是**就地覆盖自己的镜像头**
+(`GetTargetRVA` = 启动器自己的 RVA),所以**启动器模块就是游戏镜像**,
+两种启动方式下 `GetModuleHandleA(NULL)` 都返回正确的基址。
+这个设计正是为了让「基址从哪来」这件事**只有一个答案**。
+
+**② `LoadFormat5` 按固定 64 字节读模块名,而 format 1/2 按长度前缀读 —— 是不是抄错了?**
+
+两种格式读模块名的方式**不同**,看起来像其中一处抄错。
+
+**查法**:直接读文件头。`versionlib-1-7-104-0.bin`(2,263,132 字节):
+
+```text
+format=5  version=1.7.104.0
+bytes 20..84 = "SkyrimSE.exe" + 52 个 \0      <- 固定 64 字节,零填充
+ptrSize@84=8   reserved@88=0   count@92=565759
+96 + 4*count = 96 + 2263036 = 2263132 == 文件大小   <- 精确吻合
+```
+
+**结论:不是缺陷。** format 5 的模块名**确实是固定 64 字节零填充**,
+而 format 1/2 确实是长度前缀 —— 两种格式在这件事上本来就不同。
+**用文件本身的算术验证**(`96 + 4*count == filesize`)比读代码更硬。
+
+**③ `FileVersion.inl` 是不是有两个文件?**(上一轮遗留的疑问)
+
+`Launcher.cpp` 写 `#include "Utils/FileVersion.inl"`,而 git 跟踪的是小写
+`utils/FileVersion.inl`。**查法**:`git ls-files` 只有一个,
+`Get-ChildItem -Recurse` 也只有一个 —— Windows 大小写不敏感,两边指同一个文件。
+
+**④ 两条门禁的范围按 §119 规程核对过,都正确**
+
+| 门禁 | 规则 | 核对结果 |
+| --- | --- | --- |
+| `check_ostim_support_message.py` | 「拒绝信息与选择器必须一致」 | 选择器接受 **3** 种形式(`7.4.0.3` / `7.5.0.2` / `7.5.1.x`),信息**恰好**列这 3 种 —— 一致;两处都在同一个文件里,范围正确 |
+| `check_skse_bootstrap.py` | 「bootstrap 必须能被本包支持的 SKSE 版本加载」 | 它同时查 `SKSEPlugin_Version`(2.2.x 用)与 `SKSEPlugin_Query`/`Load`(2.0.x/1.5.97 用),**正是 1.5.97 与 AE 的兼容性本身** |
+
+第 ④ 条里 `check_skse_bootstrap.py` 值得单独说:它的 docstring 记着一个**只在 AE 上出现、
+在 1.5.97 上完全看不见**的缺陷(SKSE 2.2.x 按导出名 `SKSEPlugin_Version` 查找,
+而那个 dll 只导出了旧式的 `SKSEPlugin_Query`),并说明**为什么它查源码而不是二进制**
+——「出货的构建跑在 CI 上,而这个失败在本机的 1.5.x 上是看不见的」。
+**这正是本目标(1.5.x/1.6.x/1.7.x 兼容性)的核心形状**。
+
+### 修复:同一个版本查询写了**三遍**,而启动器那一遍**少测一项** —— 空值会被当成版本号
+
+**怎么找到的**:顺着 §123 的加载路径往上走。`Code/skse_client` 那条链有三步回退,
+而**启动器那条链一步都没有** —— `Launcher.cpp`:
+
+```cpp
+LC.Version = QueryFileVersion(LC.exePath.c_str());
+if (LC.Version.empty())
+    DIE_NOW(L"Failed to query game version");
+```
+
+于是去看 `QueryFileVersion`,并把**同一段查询的三份实现**摆在一起对照
+(§114/§120 的判据:**一份定义变成多份,一致性就不再是编译器的事**):
+
+| 实现 | `ProductVersion` 的守卫 | `FileVersion` 的守卫 |
+| --- | --- | --- |
+| `immersive_launcher/utils/FileVersion.inl` | `len && ptr` | `len && ptr && *ptr` |
+| `client/VersionDb.h` | `len && ptr && *ptr` | `len && ptr && *ptr` |
+| `skse_client/main.cpp` | `ptr && *ptr` | `ptr && *ptr` |
+
+**只有启动器那一份的 `ProductVersion` 少了 `*ptr`** —— 而**同一个文件里紧接着的
+`FileVersion` 分支却带着它**。一个文件对同一个查询的两半给出不同的判据,
+这就是它藏不住的地方。
+
+**后果**:一个**带 `ProductVersion` 这个键、但值为空**的版本块,
+会让第一个分支返回空串,而**第二个分支(那个存在的回退)永远不会被执行**。
+调用方接着就是 `DIE_NOW(L"Failed to query game version")` ——
+**一次启动失败,而错误信息指错了原因**:`FileVersion` 就在那里可以读。
+
+**修法**:把两个键写成一张表、用同一个守卫,四项测试
+(查询成功 / 有长度 / 有指针 / **串非空**)在两条分支上完全一致。
+`*ptr` 这一项是必须的,因为**空串是一个「成功」的查询结果**,
+而它不是一个可用的版本号。
+
+**顺带核对(不是缺陷)**:
+
+- `VerQueryValue` 的 `A`/`W` 混用**是合法的**:全仓没有定义 `UNICODE`,
+  所以裸名解析成 `A`;而 `GetFileVersionInfoW` 只决定**资源块怎么读**,
+  `VerQueryValueA` 返回的始终是 `char*`。两处都是 `A`,一致。
+- 出参类型 `(void**)` 与 `(LPVOID*)` 在 Windows 上是**同一个类型**,不是缺陷。
+- `FileVersion.inl` 只有**一个**文件:`Launcher.cpp` 写的是 `"Utils/FileVersion.inl"`,
+  而 git 跟踪的是小写 `utils/` —— Windows 大小写不敏感,所以两边指的是同一个文件。
+
+**新增门禁** `Tools/Scripts/check_version_queries.py`:
+
+1. **每一处被守卫的 `VerQueryValue` 调用都必须测「串非空」** ——
+   按括号配平取守卫(不是正则抓一行),因为条件跨行且调用内部还有括号;
+2. **每个被读到的键都必须被某个守卫覆盖** —— 免得新增一个键却不加守卫;
+3. **三份实现读的键集合必须一致,且这是失败而不是提示** ——
+   少读一个键就是**少了回退**:一个把首个键留空的版本块会让那条路径直接中止,
+   而不是去试第二个键。
+
+**刻意不要求测长度**:三份里有两份没有测它,而**它们是对的** ——
+`VerQueryValueA` 会设置长度,且非空串本身就意味着长度非零。
+要求它会把**能工作的代码报成坏的**,而**假阳性会让判据被放弃**(§115.3)。
+
+**变异测试**:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| **还原原始缺陷**(`ProductVersion` 去掉 `*ptr`) | `the ProductVersion guard is '&& productVersionLen && productVersion', which does not test non-empty. An empty ProductVersion then counts as a version, and the fallback key is never tried` |
+| 删掉某个实现里的 `FileVersion` 回退 | `reads ['ProductVersion'] while ... reads ['ProductVersion', 'FileVersion']; a copy with fewer keys has no fallback` |
+| 未变异的对照组 | **通过** |
+
+第二条在**第一版门禁里只报「提示」而不是失败** —— 我在做变异测试时发现并改成失败:
+**少了回退是缺陷,不是提醒**(§113.3 的「贡献 0 项即失败」是同一条)。
+
+### 修复:地址库回退「取目录里第一个」—— 而一个整合包有 **10 个以上**地址库,1.5.x 之间 **98.7% 的 id 指向不同地址**
+
+**怎么找到的**:转到**加载路径**——「哪个运行时被加载、按哪个版本加载」这条链。
+`Code/skse_client/main.cpp` 用三步解析游戏版本:SKSE 模块名(权威,SKSE 与游戏版本锁定)、
+exe 版本资源、最后**扫 `Data/SKSE/Plugins` 里的地址库文件名**。
+第三步存在的理由写在注释里:**重打包与降级补丁会剥掉或伪造版本资源**。
+
+而这一步的实现是「**取第一个匹配的**」:
+
+```cpp
+for (auto it = std::filesystem::directory_iterator(plugins, ec); ...)
+{
+    if (sscanf_s(name.c_str(), "versionlib-%d-%d-%d-%d.bin", ...) == 4 || ...)
+        return buf;          // 第一个就返回
+}
+```
+
+**目录枚举顺序是未定义的**,而注释里那句「一个整合包只带一套 bin」**是错的**:
+本仓库自带 **23 个**,装好的游戏里有 **10 个**。
+
+**这不是「差一点」,是灾难性的**:把 1.5.16 与 1.5.97 逐 id 对比 ——
+两者共享 **777,719** 个 id,其中 **767,644 个(98.7%)解析到不同的 RVA**。
+这正是 `GamePatch.h` 早就记下的那条:「十个不同的 1.5.x 地址库,它们的代码不可互换」。
+
+**实测确认了这条路径真的会被走到**:装好的游戏里 `version-*.bin` 有 10 个
+(`1-5-3` 到 `1-5-97`),按名字排序第一个是 **`version-1-5-16-0.bin`**。
+而随包的 `st_boot.log` 显示 `resolved='1.5.97.0'` —— **只是因为 exe 版本资源这次能读**。
+一旦它读不出来(注释里点名的那种情况),回退就会返回 `1.5.16.0`。
+
+**修法**:两件事要分开,而且需要**不同的信息**:
+
+| 问题 | 依据 |
+| --- | --- |
+| **哪个族**(pre-AE / AE) | 文件名本身:树里每个 `version-*.bin` 都是 1.5.x,每个 `versionlib-*.bin` 都是 1.6.x/1.7.x。**这个翻译单元被编译两次**,legacy 构建带 `SKYRIM_TARGET_LEGACY`,所以族**不是猜的** |
+| **族内哪个版本** | 取**最高**。比运行版本更新的地址库是**惰性的**(客户端只解析它认识的 id),更旧的则**解析到错地址** |
+
+**过程中我自己先写错了一版并当场纠正**:第一版取的是「**全局最高**」——
+那在 1.6.1170 的游戏上会选到 **1.7.104.0**,加载一个 1.7 的库。
+两个族在 `major.minor` 上**不相交**,所以「全局最高」两个问题都没回答。
+改成按 `SKYRIM_TARGET_LEGACY` 过滤后:legacy 构建只可能解析 1.5.x,modern 只可能 1.6.x/1.7.x。
+
+**顺带查出一个死文件**:`versionlib-1-6-1170-0-1.bin`(795,210 字节)
+与 `versionlib-1-6-1170-0.bin`(795,129 字节)**同名版本、内容不同**
+(共享 id 里 98.7% 解析到不同 RVA),自 `28eca3fb`「适配不同版本」起被签入,
+**但没有任何代码路径能打开它** —— `VersionDb::Load` 只格式化
+`versionlib-%d-%d-%d-%d.bin`,四个数;而 `sscanf_s` 对五段名**仍然返回 4**
+(四个转换在字面量 `.bin` 失配**之前**就成功了),所以两个文件都解析成 `1.6.1170.0`,
+`-1` 那个永远选不中。**它是有意加进来的,所以不删** —— 门禁把它登记为「不可达」并写明理由。
+
+**新增门禁** `Tools/Scripts/check_library_scan.py`,四条:
+
+1. `ScanLibraryVersion` **必须保留最高候选**,不能返回第一个匹配;
+2. **必须按族过滤**,且族来自构建宏而非猜测;
+3. **构建必须真的产出 `SKYRIM_TARGET_LEGACY=1` 的运行时** ——
+   否则过滤条件在**每个**构建里都是假,legacy 运行时就会去读 AE 的库名;
+4. **前提检查**:磁盘上每个 `version-*.bin` 真的都是 1.5.x、每个 `versionlib-*.bin` 都不是
+   —— 因为族过滤正是建立在这个命名约定上。
+
+**变异测试**:去掉族过滤 → 报 `computes a family but no longer filters on it`;
+去掉 `SKYRIM_TARGET_LEGACY=1` 构建 → 报「过滤条件在每个构建里都是假」;
+对照组通过。
+
+### 新增门禁:1.5.97 匹配报告里有 **2 条候选与出货 map 不一致** —— 逐条用真机反汇编判定谁对
+
+**怎么找到的**:继续按 §117/§118/§121 的判据问 `Tools/ida/`
+「谁在读这个文件」。`st_capstone_report.json` 的答案:**没有门禁读它**。
+
+它是**相似度匹配的中间日志**:对 91 个 AE id,记录匹配器给出的候选 `se_rva`
+与它的相似度评分(或没找到的原因,如 `no bracket`、`ambiguous 0.84 vs 0.80`、
+`low similarity 0.62`)。它是**证据**,而出货物是
+`versionlib-ae-to-se-1-5-97-0.map`。
+
+**没有任何东西把两者对照过**,所以读者无法分辨:哪些候选被采纳、哪些被否决、
+否决是不是**有意的**。对照之后:
+
+| | 数量 |
+| --- | --- |
+| 有候选的条目 | 49 |
+| 与出货 map **一致** | **47** |
+| 与出货 map **不一致** | **2** |
+
+不一致的两条:**id 37511**(`s_payGoldToContainer`,相似度 **0.82**)与
+**id 47303**(`actorHasEquippedRangedWeapon_m`,相似度 **0.74**)。
+
+**两条都用真机反汇编判定了,而出货 map 两次都对、报告的候选两次都错:**
+
+**37511** —— 出货值 `0x5e5dd0` 是一个**薄转发函数**,读 `rcx` / `rdx` / `r8d`
+然后尾调用,正是客户端传的三个参数(`this`、容器、数量):
+
+```asm
+1405e5dd0:  48 8b f9        mov %rcx,%rdi        <-- this
+1405e5de2:  41 8b f0        mov %r8d,%esi        <-- amount
+1405e5de9:  48 8b da        mov %rdx,%rbx        <-- container
+1405e5e0c:  e9 ff 1b c0 c0  jmp ...              <-- tail call
+```
+
+而报告的候选 `0x5e3a50` **完全不读 `rdx`** —— 是另一个函数。
+
+**47303** —— 出货值 `0x7bcb40` 测的是**形态类型 0x29**(`cmpb $0x29,0x1a(%rax)`)
+加一个 `<= 7` 的范围检查,正是客户端按 `bool Actor::()` 调用的那个「是否装备远程武器」:
+
+```asm
+1407bcb40:  48 8b 89 f0 00 00 00  mov 0xf0(%rcx),%rcx
+1407bcb66:  80 78 1a 29           cmpb $0x29,0x1a(%rax)    <-- form type 0x29
+1407bcb75:  83 f8 07              cmp $0x7,%eax
+```
+
+而候选 `0x7bcaf0` 测的是**另一个**形态类型。
+
+**这不是运气,而是一条可以固化的规律**:
+
+| 相似度区间 | 与出货 map 一致 |
+| --- | --- |
+| **≥ 0.90** | **31 / 31 全部一致** |
+| 0.80 ~ 0.90 | 6 / 7 |
+| < 0.80 | 10 / 11 |
+
+**每一条不一致都落在两个最低的相似度区间里**,而 ≥0.90 那一档**全票一致**。
+也就是说:**这两条否决是匹配器的低置信度猜测被人工判定推翻的结果**,
+出货 map 的处置是对的。
+
+**新增门禁** `Tools/Scripts/check_capstone_report.py`,把这件事**固定下来**:
+
+1. 每条候选**要么与出货 map 一致,要么登记在 `REJECTED` 表里并写明理由** ——
+   于是第三条不一致不可能无声出现;
+2. **反向查**:登记为「已否决」的条目若 map 现在**同意了**候选,报错 ——
+   免得豁免活得比理由长;
+3. 固化上面那条相关性:**≥0.90 那一档若有任何一条不一致就报错** ——
+   因为本节的两条否决**正是建立在「高相似度从不被推翻」之上的**;
+   一旦它不成立,这个推理就要重新推导。
+
+**变异测试**,三种形状各自被精确指名:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| 在高相似度档(1.0)造一条不一致 | `16005 (s_isQuestObject): the report resolved 0xf423f (similarity 1.0) but the shipped map has 0x1d6ba0; every candidate at or above 0.9 has been accepted, so this one disagreeing is new` **+** `that band was previously unanimous, so the rejections recorded here need re-deriving` |
+| 在低相似度档造**第三条**未登记的不一致 | `68545 (setEnabled): the report resolved 0xd9038 (similarity 0.74) but the shipped map has 0xc11c60. Either the map is wrong or the candidate was rejected - if rejected, record it in REJECTED with the reason` |
+| 让 map 与某条已否决的候选**一致**(豁免过期) | `37511: this gate records it as rejected (...), but the map now agrees with the candidate; drop the entry rather than leaving it stale` |
+| 未变异的对照组 | **通过** |
+
+### 新增门禁:91 条「引擎地址证据」**没有任何门禁读它** —— 而它有三条各自可查的主张
+
+**怎么找到的**:按 §117/§118 的判据把 `Tools/ida/` 逐个问「谁在读这个文件」。
+`st_target_meta_1170.json`(132 KB)的答案是:**只有写它的 IDA 脚本和一个 README**。
+
+它是**客户端所解析的地址库 id 背后的证据**:91 条记录,每条给出
+
+```json
+"11612": {
+  "var": "setWornData",
+  "callsite": "Games/Skyrim/ExtraData/ExtraDataList.cpp:112",
+  "ea_1170": "0x14015ab40",
+  "size": 481,
+  "decompile": "…反汇编全文…",
+  "callees": ["ae68234", …],
+  "bytes16": "40555657415641574883ec3048c74424"
+}
+```
+
+**它有三条可以各自独立验证的主张** —— 而三条都可能无声地失效:
+
+| 主张 | 失效后果 |
+| --- | --- |
+| ① `ea_1170` 是那个 id 的地址 | **被审阅的反汇编不是客户端调用的那个函数** |
+| ② 客户端**仍然**把那个 id 绑到那个变量 | 记录的反汇编不再描述实际运行的代码 |
+| ③ 那个 id 在**每个** AE 运行时上都存在 | 只在一个版本上存在 = 其他版本解析为空(旧版运行时则是那个共享桩) |
+
+**先核对现状**(三条各自查一遍):
+
+| 检查 | 结果 |
+| --- | --- |
+| `ea_1170` − 镜像基址 == `versionlib-1-6-1170-0.bin` 记的 RVA | **91 / 91 一致** |
+| (文件, 变量, id) 三元组仍存在于客户端 | **91 / 91 存在** |
+| 91 个 id 在全部 **14 个** AE 运行时上的解析 | **91/91 × 14 全部解析** |
+
+**也就是说当前没有活缺陷** —— 这份证据是准确的(§113.2 的区分)。
+
+**核对过程中值得记的两件事**:
+
+1. **`callsite` 里的行号已经漂移了** —— 91 条里有 **46 条**的行号不再指向那个绑定
+   (`ExtraDataList.cpp` 那 6 条都偏了 31 行)。行号是**拍摄时那个修订版**的,
+   而**三元组 (文件, 变量, id) 才是主张本身**。所以门禁按**三元组**查,
+   不按行号 —— 这是本节最该留下的一条。
+2. **我的第一版匹配器报了 12 条「变量绑到了别的 id」,全是假阳性**:
+   `POINTER_SKYRIMSE` 是**函数局部**的,同一个名字在不同函数里**合法地**绑不同 id
+   (`s_pickUpObject` 在 `Actor.cpp` 是 37521、在 `PlayerCharacter.cpp` 是 40533)。
+   `callsite` 的作用正是**指明是哪一处**。而 `400180` 那条用的是
+   `RttiLocator<...>(400180)` 而不是 `POINTER_SKYRIMSE` —— 元数据把它的 `var`
+   标成 `"rtti"`,**标对了**。门禁现在两种绑定形式都认。
+
+**新增门禁** `Tools/Scripts/check_target_meta.py`,三条主张各查一条,
+并**先断言证据文件与库都在**(否则报「无从校验」而不是静默通过)。
+
+**变异测试**,三条主张各自被独立命中:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| `ea_1170` 改 1 字节 | `ea_1170 0x14015ab41 is RVA 0x15ab41, but versionlib-1-6-1170-0.bin records 0x15ab40 for this id; the disassembly that was reviewed is not the function this id resolves to` |
+| 把 `var` 改成同文件里另一个名字 | `11612 (setHealth) is recorded against ...ExtraDataList.cpp, but that file binds setHealth to ['11616']; the metadata describes a binding the client no longer has` |
+| 加一条**只在 1170 上存在**的 id | `versionlib-1-6-317-0.bin: 1 recorded id(s) do not resolve there, e.g. [415831] …`(同时命中 317 与 318) |
+| 未变异的对照组 | **通过** |
+
+第二条的诊断**直接说出正确的 id 是 `11616`** —— 是能拿去改的信息,不只是「错了」。
+
+### 新增门禁:契约头被**复制进 6 个地方**,而它的 ABI 是**成员顺序** —— 没有任何东西比较这些副本
+
+**怎么找到的**:按 §119 的规程(「扫描范围要按规则搜,不能按发现地点写」)
+把 `Code/plugins/tools/` 下 9 条门禁逐个做范围审计。`check_skee_abi.py` 的
+`SOURCES` 只有两个文件,所以先问:**规则是什么?**
+规则是「**凡声明了这三个 SKEE 接口类的文件**」—— 用规则搜一遍全仓:
+
+| 文件 | 声明了 | 是否在 `SOURCES` |
+| --- | --- | --- |
+| `plugins/MorphSyncTogether/src/SkeeInterfaces.h` | 3 个 | **是** |
+| `plugins/OStimTogether/src/RaceMenuOverlayBridge.cpp` | 2 个 | **是** |
+
+**0 个漏掉** —— 这条门禁的范围是对的。`check_exports.py` 同理:契约里 4 个名字、
+运行时导出 4 个符号,**双向对称、无多余**。
+
+**但顺着「谁复制了契约」这条线问下去,发现一个真空白**:
+`STRPluginMessagingAPI/STRPluginMessagingAPI.h` 被**复制进 6 个地方**:
+
+```text
+Code/plugins/STRPM/...            运行时的正本
+plugins/STRPluginMessagingAPI/... 独立桥
+plugins/AnimSyncTogether/...
+plugins/DAVSyncTogether/...
+plugins/IEDSyncTogether/...
+plugins/TradeTogether/...
+```
+
+而这些副本的字节大小**差到 1.4 KB**(6,590 ~ 8,010),于是问题变成:
+**它们的 ABI 一致吗?谁在检查?**
+
+答案:**没有人在检查**。而这些接口结构体是**函数指针表**:
+
+```cpp
+struct Interface
+{
+    std::uint32_t version{ kInterfaceVersion };
+    Result(STRPM_CALL* registerChannel)(const char*, ReceiveCallback, void*, ListenerHandle*);
+    Result(STRPM_CALL* unregisterChannel)(ListenerHandle);
+    Result(STRPM_CALL* send)(const char*, Target, const void*, std::size_t, std::uint32_t);
+    ...
+};
+```
+
+**ABI 就是成员的顺序。** 交换 API 检查不了它:运行时交回一个指针,
+插件按**第 N 个槽位**调用,某个副本里插入/删除/重排一个成员,
+后面**每一次调用都派发到错的函数** —— 与 `check_skee_abi.py` 存在的理由
+(RaceMenu 版本错配)**是同一类失败**。
+
+**先核对现状**(把 6 个副本逐项对照):
+
+| 检查项 | 结果 |
+| --- | --- |
+| 4 个接口结构体的**成员顺序** | **6 个副本全部一致**(20 个布局) |
+| 共享常量(`kInterfaceVersion` = 2 等 6 个) | 全部一致 |
+| 声明的类型集合(15 个) | 全部一致 |
+
+**也就是说当前没有活缺陷** —— 字节差异来自空白与注释,不是 ABI
+(§113.2 的区分:补的是**守护**)。
+
+**新增门禁** `Code/plugins/tools/check_contract_copies.py`,三条检查:
+
+1. **每个接口结构体的成员顺序**必须与正本一致 —— 这是 ABI 本身;
+2. **每个共享常量的值**必须一致 —— 两边会拿它比较后才派发;
+3. **声明的类型集合**必须一致 —— 免得某个副本悄悄多/少一个类型。
+
+**刻意不要求**逐字节相同:副本在空白、以及「带了哪些尾部声明」上**合法地不同**,
+而**要求字节相同是错的**(§117.2 的方向性教训:门禁要问「ABI 一致吗」,
+而不是「文件一样吗」)。
+
+**变异测试**,三种 ABI 失败形状各自被精确指名:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| 在 `AnimSyncTogether` 副本里**交换两个成员** | `declares the same members in a DIFFERENT ORDER: [...] vs [...]. The order is the ABI` |
+| 在 `DAVSyncTogether` 副本里**改常量**(2→3) | `sets kInterfaceVersion = 3 but the runtime copy sets 2` |
+| 在 `TradeTogether` 副本里**删掉一个成员** | `declares 6 member(s) but the runtime copy declares 7: [...] vs [...]. Every call after the difference dispatches through the wrong slot` |
+| 未变异的对照组 | **通过** |
+| **删掉整个副本文件** | `is missing; IEDSyncTogether cannot be compared against the other copies` |
+
+第三条变异**同时命中了两个结构体**(`Interface` 与 `TransportInterface`)——
+说明它按结构体逐个比对,不是只比一个。
+
+### 修复:上一轮新加的覆盖表门禁**又只读了一个文件** —— 而出货 map 是三个文件生成的
+
+**怎么找到的**:上一轮(§118)刚写完 `check_ae_to_se_overrides.py` 并抓到活缺陷,
+本轮先问同一类问题(§113/§116 的判据):**这个门禁扫得够全吗?**
+它的扫描根写死成 `st_overrides_all.tsv` —— 因为**缺陷是在那里找到的**。
+
+而 `Tools/ida/README.md` 里给出的再生命令是:
+
+```text
+--overrides Tools/ida/st_overrides.txt \
+--overrides Tools/ida/st_overrides_graph.txt \
+--overrides Tools/ida/st_overrides_all.tsv \
+--out       GameFiles/Skyrim/SKSE/Plugins/versionlib-ae-to-se-1-5-97-0.map
+```
+
+**三个文件都是出货 map 的输入**,而门禁只读了第三个。
+
+**这是第三次同一个错误**:§113(`check_ostimng_versions.py` 只扫 1 个插件)、
+§116(`check_wire_symmetry.py` 只扫 `Messages`)、现在是 §119。
+**三次都是「扫描根写成发现地点而不是规则」**。所以这次修法不只是补两个文件名。
+
+**先核对现状**(把三个文件都按三条不变量跑一遍):
+
+| 文件 | 行数 | 重复 id | RVA 不是函数起点 | 在 `.text` 内却不是起点 | 与出货 map 不一致 |
+| --- | --- | --- | --- | --- | --- |
+| `st_overrides.txt` | 63 | 0 | 0 | 0 | 0 |
+| `st_overrides_graph.txt` | 21 | 0 | 0 | 0 | 0 |
+| `st_overrides_all.tsv` | 3,678 | 0 | 0 | 0 | 0 |
+
+**三个文件全部干净** —— 也就是说补的是**守护**,不是修 bug(§113.2 的区分)。
+唯一一处「id 在覆盖文件里但不在 map 里」是 `st_overrides_graph.txt` 的 **14774**
+(`BSRandom::GetGenerator`),而 README **明确**写了它「not yet folded into the map」、
+且「**不要**为了对齐而把它从覆盖文件里删掉 —— 文件是证据日志,map 才是出货物」。
+所以这一条被登记为**有意的例外**并写明理由,而不是被当成错误。
+
+**修法**:
+
+1. `OVERRIDE_FILES` 写成**显式清单**,三个文件都扫;
+2. 加 `ALLOWED_ABSENT` 表,把「有意的例外」连同理由登记下来 ——
+   并**反向查**:豁免的 id 若不在文件里了就报错,免得豁免活得比理由长;
+3. 加**防范围腐化**的反向检查:清单里的文件若**贡献 0 行**即为失败 ——
+   因为「文件被清空」与「文件格式变了」在扫描结果上**长得一样**,
+   而后者会让门禁**静默退化成空转却照样打印 OK**(§113.3/§116.3 的同一招)。
+
+覆盖从 **3,678 行 / 1 个文件** 升到 **3,762 行 / 3 个文件**。
+
+**变异测试**——**专门在上一版从不读的那两个文件里造缺陷**:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| `st_overrides.txt` 里一个 RVA 改成 `0x1234` | `Tools/ida/st_overrides.txt:4: id 11612 maps to 0x1234, which is inside .text but is not a function start` **+** `says 0x1234 but the shipped map has 0x10de90` |
+| `st_overrides_graph.txt` 里制造重复行 | `id 14774 appears on line(s) 18, 19; the reader keeps the last one, so the value that ships depends on file order` |
+| 三个真实文件的对照组 | **通过** |
+| **把 `st_overrides_graph.txt` 清空** | `contributed no override row` **+** 豁免过期提示 |
+
+**上一版门禁对前两条变异完全不报** —— 这正是补范围的意义。
+
+### 修复:1.5.x 的 id→RVA 覆盖表里 **id 35086 有两个互相矛盾的值**,而读取方**静默取最后一个**
+
+**怎么找到的**:上一轮(§117)的判据是「找出只有文档意义、编译器管不着的证据文件」。
+本轮把它用遍 `Tools/ida/` —— 逐个问「这个文件谁在读?」。`st_overrides_all.tsv`
+(3,692 行)的答案是:**除了一个 README,没有任何代码或门禁读它**。
+
+而它其实是**出货物的输入**:
+
+```text
+GameFiles/Skyrim/SKSE/Plugins/versionlib-ae-to-se-1-5-97-0.map
+  = gen_ae_to_se_map.py --overrides Tools/ida/st_overrides_all.tsv 的输出
+```
+
+也就是说:**1.5.x 运行时实际加载的那张 AE id → 1.5.97 RVA 翻译表,
+就是从这张表生成的。** 表里 3,678 行是「手工核对过的 id → RVA」。
+
+**缺陷**:表里 **id 35086 出现了两次,值不同**:
+
+```text
+L288   35086 0x567a89
+L3680  35086 0x567a80
+```
+
+而读取它的代码是:
+
+```python
+table[ae_id] = se_offset     # 后出现的覆盖先出现的 —— 静默
+```
+
+**出货的 map 取到的是「最后一个」** —— 这次是**对的**那个,
+但那是**行序的运气**,不是任何检查的结果。把文件排一次序,或者把某一行挪个位置,
+出货的就是另一个值,而**没有任何东西会报错**。
+
+**两个值谁对?** 这不是靠读代码能回答的,要问 1.5.97 的地址库本身:
+
+| RVA | 在 `version-1-5-97-0.bin` 里是函数起点? |
+| --- | --- |
+| `0x567a80` | **是**(SE id 34286) |
+| `0x567a89` | **不是** |
+
+再把真实 `SkyrimSE.exe`(1.5.97,34,769,792 字节)反汇编出来看:
+
+```asm
+140567a80:  48 85 d2        test %rdx,%rdx          <-- 函数真正的开头
+140567a83:  0f 84 3d 03 00 00  je 0x140567dc6
+140567a89:  48 8b c4        mov %rsp,%rax           <-- 旧值指向这里,函数体内 9 字节
+```
+
+`0x567a89` **落在函数体内部** —— 越过 `test rdx,rdx / je` 这个序言,
+指向「已经假定 rdx 非空」之后的代码。
+
+**这不是死数据**:`Actor.cpp:1581` 用这个 id 解析一个**活的**函数指针:
+
+```cpp
+POINTER_SKYRIMSE(TApplyActorEffect, s_applyActorEffect, 35086);
+```
+
+在 1.5.x 上,它经 `VersionDbPtr` 拿到的是**覆盖表 → 出货 map → 1.5.97 RVA**。
+一个指向函数内部的地址,**就是一次跳到错误位置的调用**。
+
+**修法**:把 L288 的旧值改成正确的 `0x567a80`,并**删掉 L3680 那条重复行**
+(两行同值没有意义,留着只会让「一个 id 一行」这个不变量继续被破坏)。
+现在全表 **3,678 行、0 个重复 id、0 处与出货 map 不一致**。
+
+**先核对现状,再动手**(§111 的方法):把**全部 3,678 行**逐条对 1.5.97 地址库查一遍 ——
+
+| 检查 | 结果 |
+| --- | --- |
+| RVA 是函数起点 | 3,677 |
+| RVA 不是函数起点 | **1**(就是 35086 的旧值) |
+| 落在 `.text` 内却不是函数起点(= 可疑) | **1** |
+| 落在 `.text` 之后(数据 / RTTI 定位符,正常) | 0 |
+
+也就是说:**全表只有这一个坏值**,不是普遍问题。
+
+**新增门禁** `Tools/Scripts/check_ae_to_se_overrides.py`,三条检查各自独立:
+
+1. **每个 id 只出现一次** —— 重复意味着读取方在**静默选择**,而选哪个取决于行序;
+2. **每个 RVA 是 `version-1-5-97-0.bin` 里的函数起点**(该客户端在那个版本上加载的库),
+   例外是 `.text` 之后的定位符(结构上就是数据);
+3. **每个值与出货 map 一致** —— map 是从这张表生成的,不一致意味着**只重生成了一边**。
+
+**变异测试**(每个都先断言真的生效),三种形状各自被精确指名:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| **还原原始缺陷**(35086 → `0x567a89`) | `id 35086 maps to 0x567a89, which is inside .text but is not a function start in version-1-5-97-0.bin - a call through it lands mid-function` **+** `id 35086 says 0x567a89 but the shipped map has 0x567a80` |
+| 还原重复行 | `id 35086 appears on line(s) 288, 3680; the reader keeps the last one, so the value that ships depends on file order` |
+| 值改成 `0xf9e91`(差 1 字节) | 同样两条,指名 L14 |
+| 未变异的对照组 | **通过** |
+
+第一条正是**本轮的原始缺陷** —— 门禁确实会拦住它。
+
+### 新增门禁:1.5.x 的补丁偏移**有实测证据文件,但没有任何东西把代码和它绑在一起**
+
+**怎么找到的**:上一轮把 15 条门禁的**扫描范围**逐个核对(§113/§116 的判据),
+其中 `Code/plugins/tools/plugin_patches.py verify` 跑通了 39 个插件补丁。
+接着问同一类问题:**仓库里还有哪些「证据文件」是只有文档意义、编译器管不着的?**
+
+`Tools/ida/st_patch_offsets_1597.tsv` 就是这样一个 —— 它是
+`Tools/ida/patch_offsets_1597.py` 把 1.6.x 与 1.5.97 两份反汇编**逐指令对齐**的产物,
+每一行给出「这个补丁站在 1.5.97 上应该写哪里」,并对没有对齐成功的行**写明原因**。
+它被签入仓库,`GamePatch.h` 的注释也指向它。
+
+但**没有任何门禁读它**:
+
+```text
+git grep -ln 'st_patch_offsets_1597' -- Tools/Scripts Code/plugins/tools
+  (空)
+```
+
+偏移量是以**字面量**形式散在 8 个文件、13 处
+`GamePatch::At(pAnchor, {modern, legacy, "1.5.97"}, "site")` 调用里的。
+于是两边可以各说各话:
+
+- **tsv 是证据** —— 它说「哪一行的 1.5.x 偏移有实测支持」;
+- **代码是主张** —— 它决定这个补丁**到底写不写**。
+
+**危险的方向只有一个**:调用点带着一个**没有任何行支持的 1.5.x 偏移** ——
+那是把**没人量过的数字写进正在运行的游戏**。反方向(tsv 有、代码不用)不是缺陷
+(1.5.x 上主动放弃一个纯外观补丁是有意的,`frame end` 就是这样),
+但值得**报告**,因为那通常意味着「行被更新了、调用点没跟上」。
+
+**先核对现状**:把 13 处调用点的偏移与 tsv **逐条对照**:
+
+| 站点 | 代码 modern | tsv ae | 代码 legacy | tsv se | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| window style | `0x174 + 1` = 0x175 | 0x175 | – | – | 一致(该行注明 1.5.x 未对齐) |
+| dinput cooperative level | 0x57 | 0x57 | 0x57 | 0x57 | 一致 |
+| stats menu appear / background / update | 0x84E / 0xA10 / 0x1040 | 同 | 0x929 / 0xAEC / 0xFBC | 同 | 一致 |
+| stats menu controls a / b | 0x46 / 0x4A | 同 | 0x46 / 0x4A | 同 | 一致 |
+| menu unfreeze | 0x682 | 0x682 | 0x6A4 | 0x6A4 | 一致 |
+| favorites menu numbering | 0x15 | 0x15 | 0x15 | 0x15 | 一致 |
+| projectile null check | 0x374 | 0x374 | 0x397 | 0x397 | 一致 |
+| skip startup movie | 0xFE | 0xfe | – | – | 一致(1.5.x 未对齐) |
+| tasklet thread names | 0x63 | 0x63 | – | – | 一致(该 id 在 1.5.97 未映射) |
+| **frame end** | 0x9 | 0x9 | **–** | **0x9** | **tsv 有实测偏移,代码不用** |
+
+**也就是说当前没有活缺陷**,缺的是守护 —— 与 §113.2、§115.4 同一种区分。
+
+**新增门禁** `Tools/Scripts/check_patch_offsets.py`:
+
+- 机械枚举**每一处** `GamePatch::At(...)` 调用(不是认行号),解析出锚点、
+  modern 偏移、legacy 偏移、实测版本字符串与站点名;
+- **modern 必须等于 tsv 记录的 `ae_offset`**;
+- **legacy 偏移只在 tsv 那一行确实记录了 `se_offset` 时才允许出现** ——
+  否则报错并引述该行的原因(如 `'instruction not in an aligned run'`);
+- 有 legacy 偏移时,**实测版本字符串必须是 `1.5.97`**,与 tsv 的前提一致;
+- 两处**命名空间不同**(tsv 的行名带限定词如 `menu unfreeze (call site)`,
+  代码用短名),所以按「行名 = 站点名 或 站点名+限定词」匹配,
+  多行匹配时**用偏移量定行**(`stats menu controls a/b` 就是这样区分的);
+- **反向查**:`NO_LEGACY_EXPECTED` / `UNUSED_LEGACY_OK` 两张豁免表里的站点
+  若在 tsv 里不再存在,报错 —— 免得豁免活得比理由长。
+
+**变异测试**(每个都先断言变异真的生效),三种缺陷形状各自被精确指名:
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| 1.5.x 偏移改成 tsv 没记录的 `0x999` | `uses 1.5.x offset 0x999 but ... records 0x929` |
+| 给「tsv 明确没有 1.5.x 偏移」的站点**加上**一个 | `applies a 1.5.x offset (0x100) that ... does not record - the row says 'instruction not in an aligned run'. A number nobody measured must not be written into a running game` |
+| modern 偏移改成 tsv 没有的 `0x375` | `uses modern offset 0x375, which no ... row records for it (recorded: 0x374, 0x379)` |
+| 未变异的对照组 | **通过** |
+
+**顺带核对(无缺陷)**:39 个插件补丁**全部**通过 `plugin_patches.py verify`
+(即都能干净地应用到固定的子模块提交上 —— 一个应用不上的补丁意味着
+**一个静默消失的修复**)。
+
+### 修复:上一轮新加的线上格式门禁**自己犯了它要防的那个错** —— 只扫了 `Messages`,漏掉 `Structs` 的 23 对
+
+**怎么找到的**:上一轮(§115)加 `check_wire_symmetry.py` 时,扫描根写死成
+`Code/encoding/Messages` 一个目录 —— 因为那是**第一个想到的**地方。
+本轮把「还有哪些目录定义同样的成对函数」数一遍:
+
+| 目录 | `.cpp` | 同时定义 `Serialize`+`Deserialize` |
+| --- | --- | --- |
+| `Code/encoding/Messages` | 112 | 110(名字是 `SerializeRaw`/`DeserializeRaw`) |
+| **`Code/encoding/Structs`** | **26** | **23** |
+
+`Structs` 是消息**内部**用的结构体(`LockData`、`Inventory`、`ActorValues`、
+`QuestLog`…),它们同样有一对 `Serialize`/`Deserialize`、同样决定字节数、
+同样**没有任何东西把两侧绑在一起**。**23 对 = 总量的三分之一**从未被扫。
+
+**这正是上一节(§113)记的同一个错误**:门禁的扫描根按「第一个想到的地方」写,
+而不是按**规则**写。而这一次是**我自己在同一轮之后犯的** —— 说明这不是一次疏忽,
+是**写门禁时的默认思维**。所以修法不能只补目录,必须让这类错误**自己暴露**。
+
+**修法**:
+
+1. `SCANNED` 改成显式清单,同时列出 `Messages`(函数名 `SerializeRaw`/`DeserializeRaw`)
+   与 `Structs`(函数名 `Serialize`/`Deserialize`)—— 同一规则、两种拼写;
+2. 加**防范围腐化**的反向检查:清单里的目录若**贡献 0 对**,本身就是失败 ——
+   因为「目录改名/移动」与「目录里真的没有」在扫描结果上**长得一样**,
+   而后者会让门禁**静默退化成空转却照样打印 OK**。
+
+覆盖从 **110 对升到 133 对(+21%)**;审计结果 **133 对全部一致**
+(即仍然没有活缺陷,补的是守护)。
+
+**变异测试扩到两个目录**(每个都先断言变异真的生效):
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| `Messages` 里写了不读 | `the write side performs 1 more operation(s)` |
+| **`Structs` 里只改一侧的顺序** | `same operations, DIFFERENT ORDER` |
+| **`Structs` 里改位宽(写 16 / 读 8)** | `only written: ['Bits16']` / `only read: ['Bits8']` |
+| 未变异的对照组 | 通过 |
+| **把 `Structs` 清空** | `Code/encoding/Structs contributed no Serialize/Deserialize pair` |
+
+最后那条是本轮最值得留的:**它正是会在上一轮抓到我的那条检查**。
+
+**顺带核对(均无缺陷)**:
+
+- **61 处 pad 声明的算术**逐条算过,没有一处是非正大小;4 处用
+  `sizeof(X)` 的(`TESObjectARMO`、`PlayerCharacter` 两个分支、`Projectile`)都写在
+  明确注释了「锚点式」的地方。
+- **两个随包运行时的 DLL** 大小相同(6,409,728 字节),版本特定标记
+  (`bUseFaceGenPreprocessedHeads`、`SetRemoteFaceGenForce`、
+  `legacy game version detected`)两边都在 —— 与「同一份源码、两个
+  `SKYRIM_TARGET_LEGACY` 配置」一致,没有出现只更新一个构建的情况。
+- **手动 `Lock()`/`Unlock()`** 全仓只有两处(`Primitives.h` 的 `BSScopedLock` 本身、
+  `ExtraDataList::GetByType`),后者的两条返回路径**都**配了 `Unlock`,
+  且三次 `IsOverriden()` 是同一个 thread_local 计数、同一线程内不会变。
+
+### 新增门禁:每条消息的「写」与「读」必须走同一串线上操作 —— 这类缺陷不会报错,只会把值读错
+
+**怎么找到的**:线上格式的每一条消息都**被定义两次** —— 一次在 `SerializeRaw`,
+一次在 `DeserializeRaw` —— 而**没有任何东西把两者绑在一起**:不是同一个函数、
+不是同一个宏、编译器也不检查。于是把 110 条消息的**两侧操作序列**逐条抽出来对照。
+
+**为什么这算稳定性缺陷而不是洁癖**:这类不一致**不会抛异常、不会报解码失败**。
+写了一个字段却没读,后面每个字段就整体错位一个宽度;而**收包方通常还有字节**
+(一个包不止那几个字段),所以症状是**值读错了**(一个坐标、一个 form id、一个计数),
+而不是「解不出来」。流还保持着同步 —— 这正是它难找的原因,与
+`docs/PITFALLS.md` 第 45 节记的「写几条就只循环几条」是**同一族的另一端**:
+那边是写侧写了比计数更多的条目,这边是两侧对**字段顺序本身**不一致。
+
+**判据是「线上操作序列」,不是字段名**:读侧**合法地**用不同的名字 ——
+循环下标或 map 键会替代写侧对条目的称呼:
+
+```text
+写: WriteVarInt(Tick) WriteVarInt(count) WriteVarInt(kvp.first) kvp.second.Serialize
+读: ReadVarInt(Tick)  ReadVarInt(count)  ReadVarInt(cServerId)  Updates[cServerId].Deserialize
+```
+
+两者都是 `VarInt VarInt VarInt Nested` —— **这才是决定字节数的东西**。
+循环体同样塌缩成一次迭代:两侧迭代同一个计数,重复次数不携带序列之外的信息。
+
+**审计结果:110 条消息全部一致** —— 也就是说**当前没有活缺陷**。
+这一条要分开说:本节加的是**守护**,不是修 bug。审计过程中我的抽取脚本报过
+17 条「不一致」,逐条读下来**全是脚本的假阳性**(循环变量名不同、
+`WireLimits::ClampFinite(...)` 包了一层、`Updates[id].Deserialize` 里带下标),
+把抽取改成按**操作**而非按**字段名**之后归零。
+
+**新增门禁** `Tools/Scripts/check_wire_symmetry.py`,并做了**四向变异测试**
+(每个变异都先断言真的生效,§113.4 的教训):
+
+| 变异 | 门禁输出 |
+| --- | --- |
+| 写了不读(写侧多一个操作) | `the write side performs 1 more operation(s) than the read side` |
+| 只改一侧的顺序 | `same operations, DIFFERENT ORDER` |
+| 读了不写(读侧多一个操作) | `the read side performs 1 more operation(s) than the write side` |
+| 只定义了半对 | `defines only one half of the pair - DeserializeRaw is missing` |
+| 未变异的对照组 | **通过** |
+
+**变异测试本身又踩了一个坑,值得记下**:第一次把「顺序」变异做成
+**两侧同时交换** —— 那样两侧**依然一致**,门禁正确地放行了,而我差点把它
+读成「门禁抓不到顺序问题」。**真实的缺陷形状是只改一侧**。
+改完再跑,四种形状全部被抓到,且诊断各不相同。
+
+**顺带核对**:107 个 opcode(客户端 52 + 服务端 55)**取值全部唯一、全部 ≤ 255**;
+`Opcodes.h` 里每个 opcode 都有对应的消息头,且每个都**既被 include 也被注册**
+进对应方向的 `MessageFactory` —— 三处(枚举、include、visitor 注册)互相核对,
+**零问题**。注册漏一个不会崩,只会让那条消息**静默不被处理**,
+所以这一条同样值得核对而不是假设。
+
+### 修复:`ExtraDataList` 的读侧判空、写侧不判 —— 同一份文件里两个函数对同一个成员的处理相反
+
+**怎么找到的**:找「本仓库自己重写了一遍引擎结构」的地方,然后**逐对**比较同一成员
+的读侧与写侧。`ExtraDataList` 是本仓库手写的引擎结构(不是转发引擎地址),
+三个成员(`data` / `bitfield` / `lock`)各自被多个函数解引用。
+
+**缺陷一:读侧判空、写侧不判**
+
+```cpp
+bool ExtraDataList::Contains(ExtraDataType aType) const
+{
+    if (bitfield)              // 读侧:判空,返回「没有任何位被设置」
+    { ... }
+    return false;
+}
+
+void ExtraDataList::SetType(ExtraDataType aType, bool aClear)
+{
+    uint8_t& flag = bitfield->data[index];   // 写侧:直接解引用  <- 崩
+```
+
+两者操作**同一个成员**,而 `SetType` 是 `Add` 调用的(`Add` → `SetType`),
+`Add` 在**物品栏同步路径**上。于是:一个 `bitfield` 为空的列表,
+**读它会得到「空集」,写它会崩** —— 读侧已经把「空」的语义定下来了,
+写侧却不同意。
+
+**缺陷二:`New()` 两次分配都不判空,而且立刻写穿**
+
+```cpp
+ExtraDataList* pExtraDataList = Memory::Allocate<ExtraDataList>();
+pExtraDataList->data = nullptr;                    // 第一次分配失败 -> 崩
+pExtraDataList->bitfield = Memory::Allocate<...>();
+memset(pExtraDataList->bitfield, 0, 0x18);         // 第二次失败 -> 崩
+```
+
+`Memory::Allocate` 在失败时返回空(这一点由同文件的
+`TESObjectREFR.cpp:705` 已经按「可能为空」处理过:那里会 `Memory::Delete`
+两个指针并把结果置空)。**唯一的调用者本来就处理了空返回值** ——
+所以这里崩掉纯粹是没判,不是契约不允许。
+
+**缺陷三:`Add()` 不判节点**
+
+```cpp
+apNewData->next = pNext;   // apNewData 可能为空
+```
+
+链表里存进一个空节点,之后 `GetByType` 的遍历与 `GetCount` 的计数
+**都会解引用它**。而 `Add` 的返回值本来就是 `bool`(成功/失败),
+判空后返回假是现成的语义。
+
+**修法**:四处各自补判空 —— `New` 两次分配(第二次失败时回收第一次)、
+`Add` 的节点参数、`SetType` 的 `bitfield`;并给 `New()` 的调用点
+(`TESObjectREFR::GetExtraDataFromItem`)补一条判空早退,因为它接下来
+每一行都解引用那个结果。
+
+**顺带核对**:`ExtraDataType` 全部 18 个枚举值的位图下标
+(`value >> 3`)最大是 19,而位图是 `0x18 = 24` 字节 —— **全部在界内**,
+所以这里没有越界写。
+
+**新增门禁** `Tools/Scripts/check_allocation_guards.py`:它按函数读**函数体**
+(而不是认行号),要求函数体里解引用的指针要么在同体内判过、要么由构造函数保证。
+**已做变异测试**:把三个函数改回修前的写法 → 门禁报 3 条并逐条指名
+(`New()` 的 `pExtraDataList`、`Add()` 的 `apNewData`、`SetType()` 的 `bitfield`);
+改回修好的写法 → 通过。
+
+### 修复:插件版本门禁「绿是因为它没在看」—— 只扫了 OStimNG,而 OStimTogether 另有 4 组 id 一个都没查
+
+**怎么找到的**:把「每个插件用了多少个地址库 id」数一遍,再和门禁实际扫的范围对照。
+结果:
+
+| 插件 | `RELOCATION_ID` 站点数 | 门禁是否扫 |
+| --- | --- | --- |
+| OStimNG(前置) | 33 | **是** |
+| **OStimTogether** | **8(4 组不同的 id 对)** | **否** |
+
+`Code/plugins/tools/check_ostimng_versions.py` 的扫描根写死成
+`plugins/OStimNG/skse` 一个目录 —— 名字也说明了这一点。而 `OStimTogether`
+自己带 8 个站点(5 处 `RELOCATION_ID`,其中 `55712/56243` 出现 4 次),
+**一个都没被检查过**。
+
+**为什么这算缺陷而不是「覆盖不全」**:`REL::ID()` 在 id 缺失时不是软失败 ——
+`REL/IDDB.cpp` 的 `report_id_lookup_failure` 会**直接中止游戏**。所以
+「本仓库支持 1.5.x–1.7.x」这句话,对 OStimTogether 而言**从来没有被校验过**,
+而门禁的绿灯会让人以为它已经被守住了。
+
+**先核对现状**(不是猜):把那 4 组 id 对全部 24 个地址库跑一遍 ——
+`55693/56224`、`53950/54774`、`55712/56243`、`55706/56237`
+**全部完整**。也就是说当前**没有活缺陷**,缺的是**守护**。
+
+**修法**:门禁改成扫**多个插件**,并把清单显式列出来
+(`SCANNED = {'OStimNG/skse', 'OStimTogether/src'}`)。同时加一条**反向检查**:
+清单里的插件若被检出却**贡献了 0 个站点**,本身就是失败 —— 因为
+「子模块没检出」和「子模块里没有站点」在扫描结果上长得一模一样,
+而后者会让这个检查**静默地退化成什么都不查**。
+
+**变异测试**:在隔离副本里把 `OStimTogether/src/OStimBridge.cpp` 的
+`RELOCATION_ID(55706, 56237)` 改成不存在的 `999999`,门禁报错并**指名文件与行号**:
+
+```text
+PLUGIN VERSION CHECK FAILED (1)
+  - version-1-5-97-0.bin: 1 SE id(s) absent, e.g. [999999] at ['OStimTogether:OStimBridge.cpp:421']
+```
+
+改回真 id 则通过。站点数从 **33 升到 41**,检查的插件从 **1 个升到 2 个**。
+
+### 修复:发布版**根本不写崩溃转储** —— 文档让玩家交 `crash_*.dmp`,而那个文件在发布版里是死代码
+
+**怎么找到的**:查「哪些宏在发布版里把代码整段剥掉」。`IS_MASTER` 由 xmake 的
+`before_build` 从 **git 分支名**推导,而本仓库的发布分支**就是 `main`**
+(`xmake.lua`:`branch == "master" or branch == "main"`)—— 所以**每个出货构建里
+`IS_MASTER` 都是 1**。这不是推断,是**实测**:随包 DLL 里嵌的构建标记就是
+`Build: v1.1.8 main EVO`,而 `#if (!IS_MASTER)` 里的字符串
+(`Components`、`Show selected entity in world`、`Crash client`)在同一个二进制里
+**全部不存在**。
+
+于是 `CrashHandler.cpp` 这一段的语义就反了:
+
+```cpp
+#if (IS_MASTER)
+    volatile static bool bMiniDump = false;   // 发布版 -> 不写转储
+#else
+    volatile static bool bMiniDump = true;    // 开发版 -> 才写
+#endif
+```
+
+**上游的语义 vs 本仓库的语义**:上游只有一条 `master` 发布分支,所以
+「`IS_MASTER` = 这是发布版」成立。本仓库把 `main` 也并进来,而 `main` 是**唯一的
+发布分支** —— 于是 `IS_MASTER` 恒为 1,**玩家跑的那个构建永远不写转储**,
+而 `docs/PITFALLS.md` 第 7 节明确告诉玩家「正确诊断文件是游戏根目录
+`logs/tp_client.log`、`crash_*.dmp`、…」。两边**各自都自洽**,所以谁也没发现:
+文档说的是一件代码做不到的事,而代码做的事文档没写。
+
+**修法**:转储不再受任何构建宏控制,每个构建都写。代价是崩溃时游戏根目录多一个文件,
+而 `RemovePreviousDump` 本来就负责只留最新那个。
+
+**顺带修掉同一段里的第二个缺陷**:那个清理函数的判据是
+
+```cpp
+if (entry.path().string().find("crash") != std::string::npos)   // 改前
+    DeleteFileA(entry.path().string().c_str());
+```
+
+它在**整条路径**上做子串匹配,所以 `CrashLogger.dll`、名为 `Crash Fixes` 的目录、
+以及任何路径里带 "crash" 的文件**都会被删掉**。改成只匹配自己写的那种名字
+(`crash_<UTC 时间戳>.dmp`),并且删除失败不再影响流程。
+
+**新增门禁** `Tools/Scripts/check_crash_diagnostics.py`:它同时读三处 ——
+处理器、`docs/PITFALLS.md`、`xmake.lua` 的分支定义 —— 并拒绝:
+转储被任何构建宏包住、`bMiniDump` 初值为假、清理判据退化成子串匹配、
+以及**文档提到的产物代码里不存在**。**已做变异测试**:把原版 `#if` 与子串清理
+还原回去,门禁报 5 条(含「文档让读者交 `crash_*.dmp`,而处理器从不写」);
+改回修好的版本则通过。
+
+**同时补上门禁的接线问题**:上一轮新增的 `check_null_accessors.py`
+**没有被 CI 调用** —— 一个不跑的门禁等于没有门禁。现在两个新门禁都接进了
+`.github/workflows/plugins.yml` 的 `push` 与 `pull_request` 两条 `paths` 触发列表,
+并各自加了运行步骤。
+
+### 修复:全项目审计 —— 15 处「引擎单例还没建好就解引用」,其中一处还抄错了引擎自己的遍历
+
+**怎么找到的**:不靠读代码猜,靠三条**可判定**的线:
+
+1. **把每个地址库 id 对着每个随包运行时算一遍** —— 3063 个 id × 24 个 `.bin`
+   (1.5.3 ~ 1.5.97 走 ae-to-se 映射表,1.6.x 走 format 2,1.7.x 走 format 5)。
+   结论:1.5.x 缺 13 个,AE 侧缺 4 个,全部已在 `Tools/missing_1_5_97_ids.txt` 记录。
+2. **把 1.5.97 的每个 patch 偏移对着真机 `SkyrimSE.exe` 反汇编核一遍** ——
+   10 个带 1.5.97 偏移的站点逐个读字节,确认 `Put`/`Nop`/`SwapCall` 各自的
+   前提都成立(例如 `SwapCall` 要求站点首字节是 `0xE8`)。全部通过。
+3. **反汇编引擎自己的 `INISettingCollection::GetSetting`(`SkyrimSE.exe+0x3104d0`)**,
+   拿它当**契约**来对照本仓库手写的那一份。这一条抓到了真缺陷。
+
+**缺陷一:`GetSetting` 抄漏了引擎的空表保护**
+
+引擎那份的入口序列是:
+
+```asm
+1403104f4  cmpq $0x0,0x8(%rax)   ; head.next == 0 ?
+1403104ff  cmpq $0x0,(%rax)      ; head.setting == 0 ?
+140310503  je   140310521        ; 两个都是 0 -> 直接 return NULL
+```
+
+而本仓库的版本**无条件**读 `pCurrent->setting->name`:
+
+```cpp
+while (pCurrent)
+{
+    if (_stricmp(acpName, pCurrent->setting->name) == 0)   // setting 为空 -> 崩
+```
+
+空集合(或链表里出现一个 `setting` 为空的项)时,引擎返回「没找到」,
+本仓库**解引用空指针**。同一趟反汇编也确认了结构体三个偏移与 `TES.h` 的声明一致
+(`lea 0x118(%rcx)` 取链表头、`0x8(%rax)` 取 `next`、`(%rax)` 取 `setting`、
+`0x10(%rdi)` 取 `setting->name`),所以**偏移没问题,缺的是保护**。
+
+**缺陷二:`INISettingCollection::Get()` 自己会返回空,而三处调用点有两处直接解引用**
+
+```cpp
+return *settingCollection.Get();   // 改前:直接解引用,不看返回值
+```
+
+两个独立的空来源:该 id 在旧版运行时上没映射时返回的是**共享桩**
+(`48 31 C0 0F 57 C0 C3` = `xor rax,rax; xorps xmm0,xmm0; ret`),
+调用它得到 `rax = 0`,于是 `*stub` 就是**读地址 0**;以及引擎要等 ini 设置建好
+才填那个单例指针,所以**启动早期它本来就是空**。现在返回空,三个调用点各自判空。
+
+**缺陷三:同一类「单例还没建好就解引用」共 15 处**
+
+判据是**树内不一致**,不是风格偏好:`PlayerCharacter::Get()` 在**全部 56 处**
+调用点都判了空,`ModManager::Get()` 13 处里判了 12 处 —— 也就是说这个仓库
+**自己已经**把这些访问器当可空用,漏判的那几处就是缺陷。逐处补齐:
+
+| 访问器 | 漏判处 | 后果 |
+| --- | --- | --- |
+| `INISettingCollection::Get` | 2(`CharacterService`、`DiscoveryService`) | 启动早期崩 |
+| `ModManager::Get` | 5(`Actor`、`PlayerCharacter`、`DiscoveryService`×3、`MagicService`、`QuestService`×2) | 刷怪/切格/法术计时/任务查询崩 |
+| `EquipManager::Get` | 5(`Actor`×3、`TESObjectREFR`×2、调试视图×2) | 装备同步崩 |
+| `EventDispatcherManager::Get` | 2(`DiscoveryService`、`ObjectService` 构造函数) | **启动期**崩 |
+| `SubtitleManager::Get` | 1(`CharacterService` 字幕) | 收到字幕包崩 |
+| `TES::Get` / `UI::Get` | 2(调试菜单) | 调试菜单崩 |
+| `ActorMediator::Get` | 1(`AnimationSystem` 回放) | 远端动画回放崩 |
+
+**为什么这些在 1.5.x/1.6.x/1.7.x 上都要紧**:三个版本走**三条不同的地址库路径**
+(format 1 + 映射表 / format 2 / format 5),但**共用同一份调用点代码**。
+单例是否已建好取决于**引擎启动顺序**,与游戏版本无关 —— 也就是说这三类
+缺陷在三个版本上都成立,而且**旧版运行时更严重**:那里未映射的 id 返回的是可执行桩,
+`*stub` 直接读地址 0,而不是返回空。
+
+**新增门禁** `Tools/Scripts/check_null_accessors.py`:它读「已知可为空的访问器」
+名单,再拒绝任何**在同一语句里解引用且没有判空**的调用点;反向也查 ——
+豁免条目一旦不再需要就报错,免得名单烂成一张万能通行证。
+**已做变异测试**:把守卫改回未判空形式,门禁报错并指出行号;改回守卫则通过。
+
+**本机不编译**(无 xmake/MSVC),以上判据是静态的 + 对真机 1.5.97 反汇编的核对。
+
+### 同步:上游 v1.8.3(12 个提交)—— 修掉「NPC 疯狂复制直到崩游戏」,并给专用服务器加上 `--generate-config`
+
+**为什么不能直接 merge**:本仓库在上游基础上魔改(多游戏版本、1.5.x 翻译表、
+插件层与 UI 中文化),两边对同一批文件的写法已经不同。所以本节按**逐个提交判定**
+再按本仓库的写法落地,而不是拉一个合并。
+
+**上游 v1.8.3 的 12 个提交,处置如下**(`v1.8.2..4917189f`):
+
+| 上游提交 | 内容 | 处置 |
+| --- | --- | --- |
+| `8f08d405` #906 | **NPC 疯狂复制**:owner 把服务器回显的**过期**状态套回自己刚分配到的 actor | **已同步**(见下) |
+| `af7f37e6` #907 | `SpellCastRequest::DesiredTarget` 未初始化 | 已同步(一行) |
+| `3e68a605` #902 | `DLC1DimHollowCrypt02` 死亡后掉进锁住的门里 | 已同步(一行) |
+| `3941ddd0` #905 | 删除死代码 `AnimationExperiments.cpp`(429 行) | 已同步(见下) |
+| `6847eaa0` | 一批 `Console::Setting` 描述改成能读懂的写法 | 已同步(6 条) |
+| `92d28f07` #910 | 新增瑞典语 | 已同步,并补齐本仓库多出的 5 个键 |
+| `23e47d2c` | `--generate-config` 生成默认 `STServer.ini` | 已同步,含入口重构(见下) |
+| `a89d8185` | 「你的安装不是纯原版」警告只在 master 构建显示 | **改写**(见下) |
+| `fbf72883` #901 | 远端 actor 的 Havok 时间步 | 本仓库早已按 1.5.x 安全写法修过,无需再动 |
+| `a3f62ba7` #909 | 单人做任务时提示组队 | 已同步(C++ + UI + 14 种语言) |
+| `589b5f5b` | CI 非发布构建的双层 zip | 不适用:本仓库 CI 不上传 `.zip` 路径 |
+| `4917189f` | 合并提交 | 不适用 |
+
+**#906 的根因(上游说明 + 本仓库核对)**:自 `1f488f6f` 起,owner 拿到
+`AssignCharacterResponse` 时会用服务器回传的数据**重新对齐**新分配到的 actor。
+但那份数据**只是自己请求快照的回显**,在往返途中可能已经过期。典型受害者是
+WE23 的「拾荒者」士兵 —— 它们在读盘时就被 `WEAliasScript` 杀掉,于是:
+回显说「活着」→ `Respawn()`(Resurrect + Reset)→ 引用被重置、3D 被重载、
+等级化临时 actor 被重掷 → owner 交还实体 → 该 actor 被当成**新**实体重新发现 →
+每轮往返重复一次,而每个交还的实体又被交给另一个玩家留一份新副本,
+**累积到几百个 NPC 后崩游戏**。
+
+**修法**(两处,都在本仓库落地):
+1. `ReconcileActorData` 里 `Respawn()` 只在**不是本地 owner** 时执行;本地 owner
+   保持自己的死亡状态,交给 `LocalComponent` 的常规差分去上报(新增 `warn` 说明
+   为什么保留)。`Kill()` 方向不受影响。
+2. `OnAssignCharacter` 的 owner 分支**不再**用回显覆盖本地状态:死亡状态不一致时
+   只打一条 `info`,并补上 `m_weaponDrawUpdates.erase()`(上游同款:所有权授予
+   到达时可能还有一条远端拔刀修正排队)。
+   本仓库原先在 owner 分支里还有一对 `SetRemote(true/false)` 夹着 `ReconcileActorData`,
+   随该调用一并去掉 —— 它存在的唯一理由就是那次对齐。
+
+**#905 的核对**:`AnimationExperiments.cpp` 是一个 429 行的逆向试验文件
+(`RePerformAction` / `ReHandleEvent` / `ComputeResult` / `g_animErrorCode`),
+全仓**零引用**。它同时是 `hkEventType::hkEventType` 与 `hkEventContext::hkEventContext`
+两个构造函数的**唯一**定义处,所以删文件必须同时把这两处内联回去
+(上游把 `hkEventType` 的构造改成成员初始化列表,本仓库照做)。
+删除前逐个 grep 了 8 个符号,确认除该文件外没有任何引用。
+
+**#23e47d2c 的入口重构**:上游把 `CreateGameServer(conReg, callback)` 拆成
+「先 `RegisterServerSettings(conReg)`、再 `CreateGameServer(conReg)`」,并让
+`LoadSettings` 返回 `bool`、新增 `IsValid()`。这不是为了 `--generate-config` 好看,
+而是消掉上游代码注释里自己写下的隐患:**设置注册晚于读取**,所以首次生成
+`STServer.ini` 时服务器设置可能整批缺失。本仓库按同一形状落地,并额外处理了
+**本仓库特有的 GUI 模式**:`RequestGuiMode` 在 Windows 上默认返回真,
+不加判断的话 `--generate-config` 会被 GUI 吞掉、只弹出窗口而不生成文件,
+所以给它加了一条 `--generate-config` 直接返回假。CI 里加了一步冒烟测试
+(生成后必须存在且能打印)。
+
+**`a89d8185` 为什么不能照抄**:上游把这条警告限制为 `#if (IS_MASTER)`,
+而上游的 `IS_MASTER` 只在 `branch == "master"` 时为真。本仓库的 `xmake.lua`
+把 `branch == "main"` 也算作 master,而本仓库的分支**就是** `main` ——
+照抄等于**空操作**,警告照样每次都弹。更关键的是这条警告的文案是
+「我们**不**建议使用 mod」,而本仓库的定位恰恰是**支持整合包**(README 第 18 行)。
+所以本仓库的处置是:**保留判定、去掉弹窗**,改成一条 `info` 日志
+(`Mod list is not the default one; this is expected when playing with a modpack`)。
+判定本身仍有价值 —— 有人报不稳定时,日志里能看到他跑的不是默认列表 ——
+但不再把整合包玩家拦下来。判定还依赖 `_ResourcePack.esl`(AE 免费 CC 内容,
+1.5.97 上根本不存在),这也印证了它不适合当阻断条件。
+
+**#909 组队提示**:单人、已连上服务器、附近有别的玩家、且不在队伍里时,
+任务**开始或推进**会弹一条 15 秒提示,提供「打开指南 / 忽略 / 不再显示」,
+冷却 15 分钟;`None` 与 `Miscellaneous` 类型不触发(隐藏的后台任务一直在推进,
+太吵)。本仓库按自己的写法落地:
+- 判「任务是不是刚开始」用的是本仓库既有的 `pQuest->IsStopped()`,
+  **没有**采用上游给 `TESQuestStartStopEvent` 新加 `started`/`failed` 两个字段的做法 ——
+  那两个字段来自引擎结构体布局,本仓库无法在 1.5.97/AE 两边都验证,
+  而 `IsStopped()` 是已在用的判据。
+- 提示文案与三个按钮键(`OPEN_GUIDE` / `DISMISS` / `DONT_SHOW`)加进了**全部 14 个语言文件**;
+  上游只改了 de/en/ru 三个,其余语言会退回英文。
+
+**验证**:`python Tools/Scripts/check_facegen_scope.py`(脸部开关门禁)与
+`python Tools/Scripts/check_docs.py`(文档门禁)均通过;14 个语言文件逐个解析,
+新增 4 个键**一个不缺、占位符与英文逐键一致**;所有改动的 `.cpp/.h` 花括号收支为 0。
+**本机不编译**(无 xmake/MSVC 工具链),以上都是静态判据。
+
+### 修复:自定义种族联机时队友的脸仍然看不见 —— 上一版只把开关拨对了,却从没要求引擎跑那趟生成
+
+**现象**:`v1.1.6` 的「自定义种族的头不显示」修复(`ca24d5ce`)发布之后,报告者回报**没有修好**,
+联机时依旧看不到自定义种族队友的脸。这是同一个 bug 的第二次修复。
+
+**上一版为什么不够**:那一版把 `bUseFaceGenPreprocessedHeads` 在「外观来自网络」的角色身上置 0,
+并且论证了写入目标、写入时机、还原方式都对 —— 这些**全部是对的**,但**少了一半**:
+这个开关只决定引擎那趟**脸部生成过程内部**走哪条分支,它本身**不会让那趟过程发生**。
+客户端从头到尾**没有任何一处要求引擎为这个 actor 跑一趟生成**,于是引擎按自己的节奏去建头,
+而 `UpdateRemoteFaceGenWindow()` 又在同一个 tick 里、`WaitingFor3D` 被摘掉的那一刻就把开关**放回去了**。
+结果就是:开关确实被按下过,但那趟会读它的生成过程要么跑在开关已经还原之后,要么根本没人叫它。
+
+**取证(全部来自本机 `SkyrimSE.exe` 1.5.97 的反汇编,不是推断)**:
+
+| 查证 | 地址/命令 | 结论 |
+| --- | --- | --- |
+| 引擎自己怎么写这个开关 | `0x14031c153` | `GetSetting` → 存 `+0x8` → 写 `0` → **调 `Actor::QueueUpdate`** → 还原 |
+| `Actor::QueueUpdate` 是谁 | `0x140693110`(AE **40255**) | 正是 `Actor.cpp:211` 里那个 `QueueUpdate`,参数 `(this, bool)` 也对得上 |
+| 生成过程在哪读开关 | `0x140363e38` / `0x140363e61` | 在 `0x140363de0` 内,用 `movzbl 0x141dea030` 直接读那个字节 |
+| 生成过程从哪进 | `0x140363de0` ← `0x140650df0`(AE 39395) | 而 `0x140650df0` **正是 `QueueUpdate` 的直接被调方**(深度 1) |
+| 写入目标对不对 | `FindAddressById(411155)` = `base+0x301d758` | 与引擎 `mov 0x2d015c7(%rip),%rcx # 0x14301d758` 是同一个单例 ⇒ **上一版的写入目标没错** |
+
+也就是说:引擎**自己**在想要一张运行时脸时的做法,就是「把开关按下 → **调 `Actor::QueueUpdate`** → 还原」。
+仓库里 `Actor::QueueUpdate()` 写的就是这个括号,却**从来没有被任何地方调用过**
+(v1.0.40/1.0.41/1.1.x/HEAD/upstream master/dev/v1.7.1/v1.8.0 全 grep 过,只有定义)。
+上一版甚至**专门写了一段理由**说明为什么不接线它 —— 那段理由把「引擎多帧建身体」当成了「不能只调一次」,
+但事实是 `QueueUpdate` **本身就是**那趟生成过程的入口,它跟多帧建身体不是互斥的两件事。
+
+**修法**:在 `RunRemoteUpdates` 里、`WaitingFor3D` **还没被摘掉**的那一刻(也就是窗口还开着),
+对「外观来自网络」的 actor 补上这一趟请求:
+
+```cpp
+if (waitingFor3D.SpawnRequest.FormId == GameId{})
+    pActor->QueueUpdate();
+```
+
+三处配套:
+
+1. **定界与窗口同源** —— 同样用 `SpawnRequest.FormId == GameId{}`,本地加载序里解析出来的 base 保留它的烘焙头;
+2. **顺序** —— 必须在 `m_world.remove<WaitingFor3D>` **之前**,否则开关已经被还原,这趟生成又会走烘焙分支;
+3. **`Actor::QueueUpdate` 补判空** —— 它现在在活路径上,`INISettingCollection::Get()` 或 `GetSetting` 返回空时
+   原来会直接解引用(那个函数从没被调用过,所以从没暴露)。
+
+**验证**:`Tools/Scripts/check_facegen_scope.py` 增加第 5、6 条判据(要求那趟请求存在、按空 `FormId` 定界、
+在摘掉 `WaitingFor3D` 之前、且 `OnUpdate` 里窗口求值在请求之前),**反向验证三种改坏方式全部被抓到**
+(整段删掉 / 去掉定界 / 把 `FormId` 比较反过来),基线未改动时通过。
+门禁在真树上跑:**`FACEGEN SCOPE CHECK OK`**。
+
+> 这一节最该记住的是:**「把开关拨对」和「让读开关的那段代码跑起来」是两件事**。
+> 上一版把全部注意力放在「写哪个地址、什么时候写、怎么还原」上,每一条都验得很干净,
+> 却从没问过「谁会让引擎去读它」—— 而死代码 `Actor::QueueUpdate()` 就在仓库里等着被问这一句。
+
 ### 修复:同一个审计脚本漏掉的 9 个 `noexcept` 分配点(客户端 8 个 + `es_loader` 1 个)—— 判据是「先问脚本漏了什么 token,再问剩下的算不算缺陷」
 
 **现象**:没有任何现象。前面三批(`941bd606` 服务端、`f0877c1b` 客户端、`84649881` 编码层)用的分配标记是 `push_back|emplace|insert\(|resize|reserve|make_shared|make_unique|new|String|Vector|Map|spdlog`。这一批把标记换成**逐行、只看函数体、屏蔽注释与 `#if 0`** 之后,又找出 9 个:
@@ -4532,6 +5947,2367 @@ enum class SetTimeResult : uint8_t
 **教训**:「拒绝」必须发生在任何写入之前 —— 否则「失败」这个词只是返回值的样子。
 
 **教训**:`assert` 是给「代码自己错了」用的;对端可控的输入落在它上面,就是把进程的存活交给对端。
+
+### 修复:1.5.3 / 1.5.16 / 1.5.23 上「裸体 NPC 修复」会把已经穿好护甲的 NPC 每趟重穿一次
+
+**判据是一条内部不一致**:同一个函数经同一个 id 解析,而**出货的十张地址映射表里只有七张带这一行**。
+
+- `ExtraContainerChanges::Data::GetArmor` 不直接调引擎,而是经 AE 地址库 id **16113** 解析
+  (`Code/client/Games/Skyrim/ExtraData/ExtraContainerChanges.cpp:36`)。
+- 1.5.x 运行时加载的是 `version-<版本>.bin` 加一张翻译表
+  `versionlib-ae-to-se-<版本>.map`(两者 id 命名空间不同,`VersionDb::Load`)。**十张表各对应一个
+  1.5.x 运行时,其中三张没有 16113**:`1-5-3-0`、`1-5-16-0`、`1-5-23-0`;另外七张有,且**值随
+  构建而不同**(1.5.39 = `0x1e7750`、1.5.50–1.5.62 = `0x1e7760`、1.5.73 起 = `0x1e7570`)——
+  这正说明它不可能用一条 override 覆盖。
+- 未映射的 id **不报错**:`VersionDbPtr::GetPtr` 在 legacy 运行时退回 `GetUnresolvedStub()`
+  (七个字节 `48 31 C0 / 0F 57 C0 / C3`,即 `xor rax,rax; xorps xmm0,xmm0; ret`),也就是
+  **每次调用返回 0**,并打一条 warn。于是 `GetArmor(32)` 在那三个运行时上**恒为 `nullptr`**。
+- 而它唯一的读者是 `Actor::IsWearingBodyPiece()`,再往上唯一的读者是
+  `InventoryService::RunNakedNPCBugChecks`:
+  `if (!pActor->IsWearingBodyPiece() && pBase) { warn("naked check fires"); pActor->EquipOutfit(); }`
+  —— 于是一个**本来就穿着护甲**的远程 actor 会在每一趟检查里被判成「没穿」并把装备重穿一遍。
+  这不是崩溃,是稳定的行为错误(每次重穿都会改变装备状态,进而影响同步)。
+
+**根因:这套记账只覆盖一个运行时。** `Tools/missing_1_5_97_ids.txt` 声明了 1.5.97 的 13 个缺口,
+`Tools/Scripts/check_docs.py` 拿这份声明和**那一张** map 对照 —— 另外九张 map,也就是另外九个
+**本仓库随包提供地址库、因而声称支持**的 1.5.x 运行时,从来没有被任何门禁读过。
+同一个错误在这个仓库里已经是**第五次**——§113(一个插件)、§116(一个目录)、§119(一个文件)、
+§126(一份手写清单),本轮是**一张 map**;机制每次都一样:**扫描范围写成发现地点,而不是规则**。
+
+**为什么缺这一行:不是漏了同步,是那三个库根本没有这条 id。** 这条要查清才能知道该不该补。
+map 是一张**翻译表**:一个 AE id 命名一个 pre-AE id,而每个 pre-AE 库把那个 id 拼成自己构建里的 RVA。
+七张有这一行的 map 正好证明了这个规则 —— **七张的值逐一等于 `version-<构建>.bin[15873]`**:
+
+| 运行时 | `version-<构建>.bin[15873]` | map 里的 `16113` | 一致 |
+| --- | --- | --- | --- |
+| 1.5.39 | `0x1e7750` | `0x1e7750` | ✅ |
+| 1.5.50 / 1.5.53 / 1.5.62 | `0x1e7760` | `0x1e7760` | ✅ |
+| 1.5.73 / 1.5.80 / 1.5.97 | `0x1e7570` | `0x1e7570` | ✅ |
+| **1.5.3 / 1.5.16 / 1.5.23** | **`15873` 不存在** | **不存在** | —— |
+
+而 pre-AE 的 id 空间是**演进**而不是只增:`version-1-5-3-0.bin` 命名了 **791,088** 个 id,其中
+**15,376** 个 1.5.97 没有;同时它**没有** 1.5.97 有的 **2,962** 个,`15873` 正在其中。
+⇒ **没有可翻译的值,也没有任何 override 能提供它**(值必须逐构建量:上表三档值已经证明),
+**重新生成也补不上**;`0x1e7570` 甚至不是 1.5.3 那个库列出的任何偏移。
+所以这三行**故意留空**,而不是填一个邻居的值。
+
+**修复一:缺口被声明,而不是被猜。** 新增 `Tools/missing_ids_by_runtime.tsv`:13 条 `*` 行
+(每个随包 pre-AE 运行时的公共缺口)+ 3 条按运行时的行,每条写明原因(上面那条结论)。
+**猜一个 RVA 比缺一个更危险**:缺了,调用落到零返回桩上 —— 行为错,但**进程是活的**;
+猜错,就是**调用一个无关函数**。
+
+**修复二:后果就地修。** 新增 `ExtraContainerChanges::Data::CanQueryArmor()`,用
+`VersionDb::Get().FindAddressById(16113)` **直查**(与 `GarbageCollector::Get` 同一范式,理由也一样:
+「没映射」和「映射到了但为空」在 `GetArmor` 的返回值上无法区分);调用点改成
+
+```cpp
+if (ExtraContainerChanges::Data::CanQueryArmor() && !pActor->IsWearingBodyPiece() && pBase)
+```
+
+重穿是一次**修复**动作,只允许建立在**确定**的答案上;问不出答案时不动 actor,比每趟给穿好衣服的
+人重穿一套好。代价是**那三个运行时上「裸体 NPC 自动修复」不再生效** —— 这是有意的降级,恢复它需要
+那三个 RVA,已登记为 `docs/FOLLOW-UP.md` 第 5 条。
+
+**修复三:新增门禁 `Tools/Scripts/check_map_coverage.py`。** 六条:
+
+| 判据 | 为什么 |
+| --- | --- |
+| `version-*.bin` 与 `versionlib-ae-to-se-*.map` 必须成对 | 只有库 = 一个 id 都翻译不了;只有表 = 没有运行时会加载它 |
+| 每张 map 的缺口(`collect_codebase_ids()` 里它不带的 id)**恰好等于**该运行时的声明 | 少声明 = 16113 那个形状;**多声明 = 声明已过期**,读者仍被告知这个运行时解析不了某个其实已修的 id |
+| 每条按运行时的行必须在 `JUDGED` 表里有已判读的绑定 | 「stub 的 0 落到调用点会怎样」不可判定,所以逐个判读并登记;新加一条没有判读的行**失败**而不是静默通过 |
+| 该守卫函数体里写的 id 必须等于**同一个文件经 `POINTER_SKYRIMSE` 解析的 id** | 同一件事写了两遍就必须一致,否则守卫问的是一个 id、调用点用的是另一个 |
+| **十张 map 必须对同一个 AE id 命名同一个 pre-AE 符号**(按 pre-AE id 反查比对,**不比值**) | 值跨构建本来就不同(上表三档),所以比值什么都查不出来;而「这条 AE id 名的是哪个符号」是**跨构建不变量**,一行译错就露出来 |
+| **每张 map 必须是单射**(两个 AE id 不能指向同一个 RVA) | 两个库都是单射,生成器也**拒绝写出**这样的表;而两个 AE id 共用一个 RVA 正是「照抄了邻居的值」的样子 |
+
+第 5 条是这一轮技术上最值钱的一条:它**不需要任何声明**就能验十张表,并且能抓到「值合法、
+但指向另一个函数」这类缺陷 —— §122 已经证明过「地址合法远不足以说明地址正确」。
+
+**验证**:
+
+- `python Tools/Scripts/check_map_coverage.py` → `MAP COVERAGE CHECK OK` /
+  `10 shipped pre-AE map(s) match their declared id gap, 1 judged binding(s) still guard the ids
+  declared per runtime`。第 5 条在出货数据上**逐对全过**:9 张兄弟表 × ~3,697 个共享 id,
+  **0 处符号不一致、0 处「该 RVA 不在对应库里」**;第 6 条十张全为单射。
+- **变异测试(五个变异,逐条被指名;每个变异都先确认已落到磁盘)**:
+  1. 删掉 `1-5-23-0` 那一行 → `versionlib-ae-to-se-1-5-23-0.map does not carry 1 id(s) ... [16113]`
+     —— 这就是**原始缺陷本身**;单独复现过一次(还缺 `1-5-3-0` 那行时门禁只报那一条)。
+  2. 把 `1-5-16-0` 那行的 id 改成 map 里**有**的 `16040` → 同时报
+     `id 16040 is declared missing on 1-5-16-0 but no binding is judged for it` 与
+     `declares [16040] missing from 1-5-16-0, but ... carries them`(两个方向都被抓到)。
+  3. 把 `1-5-3-0` 改成不存在的运行时名 `1-5-999-0` → `row for runtime 1-5-999-0, which no shipped
+     map matches (...)`。
+  4. 把守卫里的探测 id 改成 `16114` → `no CanQueryArmor body naming id 16113` +
+     `no judged binding contributed anything`;把 `GetArmor` 的 `POINTER_SKYRIMSE` id 改成 `16114`
+     (守卫不动)→ `CanQueryArmor guards id 16113, but the file resolves [16005, 16114, 16142, 16143]
+     through POINTER_SKYRIMSE`。
+  5. **把 `1-5-39-0` 表里 `16118` 的值换成同表 `16123` 的值**(一个**合法**偏移,所以「地址对不对」
+     这类检查看不见)→ `id 16118 names pre-AE id 15883 (0x1e9310), but
+     versionlib-ae-to-se-1-5-97-0.map names pre-AE id 15878 (0x1e7ba0) for the same AE id`;
+     同一个变异还让该表不再单射,第 6 条同时指名两个 id 共用一个 RVA。
+  变异 4/5 还顺带证明了另一件事:把一个 id 改成任何一张表都没有的值之后,门禁在**十张表上全部**报
+  「the client resolves [16114] and nothing declares」——**新引入一个不可解析的 id 也会被挡下**。
+- 门禁已接进 CI 的两条触发列表(`push` 与 `pull_request` 各 47 条路径,`contract` 作业 30 个步骤),
+  并复核 `python Code/plugins/tools/check_workflow_shell.py` → `WORKFLOW SHELL CHECK OK`(51 个块)、
+  `yaml.safe_load` 解析通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译);改动的三个文件是
+  `Code/client/Games/Skyrim/ExtraData/ExtraContainerChanges.h`/`.cpp` 与
+  `Code/client/Services/Generic/InventoryService.cpp`(后者多一个 `#include <ExtraData/ExtraContainerChanges.h>`)。
+
+**教训**:**「随包提供了 N 份同名产物」本身就是 N 条主张,而不是一条。** 一张表的覆盖度被声明、
+被门禁比对,不能推出另外九张也一样 —— 恰恰相反:它们的**生成路径不同**(这里是从 1.5.97 逐构建
+翻译),所以差异是常态。判据要按「出货了几份」数,而不是按「当初是在哪一份上发现的」写。
+
+**教训(同轮第二条)**:**跨版本不可比的量做不了跨版本判据,但它背后的不变量可以。**
+十个 RVA 互不相同,所以「表与表的值一致」永远为假、也永远查不出错;而「这条 AE id 命名的是
+哪个符号」在所有构建上都必须相同 —— 换一个问法,同一份数据就从「无从比较」变成「33,000 次比对
+零分歧」。**先找不变量,再写判据。**
+
+### 修复:两分支结构体布局的守护只写在 checklist 里 —— 而 checklist 自己点出的那一处始终没断言
+
+**判据是一条「同一批源码、两个目标」的内部不一致**:客户端是**同一份源码编译两次**
+(`Code/client/xmake.lua` 的 `build_client(..., {"SKYRIM_TARGET_LEGACY=1"})`),而两个目标
+**对引擎字段的位置并不一致**。`docs/PITFALLS.md` §2 称这是全仓最危险的地方,已经咬过**三次**,
+三次形状完全相同:**一个分支采用了另一个目标的值,于是静默读邻居**。它给出的防线是
+「改完更新两分支的 `static_assert`」—— 而这条防线此前只是 §0 的一个**勾选项**,
+**没有任何东西在跑它**。§117/§127 已经各付过一次账:**写下来的约定不被执行,地位等同注释**。
+
+- 全仓 `SKYRIM_TARGET_LEGACY` 条件块 **16 处**,其中**改变成员布局**的 **7 处**。
+- **`docs/FOLLOW-UP.md` 自己记着的那个缺口仍然在**:`ExtraDataList` 在 1.5.x 下**没有虚表**
+  (1.6.x+ 有),于是每个**内嵌**它的结构(`Actor`、`TESObjectREFR`、`TESObjectCELL` …)整体后移
+  8 字节 —— 而它**没有任何一条断言点它的名字**:尺寸只被 `TESObjectREFR` 的 `sizeof`
+  **间接**覆盖。也就是说,改动会在**离编辑点一个结构之外**才被发现,而且**只在那个断言恰好
+  消费了这次变化时**才被发现。
+- 同一批事实的**第二处**更险:`inactive` 的偏移被写了**五遍** —— 两个 pad 锚点
+  (`0x680 - 0x200 - sizeof(void*)` 与 `0x690 - 0x210 - sizeof(void*)`)、两个 `static_assert`、
+  一个 `kInactiveOffset`,以及 `SkyrimVM64.cpp` 里**为诊断这个偏移而生**的探针
+  (`ReadInt32At(apThis, 0x680/0x690)`)与日志各一遍。而 §2 记着这个字段的代价:
+  **读错一位就落到邻居字段上、看到非零、从此不再执行 `World::Update()`**,
+  连带连接一起静默死掉(连接 lambda 被排队却永远不被 drain)。五份拷贝里
+  **只有 `static_assert` 那一份是被检查的**。
+
+**修复**:
+
+1. **补上 `ExtraDataList` 的两分支断言**(`offsetof` 数据成员 + `sizeof`):legacy
+   `data@0x0 / bitfield@0x8 / sizeof 0x18`,AE `data@0x8 / bitfield@0x10 / sizeof 0x20` ——
+   差值就是那个虚表指针。这些数是**声明本身的算术**(`BSExtraData*` + `Bitfield*` +
+   `BSRecursiveLock`(两个 `LONG`/`DWORD` = 8 字节),AE 再加 vptr),不是量出来的。
+2. **把 `GameVM.h` 的两个候选值命名**(`kVirtualMachineOffsetLegacy/Modern`、
+   `kInactiveOffsetLegacy/Modern`),pad 锚点、`kInactiveOffset` 与断言全部**由它们推导**,
+   再加一条 `static_assert(offsetof(SkyrimVM, inactive) == kInactiveOffset<本分支候选>)`
+   把命名值钉在结构体上 —— 改一个候选而字段没跟着动,构建就失败。
+3. **`SkyrimVM64.cpp` 的两处探针与日志改用同一批名字**。理由是一句话:诊断「偏移对不对」的
+   仪器**必须读的正是结构体被编译时用的那两个数**,否则它会报告一次**它并没有做过的探测** ——
+   这与 v1.1.9 里 `--generate-config` 那处「错误信息指错原因」是同一类。
+4. **新增门禁 `Tools/Scripts/check_branch_layouts.py`**,两条规则:
+
+| 规则 | 为什么 |
+| --- | --- |
+| 目标相关的条件块若改变某结构的成员,**该文件里必须有一条 `static_assert` 点到那个类型的名字**(直接 `T` 或限定 `Outer::T`) | 断言写在 `#endif` 之后也能钉住「这次编译的那个分支」,够用;不够用的是**什么都不点这个类型** —— 这正是 `ExtraDataList` 的形状 |
+| 每个 `k*Offset*` 常量必须**由 `offsetof()` 算出**或被某条 `static_assert` **点到名字** | 它是结构体已经算过的那个数的第二份拷贝;`SkyrimVM` 就是为什么(五份拷贝、只有一份被检查) |
+| 防退化:扫描到的条件块为 0、或没有任何一处声明成员,都**失败** | 否则改一次宏名就能让门禁静默空转却照样打印 OK |
+
+**验证**:
+
+- `python Tools/Scripts/check_branch_layouts.py` → `BRANCH LAYOUT CHECK OK` /
+  `7 target-dependent layout(s) pinned, 8 file(s) scanned`(8 = 提到该宏的客户端文件数)。
+- **变异测试(三个变异,逐个确认已落到磁盘,逐个被精确指名)**:
+  1. **删掉刚补的 `ExtraDataList` 断言块**(= 还原 FOLLOW-UP 记着的原缺口)→
+     `ExtraDataList.h:39: the #ifndef SKYRIM_TARGET_LEGACY branch changes ExtraDataList's layout
+     (members ['~ExtraDataList']) and no static_assert in this file names ExtraDataList`;
+  2. 把 `TESObjectCELL::ReferenceData` 的**两条** `sizeof` 断言改名(限定名路径)→
+     `TESObjectCELL.h:32: ... changes ReferenceData's layout (members ['unk0', 'capacity', ...])
+     and no static_assert in this file names ReferenceData`;
+  3. 把 `GameVM.h` 两条「常量 ↔ 候选值」的断言换成不点名字的写法 →
+     `GameVM.h: kInactiveOffset ... is a second copy of an offset the struct already computes and
+     nothing ties it back`。
+- **变异测试同时暴露了门禁自己的一个盲点,并已修掉**:第一版把 `ExtraDataList` 那一分支读成
+  **「没有成员」**(因为它是 `virtual ~ExtraDataList();` —— 虚函数不在我当时的「成员」模式里),
+  于是变异 1 **什么都没报**。这正是 §113.4 的规矩(先确认变异真的生效)救回来的一次:
+  **一个分支靠有没有虚表来改布局,而我的规则只认数据成员**。现已把 `virtual` 声明计入布局
+  (它恰恰是移动后面每个成员 8 字节的那件事),门禁的布局计数随之 6 → 7。
+- 门禁已接进 CI 的两条触发列表(`push` 与 `pull_request` 各 49 条路径,`contract` 作业 31 个步骤),
+  并复核 `python Code/plugins/tools/check_workflow_shell.py` → `WORKFLOW SHELL CHECK OK`、
+  `yaml.safe_load` 解析通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。改动的文件是
+  `Code/client/Games/Skyrim/ExtraData/ExtraDataList.h`、
+  `Code/client/Games/Skyrim/Misc/GameVM.h`、`Code/client/SkyrimVM64.cpp`;
+  两个目标都会编译到这些断言(`check_library_scan.py` 保证 legacy 目标仍在构建里)。
+
+**教训**:**「记在清单上」和「有人在跑」是两件事,而清单越长越像前者已经成立。**
+§0 的勾选项、`docs/FOLLOW-UP.md` 的「已知但未做」,两处都**准确地把缺陷写下来了** ——
+写下来并没有让缺陷消失,也没有让它的下一次出现被挡住。**凡是「下次改这里时记得…」的句子,
+都要问一句:不记得会怎样?** 本轮的答案是:一个后续改动会在离编辑点一个结构之外、且只在恰好
+被消费时,才被发现。
+
+**教训(同轮第二条)**:**诊断代码是代码,不是注释 —— 它重复的任何数字都必须与原处绑死。**
+`SkyrimVM64.cpp` 那段日志存在的唯一目的就是区分「偏移对」和「偏移错」,而它把两个偏移
+**又抄了一遍**;一旦它们漂开,这段日志会带着一个**像是证据**的数字去指错方向。
+判据不是「日志写得对不对」,而是「它读的数和结构体编译时用的是不是同一批」。
+
+### 修复:服务器要求玩家**安装**一个他必须**删除**的 mod —— 方向编码用了 0,而 0 是合法 id
+
+**判据是一条「用一个真实数据字段当哨兵值」的内部矛盾。** mods-mismatch 回包是
+**一个列表由两次比较拼成**(客户端多出来的 + 服务器多出来的),所以每个条目必须说明自己来自哪一次。
+它此前用 `Id == 0` 表示「你必须安装」。而 `0` 是一个**真实存在的 id**:
+
+- 标准 mod:load-order 索引 `0` 就是第一个插件(`standardId`);
+- **lite(ESL)mod:`liteId` 从 0 开始发号** ——
+  `Code/components/es_loader/ESLoader.cpp` 逐字 `uint16_t liteId = 0x0;` … `plugin.m_liteId = liteId; liteId += 0x0001;`,
+  而 `TESFile::Setup(uint16_t aLiteId)` 逐字 `m_formIdPrefix = 0xFE000000 + (m_liteId * 0x1000);`
+  —— 也就是说**第一个 ESL 的 liteId 就是 0**(form id 前缀 `0xFE000000`)。
+  客户端那一侧正是用它:`Mod::GetId()` 逐字 `return IsLite() ? liteId : standardId;`,
+  认证包里逐字 `entry.Id = pMod->GetId();`(`Code/client/Games/TES.h` / `TransportService.cpp`)。
+
+链条于是闭合:服务器 `IsMoPoActive()` 时,对「客户端有、服务器没有 ⇒ **必须删除**」那一组
+`modsToRemove.ModList.push_back(mod);` —— **原样回传客户端自己的条目**,于是第一个 ESL 的
+`Id` 就是 `0`;而 UI 逐字 `mismatched.filter(mod => mod[1] === '0')` 把它归进**安装**组。
+结果:**一个第一号 ESL 不在服务器上的客户端,会被要求去「安装」一个它明明有、而且必须删掉的 mod,
+并且永远不会被告知删掉它。** 这与 v1.1.9 修掉的 MO2 那条同类(玩家被要求处理一个并不存在的问题),
+但方向相反 —— 那次是「多说了」,这次是「说反了」。
+
+**修复:**
+
+1. **方向改用不可能与真实 id 相撞的标记。** `Code/encoding/Structs/Mods.h` 新增
+   `kInstallMarker = 0xFFFF` / `kRemoveMarker = 0xFFFE`,并**静态断言**它们大于
+   `kMaxLiteId = 0x0FFF`(liteId 是 form id 的中间十二位,标准 id 是引擎填的 `uint8_t`)——
+   也就是「哨兵必须落在 id 值域之外」这件事从此由编译器执行,而不是由注释说明。
+2. **两次比较分成两个列表。** `GameServer.cpp` 里 `modsToRemove` / `modsToInstall` 各建一份,
+   标记**按列表写一次**(不再逐条推断含义);顺带修掉那条**本身就不准**的日志 ——
+   它把整份列表说成 "installed on the client",而其中一半恰恰是「服务器有、客户端没有」,
+   现在分别列出两组。
+3. **标记不进 UI。** `TransportService.cpp` 把它**翻译成词**(`"install"` / `"remove"`)再写进 JSON,
+   因为 UI 是看不到 `Mods.h` 的那一侧;而 `error.service.ts` 与 mock 改用
+   `[filename, action]`(`action: 'install' | 'remove'`),并且**两个词都显式比较** ——
+   `'remove'` 不再写成 `!== 'install'`,否则一个没预料到的词会被静默当成「删除」。
+
+**新增门禁** `Tools/Scripts/check_ui_contract.py`。overlay 是 CEF 浏览器,客户端与它之间
+**没有类型、没有 schema、没有编译器**,只有拼出来的 JSON 文本;两条词汇表跨过这条边界,而
+**此前没有任何东西同时看这三处**(C++ / 语言文件 / TS)。三条判据:
+
+| 判据 | 为什么 |
+| --- | --- |
+| C++ 能发的每个错误码,必须在**每一个**语言文件里有 `SERVICE.ERROR.ERRORS.<CODE>`,并且出现在 UI 的 `ErrorEvent` 联合类型里 | UI 逐字用 `'SERVICE.ERROR.ERRORS.' + error.error.toUpperCase()` **拼键**,所以缺一条就是**把原始键名显示给玩家**;而少一个语言就只在那一种语言里坏掉 |
+| mods-mismatch 的方向词在**两侧都必须是恰好** `{install, remove}` | 一侧多一个词 = 那个词永远匹配不上;一侧少一个词 = 那一类被静默丢掉(而 `!==` 写法会把它静默归错类) |
+| 防退化:语言文件 < 2 个、或一个错误码都没扫到、或联合类型读不出来 ⇒ **失败** | 否则改一次目录名或载荷形状,门禁就会静默空转却照样打印 OK |
+
+**验证**:
+
+- `python Tools/Scripts/check_ui_contract.py` → `UI CONTRACT CHECK OK` /
+  `7 error code(s) reachable from C++, each with a catalog entry in every language and a member in
+  the UI union; direction vocabulary bound on both sides`。
+  顺带查清一件**已死的**东西:上游那条「你的安装不是纯原版」警告在本仓库早已**改为只记日志**
+  (`DiscoveryService.cpp` 的 `IsDefaultModlist` 结果只进 `spdlog::info`,注释写明理由),
+  于是 `non_default_install` 这个码**已经不可达**,而联合类型成员与 14 份语言文件里的
+  `SERVICE.ERROR.ERRORS.NON_DEFAULT_INSTALL` 都还在 —— 门禁把这件事作为**提示**打印出来
+  (不判失败:去掉那条警告是有意的,字符串可能回来)。
+- **变异测试(五个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. **把客户端的方向词改回数字 id**(= 还原本轮修掉的原始缺陷)→
+     `the mods-mismatch payload carries the direction words [], expected ['install', 'remove']`;
+  2. 在 C++ 里加一个**没有翻译**的新错误码 `kicked_by_admin` →
+     `SERVICE.ERROR.ERRORS.KICKED_BY_ADMIN: ... 14 language(s) have no entry: cs.json, de.json, ...`
+     + `is not in the ErrorEvent union`;
+  3. 从联合类型里去掉 `wrong_version` → `error "wrong_version" is sent by ... but is not in the
+     ErrorEvent union`;
+  4. UI 改成比较 `'add'` → `the UI switches on ['add', 'remove'], expected ['install', 'remove']`;
+  5. **只从 `de.json` 删掉 `WRONG_PASSWORD` 一项** →
+     `SERVICE.ERROR.ERRORS.WRONG_PASSWORD: ... 1 language(s) have no entry: de.json`
+     —— **只指名那一个文件**(这是「每一个语言」这条判据的关键方向)。
+- 门禁已接进 CI 的两条触发列表(`push` 与 `pull_request` 各 53 条路径,`contract` 作业 32 个步骤),
+  并复核 `python Code/plugins/tools/check_workflow_shell.py` → `WORKFLOW SHELL CHECK OK`、
+  `yaml.safe_load` 解析通过。
+- C++/TS 由 GitHub CI 编译验证(§0/§1:本机不编译;UI 由 `windows.yml` 的 pnpm 步骤构建)。
+  改动的文件:`Code/encoding/Structs/Mods.h`、`Code/server/GameServer.cpp`、
+  `Code/client/Services/Generic/TransportService.cpp`、
+  `Code/skyrim_ui/src/app/services/error.service.ts`、`Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts`。
+  wire 格式**未改**(标记只出现在 UI 的 JSON 文本里,不进二进制协议)。
+
+**教训**:**「这个字段反正用不到」是错的 —— 只要它是数据字段,它的合法值域里就不许有哨兵。**
+`Id` 在错误路径里确实没有别的读者,所以「借它当方向」看起来无害;但它的值域**包含 0**,
+而 0 恰好是最常见的一个合法值(第一个插件、第一个 ESL)。**判据是值域,不是读者数。**
+现在这件事由 `static_assert(kRemoveMarker > kMaxLiteId, ...)` 兜住:哨兵想和真实 id 撞车,
+构建就失败。
+
+**教训(同轮第二条)**:**跨语言边界的契约要按「三处一起看」来建门禁,而不是按「其中一处改了什么」。**
+C++ 产生码、语言文件提供串、TS 决定怎么拼键 —— 三处此前各自都有测试/门禁,
+**但没有一条同时看它们**,而缺陷恰好只在**交界**上(缺一条翻译、方向词不一致)。
+这与 §115「一条消息定义两次」是同一形状,只是这里的两侧是两种语言。
+
+### 变更:lite(ESL)文件是否被上报,本仓库**无从判定** —— 于是改成一行日志可以判定,并加门禁守住它
+
+**判据是一条本仓库自己回答不了、而两个答案后果相反的问题。** 客户端认证包里的 mod 列表是
+**唯一**让服务端认识客户端 mod 的东西(服务端 `ModsComponent` 据此发号,客户端 `ModSystem` 据此把
+服务端 id 映射回本机 form id),而它的成员资格由一个判断决定:
+
+```cpp
+// Code/client/Games/TES.h
+[[nodiscard]] bool IsLoaded() const noexcept { return standardId != 0xFF; }
+```
+
+`0xFF` 是引擎的「**不在标准空间里**」,而 **lite(ESL)文件按定义就不在标准空间里** ——
+它的 form id 前缀是 `0xFE000000 + liteId * 0x1000`,由 `IsLite()`(flags 第 9 位)决定,
+`GetId()` 走另一条分支。**所以 `standardId != 0xFF` 对 lite 文件是真还是假,本仓库没有任何证据**:
+
+- 引擎头文件不在这个树里(全仓唯一的 `TESFile.h` 是 **`Code/components/es_loader/`** ——
+  本仓库**自己**给服务端写的加载器模型,它把 `m_standardId` 与 `m_liteId` 分开赋值、**没有哨兵**,
+  因此它不能回答**引擎**的行为);
+- 本机也没有可问的联网通道(已实测:搜索端点不可用)、没有 1.5.x/AE 可执行文件。
+
+**而两个答案的后果相反,所以不能猜:**
+
+| 答案 | 后果 |
+| --- | --- |
+| lite 文件**通过** | 下面的 lite 路径正常工作:`ModSystem::HandleMods` 填 `m_liteToServer`,`GetServerModId` 的 `0xFE` 分支解析 ESL form id |
+| lite 文件**被丢掉** | 这个 ESL 服务端**从来不知道** ⇒ 它加的每个 form **静默失去服务端 id**;开了 mod policy 的服务器还会要求玩家「安装」一个他已经装了的 mod —— **一个他无法解决的拒绝** |
+
+**这不是小众问题**:1.6.1130+ 随游戏出货的 **`_ResourcePack.esl` 本身就是 ESL**,
+而且它就是 `liteId == 0` 那一个(`DiscoveryService::IsDefaultModlist` 的期望列表里就写着它),
+所以第二个答案在 AE 上是「每个人」的问题。它与 v1.1.9 修掉的 mods-mismatch 方向缺陷**同源**:
+两条都只对**第一个 ESL** 敏感(`liteId` 从 0 发号),只是那次撞的是**方向哨兵**,这次怀疑的是**过滤器**。
+
+**做法:不猜,把它变成一行可判定的证据**(与 `docs/FOLLOW-UP.md` 第 1 条同一套路,理由也一样:
+本机没有证据,而玩家日志是最便宜的来源)。认证包构建循环现在报出**它丢掉的每个文件**
+(上限 8 条,避免 400 个插件的整合包把一次连接刷成一面墙),并带上决定这个问题的三个字段;
+循环之后给出**一行汇总**:
+
+```text
+mod list: N reported (L lite), K dropped by the standard id rule
+server mod list: M entries, S lite; lite mappings established: T, not found locally: U
+```
+
+- **`L > 0`** ⇒ lite 文件通过 ⇒ 问题关闭;
+- **`L == 0`,而丢掉的那几行里有 `isLite=1`** ⇒ lite 被丢掉 ⇒ 确认缺陷;
+- `S > 0` 而 `T == 0` ⇒ 同一个缺陷的另一面。
+
+**这两条必须在 `info` 级,而这本身是一条可查的判据**:`Code/client/TiltedOnlineApp.cpp` 里
+`rotatingLogger->set_level(spdlog::level::debug);` 是**注释掉的**,出货构建的等级就是 `info` ——
+写成 `debug` 等于写进没人看得到的日志。
+
+**新增门禁** `Tools/Scripts/check_lite_mod_path.py`。它**不判引擎行为**(它判不了),
+只守住「让这件事继续可判定」与「它问的那条路径还接着」:
+
+| 判据 | 为什么 |
+| --- | --- |
+| 丢掉文件的那条日志存在、**按参数**点名 `->IsLite()` / `->standardId` / `->liteId`、且不是 `debug`/`trace` | 少了它问题重新不可判定;等级写低了等于没写。**按参数而不是按格式串**判:格式串可以继续写着 `standardId` 而参数打印的是别的字段,而参数才是承载答案的那一半 |
+| 两侧的计数还在报(`reported` / `dropped by the standard id rule` / `lite mappings established`) | 没有计数只能看到「有文件被丢」,看不到「丢的里面有没有 lite」 |
+| lite 路径本身还接着(`m_liteToServer.emplace(` / `hiByte == 0xFE` / `m_liteToServer.find(`) | **与答案无关**:就算答案是「通过」,这条路径断了也一样坏 |
+| `Mod` 的 `IsLite()` / `GetId()` / `standardId != 0xFF` 与两条 `static_assert(offsetof(Mod, ...))` 还在 | 日志读的就是这些;改名会让它要么编不过,要么打印别的字段 |
+| `docs/FOLLOW-UP.md` 第 6 节仍存在且仍点名该门禁 | **缺口与它的仪器一起退休**,不许只删一个 |
+
+**验证**:
+
+- `python Tools/Scripts/check_lite_mod_path.py` → `LITE MOD PATH CHECK OK` /
+  `13 anchor(s) present: the lite question is still answerable from a user log, and the lite path
+  under it is still wired`。
+- **变异测试(四个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. 把那条日志降成 `spdlog::debug` → **两条**诊断:`is not at a level the shipped build prints`
+     + `uses ['spdlog::debug'], which the shipped log level filters out`;
+  2. 把参数 `pMod->standardId` 换成 `pMod->flags` → `no longer names ['->standardId']`
+     (证明「按参数判」这条规则真的在判参数);
+  3. 删掉 `ModSystem::HandleMods` 里的 `m_liteToServer.emplace(...)` →
+     `"m_liteToServer.emplace(" is gone - the receive side stops recording which server id a lite
+     mod got`;
+  4. 把 `docs/FOLLOW-UP.md` 的 `## 6.` 改名成 `## 6-X.` → `the open item about lite files
+     (section 6) is gone while the instrument remains`。
+- **变异 4 当场暴露了门禁自己的一个漏洞,已修**:第一版的锚是 `'## 6.' in doc`,
+  而它**同时匹配子标题 `## 6.1`** —— 于是「改名主干标题、正文留着」被读成「记录还在」。
+  现改为匹配顶层标题的正则 `^## 6\. `(编号后必须有空格)。**与 §131.3、§132.4 同形:
+  锚定得松一点,门禁就会开始说假话。**
+- 门禁已接进 CI 的两条触发列表(`push` 与 `pull_request` 各 55 条路径,`contract` 作业 33 个步骤),
+  并复核 `python Code/plugins/tools/check_workflow_shell.py` → `WORKFLOW SHELL CHECK OK`、
+  `yaml.safe_load` 解析通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。改动的文件:
+  `Code/client/Games/TES.h`(只加注释,不改行为)、
+  `Code/client/Services/Generic/TransportService.cpp`(日志 + 上限常量)、
+  `Code/client/Systems/ModSystem.cpp`(计数 + 汇总日志)。
+  **行为未改**:在拿到证据之前,把判断换成一个同样没有证据的写法只是把不确定性换个地方放
+  (把 `IsLoaded()` 改成恒真会连**被禁用**的插件一起上报,让服务端认为你有你没装的东西)。
+  `docs/FOLLOW-UP.md` 第 6 节写明了两条候选修法与「先要有证据」的理由。
+
+**教训**:**「我不知道」有第三种处理方式,而且它比「猜」和「不写」都好:把问题变成下一次
+日志就能回答的形式。** 猜测会把不确定性藏进代码(而且这次两个答案的后果一个是功能正常、
+一个是玩家被永久拒绝);不写则会让下一个人重新踩一遍。**判据是「这一行日志能不能把问题
+收敛成是/否」**,而这一轮的答案是:一行汇总 + 三条被丢文件的明细,足够。
+
+**教训(同轮第二条)**:**门禁的锚要锚在「主张」上,不能锚在「出现过的字符串」上。**
+`'## 6.' in doc` 让子标题替主干标题担保,于是最重要的那个动作(把待验项删掉)
+反而不会失败。**锚的宽度就是门禁的可信度。**
+
+### 修复:UI 的「打开指南」按钮和「重连」按钮——一个从没注册过,一个三层都没实现
+
+**判据是一条三层各写一遍、而没有任何东西同时看它们的桥。** 一个 UI 按钮要走三层才能到游戏:
+
+1. **typings**(`Code/skyrim_ui/src/typings.d.ts`)**声明** overlay 对象有什么,
+   `client.service.ts` 按名字调用;
+2. **`ProcessHandler::OnContextCreated`**(`Code/tp_process/ProcessHandler.cpp`)**注册** JS 函数名 ——
+   **没注册的名字根本不出渲染进程**,调用在浏览器里抛异常,没有日志、没有半截动作;
+3. **`OverlayClient`**(`Code/client/Services/Generic/OverlayClient.cpp`)**按名字派发**到实现 ——
+   注册了却没有分支的名字会跨过进程边界、然后被 if 链**静默丢掉**。
+
+`docs/PITFALLS.md` §0 的清单里就有这条规则(「新 JS→C++ 调用必须在 `ProcessHandler.cpp::OnContextCreated`
+注册」),而它是**一个勾选项**。于是:
+
+- **`openPlayGuide`(活缺陷)**:派发分支写着(`else if (eventName == "openPlayGuide")`)、
+  实现写着(`ProcessOpenPlayGuide()` → `ShellExecuteW(… wiki … playguide)`)、
+  按钮接着(`party-hint.service.ts` 把它挂成组队提示的「打开指南」动作)、
+  字符串也译好了(14 种语言的 `COMPONENT.NOTIFICATIONS.OPEN_GUIDE`)—— **只差注册那一行**。
+  后果:玩家单机做任务时弹出的组队提示上那个按钮**点了什么都不发生**(overlay 控制台里一条 TypeError)。
+  而 mock 实现了它,所以浏览器里 mock 跑得好好的,看不出来。
+- **`reconnect`(潜伏缺陷)**:typings 声明了、`client.service.ts` 调了、mock 实现了 ——
+  **两层 C++ 都没有**:`OverlayClient` 的派发链里从来没有 `reconnect`。
+  按钮本身在 `root.component.html` 里被 **HTML 注释**包着(所以今天点不到),
+  但那一行代码同时还会把重连预算清零 ⇒ 一旦有人把按钮放开,它会**既什么都不做、
+  又让自动重连不再发生**。这正是 §43.8 那类「记为潜伏项」的形状。
+- 顺带由**门禁自己**抓出第三条:**`deactivate`** 注册了、typings 声明了、UI 包了一层,
+  而 `OverlayClient` **没有分支** ⇒ 请求跨过边界后被静默丢掉(不报错、无效果)。
+
+**修复:**
+
+1. **`ProcessHandler.cpp` 补 `openPlayGuide` 的注册**(一行)—— 那一整条链本来就是通的。
+2. **`client.service.ts` 的 `reconnect()` 改用已注册的两个原语**
+   (`skyrimtogether.abandonAttempt()` + `this.connect(host, port, password)`),
+   也就是**自动重连那条路一直在用的两步**(`onDisconnect` 里的 `:384-387`)。
+   `typings.d.ts` 里那条 `reconnect()` 随之删掉 —— overlay 对象**没有**这个方法,
+   而 typings 描述的是 overlay 对象。
+3. **`OverlayClient` 补 `deactivate` 的分支与实现**:`SetUIVisible(false)`,即
+   `InputService::SetCaptureEnabled(false)` + `OverlayService::SetActive(false)` + 隐藏光标 ——
+   正是 typings 上那句「Deactivate UI and release control」,也**正是游戏侧自己隐藏 overlay 时
+   用的同一对调用**(同文件 `ProcessRevealPlayersMessage` 里就是直接调 `SetUIVisible(false)`,
+   所以线程模型与既有写法一致),两条关闭路径从此不会在「捕获状态」上分叉。
+
+**新增门禁** `Tools/Scripts/check_overlay_bridge.py`,四条判据 + 两条报告:
+
+| 判据 | 为什么 |
+| --- | --- |
+| typings 声明的每个方法都**必须注册** | 声明就是「这个对象有这个方法」;没有 ⇒ 调用即抛 |
+| UI 里每个 `skyrimtogether.<名>(` 调用都**必须注册** | 没注册的名字不出渲染进程:调用抛异常、功能什么都不做 |
+| UI **调用**的每个名字都必须**有派发分支**(`on`/`off` 除外:它们是框架在渲染进程内自己处理的) | 否则请求跨过边界被静默丢掉 —— 不报错、无效果,是最难查的一类 |
+| 反向:派发了却没注册的名字**失败** | 那是 UI 永远到不了的分支 |
+| 报告:注册了但 typings 没声明、UI 也没调 | `toggleDebugUI` 就是(它由键盘驱动),报告而不判失败 |
+| 报告:声明了、注册了、但 UI 没人调 | 通道未使用;`deactivate` 修好前属于这一类 |
+
+判据 3 特意写成「UI **调用**的」,而不是「所有注册的」:没人调的名字不可能被静默丢掉,
+所以「未使用的通道」是**报告**项而不是失败项 —— 但它**仍然**要求 `deactivate` 这种
+「UI 真的调了、却没有分支」的情况失败(`client.service.ts` 那层包装就是调用点)。
+
+**验证**:
+
+- `python Tools/Scripts/check_overlay_bridge.py` → `OVERLAY BRIDGE CHECK OK` /
+  `34 call(s) verified through all three layers: declared, registered, dispatched`。
+  对照表:`registered` 18 个、`dispatched` 16 个、`declared` 17 个;
+  `on`/`off` 是渲染进程内自处理的例外(判据里写明理由)。
+- **变异测试(四个变异,逐个先确认已落到磁盘,逐个被精确指名;共 7 条诊断)**:
+  1. 删掉刚补的 `openPlayGuide` 注册(= **还原原始缺陷**)→
+     `typings.d.ts declares openPlayGuide() but ProcessHandler.cpp never registers it`
+     + `client.service.ts:278 calls skyrimtogether.openPlayGuide(), which ... never registers`;
+  2. 给 typings 加一个 `phantomTyped()` → 第一条判据指名它;
+  3. 在 UI 里加一个 `skyrimtogether.phantomCall()` → 第二条判据指名它;
+  4. 把 `deactivate` 的分支换成 `phantomAction`(= **还原第三条缺陷**)→
+     第三条判据指名 `deactivate` 缺分支,第四条判据同时指名 `phantomAction` 无注册、`
+     openPlayGuide` 派发了却没注册。
+  顺带核对:注册判据锚在 `SetValue("名", CefV8Value::CreateFunction` 这个**形式**上,
+  所以注释里出现名字不算注册(变异 1 里注释仍在,门禁照样报错)。
+- 门禁已接进 CI 的两条触发列表(`push` 与 `pull_request` 各 57 条路径,`contract` 作业 34 个步骤),
+  并复核 `python Code/plugins/tools/check_workflow_shell.py` → `WORKFLOW SHELL CHECK OK`、
+  `yaml.safe_load` 解析通过。
+- C++ 与 TS 由 GitHub CI 编译验证(§0/§1:本机不编译;UI 由 `windows.yml` 的 pnpm 步骤构建)。
+  改动的文件:`Code/tp_process/ProcessHandler.cpp`(一行注册)、
+  `Code/client/Services/Generic/OverlayClient.h`/`.cpp`(声明 + 分支 + 实现)、
+  `Code/skyrim_ui/src/app/services/client.service.ts`(reconnect 改用已注册原语)、
+  `Code/skyrim_ui/src/typings.d.ts`(删掉对象上并不存在的 `reconnect`)。
+
+**教训**:**「三层各写一遍」的桥,必须在**一次**检查里同时看三层 —— 只看一层永远发现不了缺口。**
+这次两条缺陷正好落在**不同的两层**:`openPlayGuide` 缺第 2 层(而第 3 层早就写好了),
+`reconnect` 第 2、3 层都没有而第 1 层声明了。§115 的「一条消息定义两次」在这里变成三次,
+而**缺的那一层决定了症状**:缺注册 ⇒ **抛异常**;缺派发 ⇒ **静默丢掉**。
+后者更危险,因为它连错误都不给你。
+
+**教训(同轮第二条)**:**mock 会把「桥没接上」这类缺陷完整遮住。**
+`openPlayGuide` 与 `reconnect` 都在 mock 里实现了,所以**在浏览器里跑 mock 一切正常** ——
+它们只会在真实客户端里坏。**mock 实现了一个真实实现不存在的方法时,那不是 mock 的完整,
+而是契约已经分叉了**;门禁把两者分开比对(UI 调用排除了 `app/mock/`),就是为了让 mock 不能替真身担保。
+
+### 修复:场景更新消息带了一个**没人读**的字段,而它唯一的写入者拿「任务阶段号」和常量 5 相比
+
+**判据是一条「线路上有、语义上没有」的字段。** `check_wire_symmetry` 证明的是**两个方向
+搬运同一批字段、顺序一致**;它**不问**接收端到底有没有用到那个值。而「搬过去就丢」是协议里
+最安静的一类缺陷:**字节被消费了、所有检查都通过、字段背后的功能却从来没发生过**。
+
+`RequestQuestSceneUpdate`(客户端→服务端的场景开始/结束)就有这样一个字段:
+
+```cpp
+// Code/client/Services/Generic/QuestService.cpp(修复前)
+RequestQuestSceneUpdate update;
+update.SceneId = sceneGameId;
+update.QuestId = questGameId;
+update.Stage  = stageId;
+update.Status = stageId == RequestQuestUpdate::StageUpdateForced;   // <-- 这里
+```
+
+`stageId` 是**任务当前的阶段号**(`pQuest->currentStage`),而
+`RequestQuestUpdate::StageUpdateForced` 的值是 **5** —— 于是这一行是「这个任务现在正好停在
+阶段 5」,与它读起来的意思(「这是一次强制更新」)毫无关系。而**服务端从头到尾没有读过它**:
+`OnQuestSceneChanges` 用的是 `SceneType`(BEGIN/END)、`SceneId`、`QuestId`、`Stage`、
+`ClientQuestType`,以及 `RequestQuestUpdate::StatusCode::SceneUpdate` 作为**去重行标签**
+(那是枚举值,不是这个字段)。
+
+**发现过程里先否掉了两个不存在的缺陷**(与 §125 同形,值得记下来):看到
+`RequestQuestUpdate::StatusCode` 有 6 个值而 `NotifyQuestUpdate::StatusCode` 只有 4 个,
+先怀疑是「同一枚举定义两次、值集不一致」;读完服务端那个 `switch` 后否掉 ——
+它把 4 个值映射过去,`StageUpdateForced` 走
+`case RequestQuestUpdate::StageUpdateForced: useAggressiveSend = true; [[fallthrough]];`
+进 `StageUpdate`,其余落 `default:` 安全丢弃并举一条 error,而通知方向只会被赋那 4 个值之一。
+**枚举值集不同在这里是对的**:强制状态是**服务端自己**生成的(它给落后的队员补一次当前阶段),
+不来自客户端。
+
+**修复**:把 `Status` 从 `RequestQuestSceneUpdate` 端到端删掉 ——
+结构体字段、`operator==`、`SerializeRaw`、`DeserializeRaw`,以及客户端那一行写入者。
+**这是协议改动**:同一个 commit 的客户端与服务端才互通(§0 的版本握手),所以删一个 8 位字段
+是安全的;而且删掉的这一位**在两种情况下都没有接收者**。
+
+**新增门禁** `Tools/Scripts/check_wire_field_reads.py`:**这两条场景消息的每个字段都必须在
+它到达的那个 handler 里被读**(不是被赋值)。作用域写成**显式清单**(两条消息 + 两个 handler),
+清单不再匹配就失败,而不是静默检查零个东西。
+
+**验证**:
+
+- `python Tools/Scripts/check_wire_symmetry.py` → `WIRE SYMMETRY CHECK OK` /
+  `133 pair(s) write and read the same wire operations in the same order` ——
+  **这就是这次字段删除的判据**:结构体与两个序列化器必须仍然一致(少写一个字段、或多读一个字段,
+  这条会红)。
+- `python Tools/Scripts/check_wire_field_reads.py` → `WIRE FIELD READ CHECK OK` /
+  `8 field(s) of the two scene-update messages are read where they arrive`;
+  `--list` 打出两条消息的字段清单与各自被读的 handler。
+- **变异测试(三个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. **把 `Status` 字段加回结构体**(= 还原本轮修掉的缺陷)→
+     `OnQuestSceneChanges never reads RequestQuestSceneUpdate.Status; RequestQuestSceneUpdate
+     serialises it and the receiver drops it, so whatever fills it has no effect`;
+  2. 把 handler 改名 `OnQuestSceneChanges` → `OnQuestSceneChangesRenamed` →
+     `OnQuestSceneChanges was not found; the handler this gate reads RequestQuestSceneUpdate in has
+     been renamed or moved`(防退化);
+  3. 给 `EXEMPT` 加一条不存在的 `NotifyQuestSceneUpdate.SceneType_phantom` →
+     `is exempt but no longer a field of NotifyQuestSceneUpdate; drop the exemption`(豁免不会过期腐烂)。
+- 门禁已接进 CI 的两条触发列表(`push` 与 `pull_request` 各 60 条路径,`contract` 作业 35 个步骤),
+  并复核 `python Code/plugins/tools/check_workflow_shell.py` → `WORKFLOW SHELL CHECK OK`、
+  `yaml.safe_load` 解析通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**一个被扔掉的门禁(负结果,已记 §135.5)**:通用版(全部 133 条消息的每个字段)写出来、
+跑过、**扔掉了**。按字段名全树搜**区分不了同名跨消息的字段**——`Status`、`Id`、`Stage`
+同时属于十几条消息,任何一条读自己的字段就会替别的消息担保;改成「只在注册给该消息的 handler
+体内搜」之后,又低估了**转发给 helper** 的常见写法:第一版把
+`CharacterSpawnRequest.FactionsContent`、`StringCacheUpdate.Values` 这类**功能明明在用**的字段
+报成没人读(实测 7~10 条假阳性)。**一个会说假话的门禁会被关掉,所以它不发布**;
+发布的是能做成精确的那一半。判据不是「门禁覆盖得多不多」,而是**「它说的话能不能担保」**。
+
+**教训**:**只查「搬运是否对称」的检查,管不到「搬过去有没有人用」。**
+`check_wire_symmetry` 覆盖 133 对读写,一条都没漏 —— 而缺陷正好长在它的**判据边界之外**:
+两侧都忠实地搬运了一个没人读的字节。**每加一条对称性检查,都要问一句「它证明了什么、
+没证明什么」**,然后把没证明的那部分单独做成一条能担保的判据(哪怕作用域很小)。
+
+**教训(同轮第二条)**:**写入者拿一个数据字段当常量比较,是「读起来像功能、实际是巧合」的典型。**
+`stageId == StageUpdateForced` 里左边是阶段号、右边是枚举常量 5:它**永远为假,除了阶段正好是 5 的任务**。
+如果这个字段有读者,这就是一个只在特定阶段才触发的怪 bug;因为它没有读者,它只是一颗哑弹。
+**两种情况都该删掉这一行** —— 区别只在于「删掉之后要不要补功能」。
+
+### 修复:一条服务器设置被声明了**两次** —— 而 ini 只会写进先注册的那一个,「先」由静态初始化顺序决定
+
+**判据是这个仓库自己的设置机制决定的,不是风格问题。** 每一个 `Console::Setting` 在**构造时**
+把自己挂进一条全局链表(`SettingBase(ROOT(), ...)` → `parent = this`),
+`RegisterServerSettings()` 再把整条链表交给控制台注册表(`AddSetting` → `m_settings.push_back`,
+**没有任何按名字去重**);而按名字取用时:
+
+```cpp
+// Code/components/console/ConsoleRegistry.cpp
+SettingBase* ConsoleRegistry::FindSetting(const char* acName)
+{
+    auto it = std::find_if(m_settings.begin(), m_settings.end(), …strcmp(settingName, findName) == 0);
+    if (it == m_settings.end()) return nullptr;
+    return *it;                       // <-- 第一个同名的赢
+}
+```
+
+于是**同名的两条 `Console::Setting` 是两个对象共用一个地址**:ini 加载器与控制台命令都只写进
+**第一个**;而构造顺序 = **跨翻译单元的静态初始化顺序,标准里是未指定的** —— 所以「哪一个赢」
+**连构建之间都不稳定**;输的那一个**终生保持构造时的默认值**。
+
+实测全仓 **21 条声明里恰好一处重名**:
+
+| 设置名 | 声明处 | 谁在读 |
+| --- | --- | --- |
+| `LiveServices:bAnnounceServer` | `Code/server/GameServer.cpp:36` | `GameServer::IsPublicServer()`(公开服务器列表判定,并被 `AllowsAutoPartyJoin()` 读:`bAutoPartyJoin && !IsPublicServer()`) |
+| `LiveServices:bAnnounceServer` | `Code/server/Services/CommandService.cpp:16` | `/settime` 权限:`if (IsPlayerLeader(...) && !bAnnounceServer)`(注释写着「Party leader allowed on private servers only」) |
+
+**两个方向的后果都是错的**,而且取决于链接顺序:
+
+- 若 ini 值落进 **CommandService** 的那份:`IsPublicServer()` 永远是 `false` ⇒ 服务器**不会被
+  列进公开列表**(管理员设了 `true` 也没用),并且 `AllowsAutoPartyJoin()` 在公开服务器上**仍然是真**;
+- 若落进 **GameServer** 的那份:公开服务器上**队长仍然能改时间**(权限判定看到的是默认 `false`)。
+
+**修复**:删掉 `CommandService.cpp` 里的副本,改走**唯一的那份设置**——
+`GameServer::IsPublicServer()`(`CommandService.cpp` 本来就 include 了 `<GameServer.h>`,
+而这个访问器也是 `AllowsAutoPartyJoin()` 已经在用的),两处读者从此看同一个值。
+
+**新增门禁** `Tools/Scripts/check_console_settings.py`:**任何 `Console::Setting` 名字都只能声明一次**。
+这是**能担保**的判据:只需要声明处的字符串,不需要调用图或类型系统。另加防退化下限
+(少于 15 条声明就失败,否则改个写法就能让门禁空转)。
+
+**验证**:
+
+- `python Tools/Scripts/check_console_settings.py` → `CONSOLE SETTING CHECK OK` /
+  `20 setting declaration(s), every name unique`(21 条声明去掉副本 = 20 ✓)。
+- **变异测试(三个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. **把重复声明加回 `CommandService.cpp`**(= 还原本缺陷)→
+     `"LiveServices:bAnnounceServer" is declared 2 times (Code/server/GameServer.cpp:36,
+     Code/server/Services/CommandService.cpp:24); a name resolves to the first registration, so the
+     others never receive the ini value and keep their default - and which one wins depends on static
+     initialisation order`;
+  2. **同一个文件里制造重名**(把 `Gameplay:bEnablePvp` 的键改成 `Gameplay:bEnableGreetings`)→
+     `"Gameplay:bEnableGreetings" is declared 2 times (GameServer.cpp:41, GameServer.cpp:42)`
+     —— 同一文件内的重名同样被抓到;
+  3. 把防退化下限抬到 999 → `only 20 Console::Setting declaration(s) were found, below the floor of
+     999; the declaration shape changed…`。
+- **门禁自己犯过一次错,当场修掉,而且这个坑本仓库已经踩过**:第一版**没有剥注释**,
+  而我在 `CommandService.cpp` 里写的说明注释**逐字引用了那条被删掉的声明** ——
+  于是门禁把注释当成声明,报告「重复仍在」。这与 §3.1 记的
+  「`gen_ae_to_se_map.py` 的旧口径**把注释掉的调用当成活的**」是**同一个坑**。
+  现已先剥 `//` 与 `/* */` 再匹配。
+- 门禁已接进 CI 的两条触发列表(`push` 与 `pull_request` 各 61 条路径,`contract` 作业 36 个步骤),
+  并复核 `check_workflow_shell.py` → `WORKFLOW SHELL CHECK OK`、`yaml.safe_load` 通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。改动文件:
+  `Code/server/Services/CommandService.cpp`(删副本 + 改读访问器)。
+
+**教训**:**在「自注册 + 按名字查」的注册表里,一个名字出现两次不是风格问题,是语义分裂。**
+两个对象、一个地址、`find_if` 选第一个、而第一个是谁由**静态初始化顺序**决定 ——
+它同时具备三个最坏的属性:**静默**(没有日志)、**不确定**(换个构建可能换一个赢家)、
+**看起来正常**(两边都有值,只是其中一边永远是默认值)。判据不是「名字起得一致不一致」,
+而是**「这个名字被解析到几个对象」**。
+
+**教训(同轮第二条)**:**门禁的判据要锚在「代码」上,不能锚在「文本」上 —— 注释也是文本。**
+剥注释这件事在本仓库的采集器里早就是标准动作(§3.1 的旧口径正因如此虚增了 3 个 id),
+而我写这条门禁时又漏了一次。**「我在注释里引用了它」与「它还在」在正则眼里没有区别** ——
+所以任何扫源码的门禁,第一步都该是剥注释。
+
+### 修复:1.5.x 证据表记录了代码**故意不用**的偏移 —— 而豁免让「把它加回去」这件事**静默通过**
+
+**先说清楚这一轮不是代码 bug。** 代码是对的:`BSGraphicsRenderer.cpp` 的 frame end 在 1.5.x 上
+**直接钩住锚点函数本身**(`TP_HOOK_IMMEDIATE`),只有 1.6.x 才需要换掉里面那个 `call`:
+所以 `At(pFrameEnd, {9}, "frame end")` 故意不传 1.5.x 偏移。问题在**证据文件**与**门禁**两侧:
+
+1. **判断在转录中丢了**:生成器 `Tools/ida/patch_offsets_1597.py` 的输入里逐字写着
+   `(77246, 9, 5, "frame end (call site, 1.6 only)")` —— 人已经判断了「这个 call site 只有 1.6 有」,
+   但工具照样去对齐,并在 1.5.97 的同一函数里找到一条 `call`,于是**输出**写下了 `0x9`。
+   输入里的判断没有到达输出。
+2. **于是危险的方向被豁免掉了**:`Tools/Scripts/check_patch_offsets.py` 把 frame end 列进
+   `UNUSED_LEGACY_OK`(「表里有、代码不用的偏移不算缺陷」)—— 这个判断本身合理,
+   但它的后果是:**把 `0x9` 加回代码的那个改动,当时是通过的**
+   (表里记着 `0x9`,代码用 `0x9`,两边一致)。
+   而 `GamePatch::SwapCall` **只检查那个字节是不是 `0xE8`** —— 1.5.97 上 +0x9 处的那条 `call`
+   如果不是同一条,就会被**静默重定向**:功能坏掉,没有日志。
+
+**修复(三处,让两个产物说到一起)**:
+
+1. **生成器**:新增 `MODERN_ONLY`,按 `(ae_id, offset)` 精确指定「1.5.x 上没有对应站点」并写明原因;
+   命中时输出 `-` 而不是对齐结果。键用 id+偏移,不会漂到别的站点。
+2. **证据表**:`77246 0x9 - no 1.5.x patch site: the pre-AE path hooks the anchor itself`
+   —— 表里不再提供代码不用的数字。**生成器本机跑不了**(需要两份 exe + id 映射),
+   所以这一行是按修好的生成器**逐字**手写的;门禁验的是**表与代码是否一致**,不是生成器能否运行。
+3. **门禁**:把 frame end 从 `UNUSED_LEGACY_OK` 移到 `NO_LEGACY_EXPECTED`(后者的理由与它相符),
+   `UNUSED_LEGACY_OK` 因此清空(机制保留)。方向没变(表多给一个偏移仍然**不是**缺陷),
+   但它现在会**被报出来**,而不是被豁免掉。
+
+**验证**:
+
+- `python Tools/Scripts/check_patch_offsets.py` → `PATCH OFFSET CHECK OK` /
+  `13 patch site(s) agree with st_patch_offsets_1597.tsv`,**零 note**(改之前也是零 note,
+  因为那条 note 被豁免了 —— 这正是要修的东西)。
+- **变异测试(两个变异,逐个先确认已落到磁盘)**:
+  1. **把 1.5.x 偏移加回代码**(`{9}` → `{9, 0x9, "1.5.97"}`,即当年会静默通过的那个改动)→
+     **现在失败**:
+     `patch 'frame end' applies a 1.5.x offset (0x9) that st_patch_offsets_1597.tsv does not record -
+     the row says 'no 1.5.x patch site: the pre-AE path hooks the anchor itself'. A number nobody
+     measured must not be written into a running game`
+     —— 门禁**引用表里的理由**,而不只是说「不一致」;
+  2. **把表改回 `0x9`**(产物退化)→ 输出 1 条 note
+     `'frame end': st_patch_offsets_1597.tsv records a 1.5.x offset (0x9) that the call site does not
+     pass; the patch is skipped on 1.5.x`,门禁仍通过 —— 这个方向**不是缺陷**(弃用一个装饰性补丁是
+     故意的),但它从「被豁免」变成「被报告」。
+- 生成器本机不能运行,已用**内存内 `compile()`** 确认语法(不用 `py_compile`,它会试图写
+  `__pycache__` 而被沙箱拒绝),并确认 `MODERN_ONLY` 在定义处与使用处都到位。
+- 门禁已在 CI 的两条触发列表与 `contract` 作业里(§130 那批路径已含 `Tools/ida/**`),本轮不需要改工作流。
+
+**教训**:**「不是缺陷」的豁免,会把它旁边那个**真**缺陷一起豁免掉。**
+`UNUSED_LEGACY_OK` 的理由是对的(表多给一个偏移不算错),但同一个豁免让
+「把这个偏移加回代码」也通过 —— 而后者是**往正在运行的游戏里写字节**。
+豁免要看**它挡住了什么**,不只**它放过了什么**:如果一条判据的两个方向一个失败一个豁免,
+那么豁免的那个方向就是**绕过路径**。
+
+**教训(同轮第二条)**:**工具的输入里有判断,不代表输出里有。**
+`"frame end (call site, 1.6 only)"` 是人的判断,而工具照样输出对齐结果 ——
+**判断写在描述里,就一定会丢**;要写成**结构化字段**(这里是 `MODERN_ONLY` 的键),
+否则下游只看到「有偏移」。
+
+### 修复:一条「卡住了」的日志**说不出卡住的是谁**;并给 648 条日志加上占位符/实参一致性检查
+
+**判据是一条二值、可机检的性质:格式串里的占位符数量 == 实参数量。** 两个方向都坏,而且坏法不同:
+
+- **占位符多于实参** ⇒ spdlog 走 fmt,`fmt::format_error` **在写这行日志的那一刻抛出** ——
+  异常落在当时有效的处理器上。**只在罕见路径上触发的日志,恰恰是「出事之前从没被执行过」的那条**
+  (「地址库 id 没映射」「消息构建失败」……):**一条会崩的日志比没有日志更糟**;
+- **实参多于占位符** ⇒ 反过来**静默**:fmt 只格式化它要的参数,多出来的值**一个都不会出现在日志里**。
+
+**实测全仓 648 条带字面量格式的调用,恰好一处**:
+
+```cpp
+// Code/client/Services/Generic/InventoryService.cpp(修复前,同一段里的四行)
+440: spdlog::debug(__FUNCTION__ ": actorId {:X} naked check is irrelevant {}",       pActor->formID, pActorName);
+446: spdlog::debug(__FUNCTION__ ": actorId {:X} with naked check deadline {}",       pActor->formID, pActorName);
+452: spdlog::debug(__FUNCTION__ ": actorId {:X} naked check deadline expires {}",    pActor->formID, pActorName);
+455: spdlog::debug(__FUNCTION__ ": but still WaitingForAssignment",                  pActor->formID, pActorName);   // <-- 只有它没有占位符
+```
+
+第 455 行是「裸体检查的截止时间到了,而这只 actor **仍然**带着 `WaitingForAssignmentComponent`」——
+**正是那条要说「卡住了」的日志**,而它**既不打 actorId 也不打名字**:那一段里唯一需要用来定位的
+那条恰好说不出是谁(`pActorName` 在 432 行取好、传进去、然后被丢掉)。
+**这是 §133 同一条道理的又一处落点:诊断行要能回答「是谁」。**
+
+**修复**:补上两个占位符,与同族三行对齐:
+`__FUNCTION__ ": actorId {:X} but still WaitingForAssignment {}"`。
+
+**新增门禁** `Tools/Scripts/check_log_format_args.py`:
+
+- 对全仓 `Code/**` 的 `spdlog::<level>(...)`(含 `logger->` 形式与**跨行调用**)解析第一个参数,
+  若是**字符串字面量**(允许与 `__FUNCTION__` 拼接,这是本仓库的写法)则数占位符:
+  `{}`、`{:X}`、`{:#04x}` 都算,`{{`/`}}` 是**转义的字面量花括号,不算**;
+- 格式串是**变量**的调用**跳过**(不猜),但**跳过比例超过 35% 就失败** ——
+  否则「跳过」会把门禁悄悄掏空;
+- 另有下限:解析到的调用少于 300 条即失败(调用写法变了要报错,而不是空转);
+- **剥注释时保留字符串字面量**(格式串就在字面量里)—— §136 的教训在这里不能照搬。
+
+**验证**:
+
+- `python Tools/Scripts/check_log_format_args.py` → `LOG FORMAT CHECK OK` /
+  `648 log call(s) pass as many arguments as their format string asks for`;
+  `--list` 报 `648 checked, 17 skipped (variable format)`。
+- **变异测试(三个变异,逐个先确认已落到磁盘)**:
+  1. **还原第 455 行**(去掉两个占位符)→ `debug has 0 placeholder(s) and 2 argument(s)` ✓;
+  2. 把 `main.cpp` 那条**跨行**日志改成 4 个占位符 3 个实参 →
+     `info has 4 placeholder(s) and 3 argument(s)` ✓(同时证明跨行调用被正确解析);
+  3. 在同一条调用里写入 `{{literal braces must not count}}` → **仍然通过** ✓ ——
+     证明花括号转义不会误报(门禁不会因为「字符串里有花括号」而喊狼来了)。
+- 门禁已接进 CI 两条触发列表(`push` 与 `pull_request` 各 63 条路径;新增 `Code/**`,
+  因为这个门禁读的是**全仓**的日志调用),`contract` 作业 37 个步骤;
+  `check_workflow_shell.py` 与 `yaml.safe_load` 复核通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**教训**:**向「罕见路径」写日志的那行代码,是最不可能被测到的一行 —— 所以它必须是机械可验证的。**
+648 条里错 1 条,靠人眼读是读不出来的;而按「占位符数 == 实参数」这**一条二值判据**扫一遍,
+它自己就浮出来了。**能被机检的性质,不要交给 review。**
+
+### 修复:客户端的四条「玩家消息」是**英文散文**,而聊天把系统消息**当翻译键**渲染
+
+**判据是一条已经写好、却没被任何东西执行的契约:系统消息的文本是「键」,不是「句子」。**
+
+链路逐段可查:
+
+1. 客户端发:`OverlayService::SendSystemMessage(const std::string& acMessage)` 逐字
+   `pArguments->SetInt(0, kSystemMessage); pArguments->SetString(1, acMessage);`
+   `m_pOverlay->ExecuteAsync("message", pArguments);` ——
+   而 `Code/encoding/ChatMessageTypes.h` 里 `kSystemMessage = 0`;
+2. TS 收:`MessageTypes.SYSTEM_MESSAGE = 0`(**两侧同一个值**),`messageTypeToClassName()` 把它映成 `'system'`;
+3. **渲染**:`chat.component.html` 逐字
+
+```html
+<span class="app-chat-message" *ngIf="message.typeClass === 'system'">{{
+  message.content | transloco: message.translationParams
+}}</span>
+<span class="app-chat-message" *ngIf="message.typeClass !== 'system'">{{
+  message.content
+}}</span>
+```
+
+⇒ **系统消息的内容是当作翻译键查的**;而 Transloco 配置是 `fallbackLang: 'en'` +
+`missingHandler: { useFallbackTranslation: true }`,键在两种语言里都查不到时**把键本身显示出来**。
+
+于是四条 `SendSystemMessage` 字面量(全是英文句子)的实际行为是:**英文玩家看到正确句子**
+(键就是句子),**其余 13 种语言看到的是英文** —— 而其中两条的**同一个意思在 14 份语言文件里早就译好了**:
+
+| 站点 | 修复前(散文) | 已有的键 |
+| --- | --- | --- |
+| `CommandService.cpp`(无权限) | `"Only an admin, or the party leader on a private server, can change the time."` | **`SERVICE.COMMANDS.NOT_ADMIN`**(14 种语言全有译文) |
+| `CommandService.cpp`(时间非法) | `"That is not a time. Use /settime HH MM, with hours 0-23 and minutes 0-59."` | **`COMPONENT.CHAT.SET_TIME_INVALID_ARGUMENTS`**(客户端**本地**校验同一条件时用的就是它,14 种语言全有) |
+| `CommandService.cpp`(传送失败) | `"Teleporting to player failed."` | 无 —— 本轮新增 |
+| `OverlayService.cpp`(同上) | 同上(**同一个句子写了两遍**) | 同一个新键 |
+
+这一条**本仓库的门禁从 §132 起就一直在指着它**:`check_ui_contract.py` 每次都把
+`SERVICE.COMMANDS.NOT_ADMIN` 报成「没有任何错误码能到达、也没有 UI 源码按名字要它」——
+我当时把它记成「不可达的键」,而没有追问**「那这条消息现在是从哪来的」**。
+**一条没有调用者的翻译键,往往意味着它的调用者把句子硬编码了。**
+
+**修复**:
+
+1. 前两条改用**已存在、已翻译**的键 —— 零翻译成本,立刻让 14 种语言看到母语;
+2. 传送失败那两条改用新增的 `SERVICE.COMMANDS.TELEPORT_FAILED`;
+3. 新键**只加进 `en.json`**(回退语言):另外 13 份文件**不放假译文** ——
+   `fallbackLang: 'en'` 本来就是配置好的行为(它们今天看到的也正是这句英文),
+   而门禁每次运行都会**报告**它「缺在至少一种语言里」,译者照着补即可。
+   **判据是「玩家不会看到键名」,不是「每种语言都有一行」** —— 后者可以造假,前者不能。
+
+**扩展门禁** `Tools/Scripts/check_ui_contract.py`(第 4 条判据):
+**客户端送进聊天窗的每一个字面量,都必须在回退语言(`en.json`)里是一个键**;否则失败并说明
+「聊天用 `content | transloco` 渲染系统消息,这是键」。另外**报告**「en 里有、别的语言里缺」的键
+(降级为英文是配置行为,不是缺陷)。
+
+**验证**:
+
+- `python Tools/Scripts/check_ui_contract.py` → `UI CONTRACT CHECK OK`,两条 note:
+  既有的 `NON_DEFAULT_INSTALL` 死键,以及新键
+  `['SERVICE.COMMANDS.TELEPORT_FAILED'] are missing from at least one language and fall back to English`。
+- 四条字面量现在全是键:`SERVICE.COMMANDS.NOT_ADMIN`、`COMPONENT.CHAT.SET_TIME_INVALID_ARGUMENTS`、
+  `SERVICE.COMMANDS.TELEPORT_FAILED`(两处)。
+- **变异测试(两个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. **把无权限那条改回散文**(= 还原本缺陷)→
+     `CommandService.cpp:56 sends "You must be an admin to use that command." to the chat, which
+     renders system messages with content | transloco; that is a translation key, and en.json has no
+     such key, so what the player sees is the string itself`;
+  2. **从 `en.json` 删掉 `TELEPORT_FAILED`** →
+     `CommandService.cpp:85, OverlayService.cpp:606 sends "SERVICE.COMMANDS.TELEPORT_FAILED" …`
+     —— **两处站点被一次点名**,证明这条判据覆盖所有站点,而不是只看第一个。
+- 门禁已在 CI 的两条触发列表里(`Code/client/**` 与 `Code/skyrim_ui/src/**` 都是 §132 就加过的路径),
+  本轮不需要改工作流;`check_workflow_shell.py` 与 `yaml.safe_load` 复核通过。
+- C++/TS 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**教训**:**「玩家看到的那句话」如果是硬编码的,那么产品承诺的 N 种语言里只有 1 种是真的。**
+这条缺陷之所以能活下来,是因为**它在英文环境下完全正确** —— 键就是句子、查不到就原样显示,
+于是开发者(和英文玩家)看到的一切都正常。**判据必须是「渲染路径怎么处理这个字符串」**,
+而不是「这句话读起来对不对」:同一个字符串,在 `| transloco` 后面是**键**,在别处是**文本**。
+
+**教训(同轮第二条)**:**一个没有调用者的翻译键,先别急着删 —— 它可能正指着一条硬编码的句子。**
+`SERVICE.COMMANDS.NOT_ADMIN` 从 §132 起就被门禁报成不可达,两轮里我都把它读成「死键」,
+直到顺着「那这条消息从哪来」才找到四条散文。**报告项要当线索读,不能当噪音读。**
+
+### 修复:「连接断开,正在重连」这条消息把 `{{remainingReconnectionAttempt}}` **原样打给玩家看**
+
+**判据是一条跨三个产物的二值性质:文本里要的占位符,必须在**渲染它的地方**被交进去。**
+Transloco 的行为是**只替换它拿到的参数,拿不到的占位符原样留在文本里** ——
+所以「键被引用了」不等于「这句话能读」。
+
+实测这条:
+
+```jsonc
+// en.json / de.json / ja.json …(14 份语言文件全都一样)
+"SERVICE.CLIENT.CONNECTION_LOST": "Connection lost, trying to reconnect. {{remainingReconnectionAttempt}} attempts left.",
+"                                 Verbindung verloren, versuche erneut zu verbinden. {{remainingReconnectionAttempt}} Versuche verbleibend.",
+```
+
+```ts
+// Code/skyrim_ui/src/app/services/client.service.ts(全部站点只有这一处)
+this._remainingReconnectionAttempt--;                                    // ← 值就在上一行
+this.chatService.pushSystemMessage('SERVICE.CLIENT.CONNECTION_LOST');    // ← 一个参数都没交
+```
+
+⇒ **每一次自动重连,玩家读到的是「Connection lost, trying to reconnect.
+`{{remainingReconnectionAttempt}}` attempts left.」** —— 而这条消息存在的**唯一意义**就是
+告诉他「还剩几次」。**值就在上一行,少传了一个参数。**
+
+**它为什么能活下来**:语句本身没问题(键确实被引用了,`pushSystemMessage` 的第二个参数本来就是可选的),
+而英文玩家看到的句子**其余部分完全正常** —— 只有中间那一段是 `{{...}}`。
+所以**只有「把目录里的占位符和调用点的参数对起来」这一条判据能抓到它**。
+
+**修复**:把上一行的计数器传进去。
+
+**新增门禁** `Tools/Scripts/check_i18n_params.py`,三条判据:
+
+| # | 判据 | 覆盖的坏法 |
+| --- | --- | --- |
+| R1 | 一个键的**占位符集合**在 14 份语言文件里必须相同 | 某语言的译文漏掉/改了占位符 ⇒ 那种语言的玩家看到残缺文本 |
+| R2 | **字面量键**的调用点必须交出该键需要的参数 | 传错名字或不传 ⇒ 玩家读到 `{{...}}` |
+| R3 | **运行时拼出来的键**(`'SERVICE.ERROR.ERRORS.' + code.toUpperCase()`)所需的参数,必须由 `error.service.ts` 里该 code 的接口声明提供 | 面板的键由 code 决定、参数由接口决定 —— **此前没有任何东西把这两边对起来** |
+
+R2 覆盖本仓库的**三种写法**:`translate('KEY', {a})`、`'KEY' | transloco: {a}`、
+`{ message: 'KEY', params: {a} }`(以及 `messageParams`);另有下限防退化
+(键 < 10、调用点 < 10 即失败)。`[text]="'KEY'"` 这类绑定**故意不在 R2 范围内**:
+那个组件自己注入了 `{ length: option.value }`(`dropdown.component.html`),裸键在**那里**才是正确写法 ——
+**门禁的作用域必须写清楚**,否则它会把正确写法当缺陷报。
+
+**验证**:
+
+- `python Tools/Scripts/check_i18n_params.py` → `I18N PARAM CHECK OK` /
+  `16 parameterised key(s) agree across languages, call sites and runtime codes`
+  (note:16 个键、**12 个调用点**、3 个运行时 code)。
+- **变异测试(三个变异,每个针对一条判据,逐个先确认已落到磁盘)**:
+  1. **还原本轮的修复**(去掉那个参数)→ R2 指名
+     `client.service.ts:401: SERVICE.CLIENT.CONNECTION_LOST is rendered without
+     ['remainingReconnectionAttempt'] …`;
+  2. 把 `de.json` 的占位符改名 `{{remainingReconnectionAttempt}}` → `{{attempts}}` → R1 指名
+     `de.json: SERVICE.CLIENT.CONNECTION_LOST needs ['remainingReconnectionAttempt'] but this
+     translation has ['attempts']`;
+  3. 把 `error.service.ts` 里 `wrong_version` 接口的 `expectedVersion` 改名 → R3 指名
+     `the 'wrong_version' interface carries ['serverVersion', 'version'], but
+     SERVICE.ERROR.ERRORS.WRONG_VERSION asks for ['expectedVersion']`。
+- 门禁已接进 CI 两条触发列表(`push`/`pull_request` 各 65 条路径,新增
+  `Tools/Scripts/check_i18n_params.py` 与 `Code/skyrim_ui/src/**`),`contract` 作业 38 个步骤;
+  `check_workflow_shell.py` 与 `yaml.safe_load` 复核通过。
+- TS 由 GitHub CI(`windows.yml` 的 pnpm 构建)验证(§0/§1:本机不编译)。
+
+**门禁第一版报了 4 条,只有 1 条是真的 —— 另外 3 条是它自己的解析器有问题。**
+
+| 第一版报的 | 真相 |
+| --- | --- |
+| `commands.ts: SERVICE.COMMANDS.AVAILABLE_COMMANDS is rendered without ['cmds']` | 代码是对的:`{ cmds }` 是**简写属性**,而我的 `param_names` 只认「名字: 值」 |
+| `error.service.ts: the 'wrong_version' interface carries ['version'], but … asks for ['expectedVersion']` | 接口是对的:TS 接口成员用 **`;`** 分隔,而我只按 `,` 切 |
+| 只见 5 个调用点(下限 10) | `selectTranslate(` **根本没被匹配**:`\btranslate` 在 `selectTranslate` 里**没有词边界**,大小写也不同;另外**管道写法**与 **`params:` 在键之后**的写法完全没覆盖 |
+| `client.service.ts:401 … without ['remainingReconnectionAttempt']` | **这一条是真的** ✓ |
+
+修的是**解析器**,不是代码。**与「第一版就通过的门禁值得怀疑」对称:第一版就失败的门禁同样值得怀疑 ——
+先去看代码,再决定改哪一边。**
+
+**本轮的另外三处「已验证干净」(记下来是为了以后不用重新探)**:
+① **初始化器管线**:36 个 `TiltedPhoques::Initializer` 全在 `Code/client/`,`RunAll()` 只有一处调用
+(`TiltedOnlineApp.cpp`),launcher 里那行被注释掉的 `RunAll()` 是因为 launcher **没有任何初始化器** ——
+两条启动路径都靠客户端 DLL 自己跑那一遍,顺序也对(`VersionDb::Load` 在前、hook 在后);
+② **模板里的硬编码文本**:全仓 26 个模板只有 12 处候选,全部在 `app/mock/`(调试用)、
+F2 调试面板与 `index.html` 的窗口标题里,**没有一处是玩家可见 UI**;
+③ **占位符的跨语言一致性**:14 份目录 × 全部键,**0 处不一致**。
+
+**教训**:**「键被引用了」和「这句话玩家能读」是两件事。**
+键存在、调用点存在、code review 也过得去 —— 但**参数没交**时,文案中间的 `{{...}}` 会原样出现在
+聊天窗里,而英文玩家看到的其余部分完全正常。**渲染路径在缺参数时的行为才是判据**,
+不是「有没有引用这个键」。
+
+### 审计:五个 UI 事件监听**没有任何产出者** —— 其中一个守卫包住整个 overlay(措辞已订正,见本节末)
+
+**判据是 §134 那条桥的**反向**:`skyrimtogether.on('X')` 必须有一个 C++ 侧
+`ExecuteAsync("X")` / `EmitEvent("X")`,否则**它驱动的状态永远不会变**。
+
+实测:**29 个 UI 监听 × 24 个 C++ 事件名 → 5 个监听没有产出者,0 个事件没有监听**:
+
+| 监听 | 真相(逐条查过) |
+| --- | --- |
+| `setName` | **源码里写着「不要」**:`//not wanted, we dont sync name changes` |
+| `debug` | **源码里写着「不再需要」**:`//not needed anymore`,`debugData` 取代了它 |
+| `dummyData` | 只喂 F2 调试面板的刷新(`onDummyData` 里打印数据的循环**已被注释掉**) |
+| `protocolMismatch` | **已被取代**:协议不匹配现在走 `triggerError` + `wrong_version`(`TransportService.cpp` 组那个 payload),由错误面板显示 |
+| **`openingMenu`** | **整条链都在、产出者从来不存在** —— 见下 |
+
+`openingMenu` 这条值得单独说,因为它的消费端是**整个 overlay**:
+
+```html
+<!-- Code/skyrim_ui/src/app/components/root/root.component.html, 已删除 -->
+<ng-container *ngIf="!(menuOpen$ | async)">
+  <app-debug></app-debug>
+  <app-group></app-group>
+</ng-container>
+```
+
+**这行代码块是本节的错误来源**:守卫里只有 `app-debug`(F2 调试面板)与 `app-group`
+(队伍成员列表)两个组件,聊天窗、通知、主菜单与弹窗层都在守卫**之外**。当时按「整个 overlay」
+写了结论,把「实现产出者」的代价说大了一个量级 —— 订正与后果见 v1.1.9 末尾的
+「修复:一个包住两个组件的守卫被记成了产品决定」一节。
+
+即「游戏菜单打开时把 overlay 藏起来」。而它**永远为假**:全仓(任何扩展名)搜 `openingMenu`
+只有 UI 侧三处(`root.component.ts`、`client.service.ts`、`typings.d.ts`);
+`Code/client/**` 与 `Code/tp_process/**` 的 24 个事件名里没有它;**连 mock 都不发它** ——
+所以浏览器里跑 mock 也看不出这个行为是空的。
+
+⇒ **游戏菜单打开时 overlay 不会被隐藏**,守卫是一句空话。真正在隐藏 overlay 的只有
+`OverlayClient::SetUIVisible(false)`,而它只有两个调用点(`revealPlayers` 与 §134 补的
+`deactivate`),**都不是菜单钩子**:`UI::GetMenuOpen`(id 82074)存在但只有 `DebugService` 用它。
+
+**本轮不做行为改动,理由写下来**:两个方向都改产品行为且方向相反 ——
+实现产出者意味着**开任何菜单整个 overlay(含聊天窗)消失**(玩家一边翻背包一边看队伍聊天是常见用法),
+删掉死通道则运行时零变化但要丢掉 UI 侧已写好的意图。**隐藏与否是产品决定**,不是审计能替它选的。
+所以:事实写进 `docs/FOLLOW-UP.md` **第 7 节**(含「决定之后要同步改哪里」的清单),
+在 `root.component.html` 里留下注释(下一个读到它的人不必重新推导),并用门禁**锁住**它。
+
+**后续(2026-10-12)**:按 `docs/FOLLOW-UP.md` §7.3 的「删掉守卫」那一行执行了删除 ——
+见 v1.1.9 末尾的「修复:一个包住两个组件的守卫被记成了产品决定」一节。
+上面这条「用门禁锁住」的做法正是那次删除的机械保证:豁免与监听必须一起删,少一边门禁就失败。
+
+**扩展门禁** `Tools/Scripts/check_overlay_bridge.py`(第 5 条判据,反向):
+**UI 订阅的每个事件都必须有 C++ 产出者**,否则失败;没有产出者的名字必须在
+`NO_EMITTER` 里**逐条写明理由**(上面五条的理由就是表里那五行),且**豁免会腐烂**:
+某个名字不再被任何 UI 订阅时,门禁要求删掉那条豁免。
+这一条真正防的是**改名**:C++ 把 `ExecuteAsync("setVersion")` 改成别的名字,UI 的 handler
+从此**再也不运行** —— 没有错误、没有日志,而 mock 里一切照旧。
+
+**验证**:
+
+- `python Tools/Scripts/check_overlay_bridge.py` → `OVERLAY BRIDGE CHECK OK` /
+  `58 call(s) verified through all three layers: declared, registered, dispatched`
+  (从 §134 的 34 条升到 58 条:新增 24 条事件方向),另有 6 条 note ——
+  其中 5 条**逐条点名**这五个死监听并给出理由(删除 `openingMenu` 之后 note 减为 5 条,
+  `openingMenu` 那条随之消失,计数仍是 58)。
+- **变异测试(三个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. **把 C++ 的 `ExecuteAsync("setVersion")` 改名**(→ `setVersionRenamedForMutation`)→
+     `client.service.ts:137 subscribes to "setVersion", which no C++ code emits; the handler never
+     runs and the state it drives can never change` —— **这正是改名这个危险情形**;
+  2. 在 UI 里加一个没有产出者的监听(`skyrimtogether.on('phantomEvent', …)`)→ 被指名;
+  3. 在 `NO_EMITTER` 里加一条背后没有监听的豁免(`phantomExempt`)→
+     `NO_EMITTER exempts "phantomExempt", but no UI code subscribes to it; drop the exemption`.
+- 门禁已在 CI 的两条触发列表里(§134 就加的 `Code/tp_process/**`、`Code/client/**` 等路径),
+  本轮不需要改工作流;`check_workflow_shell.py` 与 `yaml.safe_load` 复核通过。
+- C++/TS 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**教训**:**桥的两个方向要分别检查,而「反向」那半通常没人做。**
+§134 查的是「UI 调用的名字有没有实现」(call ∈ registered ∈ dispatched);
+本轮查的是「游戏推的事件有没有人发」。**两者都是「同一个名字写在两处、没有东西同时看它们」**,
+但坏法不同:调用缺实现会**抛异常**(看得见),事件缺产出者会**静默**(handler 永不运行,
+状态永远停在初值)。`openingMenu` 就是后者:守卫、类型、subject、消费端**四样俱全**,
+唯独没有产出者。
+
+**本节的一条自伤,记下来**:「包住的是整个 overlay」当时**没人去核对** ——
+守卫里只有两个组件。这个说法把「实现产出者」的代价说大了一个量级,
+于是一个只需删十几行的决定被记成了产品决定。
+**影响取舍的事实,要先看代码再写。**
+
+### 修复:消息工厂的抽取表**只查了范围,没查有没有填** —— 一个字节就能让进程终止
+
+**判据是一条二值性质:枚举里的每个 opcode 都必须有一个抽取器槽位。** 四个消息工厂的结构都是:
+
+```cpp
+static std::function<UniquePtr<ServerMessage>(TiltedPhoques::Buffer::Reader&)> s_serverMessageExtractor[kServerOpcodeMax];
+
+// 槽位由一个手写的类型清单填:
+auto s_visitor = CreateMessageVisitor<AuthenticationResponse, …, NotifyPluginMessaging>;
+ServerMessageFactory::Visit(extractor);          // extractor 写 [T::Opcode]
+```
+
+而 `Extract()` 只查了**范围**:
+
+```cpp
+if (data >= kServerOpcodeMax) [[unlikely]] return {nullptr};   // 越界 → 安全返回
+const auto opcode = static_cast<ServerOpcode>(data);
+return s_serverMessageExtractor[opcode](aReader);              // ← 槽位可能是空的
+```
+
+**范围检查不是完整性检查。** 清单里没点到的 opcode,它的槽位是一个**空的 `std::function`**;
+调用空 `std::function` 抛 `std::bad_function_call` —— 而 `Extract()` 是 `noexcept`,
+于是 `std::terminate`:**线上一个字节的 opcode 就能终止进程**。这不是「将来可能」的隐患:
+本轮就在服务端清单里发现了**三个重复条目**(`NotifyDialogue`/`NotifySubtitle`/`NotifyPlayerDialogue`
+各写了两遍)—— **手写清单被人反复编辑,正是漏掉一个名字的操作。**
+
+**实测**:四个工厂的**每一个槽位今天都是填满的**(客户端 53/53、服务端 56/56、admin 1/1 与 2/2),
+所以这**不是活崩溃,是活的危险**:唯一挡住它的是「还没人删掉一个名字」。
+
+**修复(两层)**:
+
+1. **抽取器兜底**(四个工厂各一处):调用前检查槽位是否为空,空则返回 `nullptr` ——
+   与越界 opcode 的行为一致(丢一个消息,而不是死一个进程);
+2. **把「漏名字」变成构建期失败**:新增门禁 `Tools/Scripts/check_message_factories.py`。
+3. **顺手修掉那三个重复条目**(服务端清单 59 项 → **56 项,与 56 个 opcode 一一对应**)。
+
+**新增门禁的四条判据**(覆盖四个工厂、112 个 opcode):
+
+| # | 判据 | 为什么 |
+| --- | --- | --- |
+| R1 | 枚举里每个 opcode 都要有消息类型填进抽取表 | 空的槽位 = `terminate` |
+| R2 | 清单里每个类型都要在枚举里有 opcode | 名字陈旧 = 同一个洞的另一面 |
+| R3 | **同一个类型不能列两次** | 重复正是「手写清单开始漂移」的指纹,而**下一次编辑可能删而不是重** |
+| R4 | 每个声明了 opcode 的消息头都必须被工厂点到 | 能构造、能发送、**永远解不开**的消息 |
+
+**判据怎么把两边的名字对上**:不猜名字。`RemoveSpellRequest` 声明的是 `kRequestRemoveSpell`、
+`AdminShutdownRequest` 声明的是 `kAdminShutdown` —— 名字不同构;
+而客户端与服务端的消息**共用一个目录**。所以门禁读每个消息头里
+`static constexpr <哪个枚举>Opcode Opcode = <哪个名字>;` **这一行本身**,
+由**声明的枚举**决定它属于哪个工厂。
+(第一版正是猜了名字:`kFooBar` ↔ `FooBar`,于是报了 **116 条假失败** ——
+其中 112 条是把服务端的消息算进了客户端。**判据的第一版报错,先怀疑判据**,§140 同一条。)
+
+**验证**:
+
+- `python Tools/Scripts/check_message_factories.py` → `MESSAGE FACTORY CHECK OK` /
+  `112 opcode(s) matched to a message type across 4 factories`;
+  `--list` 报四个工厂分别是 `53/53`、`56/56`、`1/1`、`2/2`(distinct = 总数,即**零重复**)。
+- **变异测试(两个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. **从服务端清单里删掉 `NotifyRemoveSpell`**(= 制造一个空槽位,也就是那个 terminate) →
+     `NotifyRemoveSpell.h declares kNotifyRemoveSpell, but the visitor list does not name
+     NotifyRemoveSpell; its extractor slot stays an empty std::function and Extract() would terminate
+     the process on that opcode` + R4 同时点名「能发不能解」;
+  2. **在客户端清单里把 `PluginMessagingRequest` 写两遍**(= 还原那三个重复条目的形状) →
+     `PluginMessagingRequest is listed 2 times in the visitor; a repeat means the list is being
+     edited by hand and the next edit can drop a name instead of repeating one`。
+- **新增回归测试** `Code/tests/encoding.cpp` `[encoding.factory]`:
+  `An opcode the factory has no message for is dropped, not fatal` ——
+  钉住**两种**越界(恰好 `kClientOpcodeMax`、以及远超它的值)、服务端的同类情形,
+  并**同时断言一个真实消息仍然解得开**(否则「一律拒绝」也能让测试通过)。
+  测试由 CI 的 `windows.yml`(§ round 1 确认过它会跑 encoding 测试)执行。
+- 门禁已接进 CI 两条触发列表(`push`/`pull_request` 各 68 条路径,新增 `Code/encoding/**` 与
+  `Code/admin_protocol/**`),`contract` 作业 39 个步骤;`check_workflow_shell.py` 与
+  `yaml.safe_load` 复核通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**教训**:**「查了范围」和「查了完整性」是两件事,而前者看起来像后者。**
+`if (data >= kServerOpcodeMax) return nullptr;` 读起来像一道完整的防线,
+但它只挡住了**枚举之外**的值;**枚举之内**却没人填的槽位,同样是空 `std::function`,
+同样从 `noexcept` 里抛出去。**索引表的两种坏法:越界,和没填** ——
+后者更隐蔽,因为它需要一个**手写清单**与**枚举**保持一致,而这两样东西从来不在一起。
+
+### 修复:玩家**拔/收武器**之后,别人看不见 —— `NotifyDrawWeapon` 从来没被发送过
+
+**判据是一条二值性质:线上的每条消息,要么有人发,要么有人收。**
+§142 已经保证「每个 opcode 都有抽取器」;本轮查的是**另一半** ——
+消息在枚举里、在工厂里、在访问清单里、`#include` 也在,**就是没有任何代码构造它**。
+
+实测 109 条消息,查出**一条真的死了**:
+
+```
+客户端  InventoryService::RunWeaponStateUpdates()
+        → 检测到本地 actor 的拔刀状态变了 → 发 DrawWeaponRequest
+服务端  InventoryService::OnWeaponDrawnRequest()
+        → characterComponent.SetWeaponDrawn(message.IsWeaponDrawn)   ← 只更新了自己的副本
+        → 然后……没有然后了
+```
+
+而 `NotifyDrawWeapon`(字段正好是 `Id` + `IsWeaponDrawn`)存在、有 opcode、在访问清单里、
+被客户端 `InventoryService.cpp` `#include` 着 —— **全仓没有任何一处构造它**
+(服务端 `InventoryService.h` 里那个 `struct RequestObjectInventoryChanges;` 前向声明式的痕迹同理)。
+
+**后果**:拔刀状态**只在角色生成时同步一次**(`CharacterSpawnRequest.IsWeaponDrawn` /
+`AssignCharacterResponse.IsWeaponDrawn`),**之后的变化永远不广播** ——
+所以「玩家 A 当着 B 的面拔刀,只要 B 早就加载了 A,就永远看不到」,
+直到 B 重新进格子、A 的角色重新生成一次。**没有任何报错,功能只是不存在。**
+
+**修复**:服务端在更新自己的组件之后,按**同一文件里装备广播的既有写法**广播出去:
+
+```cpp
+NotifyDrawWeapon notify;
+notify.Id = message.Id;
+notify.IsWeaponDrawn = message.IsWeaponDrawn;
+
+const entt::entity cOrigin = static_cast<entt::entity>(message.Id);
+if (!GameServer::Get()->SendToPlayersInRange(notify, cOrigin, acMessage.GetSender()))
+    spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+```
+
+**客户端**补上接收端:`sink<NotifyDrawWeapon>` → `OnNotifyDrawWeapon`,
+把服务端 id 解析回本机 actor(与 `OnNotifyEquipmentChanges` 同样的
+`view<RemoteComponent, FormIdComponent>` 查找),状态确实不同才调 `SetWeaponDrawnEx` ——
+即**生成路径用的同一个函数**(它会置 `g_forceAnimation` 强制重放动画,否则本地看不到这次拔刀)。
+
+**新增门禁** `Tools/Scripts/check_message_use.py`(两条判据 + 两个方向):
+
+| 判据 | 为什么 |
+| --- | --- |
+| `ClientMessage` 必须**要么被客户端发、要么被服务端收** | 二者皆无 = 死在线上的一条消息 |
+| `ServerMessage` 必须**要么被服务端发、要么被客户端收** | 同上 |
+| **「有人收、没人发」必须失败**(而不是通过) | 这正是 `NotifyDrawWeapon` 的形状;见下面那段自伤 |
+| 豁免条目必须仍对应真实消息 | 豁免会腐烂(§138/§140 同一条) |
+
+**验证**:
+
+- `python Tools/Scripts/check_message_use.py` → `MESSAGE USE CHECK OK` /
+  `109 message(s) checked across 2 direction(s)`,外加 3 条 note
+  (`NotifyPlayerDialogue`、`RequestObjectInventoryChanges`、`NotifyObjectInventoryChanges`
+  各有理由,见下)。
+- **变异测试**:把服务端那段广播**注释掉**(= 还原本缺陷)→
+  `NotifyDrawWeapon is handled by the client but nothing on the server constructs it; the handler
+  can never run and whatever it updates can never change`。
+- 门禁已接进 CI 两条触发列表(各 69 条路径),`contract` 作业 40 个步骤;
+  `check_workflow_shell.py` 与 `yaml.safe_load` 复核通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**同轮查出的另外两条死通道**(记录理由,**不动代码**):
+
+| 消息 | 真相 |
+| --- | --- |
+| `NotifyPlayerDialogue` | **功能是活的,只是走的不是它**:玩家对话经 `sendPlayerMessage(kPlayerDialogue, …)` 走 **`NotifyChatMessageBroadcast`**(`MessageType = kPlayerDialogue`)广播,所以客户端 `OverlayService::OnPlayerDialogue` 永不运行 |
+| `RequestObjectInventoryChanges` / `NotifyObjectInventoryChanges` | **保留但从未接线**:容器背包走 `ObjectService`;两者除了 include、前向声明、工厂槽位与 opcode 之外没有任何引用 |
+
+**这两组都不删 opcode**:`Opcodes.h` 自己写着「**只追加,从不插入** —— 配套插件按索引挂钩这张表,
+所以每个既有 opcode 必须保持它的编号」;删掉**表中段**的一个枚举值会让它之后**全部重编号**,
+那正好违反这条规则。所以门禁里给它们逐条写明理由,把状态**锁住**。
+
+**门禁第一版有一条会放过真缺陷的洞(自伤,必须记)**:
+最初「既没人发也没人收」才算失败,于是**「有人收、没人发」直接通过** ——
+我第一次做变异时把服务端的 `notify` 改名成 `notifyMUTATION`,门禁报 OK,
+我一度以为门禁坏了;实际是**我的变异是假的**(改名不等于不发送,消息照样被构造和发送)。
+于是做了**真变异**(把整段广播注释掉)才发现:**当时那条规则下,`NotifyDrawWeapon` 这种
+「客户端收、服务端从不发」的形状会一路通过** —— 而那正是我要修的缺陷本身。
+补上「有人收、没人发 = 失败」之后,真变异才被抓住。
+**教训**:**变异要改「行为」,不是改「名字」**;而**门禁漏掉的恰好是它要抓的那一类**时,
+只有真变异能暴露。
+
+**教训**:**「消息完整」有四种完整,而检查通常只做前三种。**
+有 opcode ✓、有抽取器 ✓、有序列化 ✓、**对面有处理器 ✓** —— `NotifyDrawWeapon` 四样俱全,
+依然是一个**从未被发送过的消息**:功能不是坏了,是**根本没接上**。
+判据必须问到**「谁构造它」**:一条没人构造的消息,与一条没人监听的消息,
+是同一种缺陷的两面。
+
+### 审计:进程内事件总线(**结论:干净**),以及一个只发不读的字段
+
+**先说结论**:本轮**没有找到缺陷**。查了进程内 `entt::dispatcher` 事件总线(153 个 sink、
+其中 48 个进程内事件)与 `ServerSettings` 这条「服务器下发玩法策略」的通路,
+**两者都是干净的**;唯一记录下来的是一条**只发不读**的字段。下面是判据与**为什么第一版判据错了**。
+
+#### 1. 进程内事件:「订阅了但没人 trigger」——**不可由文本判定**(负结果)
+
+第一版按 `.trigger(` 扫,报出 **30 个事件订阅后从未被触发**,包括
+`InventoryChangeEvent`、`CellChangeEvent`、`ActionEvent` 这些**显然在跑**的东西。
+逐条查完,原因有三层:
+
+| 我漏掉的 | 实际写法 |
+| --- | --- |
+| 参数不是裸标识符 | `m_dispatcher.trigger(acMessage.Settings)`、`trigger(ConnectedEvent(id))`、`trigger(Type{…})` —— 实测 4 种形状(类型字面量 3、限定名 4、成员访问 3、其余 61) |
+| **还有第二个派发入口** | `World::Get().GetRunner().Trigger(std::move(aEvent))`(`RunnerService.h`)—— 它把 `m_dispatcher.trigger(...)` 包进 lambda 入队,**事件类型只在调用点由实参推导**,文本里根本不出现 |
+| 队列 | 同一个 `RunnerService` 还有 `Queue(std::function<void()>)` |
+
+⇒ **「这个进程内事件到底有没有被派发」需要调用点的实参类型,即一次类型感知的扫描** ——
+与 §135.5、§140.4 撞的是同一堵墙。**判据做不到,就不发布**(§135 的既定做法);
+这里记下来,免得下一轮再撞一次。
+
+#### 2. `ServerSettings` 通路:**干净**
+
+服务器把 7 个玩法策略字段一次性下发(`GameServer.cpp:141-147`),
+客户端 `TransportService` 在两处收到后 `m_dispatcher.trigger(acMessage.Settings)`
+(`:791`、`:903`)⇒ `PlayerService::OnServerSettingsReceived` **确实会跑**:
+
+| 字段 | 客户端读者 |
+| --- | --- |
+| `Difficulty` | `PlayerService.cpp:111,113` → `SetDifficulty` |
+| `GreetingsEnabled` | `PlayerService.cpp:115` → 关掉问候距离 |
+| `DeathSystemEnabled` | `PlayerService.cpp:121` → `ToggleDeathSystem` |
+| `PvpEnabled` | `Actor.cpp:1200`、`MagicTarget.cpp:137` |
+| `SyncPlayerHomes` | `ObjectService.cpp:158` |
+| `SyncPlayerCalendar` | `CalendarService.cpp:36` |
+| `AutoPartyJoin` | **没有任何客户端读者** |
+
+**7 个字段里 6 个有人读,服务器端 7 个全部有人写** —— 没有「写了没人读」之外的缺口。
+
+#### 3. 唯一记录项:`AutoPartyJoin` 只发不读
+
+它**不是坏掉的功能**:自动入队完全在服务端决定
+(`GameServer::AllowsAutoPartyJoin()` → `PartyService.cpp:136/277` 把玩家加进队伍并逐个发
+`SendPartyJoinedEvent`),客户端通过**普通的队伍消息**得知结果,**不需要这个标志**。
+所以它是**信息性字段**:发过去、没人读。
+
+**没有删它**:`ServerSettings` 是按固定字段表序列化的,删中间一个字段会让其后**全部位移**;
+而**也没有给它硬造一个读者** —— 那会凭空发明一条产品行为。
+正确做法是**把它记录下来并锁住**,于是扩展 §135 的门禁:
+
+**`check_wire_field_reads.py` 新增第三个主体 `ServerSettings`**,并顺带修了它自己的两个洞:
+
+1. **结构体解析器只认 `struct X final :`** —— `struct ServerSettings {`(无 final、无基类)解析不出字段;
+   更糟的是 `fields_of()` 从匹配点往后找**第一个** `{`,于是拿到的是**内联方法体**
+   (`operator==` 的),所以「声明了方法的结构体」的字段全部看起来不存在。已改为从**结构体自己的**
+   左花括号开始。
+2. **「在到达处被读」对共享结构体不成立** —— 消息的处理器是它唯一的消费者,
+   而 `ServerSettings` 是**按需读取**的(`Actor.cpp`、`MagicTarget.cpp`、`ObjectService.cpp`、
+   `CalendarService.cpp`)。第一版把它套在 `OnServerSettingsReceived` 一个函数体上,
+   于是 `PvpEnabled`/`SyncPlayerHomes`/`SyncPlayerCalendar` 被报成「没人读」——
+   **三个假失败**。已让主体支持**目录作用域**(handler 名为空 = 整个 `Code/client`)。
+
+**验证**:
+
+- `python Tools/Scripts/check_wire_field_reads.py` → `WIRE FIELD READ CHECK OK` /
+  `14 field(s) of 3 wire type(s) are read where they arrive`,外加一条 note
+  (`ServerSettings.AutoPartyJoin is exempt: informational: …`)。
+- **变异测试**:把 `PvpEnabled` 的**两个**读者都改成 `if (false)` →
+  `Code/client: nothing in that directory reads ServerSettings.PvpEnabled; ServerSettings
+  serialises it and the receiver drops it, so whatever fills it has no effect` ✓。
+  (先只改一个时**没有**报错 —— 两个读者,去掉一个仍然有人读,**这正是该有的行为**。)
+- 门禁已接进 CI 两条触发列表(各 70 条路径,新增 `Code/encoding/Structs/ServerSettings.*`),
+  `contract` 作业 40 个步骤;`check_workflow_shell.py` 与 `yaml.safe_load` 复核通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**教训**:**判据的「作用域」和「解析器」是两处最容易出错的地方,而它们出错时看起来都像发现了缺陷。**
+本轮第一版报了 30 个 + 3 个,全部是判据自己的问题(派发入口漏了一个、作用域套错了一层、
+结构体解析器从错误的 `{` 开始)。**先证明判据能看见已知为真的东西**,再去相信它报出来的东西。
+
+### 加固:SKSE 插件版本结构体是**手写的 ABI 镜像**,而它此前只断言了标志位
+
+**判据是一条外部 ABI 的一致性:这个结构体的布局必须与 SKSE64 的 `PluginVersionData` 逐字段相同。**
+
+`Code/skse_bootstrap/main.cpp` 里的 `SksePluginVersionData` 是**手写**的 —— 因为那个 dll 不链接
+SKSE 的头文件 —— 而 **SKSE 是按偏移直接从本 dll 的导出里读它的:它永远看不到字段名**。
+本轮逐字段核对(9 个字段、类型、数组长度、`sizeof = 848`),**与 SKSE64 `PluginAPI.h` 完全一致** ✓
+—— 这一条本身是**干净的**。
+
+**但守卫不完整**:文件里已有 3 个 `static_assert`(标志位 `1 << 1` / `1 << 0`、`kVersion == 1`),
+**没有任何一个断言布局**。而布局正是会被人手改坏的东西:
+
+| 改动 | 后果 |
+| --- | --- |
+| 加一个字段 / 改数组长度 | 其后**每个字段**的偏移全部移动 ⇒ SKSE 把 name 读成 author、把标志位从版本列表里读出来 |
+| 交换两个相邻字段 | 同上,而且**类型完全相同**,肉眼与编译都看不出来 |
+| 改一个标志位的值 | SKSE 拒绝加载,报的却是「游戏版本」而不是「插件」 |
+
+**而且它是静默的**:导出仍在、名字仍是 `SKSEPlugin_Version`,插件照常被扫描到 ——
+这正是 §-round 里那条注释描述的现场(「no version data」那条日志就是这么来的)。
+
+**修法(两层)**:
+
+1. **`static_assert` 钉住布局**(本文件,4 条新增):`sizeof == 848`、
+   `offsetof(name) == 8`、`offsetof(versionIndependenceEx) == 772`、`offsetof(seVersionRequired) == 844`
+   —— 与 §131 给 `ExtraDataList`/`GameVM` 加的那批同一形状;**编译期**就挡住。
+   顺带补上 `<cstddef>`:`offsetof` 需要它,而这是个**没有 PCH** 的独立 dll
+   (客户端那几个用 `offsetof` 的文件是靠 PCH 传递的,不能照抄)。
+2. **新增门禁** `Tools/Scripts/check_skse_abi.py`:把 SKSE64 的参考布局**写成数据**,
+   逐字段比对声明 —— 判据是「**这个声明是否仍描述 SKSE 实现的接口**」,
+   而不是「它是否与它自己一致」(后者永远为真)。
+
+**验证**:
+
+- `python Tools/Scripts/check_skse_abi.py` → `SKSE ABI CHECK OK` /
+  `15 field/constant(s) matched against the SKSE64 layout`
+  (`--list` 打出两个结构体的逐字段布局与三个常量的值)。
+- **变异测试(三个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. `char name[256]` → `[260]`(数组改长)→
+     `SksePluginVersionData field 2 is char name[260], but SKSE reads char name[256] there` ✓;
+  2. **交换 `versionIndependenceEx` 与 `versionIndependence`**(类型相同,肉眼看不出来)→
+     两条诊断同时点名这两个字段 ✓(并且**新增的 `offsetof` 断言也会在编译期挡住它**);
+  3. `kVersionIndependent_Signatures = 1 << 1` → `1 << 2`(标志位改错)→
+     `kVersionIndependent_Signatures is 1 << 2, but SKSE checks 2 (1 << 1); a wrong bit is refused
+     with a message about the game version instead of about the plugin` ✓。
+- **常量比较比的是「值」不是「文本」**:`1 << 1` 与 `2` 是同一个值,
+  门禁求值后再比 —— 否则它会把正确的写法报成错(第一版正是如此,两条假失败)。
+- 门禁已接进 CI 两条触发列表(各 72 条路径,新增 `Code/skse_bootstrap/**`),
+  `contract` 作业 41 个步骤;`check_workflow_shell.sh`… 即 `check_workflow_shell.py` →
+  `WORKFLOW SHELL CHECK OK`、`yaml.safe_load` 通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**教训**:**「手写的外部 ABI 镜像」必须同时钉住**语义**和**布局**,而人们通常只钉前者。**
+这个结构体已经断言了「标志位该是什么值」(语义),却没有断言「字段在哪」(布局)——
+而布局恰恰是**同一类改动**(加字段、改长度、调顺序)最先破坏的东西,
+且它的失败方式是**静默的**:导出还在、名字还对,SKSE 只是从错误的偏移读到了别的东西。
+**凡是「别人按偏移读我们的内存」的地方,`sizeof` 与 `offsetof` 断言就是那条判据。**
+
+### 加固:插件 C ABI 的**结构体布局**此前完全没有被钉住
+
+**判据是同一形状的第二个落点**:`STRPluginMessagingAPI.h` 是**独立插件仓库各自 vendor 一份**
+的 C ABI 头文件,而契约工具 `strpm_contract.py` 此前钉住的是:
+
+| 已钉住 | 没钉住 |
+| --- | --- |
+| 头文件的 **sha256**(C1) | —— |
+| **常量值**(C4:`kInterfaceVersion` 等 6 个) | —— |
+| **类型名字**(`interfaceTypes`,24 个名字) | **结构体的字段** |
+
+**后果**:`interfaceTypes` 只是一串**名字**,没有任何字段信息 ——
+所以**「改字段顺序 / 加字段 / 改数组长度,然后重新记录 hash」**这条路是**全绿通过**的。
+而 C1 的 hash 本来就会被**有意重新记录**(那正是它设计的方式:编辑 → 重记 → 继续),
+所以「重新记录」不是漏洞利用,是**正常工作流**。
+
+**这条 ABI 是跨 DLL 边界读的,而且消费者是别人编译的二进制**:
+
+```cpp
+// 消费者(独立仓库)按自己 vendor 的那份头文件编译:
+STRPM::Target target{ ... };          // 按值传进我们的 send()
+const STRPM::Message* message;        // 我们交回去,它逐字段读
+STRPM::RuntimeStatus status;          // 同上
+```
+
+⇒ 布局不一致时,消费者会**把我们的 `sender.displayName` 从错误的偏移读出来并当成指针解引用** ——
+崩溃发生在**它的**插件里,而**构建期没有任何错误**(它编的是自己那份拷贝)。
+
+**修法:契约新增 C5「接口布局」**:
+
+1. `strpm_contract.py` 新增 `struct_layouts()`:抽出每个结构体的**字段表**(类型 + 名字 + 数组长度,**按声明顺序**);
+2. `dump` 把结果写进 `contract.json` 的 `interfaceLayouts`(10 个结构体、**48 个字段**);
+3. `check` 新增 C5,两层:
+   - **主体**:当前头文件的布局必须与 pinned 的布局**逐字段相同** ——
+     所以「改完重新 dump」不再能把布局改动**顺手带走**;
+   - **每个消费者**:其 vendored 拷贝里**双方都声明**的结构体,布局必须与权威头文件相同 ——
+     这才是**真正的跨 DLL 危险**(消费者按旧拷贝编译)。
+
+**验证**:
+
+- `python Code/plugins/tools/strpm_contract.py check` → `CONTRACT OK` /
+  `consumers 7`;头文件 pin 未变(`8fdcf481…`,即本轮**没有**夹带任何 ABI 改动)。
+- **变异测试(逐个先确认已落到磁盘)**:
+  1. **把某个消费者 vendored 拷贝里的 `Sender` 字段重排** ——
+     这是**最真实的危险**(消费者按旧布局编译)→
+     `C5 [OStimTogether] struct Sender disagrees with the authoritative layout` ✓;
+  2. 若只保留「主体」那一层,变异 1 **不会**被发现(见下)—— 两层都必要。
+- 邻近的插件门禁同时复核通过:`check_transport_compat.py`(「new opcodes appended, chat indices
+  unchanged, docs remain accurate」)、`check_exports.py`(「4 contract entry point(s) exported」)。
+
+**本轮门禁自己踩的三个坑(全部记下来)**:
+
+| 坑 | 症状 | 修法 |
+| --- | --- | --- |
+| **正则灾难性回溯** | 抽字段的嵌套量词(`identifier\|const\|星号` 三者互相重叠)在**不匹配的行**上有指数级回溯,**读一个头文件 5 分钟没结束** | 改成**线性扫描**(按顶层 `;` 切分声明,再逐条解析)⇒ **0.001 秒** |
+| **字段被静默漏掉** | 第一版只认 `类型 名字;`,于是 `const char* channel`(星号贴类型)与**全部函数指针成员**都没进布局 —— `Interface` 只有 1 个字段(应 7 个)、`Message` 4(应 6) | 两条分支:函数指针 + 数据成员;后者把星号在类型/名字两侧的写法都归一化 |
+| **过滤器把该查的排除了** | 每个消费者的比较里加了 `struct in used`(只比消费者源码点过名的结构体),理由是「其余是噪音」—— 而 `Sender` **恰恰从不被消费者点名**(它是跟着我们交回的 `Message*` 来的)⇒ **变异 1 静默通过** | **删掉该过滤**:vendored 拷贝声明了的结构体就是 ABI,与消费者是否点名无关 |
+
+**教训**:**「契约」钉住的东西,要和「危险」发生的地方对齐 —— 而人们会钉住容易钉的(哈希、常量、名字),漏掉难钉的(布局)。**
+哈希只说明「文件变了」,不说明「变了什么」;而它**本来就会被重新记录**,所以它挡不住「改布局 + 重记哈希」这条**正常流程**。
+**类型名字列表**更糟:它读起来像在描述接口,实际一个字段都没描述。
+**判据必须落在**语义**上(字段是什么、在哪),而不是**出处**上(文件是否被改过)。**
+
+**教训(同轮第二条)**:**过滤「噪音」的守卫,常常正是漏掉真缺陷的那一处。**
+`struct in used` 看起来是精确化(只查用到的),实际是把「消费者不点名但会读到的结构体」全部豁免 ——
+而跨 DLL 边界读的结构体**恰恰大多不被点名**(它们是指针后面跟着来的)。
+**删掉一个过滤器之后变异才被抓到,这本身就是它一直在放行的证据。**
+
+### 审计:游戏结构体的布局断言(**结论:自洽**),与三次失败的工具
+
+**本轮没有缺陷。** 探针是「`Code/client/Games` 里那些 `offsetof` 断言是否覆盖了代码真正用到的字段」,
+**而这个问题在文本层面不可判定** —— 下面是证据,以及**为什么第一版工具报了假结果**。
+
+#### 1. 想要的性质:被断言的字段 vs 被用到的字段 —— **做不到**
+
+第一次尝试抽「每个结构体声明的成员」,结果 `61 个有断言的结构体,0 个解析出成员`。
+逐层查下去,**是工具自己的 bug**:
+
+| 工具的错 | 症状 |
+| --- | --- |
+| `STRUCT` 正则**漏了 `re.M`** | `^\s*struct` 只在文件开头匹配 ⇒ **一个结构体都没找到**,于是 61 行「有断言但没成员」全是这一个标志位的产物 |
+| 补上 `re.M` 后,成员解析器把**嵌套类型**当成员 | 这些头文件里有 **153 个嵌套 `struct/class/enum` 声明**、**22 个预处理分支**;`Actor` 因此报出 **114 个「成员」**,而真实字段数远低于此(报出的「未钉住成员」里是 `SpellItemEntry`、`ActorValueModifiers`、`ContactNormal` 这类**嵌套类型名**,以及 `SKYRIM_TARGET_LEGACY`、`TP_PLATFORM_32` 这类**宏**) |
+| 断言一致性检查**无视分支结构** | 把 `#ifdef SKYRIM_TARGET_LEGACY / #else` 的两套偏移当成「同一字段被断言成两个值」⇒ **`Actor` 一个文件报出 14 条假冲突**,而那是**设计本身** |
+
+⇒ **「这个结构体的字段是否都被钉住」需要真正的 C++ 解析**(宏展开 + 嵌套作用域),
+与 §135.5、§140.4、§144.1 撞的是同一类墙:**文本扫描代替不了类型系统**。
+
+#### 2. 能判定的那一部分:**分支内自洽** —— 干净,且已做成门禁
+
+把问题**缩小到文本能回答的范围**:同一个预处理分支内,一个偏移只能对应一个字段、
+一个字段只能有一个偏移(跨分支**允许不同** —— 那正是 legacy/AE 两套布局的意义)。
+
+**实测:192 条断言、47 个文件、55 个分支,`0` 处分支内不一致** ✓ —— 这是**已验证干净**的结论。
+
+**新增门禁** `Tools/Scripts/check_layout_asserts.py`:跟踪 `#if/#else/#endif` 深度,
+按分支分组后检查这两条;另有下限(少于 100 条断言即失败,防止形状变化后退化成空转)。
+门禁的文档字符串**明确写出它不做什么**(不检查字段覆盖率)以及**为什么**
+(153 个嵌套声明 + 22 个分支 ⇒ 文本抽取必然把类型名和宏当字段)——
+**把「做不到」写在工具里,比让它安静地报假结果好。**
+
+**验证**:
+
+- `python Tools/Scripts/check_layout_asserts.py` → `LAYOUT ASSERT CHECK OK` /
+  `192 assertion(s) in 47 file(s) across 55 branch(es)`。
+- **变异测试(两个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. **同一字段在同一分支里断言成两个偏移**(`bitfield == 0x8` 之后再写 `bitfield == 0x10`,即复制粘贴忘了改字段名)→
+     `ExtraDataList.bitfield is asserted at both 0x8 and 0x10 in the same branch (#ifdef:SKYRIM_TARGET_LEGACY); one of the two is stale` ✓;
+  2. **两个不同字段断言在同一偏移**(`lock == 0x8`)→
+     `ExtraDataList: bitfield and lock are both asserted at 0x8 in the same branch …; the struct cannot have both there` ✓。
+- 门禁已接进 CI 两条触发列表(各 74 条路径,新增 `Code/client/Games/**`),
+  `contract` 作业 42 个步骤;`check_workflow_shell.py` 与 `yaml.safe_load` 复核通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**教训**:**工具的每一个 bug 都会伪装成「发现」,而这一轮的工具错了三次。**
+`re.M` 漏了 ⇒ 61 行「无成员」;嵌套类型当成员 ⇒ `Actor` 报 114 个成员;
+无视分支 ⇒ 14 条「冲突」。**三次都长得像结论,三次都是工具自己的问题。**
+判据是:**在相信它报出来的东西之前,先让它看见一件你已知为真的事** ——
+这一轮如果先问「它能不能正确解析我手写检查过的那两个字段」,三次错误一次都不会发生。
+
+**教训(同轮第二条)**:**一个性质如果文本层面不可判定,就把它缩小到可判定的那部分,并写清边界。**
+「字段是否都被钉住」不可判定;**「分支内偏移是否唯一」可判定** —— 后者虽然窄,
+却真的能抓住「复制粘贴断言忘了改数字」这类错误(两个变异都被它抓住了)。
+**把「我不查什么、为什么」写进门禁的文档字符串,是让下一个人不重复撞墙的唯一办法。**
+
+### 审计:Papyrus 变量类型标签**定义了两遍**,而没有任何东西把它们连起来
+
+**判据是两个组件必须给同一个标签空间编同样的号。** 这个标签在仓库里出现两次,
+**由两个永远看不到对方代码的组件各自定义**:
+
+| 位置 | 枚举 | 用途 |
+| --- | --- | --- |
+| `Code/components/es_loader/Records/Chunks.h` | `Type` | 解析 `.pex` 脚本块(`Chunks.cpp` 里 `case Type::OBJECT_ARRAY`) |
+| `Code/client/Games/Skyrim/Misc/BSScript.h` | `BSScript::Variable::Type` | 向 VM 注册 native(`BSScript.cpp` 传 `kBoolean`),VM 也用它回传返回类型 |
+
+**同一个标签空间,两套拼写,零个共同名字**:
+
+```
+loader:  INVALID=0  OBJECT=1  WSTRING=2  INT=3  FLOAT=4  BOOL=5   … ARRAY=11..15
+client:  kEmpty=0   kObject=1 kString=2  kInteger=3 kFloat=4 kBoolean=5   kMax=16
+```
+
+**实测 11 处对应关系全部一致** ✓(六个标量标签逐一相等;五个数组标签都落在
+`kMax = 16` 之内)—— 也就是说**今天是对的,但没有任何东西在维持它**。
+
+**为什么这算真缺口**:两边各自改一处,**两个枚举都照样编译**,各自也照样自洽 ——
+失败形式是**静默地误解码一个 Papyrus 变量**,而那条路径正是插件/脚本一侧。
+这与 §145/§146 是同一形状:**同一个事实写在两处,而没有任何东西同时看它们**。
+
+**新增门禁** `Tools/Scripts/check_papyrus_types.py`,两条判据:
+
+| 判据 | 为什么 |
+| --- | --- |
+| R1 六个标量标签在两侧**同值** | 对应关系**不能按名字找**(两侧零个共同名字),所以配对表**写死在门禁里**并附理由 |
+| R2 loader 的每个**数组标签**都低于 client 的 `kMax` | client 的 `kMax` 才是「VM 表能到多远」的那份声明 |
+| 下限:标量 < 6 或数组 < 4 即失败 | 枚举形状变了要报错,不能退化成空转 |
+
+**验证**:
+
+- `python Tools/Scripts/check_papyrus_types.py` → `PAPYRUS TYPE CHECK OK` /
+  `11 tag(s) compared between Chunks.h and BSScript.h`。
+- **变异测试(两个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+  1. **删掉 client 侧一个隐式编号的枚举值**(`kFloat`)→ 报
+     `FLOAT/kFloat is missing …` **与** `BOOL/kBoolean is missing …` **两条** ——
+     这正是要的效果:**隐式编号的枚举里删一个,它后面的全部重编号**,所以第二个名字也一起错位;
+  2. **把 client 的 `kMax` 从 16 降到 12** →
+     `STRING_ARRAY/INT_ARRAY/FLOAT_ARRAY/BOOL_ARRAY … at or above the client's kMax (12); the VM
+     table it is read against does not reach that far`(四条,逐个点名)。
+- 门禁已接进 CI 两条触发列表(各 77 条路径,新增 `Chunks.*` 与 `BSScript.*`),
+  `contract` 作业 43 个步骤;`check_workflow_shell.py` 与 `yaml.safe_load` 复核通过。
+- C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+**教训**:**「零个共同名字」本身就是一种危险信号。**
+两个枚举**没有任何一个标识符相同**,所以**任何按名字做的检查都看不见它们的关系** ——
+而它们编的是同一个号。**当两份定义共用 0 个名字却必须一致时,那份对应关系只能由人写下来**
+(门禁里的配对表就是它),**而写下来的那一刻,它才第一次变成可检查的**。
+
+**教训(同轮第二条)**:**隐式编号的枚举里,「删一项」不是「少一项」,是「后面全变」。**
+变异 1 之所以同时报出两个名字,正是因为 `kFloat` 之后的所有标签都往前挪了一位 ——
+**报出来的第二条诊断才是这个改动真正的后果**。**给必须稳定的标签显式编号,或者用门禁守住位置。**
+
+### 审计:仓库**自己的提交清单**(§0)里,哪些条目只是文字、哪些真的在跑
+
+前两轮(§131、§134)各自撞到过同一件事:§0 的清单上写着一条规则,
+**却没有任何东西在执行它**。于是这一轮把 §0 整个读一遍,逐条问**「谁在看它」**,
+分成三类:**已经有门禁的**、**能变成门禁的**、**只能靠人读的**。
+
+清单里能判定的部分里,有两条此前完全没有守护,而它们各自连着一次真实的返工:
+
+**一、安装向导的两条语言分支必须提供同样的东西。**
+`GameFiles/Skyrim/fomod/ModuleConfig.xml` 把整套安装步骤**写了两遍** ——
+一份 `lang = zh`、一份 `lang = en`。插件的**名字是翻译过的**,所以两边对不上名字;
+能对的是**结构与载荷**。新增门禁 `Tools/Scripts/check_fomod_languages.py`,三条判据:
+
+| 判据 | 为什么 |
+| --- | --- |
+| R1 两条分支的安装步骤数相同 | 分支少了整段,只有一边的玩家看不到 |
+| R2 逐步,两条分支的插件选项数相同 | 步骤对齐了但选项数不同,同样是漏 |
+| R3 逐步,两条分支安装的**文件夹与文件完全相同** | 这条才是要害:**加在中文分支里而英文分支没有的插件,英文玩家根本装不上** |
+
+R3 之所以最关键,是因为**它没有报错**:向导照着自己文件里的内容执行,一切正常,
+**玩家只是少了一个组件,而且永远不知道自己少了**。
+下限 `MIN_STEPS = 2` / `MIN_PLUGINS = 4`:文件被换掉或解析失败时要失败,不能退化成空转。
+
+**三个变异逐条命中**(每个都先读回磁盘确认,再跑门禁;全部回退到**字节相同**):
+在 zh 分支多加一个文件夹 → R3 报 `only in zh: ['OptionalPlugins/MUTATION_ZH_ONLY']`;
+从 zh 分支删掉整个插件选项 → R2 报 `6 plugin option(s) in en and 5 in zh`;
+把某一步的 `flagDependency` 从 `zh` 改成 `en` → R1 报 `5 install step(s) and zh declares 3`。
+第三个最贴近真实返工:**复制一整段步骤去改语言标记时漏改一个**,那一步就**只出现在一种语言里**。
+
+**回退本身也踩了坑**:**第一次用 `git checkout --` 回退被沙箱拒绝**
+(`Unable to create '.git/index.lock': Permission denied`),而**失败时文件仍是变异的版本** ——
+若不复核哈希,就会把「变异还在」当成已回退,**后面所有结论都建立在脏文件上**。
+改用编辑工具反向替换后**逐字节比对哈希确认**(`36375D4F…`),才算回退成功。
+
+**二、构建要求的 xmake 不能高于 CI 安装的 xmake。**
+这是**两处声明**,而且**不是同一类声明**,所以「让它们相等」既不是规则也做不到:
+
+```text
+xmake.lua:8                       set_xmakever("3.0.0")     <- 下限
+.github/workflows/windows.yml     xmake-version: 3.1.0      <- 实际装的
+```
+
+真正的不变式是**装的 ≥ 要求的**。**把下限抬到 pin 之上,每次构建都会失败**,
+而 xmake 报的是「这个项目」而不是「这个工具链」,所以症状指向项目、根因在版本。
+新增门禁 `Tools/Scripts/check_xmake_version.py` 按这个方向检查,并逐个打印读到的数:
+
+```text
+note: xmake.lua requires >= 3.0.0; workflows install windows.yml 3.1.0
+XMAKE VERSION CHECK OK
+every workflow installs an xmake at or above the version the build requires
+```
+
+### 修复:**一个「无法检查时报告成功」的门禁** —— 而且它就在 CI 里,一直显示绿色
+
+这一轮的**活缺陷**,是上一轮自己写下的门禁里找到的。
+
+`Code/plugins/tools/check_workflow_shell.py` 用 `try/except ImportError` 包住 `import yaml`,
+失败时打印 `POWERSHELL PARSE CHECK SKIPPED` 并 **`return 0`**。它的注释写着
+「CI 会先装好 pyyaml」——**而跑它的那个作业 `contract` 什么都不装**:
+整个 `plugins.yml` 里唯一一句 `pip install pyyaml` 在 **`wizard` 作业**里。
+
+```text
+contract 作业           pyyaml 从未安装  ->  ImportError  ->  SKIPPED + exit 0  ->  CI 绿色
+wizard 作业             装了 pyyaml        (但 wizard 不跑这个门禁)
+```
+
+所以这个门禁**在 CI 里从来没有解析过任何东西,却一直是绿的**。
+这正是它本该防住的那类缺陷 —— **而「跳过」与「通过」对调用方是完全相同的输出**,
+这也是它比「门禁根本不存在」更糟的原因:不存在的门禁**看得见**。
+
+**两处修改,方向相反但都要做**:
+
+1. **门禁改为失败**:捕获 `ImportError` 后 `raise SystemExit`,并把原因写清楚
+   —— pyyaml 是**需求**而不是优化,并明确写出「不要把它降级成跳过」;
+   另外补了一条**空语料保护**:一个 PowerShell 块都没找到时也失败,
+   因为「没找到要检查的东西」与「检查完都没问题」同样无法区分。
+2. **CI 满足这个需求**:在 `contract` 作业里那一步加上
+   `python -m pip install --quiet --disable-pip-version-check pyyaml`,
+   并说明为什么装在这里(在**跑这个门禁的作业里**装,而不是别处)。
+
+**验证**(两向都验,这是本轮的关键):
+
+```text
+python Code/plugins/tools/check_workflow_shell.py        -> WORKFLOW SHELL CHECK OK  (exit 0)
+python .scratch_missing_dep.py <该脚本> yaml              -> WORKFLOW SHELL CHECK CANNOT RUN
+                                                             VERDICT: FAIL (correct)
+```
+
+后者用一个**只把 `yaml` 变成不可导入**的包装器运行同一个脚本,
+证明它在缺依赖时的行为**从「绿」变成了「红」**,而不是只在改动前后看起来不同。
+
+### 新增门禁 `Tools/Scripts/check_gate_integrity.py`:守住「门禁本身」
+
+上面那个缺陷不是孤例,而是**一类**:**门禁的可信度有三个各自独立的问题**,
+FOLLOW-UP 里早就把它们写成了三条(它会跑吗 / 它会失败吗 / 它看全了吗),
+但**这三条此前也只是文字**。于是把它们变成会跑的检查,七条判据:
+
+| 判据 | 防的是什么 |
+| --- | --- |
+| R1 没有 `except ImportError` 吞掉错误 | **本轮修的活缺陷**:无法检查时返回 0 |
+| R2 没有未经登记的 `SKIPPED` 横幅 | 「跳过」与「通过」输出相同,每个跳过都要写明理由 |
+| R3 磁盘上每个门禁都被某个工作流调用 | 门禁没人跑 = 带步骤的注释 |
+| R4 每个门禁都被「跑它的那个作业」的路径触发覆盖 | 步骤在,但改动它不会启动作业 |
+| R5 同一个工作流的 `push` 与 `pull_request` 路径列表一致 | 只加一边 = 一个方向有守护、另一个方向没有 |
+| R6 **工作流点名的门禁必须在磁盘上存在** | **本轮在门禁自己身上找到的缺陷,见下** |
+| R7 跑门禁的作业必须安装了该门禁依赖的包 | **本轮修的活缺陷的根因**(`IMPORT_TO_PACKAGE` 表把 `yaml` 映射到 `pyyaml`) |
+
+**R6 是写这个门禁时,在它自己身上发现的。** 最初的 R3 是「磁盘上的每个门禁都被调用」——
+**单向**的。于是删掉 39 个门禁脚本后,它照样打印:
+
+```text
+note: 1 gate script(s), 0 never run by CI
+GATE INTEGRITY CHECK OK
+```
+
+**而工作流里仍然点着 40 个。** 一个**语料可以凭空消失而结论不变**的检查,
+正是这个文件整篇在讲的那种缺陷 —— **所以把它补成双向**,并要求**两个方向各报一个数**:
+
+```text
+note: 40 gate script(s), 0 never run by CI
+note: 40 gate script(s) named by workflows, 0 missing
+```
+
+两个数**必须同时是 40**:第一个掉了说明有门禁没接线,第二个掉了说明有步骤指向不存在的文件。
+
+**顺带查出的四条真实问题**(全部当场修掉):
+
+- `contract` 作业里**没有**任何 `pip install`,而它跑的两个门禁都要 pyyaml
+  (就是上面那条活缺陷);
+- `Tools/Scripts/check_fomod_languages.py`、`check_xmake_version.py`、`check_gate_integrity.py`
+  **三条路径触发里都没有** —— 步骤加了,但**改动这三个门禁自己不会启动作业**;
+- `.github/workflows/**` 此前不是任何触发路径 —— 而 R5/R7 读的正是这些文件,
+  **改工作流不会让检查工作流的门禁跑起来**;
+- `plugins.yml` 的 `push`/`pull_request` 两条路径列表里各有 **6 个重复条目**
+  (`Code/client/**` 出现 3 次)。对 GitHub 无害,但它是**手改列表**的指纹,
+  所以门禁**报告**它而不失败。
+
+**变异测试(七个变异,逐个先确认已落到磁盘,逐个被精确指名)**:
+
+| 变异 | 结果 |
+| --- | --- |
+| 给一个门禁加上吞掉 `ImportError` 的 `try/except` | CAUGHT(`ImportError`) |
+| 给一个门禁加上 `print("… SKIPPED")` | CAUGHT(`SKIPPED`) |
+| 新增一个**没有任何工作流点名**的门禁脚本 | CAUGHT(`never run`) |
+| 两条路径触发列表里**同时**改掉一个门禁的名字 | CAUGHT(`path trigger`) |
+| **只改 `push`** 那条列表,加一条 | CAUGHT(`differ`) |
+| 从 `contract` 作业里**删掉那句 `pip install pyyaml`** | CAUGHT(`never installs`) |
+| 把 40 个门禁删到只剩 1 个 | CAUGHT(39 条 `does not exist on disk`) |
+
+**其中四个变异第一次跑是 MISSED,而四个里三个是变异自己写得不精确** ——
+这一条比结果本身更值得记下来:
+
+- 变异 3 原本改的是一个**已存在**的门禁脚本,**而工作流仍然按路径点着它**,
+  所以 R3 看不见 —— 改成**新增**一个脚本才测到;
+- 变异 4 原本**只改一条**列表,于是先触发的是 **R5**(两条列表不一致),
+  而 R5 命中时会跳过 R4 —— 改成**两条一起改**才测到 R4;
+- 变异 5 原本把新条目写成 **4 个空格缩进**(YAML 里跑到了别的层级),
+  门禁**直接抛 traceback 而不是报告失败** —— 这里**修的是门禁**:`yaml.safe_load`
+  包上 `except yaml.YAMLError`,把「这个工作流根本解析不了、所以里面每个步骤都是死的」
+  报成一条失败;
+- 变异 6 原本给门禁加一句 `import requests`,触发的是「这个包名没登记」而不是
+  「作业没装它」—— 改成删掉那句 `pip install pyyaml` 才测到 R7。
+
+**教训**:**变异测试也会撒谎,而它撒谎的方式和门禁一样 —— 变异没生效、或者生效在别的地方。**
+所以**每个变异都要先读回磁盘确认**;更要紧的是,**当变异 MISSED 时,先怀疑变异,再怀疑门禁**,
+但**两个方向都要查**:上面第三条 MISSED 的结果是**门禁真的有问题**(抛 traceback),
+而另外三条是**变异写歪了**。**分不清这两者,就会把「门禁不行」和「测试不行」混为一谈。**
+
+**教训(同轮第二条)**:**一个检查「X 必须被登记」的规则,必须同时检查「登记的东西必须存在」。**
+单向的版本对**语料缩小**完全无感:它遍历的是**它找到的东西**,
+所以**删掉语料 = 少找到几个 = 仍然全部合规**。
+**凡是「遍历发现集合并要求每个成员满足某性质」的检查,都要配一条反向规则,
+并且两个方向都要打印计数** —— 两个数一起看,才看得出语料有没有消失。
+
+**验证**:40 个门禁全部跑过一遍,**40/40 通过**;
+`plugins.yml` 经 `yaml.safe_load` 复核:两条触发列表各 **81 条(74 条唯一)**、
+集合相等,`contract` 作业 **46 个步骤 / 40 个门禁步骤**;
+`check_workflow_shell.py` 复核通过(每个 PowerShell 块都能解析)。
+C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+### 修复:Papyrus `native` 的**两份手写清单** —— 一个「报了失败,却什么也没回答」的原生函数
+
+**怎么找到的**:按 §134/§143 的判据 —— **同一个名字写在两个地方、而没有任何东西比较它们**。
+这里的两处隔着**语言边界**:`.psc` 里的 `Function Foo() global native` 是一句**承诺**,
+C++ 里的 `RegisterFunction("Foo", "ClassName", …)` / `BindNativeMethod(new …Func("Foo", …))`
+才是**兑现**。查了 4 个第一方脚本目录(`GameFiles/Skyrim/scripts/source`、
+`plugins/TradeTogether/Source/Scripts`、`plugins/OStimTogether/compat/OStimUIConsent/…`、
+`plugins/OStimTogether/optional/OCumIntegration/…`)与全树 232 个 C++ 源文件:
+**9 个声明 / 9 个注册**,名字与类名**全部一致**(加的是守护)。
+
+**但顺着调用链往下读一层,发现的是真缺陷。**
+`Code/client/Games/Skyrim/Misc/BSScript.cpp` 里 `IsRemotePlayerFunc` 与 `IsPlayerFunc`
+的 `MarshallAndDispatch` 都长这样:
+
+```cpp
+Actor* pActor = pArg1->ExtractComplexType<Actor>();
+if (!pActor)
+    return false;          // <- 报告「这次调用失败了」,而 apResult 从头到尾没被写过
+```
+
+**`return false` 不是「返回 false」,而是「这次调用失败」** —— 于是 VM 用**返回类型的默认值**
+代替结果,脚本拿到的是 `false`。而这个分支**不是异常路径**:
+所有出货调用点都先做一次**不检查结果的** `as Actor` 转换
+(`TempleBlessingScript.psc:7`、`ResourceFurnitureScript.psc`、`HallofStoriesDiskScript.psc` 三处),
+非 Actor 的激活物就是 `None`,**每一次普通激活都会走进这个分支**。
+两处都改成:
+
+```cpp
+if (!pActor)
+{
+    apResult->Set<bool>(false);   // None 是一个「答案」,不是一次「失败」
+    return true;
+}
+```
+
+**同一轮第二个缺陷**:`Code/client/Games/PapyrusFunctions.cpp:19` 的 `IsPlayer` 第一行是
+`spdlog::info("Calling IsPlayer");` —— 一次**无条件**的日志,脚本每次调用都写一行。
+删掉。
+
+### 新增门禁 `Tools/Scripts/check_papyrus_natives.py`
+
+五条判据:**R1** 每个第一方 `native` 声明都有同名同类的注册;**R2** 每个注册都对应一个存在的声明
+(单向规则对**语料缩小**无感 —— §149 的教训);**R3** C++ 侧写明参数个数时(`NativeFunction(...)`
+基类构造的最后一个参数)**必须等于** `.psc` 的参数个数(VM 会拒绝参数个数不符的调用);
+**R4** 注册里的类名必须是一个真实存在的 `Scriptname`;**R5** 任何 `MarshallAndDispatch`
+**都不许** `return false;`(上面那个缺陷的判据本身)。刻意**不查** SKSE 侧参数**类型**
+(它由 C++ 签名在编译期推导,源码里没有数字),这条边界写在门禁的 docstring 里。
+
+```text
+note: 9 native declaration(s) found in 4 first-party script dir(s)
+note: 9 registration(s) found across 232 C++ source(s)
+note: 3 native function class(es) state a parameter count: DidLaunchSkyrimTogether, IsPlayer, IsRemotePlayer
+note: 3 MarshallAndDispatch body(ies) inspected for a result that is never written
+PAPYRUS NATIVE CHECK OK / every declared native is registered under its own name
+```
+
+**门禁自己的三个坑,都是「跑起来」才暴露的**:
+
+1. **R3 一次都没跑过**:参数个数表是**按文件**建的,而这三个原生函数**注册**在
+   `Code/client/Games/Misc/BSScript.cpp`、**构造**在 `Code/client/Games/Skyrim/Misc/BSScript.cpp` ——
+   两个文件,于是三条全部报「没有基类构造,参数个数未写明」。改成**全树扫描**才真正执行;
+2. 键名不匹配:`BIND` 抓到的是 `IsRemotePlayerFunc`,而构造表以 `IsRemotePlayer` 为键;
+3. R4 里有一句**恒真式**(`cls not in known_classes and cls not in {…declared}` 是同一个集合写了两遍)。
+
+**而 R5 的第一版,恰好漏掉了它自己为之而写的那个缺陷**:判据写的是
+`returns_false and not sets_result`,但**成功路径里也有** `apResult->Set<`,
+所以 `sets_result` 恒为真 —— 把 `if (!pActor) return false;` **改回磁盘**、门禁照样打印 OK。
+收紧成 `re.search(r"\breturn\s+false\s*;", body)`(花括号配对取出函数体、剥掉 `//` 注释
+—— §143 的教训:**被注释掉的代码不是代码**)之后才抓得住。
+
+**四个变异**(每个都先读回磁盘确认,每个都被抓,每个都已还原):
+参数个数 `1 → 2`(R3);`"IsPlayer" → "IsPlayerMUTATION"`(R1+R2 双向同时命中);
+类名 `"SkyrimTogetherUtils" → "…UtilMUTATION"`(R4);把 `if (!pActor) return false;` 改回去(R5)。
+
+### 新增门禁 `Tools/Scripts/check_shipped_pex.py`:出货的 `.pex` 与它的 `.psc` 此前**没有任何关系**
+
+同一轮的第二处「两份手写清单」:**`.psc` 是源码,`.pex` 才是真正出货的东西**。
+`GameFiles/Skyrim/scripts/` 下 10 个 `.psc` 与 10 个 `.pex` 一一对应,
+`Tools/Packaging/New-STNModPackage.ps1:105` 打包的是 `.pex`,
+而**全树没有任何东西读它、比较它**(`windows.yml` 的编译步骤故意写到临时目录、
+不覆盖 `GameFiles`)—— 也就是说**改了 `.psc` 而没重新编译,出货的是旧脚本,而源码是读者信任的那份**。
+
+判据:每个 `.psc` 必须有 `.pex`(大小写不敏感配对 —— `PetFramework_PetQuest.psc` 出货名是
+`petframework_petquest.pex`)、每个 `.pex` 必须有 `.psc`、**声明的每个名字**
+(Scriptname / `Function` / `Event`)**必须出现在 `.pex` 的可打印串表里**、
+**每个 ASCII 字符串字面量也必须出现**(多行字面量**逐行**查 —— `.pex` 里存的就是逐行的一项);
+下限 `MIN_SCRIPTS = 8`、`MIN_LITERALS = 30`(空语料必须失败)。
+刻意**不查**控制流、算术,以及**既不碰名字也不碰字面量**的编辑 —— 理由写在文件头:
+已提交的 `.pex` 出自原始编译器,`SkyrimTogetherVerifyLaunchScript.psc` 当初是**照着它 `.pex`
+里已有的字节**重写的,所以「重新编译得到逐字节相同的产物」本来就做不到。
+
+```text
+note: 10 shipped script(s) paired with their source
+note: 63 name(s) and 64 literal(s) looked up in the string table
+SHIPPED PEX CHECK OK / every .pex shipped names what its .psc declares
+```
+
+两个变异:改一个字面量(`ResourceFurnitureScript.psc:121` 的 `"SoundPlay . NPCHumanWoodChop"`)
+与改一个事件名(`TempleBlessingScript.psc:5` 的 `OnActivate`),都被抓并逐条指名,都已还原。
+
+**验证**:42 个门禁全部跑过一遍,**42/42 通过**;
+`plugins.yml` 经 `yaml.safe_load` 复核:两条触发列表各 **84 条**、集合相等,
+`contract` 作业 **48 个步骤 / 42 个门禁步骤**;
+`check_workflow_shell.py`(69 个 PowerShell 块)与 `check_gate_integrity.py` 复核通过。
+C++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。
+
+### 修复:一个包住两个组件的守卫被记成了产品决定 —— `openingMenu` 死通道已删
+
+**这是 §141 的收尾,也是它的一处订正。** §141 记录:UI 订阅的 `openingMenu` 事件没有任何
+C++ 产出者,而 `root.component.html` 用它包住了 overlay。当时写成「包住整个 overlay」,
+据此判定「实现产出者会让整个 overlay 在菜单打开时消失」,于是记成产品决定、不动行为。
+
+**核对之后发现那是错的。** 守卫里只有两个组件:
+
+```html
+<!-- 删除前 -->
+<ng-container *ngIf="!(menuOpen$ | async)">
+  <app-debug></app-debug>
+  <app-group></app-group>
+</ng-container>
+```
+
+`app-debug` 是 F2 调试面板,`app-group` 是队伍成员列表。**在守卫之外**的是:
+聊天窗(`app-window.app-root-chat`)、通知(`app-notifications`、`app-notification-popup-container`)、
+主菜单(`app-root-menu`/`app-root-status`)与整个弹窗层(`app-root-popups`)。
+⇒ 「实现产出者」的代价不是「整个 overlay 消失」,而是「F2 面板与队伍列表消失」。
+
+**于是决定改为删除**(记录在 `docs/FOLLOW-UP.md` 第 7 节,状态已改为「已完成」)。
+理由不是「哪个更省事」,而是**空行为的存在成本**:一个被记录的空行为比一个不存在的功能
+更容易被误认为已实现 —— 而它连 mock 都不发,浏览器里也看不出差别。
+
+**删掉的东西(逐条对账)**:
+
+| 层 | 落点 |
+| --- | --- |
+| 守卫 + 说明 | `Code/skyrim_ui/src/app/components/root/root.component.html:2-16`(`app-debug`/`app-group` 提到原父节点,位置不变) |
+| 订阅字段 | `Code/skyrim_ui/src/app/components/root/root.component.ts` 的 `menuOpenC++ 由 GitHub CI 编译验证(§0/§1:本机不编译)。 |
+| 监听 + subject + handler | `Code/skyrim_ui/src/app/services/client.service.ts`(`on('openingMenu')`/`off('openingMenu')`/`onOpeningMenu`/`openingMenuChange`,704→689 行) |
+| 类型 | `Code/skyrim_ui/src/typings.d.ts`(`OpeningMenuCallback` + 两条 `event: 'openingMenu'` 重载) |
+| 门禁豁免 | `Tools/Scripts/check_overlay_bridge.py` 的 `NO_EMITTER['openingMenu']` |
+
+**门禁自证**:`check_overlay_bridge.py` 第 5 条判据是**双向**的 ——
+`NO_EMITTER` 豁免的名字若不再被任何 UI 订阅 ⇒ 失败;UI 订阅的名字若没有 C++ 产出者 ⇒ 失败。
+所以**豁免与监听必须一起删**,少一边门禁就失败。这正是 §141 那句「用门禁锁住状态」的兑现。
+
+**验证**:
+
+- `python Tools/Scripts/check_overlay_bridge.py` 改前 / 改后均 `OVERLAY BRIDGE CHECK OK` /
+  `58 call(s) verified through all three layers: declared, registered, dispatched`;
+  note 从 6 条降到 5 条,消失的正是 `openingMenu` 那条。
+- **变异**:把 `skyrimtogether.on('openingMenu', …)` 加回 `client.service.ts` 而豁免不恢复 ⇒
+  `OVERLAY BRIDGE CHECK FAILED (1)` /
+  `Code/skyrim_ui/src/app/services/client.service.ts:130 subscribes to "openingMenu", which no C++
+  code emits; the handler never runs and the state it drives can never change. Either emit it or
+  record why it is dead in NO_EMITTER`;还原后回到 OK。
+- `git grep -n "openingMenu"` 改后只剩 5 条历史文档行与 `root.component.html` 一条「已被删除」注释。
+
+**订正同步到三处**:`docs/PITFALLS.md` §141(表格行、代码块、「141.3」节与教训)就地标注
+「整个 overlay」是错的并指向 §151;`CHANGELOG.md` 的 §141 那条审计小节同样就地标注;
+`docs/FOLLOW-UP.md` 第 7 节整节改写为「已决 + 已执行」。
+
+**教训**:**影响取舍的事实,要先看代码再写。**
+「包住整个 overlay」这句当时没人核对 —— 它把「实现产出者」的代价说大了一个量级,
+于是一个只需删十几行的决定被记成了产品决定,还写进了三份文档。
+
+### 修复:overlay 自己的系统消息也是**散文当翻译键** —— 门禁只查了 C++ 那一侧
+
+§137 修的是 C++ 侧:`SendSystemMessage("英文散文")` 送进聊天,而聊天把系统消息
+**当翻译键**渲染(`Code/skyrim_ui/src/app/components/chat/chat.component.html:12-14` 的
+`{{ message.content | transloco }}`),于是玩家看到的是句子本身。当时补了
+`check_ui_contract.py` 的第 4 条判据。
+
+**但它只扫 `Code/client` 与 `Code/server` 的 `.cpp`。** overlay 自己也会往同一个聊天里
+推系统消息 —— `pushSystemMessage('...')` —— 走的还是同一条渲染路径。实测 10 个调用点里
+**9 个是点号大写键,1 个是散文**:`Code/skyrim_ui/src/app/services/party-hint.service.ts:43`
+的 `'Party hint timer has been reset.'`。
+
+修法两行:`Code/skyrim_ui/src/assets/i18n/en.json:195` 在 `SERVICE.PARTY_HINT` 段新增
+`RESET`,调用点改引用该键。
+
+**只补 en.json 的依据**(实测,不是推断):`check_i18n_params.py:146` 是
+`if key not in keys: continue  # a missing key falls back to en, and section 137 reported that separately`,
+即「某语言缺某键」被显式跳过 —— 与 §137.4 的 `fallbackLang: 'en'` 裁定一致。
+新键文案不含 `{{占位符}}`,所以不进入 `check_i18n_params.py:134` 的 `reference` 集合,
+R1/R2 的计数逐字不变(实测 `16 parameterised key(s), 12 call site(s), 3 runtime code(s)`,改前改后相同)。
+
+**门禁扩到 overlay 侧**:`check_ui_contract.py` 新增 `UI_SRC`、正则
+`SYSTEM_MESSAGE_TS = re.compile(r"pushSystemMessage\(\s*'([^']+)'")`,以及一个**独立的**扫描块 ——
+不与 C++ 的命中合并后再判空,因为「某一侧扫到 0 个」正是 helper 被改名/搬走的样子,
+先合并会让另一侧的命中把它盖住。两侧合并后跑同一条
+`if text not in languages[FALLBACK_LANGUAGE]` 检查。
+
+**验证**:
+
+- `python Tools/Scripts/check_ui_contract.py` 改前 / 改后均 exit 0;
+  改后 note 如实列出 `['SERVICE.COMMANDS.TELEPORT_FAILED', 'SERVICE.PARTY_HINT.RESET'] are missing
+  from at least one language and fall back to English`(新键只在 en,符合裁定)。
+- **变异(a)**:把 `party-hint.service.ts:43` 换回散文 ⇒ `UI CONTRACT CHECK FAILED (1)` /
+  `Code/skyrim_ui/src/app/services/party-hint.service.ts:43 sends "Party hint timer has been reset."
+  to the chat, which renders system messages with \`content | transloco\`; that is a translation key,
+  and en.json has no such key, so what the player sees is the string itself`;还原后 OK。
+- **变异(b,空扫描防护)**:把 5 个文件的 `pushSystemMessage(` 改成
+  `// pushSystemMessageRenamed(` ⇒ `UI CONTRACT CHECK FAILED (1)` /
+  `no pushSystemMessage string was found in the overlay sources, so the "a key, not a sentence" rule
+  covered nothing there; the overlay send helper moved or changed shape`;还原后 OK。
+
+**一条已知的边界(如实记下)**:同一个变异如果把调用点**注释掉**而不是改名
+(`// pushSystemMessage(` 后接换行与键),门禁**不会**报警 —— 正则的 `\s*` 允许跨行,
+注释形式依然命中。**这是设计边界,不是漏洞**:该判据要抓的是「整侧扫空」,
+即 helper 被改名或搬走;注释掉一个调用点并不使键消失,也不改变玩家看到的东西。
+要连注释形式一起抓,得先剥注释或收紧正则 —— 那会让判据从「这侧还有没有这种调用」
+变成「这种调用有没有被注释」,是另一条规则,本轮不做。
+
+**教训**:§137 的判据写的是「聊天把系统消息当翻译键」,**但落点只写了一半**。
+同一个渲染路径有两个上游(C++ 与 overlay),判据只覆盖了一个 ——
+**当一条规则讲的是「渲染路径」时,要把喂它的每一侧都列出来,再逐侧扫描。**
+
+### 修复:空访问器门禁补认 `if (pX)` 与 `&& pX` 两种形状,并补上 15 处「赋值-解引用」型漏判
+
+**这一条与 `### 修复:全项目审计 —— 15 处「引擎单例还没建好就解引用」...` 修的不是同一批站点。**
+上一轮那 15 处是**同一条语句里** `Accessor::Get()->...` 的形态,而当时的门禁扫描窗口就是「一条语句」,
+所以那一批它能看见。这一轮报出来的 15 处是**赋值与解引用分成两行**的形态
+(`auto* pX = Accessor::Get();` 然后 `pX->...`),旧门禁连检查的机会都没有 ——
+把它指向改动前的 13 个文件,它报的是 **0 个站点**;同一份树换成本轮门禁报 **15** 个,逐行等于人工核对清单。
+
+**6 条误报是另一回事**。把形状表换回上一轮的(不认 `&&`/`||` 右操作数、不认裸 `if (pX)`),
+当前树报 **6** 条,全部是**已经正确判空**的站点:`PlayerCharacter.cpp:115` 的 `if (pTes && pModManager)`、
+`DebugService.cpp:350` 与 `DiscoveryService.cpp:139`/`:269` 的 `if (pX)`、`DiscordService.cpp:53` 的
+`if (!m_bCustomPresence && pPlayer)`、`PlayerService.cpp:311` 的 `if (pPlayer)`。
+`if (pProcessLists)` 与 `if (pProcessLists != nullptr)` 是同一个条件,门禁此前只认后者 ——
+于是它把写了守卫的代码报成缺陷,同时把没写守卫的代码放过去。本轮把两种形状补进 `test_of()`,
+`--selftest` 扩到 **25** 条用例(14 条必须认、11 条近失必须继续拒绝)。
+
+**15 处的修法**:空指针时一律走**已存在**的退化路径,不发明新行为 ——
+`EquipManager::Get` 的四处在管理器为空时整段跳过引擎装备调用
+(其中 `Actor::SetMagicEquipment` 把 `const bool hasEquipManager = pEquipManager != nullptr;`
+提到赋值同层,因为门禁只把不深于赋值行的测试算作支配);
+`MagicItem::IsInvisibilitySpell` 的空管理器**不消耗** `static bool runonce`,
+否则 `bosFormID` 会永久停在 0 且不再重试;四个 Debug 视图把判空放在 `ImGui::Begin` **之前**
+(无匹配 `End` 会造成 ImGui 栈失配,该窗口在主菜单也能画出来);
+`CalendarService::ToggleGameClock` 的 `s_gameClockLocked = !aEnable;` 留在守卫之外,两条路径都执行;
+`HandleUpdate` 的 `m_lastTick` tick 记账照旧;`PlayerService` 的 `m_knockdownDeadline`/`m_knockdownStart` 照设;
+`TransportService` 让 `request.PlayerTime` 保持 `TimeModel{}` 默认值
+(TimeScale 20 / Time 12 / Year 1 / Month 1 / Day 1),即该函数自己写下的
+「everything below degrades to a default」;`ModSystem` 用三元让每个条目落进既有的 `else`
+(`++unmapped;` + `spdlog::error`)。
+
+**验证**:`check_null_accessors.py` ⇒ `NULL ACCESSOR CHECK OK`(19 个可空访问器 / 446 个源文件 /
+1 个豁免仍有效),exit 0;`--selftest` ⇒ `NULL ACCESSOR SELFTEST OK (25 shape(s))`,exit 0。
+改动前基线对新门禁 15 条、当前树 0 条;13 个文件花括号净差为 0。
+**本机不编译**(无 xmake/MSVC),以上判据是静态的。
+
+### 新增:一个把「官方地址库缺的 id」按住的门禁
+
+**怎么找到的**:从 §43.8 那句「记为潜伏项,不修」开始。它把 4 个 RTTI 定位器在 1.6.1130+
+上整条不存在的实测证据写下来了,但只留了一句「一旦有人写 `Cast<NiObjectNET>`,它会静默返回
+`nullptr` 而不是崩溃 —— 这正是需要在评审时盯住的那类改动」。**「评审时盯住」不是一种保证**,
+而这件事的两份语料(客户端的 `registerRtti_*` 注册表、随仓库发布的 24 张地址库表)都已经在
+仓库里,门禁读得到,不需要靠谁记得。
+
+**这个门禁比什么**:
+
+| 语料 | 来源 | 规模 |
+| --- | --- | --- |
+| RTTI 注册表 | `Code/client/Games/Skyrim/RTTI.cpp` | 2806 个 id / 2806 个类型名 |
+| 地址库表 | `GameFiles/Skyrim/SKSE/Plugins/versionlib-*.bin`(14)+ `versionlib-ae-to-se-*.map`(10) | 24 张 |
+| `Cast<>` 站点 | `Code/**/*.{cpp,h,hpp}`,清空注释后 | 196 个站点 / 37 个不同实参 |
+
+四条判据:① 每个 `Cast<>` 实参在每张表上都解析;② 注册表与表的差集和 `GAPS` 声明**双向**
+一致(未声明=失败,声明了却已不是缺口=失败);③ `GAPS` 里的 id 不得被任何 `Cast<>` 触达 ——
+这条把「评审时盯住」变成会红的判据;④ 四类语料任一为空即失败(反空跑)。
+
+**登记了 5 个缺口**(唯一手工维护的数据,每条带 reason):
+
+| id | 类型 | 缺在哪 |
+| --- | --- | --- |
+| 392519 | `NiObjectNET` | 6 张 bin(1.6.1130 / 1.6.1170 / 1.6.1170-0-1 / 1.6.1179 / 1.7.99 / 1.7.104) |
+| 394235 | `CreationClubMenu` | 同上 6 张 |
+| 398437 | `NiParticleSystem` | 同上 6 张 |
+| 400159 | `CCallbackBase` | 3 张(1.6.1170-0-1 / 1.6.1179 / 1.6.659) |
+| 400180 | `BSWin32GameDataSystemUtility` | 10 张 map(全部 ae-to-se) |
+
+**为什么不是「修掉」**:`versionlib-*.bin` 是 SKSE 官方发布产物,改一个字节哈希就对不上,
+`CheckAddressLibrary` 可能直接拒收;而且缺口是一个 **id 空洞**(`392519` 整行不存在,不是
+偏移 0)。所以门禁的语义是**记录并按住**:不要求缺口消失,要求缺口不被使用。
+`400180` 在另一条链路上早就声明过(`Tools/missing_ids_by_runtime.tsv` /
+`check_map_coverage.py` 管的是 map 那一侧),门禁里的 reason 写明了对方是谁、两者不矛盾。
+
+**顺带订正的两个口径**:① §43.8 的「4 个」按 RTTI 注册表口径是 **5 个**,多出来的
+`400180` 缺的是 10 张 ae-to-se map(14 张 bin 里全都在);② 任务最初说「38 个实参 / 200 个
+站点」是**不清注释**的裸扫,按仓库惯例清空注释后是 **37 / 196** —— 差掉的 4 个站点都在注释里,
+其中 `ExtraTextDisplayData` 这个类型在活代码里一次都不出现。不清注释的话,一段注释掉的
+`Cast<NiObjectNET>` 也能让判据 ③ 报红,而那条线根本不会运行。
+
+**验证**:`RTTI COVERAGE CHECK OK` /
+`2806 registration(s) x 24 shipped library(ies) = 67344 id/runtime pair(s); 37 distinct
+Cast<> argument(s) over 196 site(s) resolve everywhere; 5 declared gap(s) are real and
+reachable from no cast`。变异 (a) 加一个 `Cast<NiObjectNET>` 站点 ⇒ 报出该 `文件:行` 并说明
+「不是崩溃,是静默 no-op」;变异 (b) 删一条 `GAPS` ⇒ 报未声明缺口;反向变异加一条已在所有表
+里的 id ⇒ 报 stale;变异 (c) 把扫描语料指向不存在的目录 ⇒ 报空覆盖而不是 OK。四条 sibling
+门禁(`check_map_coverage` / `check_target_meta` / `check_library_scan` / `check_gate_integrity`)
+改后全绿。
+
+### 可诊断性:三个只验过 1.5.97 的结构体偏移 —— 补上断言,并把能判定它的那行日志提到 info
+
+**背景**:客户端为了只对「从网络重建的 actor」拨掉 `bUseFaceGenPreprocessedHeads`,
+自己手走引擎的 INI 设置链表,依赖三个偏移:`Setting::data +0x8`、`Setting::name +0x10`、
+`INISettingCollection` 链表头 `+0x118`。这三个数字是在 `SkyrimSE.exe` **1.5.97** 上量的,
+**1.6.x/1.7.x 全部未验证**,而仓库里 1.6.1170 的逆向产物是按「代码里真正调用的目标」采集的,
+`INISettingCollection` / `GameSettingCollection` / `GetSetting` 一条都不在其中。
+
+**为什么这值得单独记一笔**:偏移错了**不会崩溃**。`INISettingCollection::Get()` 经
+`POINTER_SKYRIMSE(411155)` 解析,该 id 在 1.6.317/640/1170/1.7.99/1.7.104 上全部有映射,
+`GetSetting` 的返回值也在调用点判了空。于是错误只表现为「开关没拨,隐形头照旧」或
+「写坏了别的 INI 设置」—— **「AE 上没修好」和「AE 上偏移不对」两种解释从用户日志里无法区分。**
+
+**改动三处:**
+
+1. `Code/client/Games/TES.h` —— 两个结构体后补三条 `static_assert`,并写明**它们不关闭缺口**
+   (只在编译期检查本仓库自己的布局,不会去问引擎),以及这三个数字只按 1.5.97 量过、
+   错偏移是静默失效而非崩溃。
+2. `Code/client/Services/Generic/CharacterService.cpp` —— `SetRemoteFaceGenForce` 的**首次写入**
+   提升为 `spdlog::info`(带解析到的 `Setting*` 与读到的值,只打一次),之后仍走 `debug`;
+   查找失败路径从静默 `return` 改为**先 `warn` 再 `return`**(空指针是「设置不存在」与
+   「偏移不对」共用的答案,不区分就永远看不出是哪种)。
+   `TiltedOnlineApp.cpp:71` 的 `set_level(spdlog::level::debug)` 是注释掉的,所以原来那行
+   **在发布版永不打印** —— 这是提升级别的全部理由。
+3. `Tools/Scripts/check_facegen_scope.py` —— 新增第 7 条判据,锁住上面两件事:字段声明与
+   三条断言仍在、`info` 行仍在且格式串点名该设置、且**被 `if` 包住**(首次写入唯一性)、
+   `debug` 行未被删、失败路径**既 `warn` 又仍然 `return`**。
+
+**验证**:`check_facegen_scope.py` exit 0,摘要行新增 `3 asserted offset(s), 1 info first-write log`;
+`check_layout_asserts.py` exit 0(`192 → 195` 条断言,唯一性无冲突);
+`check_log_format_args.py` exit 0(新日志占位符与参数数一致)。
+变异实测:改回 `debug` → `FACEGEN SCOPE CHECK FAILED (1)` 并指名首次写入日志;删 `warn` → `FAILED (1)`;
+删一条 `static_assert` → `FAILED (1)`;三者还原后均 exit 0。
+
+**没有关闭缺口**:三个偏移在 AE 上依然未验证。现在有了判据 —— 一名 1.6.x/1.7.x 玩家的一行
+日志(`Setting*` 非空且值为 0/1 = 偏移正确;出现 `warn` = 偏移不对)即可定论,
+见 `docs/FOLLOW-UP.md` 第 1 节。
+
+### 修复:框架传输路径丢掉了 `STRPM::Message` 的 `flags` 与 `sequence`,`kMessageAllowLoopback` 从未实现
+
+**同一个结构体,两条后端给出不同的值**:契约 `STRPluginMessagingAPI.h:102-110` 的 `Message` 有六项,
+独立 bridge 全部兑现(`STRPluginMessagingAPIRuntime.cpp:703` 每实例自增 sequence、`:713-714` 把
+`seq=`/`flags=` 编进报文、`:725` 按 `kMessageAllowLoopback` 本地回环投递),
+而框架路径三条一条都没兑现。
+
+**这不是三处疏漏,是一处根因**:`Code/encoding/Messages/PluginMessagingRequest.h` 与
+`NotifyPluginMessaging.h` 两个线上消息**根本没有这两个字段**(只有
+`Channel`/`TargetKind`/`TargetPlayerId`/`PluginData` 与
+`Channel`/`SenderDisplayName`/`SenderPlayerId`/`SenderIsHost`/`PluginData`)。
+接收方除了写死常量别无选择,所以 `PluginMessagingService.cpp:469-470` 只能写
+`message.flags = STRPM::kMessageNone;` 与 `message.sequence = 0;`,
+而 `Send` 的第五个形参 `aFlags` 在函数体内**出现 0 次**。
+
+**玩家现象是诊断信息缺失,不是崩溃**:`MorphSyncTogether/src/UdpTransport.cpp:265-270` 与
+`OStimTogether/src/STRPMTransport.cpp:444-451` 都把收到的 `sequence` 打进日志
+(`sequence={}` / `seq={}`),实测**只是格式化实参,不进任何分支**。恒 0 的日志会让人以为协议没走
+sequence,排查时把注意力引到错误的方向。
+
+**修法**:两个线上消息各加 `Flags`/`Sequence`,用仓库既有的 `WriteVarInt`/`ReadVarInt`
+(追加在 payload 之后,`SerializeRaw` 与 `DeserializeRaw` 同序);客户端 `Send` 用
+`std::atomic<std::uint64_t> m_nextSequence{ 1 }` 打戳并把 `aFlags` 原样写入;服务端只逐字段转发、
+仍然不解释;接收侧改用 `acMessage.Flags`/`acMessage.Sequence`;
+`kMessageAllowLoopback` 在 `Send` 内本地投递一次,**沿用该文件既有的「锁内收集、锁外调用」纪律**
+(插件可以在自己的 receive handler 里 send,持锁调用会死锁)。
+
+**为什么可以加字段**:`Code/server/GameServer.cpp:886` 要求客户端与服务端的 `BUILD_COMMIT`
+完全相等,不等即 `RT::kWrongVersion` 踢出;`CHANGELOG.md` 也写明每个 tag 附版本号相同的两个包。
+跨版本混用不是受支持配置。
+
+**未验证**:`Libraries/TiltedConnect` 在本机是未初始化的空 submodule,底层是否可靠有序
+**无法从本仓库确证**,因此本次只透传 `kMessageReliable|kMessageOrdered`,不改协议语义。
+
+**门禁**:新增 `Tools/Scripts/check_message_flags_parity.py`(五条静态断言,纯标准库):
+`Send` 必须真的使用 flags 形参;sequence 与接收侧的两个赋值右侧都不得是常量
+(正是本次缺陷的形状);两个线上消息都必须声明两字段且写读同序;服务端必须转发。
+变异体实测:`Flags = aFlags;` 改成 `Flags = 0;` 与 `message.flags` 改回 `STRPM::kMessageNone`,
+门禁均退出 1。
+
+### 修复:14 个门禁在「什么都没比」时报 OK —— 空语料被当成了通过
+
+**现象**:这一轮的活缺陷,是上一轮自己写的门禁。`Tools/Scripts/check_gate_integrity.py` 把 44 个门禁的
+**注册与依赖**管住了,却管不住它们**比了多少**:把一个门禁的语料削弱(改名锚点、清空被读的文件、
+缩进一个终止符),它照旧打印 `... CHECK OK` 并退出 0。逐个变异实测,14 个门禁有这一面:
+
+```text
+check_skee_abi.py       重命名 class IOverlayInterface  → 0 declaration(s) checked + SKEE ABI CHECK OK
+check_exports.py        两处 re.findall 可为空          → 报告循环执行 0 次
+check_contract_copies   清空一份 vendored 头            → 22 个布局(基线 25)仍然 OK
+check_transport_compat  重命名 kSetTimeCommandRequest   → 两条顺序规则一起跳过
+check_skse_bootstrap    把 }; 缩进                      → initializer 为 None,三条标志位规则跳过
+check_ostimng_build     子模块没 checkout               → rglob('vcpkg.json') 静默返回空
+check_allocation_guards 反向循环是空操作                → 摘要打印的是表的长度,不是实测计数
+check_patch_offsets     GamePatch::At 锚点改名          → checked == 0
+check_ostim_support_message 选择器/消息两侧都可为空     → 两侧都空仍 OK
+check_crash_diagnostics RemovePreviousDump 改名         → 整条规则静默跳过
+check_capstone_report   --list 从不调用 check()         → 三句判决直接 print
+check_ae_to_se_overrides 出货 map 为空                  → 只 warn
+check_library_scan      checked == 0                    → 只 warn
+check_package_metadata  看不到自己的 tag                → 只 warn
+```
+
+**根因**:三种形状,都不是「规则写错了」,而是**规则没跑**——
+① **计数无下限**:`checked`/`compared`/`named` 一路自增,空语料时循环体一次都不执行,尾部照样打 OK;
+② **锚点缺失被当成合法缺席**:`if body is None: continue  # this plugin does not use that interface`
+与 `if not match: return None` —— 「这个插件不用那个接口」和「这份拷贝被改名」被写成了同一行;
+③ **warn-only**:`warnings` 只被打印(`check_contract_copies.py:360-362`),永不进入退出码(`:364`),
+于是从语料里删掉一个键就退役了整条规则。
+
+**修法**:按每个门禁已有的语料逐条补下限,并把「合法缺席」与「语料被削」分开——
+`check_ostimng_build` 保留「子模块未 checkout 就 continue」(`.github/workflows/plugins.yml:346`
+给跑该门禁的 job 设了 `submodules: true`),但插件存在而不贡献站点即失败(与
+`check_ostimng_versions.py:158` 的既有先例一致);`check_skse_bootstrap` 的正则从 `\n\};` 放宽到
+`\n\s*\};`,同时把「读不到初始化器」从跳过改为失败;`check_transport_compat` 刻意用 `elif` ——
+`kSetTimeCommandRequest` 声明着但锚点标识符没了才报错,opcode 合法缺席仍是 skip;
+`check_allocation_guards` 的 `deref_pattern()` 补上 `(*p).field` 与裸 `*p` 两种拼写,并把
+`examined`/`compared` 分开统计,摘要不再打印表的长度;`check_capstone_report` 的 `--list` 改成打印
+「这个门禁比什么」加它算出的计数,删掉三句硬编码结论 —— 缺陷在打印的文本里,没有任何退出码能显示它。
+
+**验证**:`Tools/Scripts/.verify_vacuity.py` 四阶段 —— clean 必须 0 / 变异必须非 0 /
+**pre-fix 必须也是 0**(证明缺陷真实存在,而不是变异打中了另一条规则) / 还原必须回 0;
+语料走 `.mut-mirror-full/` 的字节镜像,门禁的 `parents[N]` 在镜像内解析。11 条 CAUGHT,
+外加一条绿色控制组(只把终止符缩进必须仍绿,证明放宽正则没把合法重排变成失败)。
+**两个残留洞被固化下来留给下一轮**:`check_exports` 只改 4 个常量里的 1 个仍 MISSED,
+`check_skee_abi` 只改两份拷贝中的一份仍 MISSED —— 它们就是下面那一条。
+
+**门禁**:`check_gate_integrity.py` 的 7 条规则(R1 不得「跑不了却报成功」/R2 不得「什么都没比却通过」/
+R3-R6 workflow 注册与 path trigger 双向/R7 依赖安装)是这一批能被看见的原因。14 个门禁此前都已在
+`.github/workflows/plugins.yml` 注册,未改任何 workflow。
+
+### 修复:五个「覆盖洞」—— 判据依赖的那份数据被削弱后,门禁仍然报 OK
+
+**现象**:上一批补了「计数下限」之后,还剩一类更细的洞:**下限本身可以被绕过**。判据不是
+「有没有比较」,而是「比较覆盖了全部应该比较的东西」。五个,都是变异实测:
+
+```text
+check_exports.py        头文件里 4 个 kQuery*ExportName[] 只改名 1 个 → named 仍有 3 条,循环照跑
+check_skee_abi.py       只改两份拷贝中的一份的 class IOverlayInterface → declaring 仍非空,那份静默离开比较
+check_contract_copies   从 contract.json 删掉 headerSha256          → else 分支只 warn
+check_library_scan      Code/skse_client/xmake.lua 消失             → 只 warn,规则 3 静默退役
+check_target_meta.py    GameFiles/Skyrim/SKSE/Plugins 下没有 versionlib-*.bin → 只 warn
+```
+
+**根因**:前两个是**多来源**的洞 —— 判据的语料有两份以上,一份被削弱时另一份把下限撑住;
+后三个是「语料缺席 → warn → exit 0」,而这几个文件(`Code/skse_client/xmake.lua`、
+`GameFiles/Skyrim/SKSE/Plugins/versionlib-*.bin` 十四张、`Code/plugins/STRPM/contract.json`、
+`Code/skse_client/main.cpp`)**全部受版本控制**,所以缺席意味着检出损坏或被删,不是合法的跳过。
+同一个门禁里早就有相反的先例:`check_library_scan.py:89-99` 已经因为
+`Code/skse_client/main.cpp` 缺失而 `failures.append`。
+
+**修法**:`check_exports.py` 改为读 `Code/plugins/STRPM/contract.json` 的 `exportNames`(4 个字符串值),
+与头文件扫出的常量值做**双向**集合比较 —— 少一条报「常量被改名或删除,比较覆盖的入口点比契约
+公布的少」,多一条报「manifest 不再描述头文件公布的入口点」;manifest 缺失 / JSON 非法 /
+没有 `exportNames` 列表都记失败。`check_skee_abi.py` 新增 `EXPECTED` 表(`:93-102`,
+风格同既有的 `MINIMUM_VERSION`):`MorphSyncTogether` = 三个接口、`OStimTogether` = 两个
+(它确实不声明 `IBodyMorphInterface`);某插件不再声明 `EXPECTED` 记的接口即失败,并配**反向 stale 检查**
+(`EXPECTED` 点名了不在 `SOURCES`/`REFERENCE` 里的东西也是失败)。其余三条
+`warnings.append` → `failures.append`,措辞点明「这些语料受版本控制,所以缺席意味着声明没有根据,
+而不是这个运行时不需要检查」。
+
+**验证**:三条走 `.verify_vacuity.py`(pre-fix 全 0、fixed 全 1、还原全 0);
+`check_target_meta.py` 另跑五组 —— `versionlib-1-7-99-0.bin` 截成 16 个零字节时 pre-fix 仍打印 OK,
+fixed 报「存在但读不出,所以没有 id 被比过」,而**整个删掉该文件仍然 exit 0**
+(缺席不失败、存在但不可读才失败,正是要的语义);`check_library_scan` 与 `check_contract_copies`
+的变异分别让 `xmake.lua` 从镜像消失、从 `contract.json` 删 `headerSha256`。
+全量复扫 `ran 44 gate(s); 44 passed, 0 failed`。
+
+**未修(如实记录)**:`check_contract_copies.py:293` 的反向常量漂移仍是 warn-only ——
+某份副本多带一个 `inline constexpr` 常量能编译、不破坏契约,转成失败会让插件侧合法新增变红;
+`check_exports.py` 仍不报告「被导出但没有任何常量点名」的符号。
+
+### 修复:工作树 `CHANGELOG.md` 被截断损坏 —— 44 个门禁里只有 1 个会读它,而它是硬崩
+
+**现象**:为落盘找插入点时,`grep` 报 `Line 5751: (line is not valid UTF-8)`,而 `pwsh` 读出的中文
+全是乱码(`# 鏇存柊鏃ュ織`)。先按「终端按 GBK 解码的假象」放过了一次,`grep` 的告警推翻了它。
+
+**测量**:
+
+```text
+工作树   621282 B / 6575 行 / 3620 行不是合法 UTF-8 / 缺整个 ## v1.1.6(2026-09-27) 节
+镜像     633619 B / 9010 行 / 0 行非法 / sha256 9ebb7a59cc47898486a6f81bc3310adc12ab86c667c0ff635a2b26e7ad476284
+HEAD     401528 B / 5531 行 / 0 行非法
+```
+
+损坏形态是**多字节序列被截断**:第 3 行 `以`(U+4EE5 = `e4 bb a5`)的第三字节变成 `?`(`e4 bb 3f`);
+3620 个坏行**全部**含一个字面 `?`,文件里 `?` 共 12369 个;1057 段连续坏行,最长 33 行。
+不是任何单一编码往返(`gbk`/`cp936`/`latin-1`/`utf-16-le` 逐一试过都不等),也不是「只坏了新加的行」——
+`# 更新日志` 之后的第一段正文就坏了。全树扫描 2332 个受控文本文件,**只有这一个文件受损**。
+
+**恢复**:会话早期建的镜像 `.mut-mirror-full/CHANGELOG.md` 正是损坏前的版本 ——
+会话里记录过的 10 个行号锚点(`:1 # 更新日志`、`:10 ## v1.1.9`、`:8015 ## v1.1.8`、`:8175 v1.1.7`、
+`:8271 v1.1.6`、`:8499 v1.1.5`、`:8743 v1.1.4`、`:8844 v1.1.3`、`:8872 v1.1.2`、`:8963 v1.1.1`)
+**全部命中**;与 HEAD 的行级 diff 是 `+3479 -0`(零删除,纯超集);工作树里「不含 `?` 也不含 U+FFFD」
+的可抢救行共 2047 行,**不在镜像里的 0 行**。于是逐字节拷回,恢复后 sha256 与源相同、UTF-8 合法、
+`check_docs.py` 重新 `DOC CHECK OK`。
+
+**根因(为什么没有任何门禁抓住它)**:44 个门禁里只有 `check_docs.py` 会读 `CHANGELOG.md`,
+而它是**硬崩**而不是报一条失败 —— `UnicodeDecodeError: 'utf-8' codec can't decode bytes in
+position 40-41`,栈顶在 `check_version_tables()` 里,既不点名文件也不说后果。其余约 40 处读取器
+用 `errors='ignore'` / `errors='replace'`,损坏被静默吞掉(`check_layout_asserts.py:78`、
+`check_map_coverage.py:131`、`Code/plugins/tools/check_skee_abi.py:157`、
+`Tools/Scripts/gen_ae_to_se_map.py:251`……)—— 连 `check_docs.py` 自己打印的覆盖率数字
+都是经由宽松读取算出来的。
+
+**修法**:`check_docs.py` 新增第一条规则 `text-integrity`(`:139-170`):`git ls-files` 列出受控文件,
+按 34 个文本后缀过滤,逐份 `decode('utf-8')`,失败时报
+`{rel}: byte {offset} is not valid UTF-8 ({reason}); every gate that reads it with errors='ignore'
+or errors='replace' is comparing a degraded copy and can report OK while doing so`。
+它注册在 `CHECKS` 字典第一位,并在 `main()` 的循环里于它失败时 `break` —— 否则损坏的 `CHANGELOG.md`
+会先在 `check_version_tables()` 里死掉,这条可读消息永远到不了 stdout。
+`git ls-files` 失败(不在仓库里)也记失败而不是静默跳过。
+
+**验证**:干净树 `DOC CHECK OK` 加原有 4 行,**逐字节与改前相同**(零新增噪音);
+把 `docs/PITFALLS.md` 字节 465 改坏 ⇒ `DOC CHECK FAILED (1)` 加可读消息;
+**pre-fix 门禁配同一个 PITFALLS 变异 ⇒ exit 0(盲)**;pre-fix 门禁配 `CHANGELOG.md` 字节 40 变异
+⇒ exit 1 但只有未捕获的 `UnicodeDecodeError` traceback;还原后回 exit 0。
+全量复扫 `ran 44 gate(s); 44 passed, 0 failed`。
+
+**范围(如实记录)**:规则按后缀过滤,**43 个无后缀受控文本文件**(`.gitignore`、`.gitattributes`、
+`LICENSE`、`VERSION`、`Dockerfile`……)够不到;107 个合法非 UTF-8 的受控文件全是真二进制
+(`.bin` 24、`.ico` 19、`.pex` 12……),没有一个在后缀表里 —— 这正是它在健康树上沉默的原因。
+
+### 修复:游戏版本的那条「权威信号」被 `skse64_steam_loader.dll` 提前掐断
+
+**怎么找到的**:按「同一件事写了两遍,把两遍抽出来对照」这条判据(§115/§116/§120),问
+**「同一个模块列表,谁还在扫」** —— 答案是两个翻译单元,而且它们的写法不一样:
+
+```text
+Code/skse_client/main.cpp     GetSKSEModuleVersion()   决定用哪个地址库
+Code/skse_bootstrap/main.cpp  IsLegacyGame()           决定加载哪个版本的运行时 DLL
+```
+
+两个都扫 `skse64_` 前缀、都用 `swscanf_s(name + 7, L"%d_%d_%d", …)` 取版本,
+但**只有前者把 `break` 写在了解析之外**:
+
+```cpp
+if (name.rfind(L"skse64_", 0) != 0)
+    continue;
+if (swscanf_s(name.c_str() + 7, L"%d_%d_%d", &a, &b, &c) >= 3)   // 解析成功才赋值
+{
+    ...
+    result = buf;
+}
+break;                                                            // <-- 无条件,在解析之外
+```
+
+**为什么前缀不足以认出运行时**:SKSE 的安装目录里,**`skse64_` 前缀的模块有两个** ——
+运行时 `skse64_1_5_97.dll`,以及 `skse64_steam_loader.dll`(它先于运行时被映射进游戏进程,
+负责给游戏的 IAT 打补丁并挂 `WinMain`,**它名字里没有版本号**)。模块枚举顺序不是我们能选的,
+所以「运行时恰好排在前面」不是可以依赖的东西。
+
+**后果**:loader 排在前面时,这一轮扫描**一个版本都取不到**(`result` 仍是空串),
+于是 `RunTiltedInit` 静默退回到它本来要取代的那两级 fallback —— exe 版本资源、地址库文件名。
+而这两级恰好是**降级版/整合包**上最不可靠的:那正是这段代码存在的理由。
+
+**本机实测**(`D:\game\SkyrimSE\`,1.5.97,SKSE 2.0.x):
+
+```text
+skse64_steam_loader.dll      解析 = None
+skse64_1_5_97.dll            解析 = ('1','5','97')
+当前循环 → resolved=''                    (运行时根本没被读到)
+改为解析成功才停 → resolved='1.5.97.0'
+```
+
+同目录的 `skse64_steam_loader.log` 自己记着它就在游戏进程里:
+`HookMain: thread = 35920 retaddr = …`、`patched iat`。
+
+**修法**:把 `break` 移进解析成功的分支 —— 与 `Code/skse_bootstrap/main.cpp` 的
+`IsLegacyGame()` **写法一致**(它用 `return` 停在解析成功之后,所以从来没这个缺陷)。
+两个调用方现在对同一个模块列表给出同一个答案。
+
+**判据**:新门禁 `Tools/Scripts/check_skse_module_scan.py`,四条静态断言 ——
+①两份实现都还匹配 `skse64_` 前缀;②都还把版本从模块名里解析出来;
+③**停在解析成功处,而不是停在前缀上**(前缀之后、解析之前的裸 `break` 与解析之后的裸 `break`
+都算失败);④循环真的在遍历。另外它要求 `skse64_steam_loader.dll` 仍被点名,
+否则这条规则的理由已经不在了。
+
+**变异实测(5/5 全部被抓)**:恢复无条件 `break` ✓;把 `break` 提到解析之前 ✓;
+删掉版本解析 ✓;删掉前缀匹配 ✓;重命名函数让扫描找不到 ✓。
+
+### 修复:四个插件的加载路径是 `noexcept` 且会分配 —— 而只有一份被修过
+
+**怎么找到的**:按 §「同一类缺陷的兄弟函数/兄弟副本」判据。仓库对「`noexcept` 帧里分配」
+已经有**四轮**普查(`Code/client`、`Code/server`、`Code/encoding`、
+`plugins/STRPluginMessagingAPI`),产物是 `Code/plugins/patches/STRPluginMessagingAPI/0004..0007`。
+这一轮把**同一把尺子**量到插件树的其余部分 —— 之前没有一轮覆盖过。
+
+**现象(两个形状,同一个后果)**:
+
+**(a) 插件加载路径**。每个伴生插件都带一份同名小助手,用来找消息 API 模块:
+
+```text
+plugins/STRPluginMessagingAPI/src/STRPluginMessagingAPI.cpp   HMODULE LoadPluginModule(...) noexcept
+plugins/AnimSyncTogether/src/STRPMApi.cpp                     HMODULE LoadPluginModule(...) noexcept
+plugins/DAVSyncTogether/src/STRPMApi.cpp                      HMODULE LoadPluginModule(...) noexcept
+plugins/TradeTogether/src/STRPluginMessagingAPI.cpp           HMODULE LoadPluginModule(...) noexcept
+```
+
+四份都在 `noexcept` 里构造 `std::wstring pluginPath` 并 `+= moduleName`。
+**分配失败逃出 `noexcept` 帧会调 `std::terminate`** —— 游戏直接结束,没有崩溃转储,
+任何日志里也没有痕迹。修 `STRPluginMessagingAPI` 的那一轮(0005 的标题里就写着
+"and the load path")只覆盖了它自己那一份;另外三份在**各自独立的仓库**里,所以没人对照过。
+
+**(b) OStimNG 的 Thread API**。`OstimNG-API-Thread.cpp` 里 8 个入口在头文件中声明为 `noexcept`,
+而 **OStimTogether 逐字复制了那份 vtable**(`ModThreadControl.h`),所以承诺**不能单方面撤回**;
+其中 8 个函数体在增长容器(`GetNavigationCount`/`GetNavigationOptions`/`NavigateToScene`/
+`RegisterEventCallback`/`RegisterControlCallback`/`SearchScenes`/`HasCompatibleNode`/`MigrateThread`),
+一个 `catch` 都没有。同一个仓库的**兄弟文件** `OstimNG-API-Main.cpp` 已经因为同一个原因被修过
+(`Code/plugins/patches/OStimNG/0003`),而这一份没有跟着写。
+
+**修法**:
+- 四份 `LoadPluginModule` 把两条字符串操作包进 `try/catch(...)`,失败时**落到「没加载」** ——
+  这正是模块不在 `Data\SKSE\Plugins` 时已有的行为,每个调用方都把空模块读作「消息 API 不可用」。
+- OStimNG 那 8 个入口各自捕获分配失败并返回空答案/失败码;`MigrateThread` 通过 `onComplete(-1, context)`
+  上报,避免调用方等一个永远不会到的回调。
+
+**为什么必须写成 patch**:这些文件在**钉住的 submodule** 里,CI 每次都跑
+`git submodule update --init --force`,工作树里的改动会被丢掉。所以四处修复都落成
+`Code/plugins/patches/` 下的普通内容:
+
+```text
+STRPluginMessagingAPI/0009-keep-an-allocation-failure-out-of-the-plugin-load-path.patch
+AnimSyncTogether/0003-…            DAVSyncTogether/0004-…            TradeTogether/0003-…
+OStimNG/0007-…  (被扩充:在原有内容之后追加 8 处 catch)
+OStimNG/0008-…  (0007 的另一半,见下)
+```
+
+`OStimNG/0007` 是被 `docs/PITFALLS.md` §109 点名引用的,所以没有新建编号去取代它,
+而是把新内容追加进同一份 —— 否则那条锚点会指向一个不再包含它所描述内容的文件。
+
+**为什么 OStimNG 那部分被拆成 0007 + 0008**(工具链的坑,如实记下):补丁的**上下文行是逐字节
+匹配**的,而 submodule 里钉住的 blob **逐文件行尾不同** —— `OstimNG-API-Thread.cpp` 是 **CRLF**,
+`Main.cpp` / `PapyrusThread.h` / `MainThread.h` 是 **LF**。一份文件**不可能同时**满足两边,
+所以按目标文件拆开:0007 只含线程文件(整份 CRLF),0008 含其余三个(整份 LF)。
+两半各自 `git apply --check --cached` 通过,合起来仍是原先那一组改动。
+
+第一处误导来自 `git show HEAD:<patch>`:它会**套用 smudge 过滤器**,把 CRLF 变成 LF,
+于是「与原始补丁逐字节相同」的比对结论是**假的**;`git cat-file blob` 才给真字节。
+**教训**:在 `core.autocrlf=true` 的树上比对文本补丁内容,要用 `git cat-file blob`。
+
+
+**判据**:新门禁 `Code/plugins/tools/check_noexcept_allocations.py`。它**按性质检查,不按名单**,
+四条规则:①`plugins/` 下**每一个**「`noexcept` 且函数体真的会分配」的函数都必须含 `catch`;
+②**每一份**会分配的 `LoadPluginModule` 都必须含 `catch`(按名字更严);③提到该助手却在其中
+找不到定义的插件**报失败**;④本文件**为之而写**的 12 个站点必须**真的被看见**(语料下限)。
+
+**第一版门禁的语料是按「发现地点」写的,而这是同一错误的第五次**:它只有两个语料 ——
+「每一份 `LoadPluginModule`」与「`OstimNG-API-Thread.cpp` 的每一个 `noexcept override`」,
+两者都是「我在哪里找到缺陷」。实测数了一下:`noexcept` 且会分配的函数 **14 处在语料内、
+18 处在语料外**,对第一版完全不可见。这正是 §113/§116/§119 记过的同一错误。
+第二版把规则 1 的语料换成**整棵插件树**,并加规则 4 —— 于是查到 **29 处**并全部通过。
+
+**规则 4 立刻抓到两个站点**(`GetNavigationCount`、`NavigateToScene`):它们在语料里,
+但第一版的分配标记匹配不到,因为标记漏了带模板实参的声明(`std::vector<T> name =`)
+与构造式(`std::string(x)`)。**没有规则 4,第二版会一边少看两个站点一边报 OK。**
+补上两种写法后 12/12 全部可见。
+
+**一个假阳性,以及为什么不把它排除掉**:普查把
+`STRPMChatUiSuppressV3.h:FindNearestCallAfterXref` 报成缺陷,逐条读下来是假的 ——
+`std::vector<std::uint8_t> snapshot;` 是**默认构造**(不分配),唯一会分配的一步委托给
+`Snapshot()`,而它**自己含 `resize` 的 catch**,调用方又整个包在 `try/catch` 里。
+第二版把标记收紧到「真的会分配」之后它不再被匹配,于是那张豁免表**留空** ——
+留空而不删表,是因为「用更窄的正则把它排除」正是让真实站点漏看的做法:
+**豁免是看得见的,窄正则是看不见的。**
+
+**变异实测(第一版 5/5;第二版按新规则补测)**:去掉 AnimSyncTogether 的守卫 ✓;
+去掉 facade 的守卫 ✓;重命名助手 ✓;去掉 `GetNavigationCount` 的 catch ✓;
+**去掉第三语料外一个站点的 catch**(`STRPMChatUiSuppress.h:Snapshot`)✓;
+**把 `std::vector<...> conditions = ...` 改成 `auto`,使已知站点不可见** ✓。
+后两条验的是「门禁真的比第一版看得更多」,而不只是「它还认识原来那 12 个名字」。
+
+**验证**:`python Code/plugins/tools/plugin_patches.py verify` → `PATCH VERIFY OK`,
+**44 份 patch**(改前 39 份)全部对钉住的提交 `git apply --check --cached` 通过;
+全量门禁 `ran 46 gate(s); 46 passed, 0 failed`(改前 44 个)。
+
 
 ## v1.1.8(2026-09-28)
 

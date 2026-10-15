@@ -1,9 +1,20 @@
 <ng-container *ngIf="inGame$ | async">
-  <ng-container *ngIf="!(menuOpen$ | async)">
-    <app-debug></app-debug>
+  <!--
+    The guard that used to wrap these two components - `*ngIf="!(menuOpen$ | async)"`,
+    driven by the 'openingMenu' event - is gone: nothing emitted that event, not the
+    client, not tp_process, not even the mock, so it was always false, the guard could
+    never fire, and the overlay was never hidden while a game menu was open. Hiding the
+    overlay in menus is still a product decision and still unimplemented: what hides it
+    is SetUIVisible(false), which the game side calls from its deactivate and
+    revealPlayers handlers, neither of them a menu hook (UI::GetMenuOpen exists but only
+    DebugService uses it). The dead channel went with the guard - the listener and the
+    subject in services/client.service.ts, the typings entry, and the NO_EMITTER
+    exemption in Tools/Scripts/check_overlay_bridge.py. docs/FOLLOW-UP.md records the
+    decision.
+  -->
+  <app-debug></app-debug>
 
-    <app-group></app-group>
-  </ng-container>
+  <app-group></app-group>
 
   <app-notification-popup-container
     class="app-notification-popup"

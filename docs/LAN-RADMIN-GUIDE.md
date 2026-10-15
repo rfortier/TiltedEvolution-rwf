@@ -24,7 +24,7 @@ Radmin LAN、Hamachi 或同一物理局域网直连即可联机,**无需 Steam �
 (由 `Tools/Scripts/gen_se_map_from_history.py` 从本仓库 git 历史中的
 1.5.97 原始偏移自动生成,再叠加 `Tools/ida/match_capstone.py` 的指令相似度
 匹配与 `Tools/ida/recover_1597.py` 的字符串/调用图/全局变量定位,共覆盖代码
-引用的 **99.6%** 地址,即 3082 个地址中已解析 3069 个),随 mod 安装时会一并
+引用的 **99.6%** 地址,即 3063 个地址中已解析 3050 个),随 mod 安装时会一并
 复制到 `Data/SKSE/Plugins/`。全部 3698 条映射都能在官方地址库中找到对应符号。
 
 **务必知悉**:剩余 13 个地址在 1.5.x 上仍未恢复,运行时安全降级(空实现桩 /

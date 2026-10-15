@@ -28,7 +28,8 @@
 #include <Events/PreUpdateEvent.h>
 #include <Events/UpdateEvent.h>
 
-#include <ModCompat/BehaviorVar.h>  
+#include <ModCompat/BehaviorVar.h>
+#include <WireLimits.h>
 
 World::World()
     : m_runner(m_dispatcher)
@@ -91,7 +92,8 @@ void World::Update() noexcept
     m_hasTicked = true;
     m_lastFrameTime = cNow;
 
-    const auto cDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
+    const auto cDeltaSeconds = WireLimits::ClampFrameDelta(
+        std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count());
 
     m_dispatcher.trigger(PreUpdateEvent(cDeltaSeconds));
 

@@ -8,6 +8,22 @@ struct SkyrimVM
 
     static SkyrimVM* Get();
 
+    // The two runtimes disagree about where BOTH fields below sit, so each value
+    // exists twice by nature - once per candidate - and the one this build
+    // compiled to is the one offsetof() is asserted against below. They are
+    // named rather than repeated because the same two numbers are also read by
+    // the diagnostic in SkyrimVM64.cpp, which probes BOTH candidates to tell
+    // "the offset is right" from "the offset is wrong"; a literal there that
+    // drifted from the struct would make the instrument that exists to report a
+    // wrong offset report a probe it never took.
+    static constexpr int kVirtualMachineOffsetLegacy = 0x200;
+    static constexpr int kVirtualMachineOffsetModern = 0x210;
+    // PITFALLS section 2 has paid for this one three times: a wrong value here
+    // reads the neighbouring field, sees non-zero, and stops World::Update() for
+    // the rest of the session - which takes connecting down with it, silently.
+    static constexpr int kInactiveOffsetLegacy = 0x680;
+    static constexpr int kInactiveOffsetModern = 0x690;
+
     // The vm as the game itself handed it to one of our papyrus hooks. That is
     // the only source that holds on both runtimes: the field below sits where
     // 1.6.x puts it, and on 1.5.97 that offset lands on unrelated data, so a
@@ -36,9 +52,9 @@ struct SkyrimVM
     // [rcx+0x200] and calls through [rax+0x28] - a vtable call on that exact
     // pointer. The v1.0.18 fork baseline also had 0x200.
 #ifdef SKYRIM_TARGET_LEGACY
-    uint8_t pad8[0x200 - 0x8];
+    uint8_t pad8[kVirtualMachineOffsetLegacy - 0x8];
 #else
-    uint8_t pad8[0x210 - 0x8];
+    uint8_t pad8[kVirtualMachineOffsetModern - 0x8];
 #endif
     BSScript::IVirtualMachine* virtualMachine;
     // inactive gates whether the client does any work at all: SkyrimVM64.cpp
@@ -58,26 +74,31 @@ struct SkyrimVM
     // differs by 0x10, so each target asserts its own value rather than
     // adopting one offset for both.
 #ifdef SKYRIM_TARGET_LEGACY
-    uint8_t pad218[0x680 - 0x200 - sizeof(void*)];
+    uint8_t pad218[kInactiveOffsetLegacy - kVirtualMachineOffsetLegacy - sizeof(void*)];
     int32_t inactive;
 #else
-    uint8_t pad218[0x690 - 0x210 - sizeof(void*)];
+    uint8_t pad218[kInactiveOffsetModern - kVirtualMachineOffsetModern - sizeof(void*)];
     int32_t inactive;
 #endif
     static constexpr int kInactiveOffset =
 #ifdef SKYRIM_TARGET_LEGACY
-        0x680;
+        kInactiveOffsetLegacy;
 #else
-        0x690;
+        kInactiveOffsetModern;
 #endif
 };
 
+// Each branch asserts its own value against the named candidate it compiled
+// from, so the pads, the constants and the diagnostic in SkyrimVM64.cpp cannot
+// drift apart: changing a candidate without moving the field fails the build.
 #ifdef SKYRIM_TARGET_LEGACY
-static_assert(offsetof(SkyrimVM, virtualMachine) == 0x200);
-static_assert(offsetof(SkyrimVM, inactive) == 0x680);
+static_assert(offsetof(SkyrimVM, virtualMachine) == SkyrimVM::kVirtualMachineOffsetLegacy);
+static_assert(offsetof(SkyrimVM, inactive) == SkyrimVM::kInactiveOffsetLegacy);
+static_assert(SkyrimVM::kInactiveOffset == SkyrimVM::kInactiveOffsetLegacy);
 #else
-static_assert(offsetof(SkyrimVM, virtualMachine) == 0x210);
-static_assert(offsetof(SkyrimVM, inactive) == 0x690);
+static_assert(offsetof(SkyrimVM, virtualMachine) == SkyrimVM::kVirtualMachineOffsetModern);
+static_assert(offsetof(SkyrimVM, inactive) == SkyrimVM::kInactiveOffsetModern);
+static_assert(SkyrimVM::kInactiveOffset == SkyrimVM::kInactiveOffsetModern);
 #endif
 
 using GameVM = SkyrimVM;

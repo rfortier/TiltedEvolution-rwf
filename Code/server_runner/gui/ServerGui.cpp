@@ -271,6 +271,11 @@ bool RequestGuiMode(int argc, char** argv)
     {
         if (std::strcmp(argv[i], "--nogui") == 0 || std::strcmp(argv[i], "--console") == 0)
             return false;
+
+        // A config generation run has no server to show, and the GUI would
+        // otherwise swallow the argument and start a window instead.
+        if (std::strcmp(argv[i], "--generate-config") == 0)
+            return false;
     }
     return true;
 }

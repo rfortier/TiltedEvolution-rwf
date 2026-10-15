@@ -40,7 +40,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "메시지 보낸 사람:",
       "ACCEPT": "승인",
-      "DECLINE": "거절"
+      "DECLINE": "거절",
+      "OPEN_GUIDE": "가이드 열기",
+      "DISMISS": "닫기",
+      "DONT_SHOW": "다시 표시하지 않기"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "{{name}}님의 초대 수락",
@@ -185,6 +188,9 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}}님이 귀하를 파티에 초대했습니다"
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "함께 퀘스트를 진행하시겠습니까? 파티를 만들고 가까이 있으면 퀘스트 진행 상황을 공유할 수 있습니다! 자세한 내용은 플레이 가이드를 확인하세요."
     }
   }
 }

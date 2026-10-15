@@ -40,7 +40,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "Message from",
       "ACCEPT": "Accept",
-      "DECLINE": "Decline"
+      "DECLINE": "Decline",
+      "OPEN_GUIDE": "Open guide",
+      "DISMISS": "Dismiss",
+      "DONT_SHOW": "Don't show"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "Accept invite from {{name}}",
@@ -161,7 +164,8 @@
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "Available chat commands: {{cmds}}",
       "COMMAND_NOT_FOUND": "'{{cmd}}' is not a recognized command.",
-      "NOT_ADMIN": "You must be an admin to use that command."
+      "NOT_ADMIN": "You must be an admin to use that command.",
+      "TELEPORT_FAILED": "Teleporting to player failed."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}} has reached level {{level}}.",
@@ -185,6 +189,10 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}} invited you to join a party"
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "Want to quest together? Form a party and stay close to share quest progress! Check out our play guide to learn more.",
+      "RESET": "Party hint timer has been reset."
     }
   }
 }

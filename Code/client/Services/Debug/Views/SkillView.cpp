@@ -6,9 +6,15 @@
 
 void DebugService::DrawSkillView()
 {
+    // Both the player and its skill block are absent before the character exists,
+    // and the window is skipped rather than opened empty: an ImGui::Begin() with no
+    // matching End() is a stack mismatch, so the test has to come first.
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || !pPlayer->pSkills)
+        return;
+
     ImGui::Begin("Skills");
 
-    PlayerCharacter* pPlayer = PlayerCharacter::Get();
     Skills* pSkills = *pPlayer->pSkills;
 
     ImGui::InputFloat("Global XP", &pSkills->xp, 0, 0, "%.3f", ImGuiInputTextFlags_ReadOnly);

@@ -72,11 +72,18 @@ float CalendarService::TimeInterpolate(const TimeModel& aFrom, TimeModel& aTo) c
 void CalendarService::ToggleGameClock(bool aEnable)
 {
     auto* pGameTime = TimeData::Get();
-    m_offlineTime.m_timeModel.Day = pGameTime->GameDay->f;
-    m_offlineTime.m_timeModel.Month = pGameTime->GameMonth->f;
-    m_offlineTime.m_timeModel.Year = pGameTime->GameYear->f;
-    m_offlineTime.m_timeModel.Time = pGameTime->GameHour->f;
-    m_offlineTime.m_timeModel.TimeScale = pGameTime->TimeScale->f;
+
+    // The lock is what this call is for and it is set on both paths; the snapshot is
+    // only there to fade in from, and there is nothing to snapshot before the
+    // engine's time manager exists.
+    if (pGameTime != nullptr)
+    {
+        m_offlineTime.m_timeModel.Day = pGameTime->GameDay->f;
+        m_offlineTime.m_timeModel.Month = pGameTime->GameMonth->f;
+        m_offlineTime.m_timeModel.Year = pGameTime->GameYear->f;
+        m_offlineTime.m_timeModel.Time = pGameTime->GameHour->f;
+        m_offlineTime.m_timeModel.TimeScale = pGameTime->TimeScale->f;
+    }
 
     s_gameClockLocked = !aEnable;
 }
@@ -101,19 +108,29 @@ void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
         m_lastTick = now;
 
         m_onlineTime.Update(delta);
-        pGameTime->TimeScale->f = m_onlineTime.m_timeModel.TimeScale;
-        pGameTime->GameDay->f = m_onlineTime.m_timeModel.Day;
-        pGameTime->GameMonth->f = m_onlineTime.m_timeModel.Month;
-        pGameTime->GameYear->f = m_onlineTime.m_timeModel.Year;
-        pGameTime->GameDaysPassed->f += m_onlineTime.GetDeltaTime(delta) * (1.f / 24.f);
+
+        // The time manager is built by the engine during startup and this runs from
+        // the moment the server hands the clock over, so it can still be missing here.
+        // The tick accounting above keeps advancing either way, which is what stops
+        // the elapsed time from being replayed in one jump once the manager exists.
+        if (pGameTime != nullptr)
+        {
+            pGameTime->TimeScale->f = m_onlineTime.m_timeModel.TimeScale;
+            pGameTime->GameDay->f = m_onlineTime.m_timeModel.Day;
+            pGameTime->GameMonth->f = m_onlineTime.m_timeModel.Month;
+            pGameTime->GameYear->f = m_onlineTime.m_timeModel.Year;
+            pGameTime->GameDaysPassed->f += m_onlineTime.GetDeltaTime(delta) * (1.f / 24.f);
+        }
 
         // time transition in
         if (m_fadeTimer < kTransitionSpeed)
         {
-            pGameTime->GameHour->f = TimeInterpolate(m_offlineTime.m_timeModel, m_onlineTime.m_timeModel);
+            if (pGameTime != nullptr)
+                pGameTime->GameHour->f = TimeInterpolate(m_offlineTime.m_timeModel, m_onlineTime.m_timeModel);
+
             m_fadeTimer += updateDelta;
         }
-        else
+        else if (pGameTime != nullptr)
             pGameTime->GameHour->f = m_onlineTime.m_timeModel.Time;
     }
 }

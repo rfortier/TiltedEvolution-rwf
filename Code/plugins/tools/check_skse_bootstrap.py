@@ -121,9 +121,18 @@ def main() -> int:
 
     # 3. The declared flags must satisfy SKSE's rules. Read them from the
     #    initializer, so the check follows the code rather than a comment.
+    # `\n\s*\};` rather than `\n\};`: the closing brace's column is formatting, and
+    # requiring column 0 made an indented initializer parse as absent, which skipped
+    # every rule below while the step stayed green. An initializer that cannot be
+    # read at all is now reported instead of skipped.
     initializer = re.search(
-        r'SKSEPlugin_Version\s*=\s*\{(.*?)\n\};', code, re.S)
-    if initializer and not failures:
+        r'SKSEPlugin_Version\s*=\s*\{(.*?)\n\s*\};', code, re.S)
+    if initializer is None:
+        failures.append(
+            f'{SOURCE_REL}: no initializer for SKSEPlugin_Version could be read, so the '
+            f'version-independence flags below were never checked; an unreadable initializer '
+            f'is a failure and not a skip')
+    elif not failures:
         init = initializer.group(1)
 
         has_signatures = 'kVersionIndependent_Signatures' in init

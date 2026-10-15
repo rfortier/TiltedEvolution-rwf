@@ -108,8 +108,13 @@ int TP_MAKE_THISCALL(HookVMUpdate, GameVM, float a2)
     // stopped; seeing none means it never started and the hook is elsewhere.
     const bool cAnnounce = cTick == 1 || cTick % kTickHeartbeatEvery == 0;
 
-    const RawOffset cAtLegacy = cAnnounce ? ReadInt32At(apThis, 0x680) : RawOffset{};
-    const RawOffset cAtModern = cAnnounce ? ReadInt32At(apThis, 0x690) : RawOffset{};
+    // Both candidates come from GameVM.h rather than being spelled again here:
+    // this pair is the instrument that distinguishes "the offset is right" from
+    // "the offset is wrong", so it has to be reading the same two numbers the
+    // struct was compiled with, and the log line below has to be reporting the
+    // same two it read.
+    const RawOffset cAtLegacy = cAnnounce ? ReadInt32At(apThis, SkyrimVM::kInactiveOffsetLegacy) : RawOffset{};
+    const RawOffset cAtModern = cAnnounce ? ReadInt32At(apThis, SkyrimVM::kInactiveOffsetModern) : RawOffset{};
 
     if (apThis->inactive == 0)
     {
@@ -144,7 +149,8 @@ int TP_MAKE_THISCALL(HookVMUpdate, GameVM, float a2)
         spdlog::info("vm tick heartbeat: tick {}, client update ran {} times and was gated {} times, this build reads "
                      "inactive at {:#x}, where the value is {}; offset {:#x} holds {} and offset {:#x} holds {}",
                      cTick, s_updates.load(), s_skipped.load(), static_cast<int>(SkyrimVM::kInactiveOffset),
-                     apThis->inactive, 0x680, DescribeOffset(cAtLegacy), 0x690, DescribeOffset(cAtModern));
+                     apThis->inactive, SkyrimVM::kInactiveOffsetLegacy, DescribeOffset(cAtLegacy),
+                     SkyrimVM::kInactiveOffsetModern, DescribeOffset(cAtModern));
     }
 
     return TiltedPhoques::ThisCall(VMUpdate, apThis, a2);

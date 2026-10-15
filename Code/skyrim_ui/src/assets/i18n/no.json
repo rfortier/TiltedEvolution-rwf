@@ -40,7 +40,10 @@
     "NOTIFICATIONS": {
       "MESSAGE_FROM": "Message from",
       "ACCEPT": "Aksepter",
-      "DECLINE": "Avslå"
+      "DECLINE": "Avslå",
+      "OPEN_GUIDE": "Åpne guide",
+      "DISMISS": "Lukk",
+      "DONT_SHOW": "Ikke vis igjen"
     },
     "PARTY_MENU": {
       "ACCEPT_INVITE": "Aksepter invitasjon fra {{name}}",
@@ -185,6 +188,9 @@
     },
     "PLAYER_LIST": {
       "PARTY_INVITE": "{{from}} inviterte deg til en gruppe."
+    },
+    "PARTY_HINT": {
+      "MESSAGE": "Vil dere gjøre oppdrag sammen? Lag en gruppe og hold dere i nærheten for å dele oppdragsprogresjon! Se spillguiden vår for mer informasjon."
     }
   }
 }
