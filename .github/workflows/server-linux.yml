@@ -1,0 +1,189 @@
+name: Server (Linux)
+
+# Builds the dedicated server on Ubuntu. Complements windows.yml, which builds
+# the client+server on Windows.
+#
+# This job exists because the server supports two platforms and only one of them
+# was ever compiled by CI. A change that breaks the Linux branch - a Windows-only
+# header reached from shared code, a linker flag moved out of its platform guard -
+# used to be invisible until someone built it by hand.
+
+on:
+  push:
+    branches: [master, main, bluedove, prerel]
+    paths:
+      - 'Code/**'
+      - 'xmake.lua'
+      - '.github/workflows/server-linux.yml'
+  pull_request:
+    paths:
+      - 'Code/**'
+      - 'xmake.lua'
+      - '.github/workflows/server-linux.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Ubuntu / GCC / release
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl pkg-config git ca-certificates unzip libssl-dev \
+            libgl1-mesa-dev xorg-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxi-dev libwayland-dev libxkbcommon-dev
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: 3.1.0
+          actions-cache-folder: '.xmake-cache'
+
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.xmake/packages
+          key: linux-xmake-${{ hashFiles('**/xmake.lua') }}
+          restore-keys: |
+            linux-xmake-
+
+      - name: Configure
+        run: xmake config -y -m release -vD
+
+      - name: Build
+        run: xmake -y -vD
+
+      - name: Verify the server artifacts exist
+        run: |
+          set -e
+          echo "--- expected artifacts ---"
+          test -f build/linux/x86_64/release/SkyrimTogetherServer \
+            || { echo "::error::SkyrimTogetherServer was not produced"; exit 1; }
+          test -f build/linux/x86_64/release/libSTServer.so \
+            || { echo "::error::libSTServer.so was not produced"; exit 1; }
+          ls -la build/linux/x86_64/release/SkyrimTogetherServer \
+                 build/linux/x86_64/release/libSTServer.so
+
+      - name: Confirm no Windows-only code was linked in
+        run: |
+          set -e
+          BIN=build/linux/x86_64/release/SkyrimTogetherServer
+          nm -C "$BIN" > /tmp/symbols.txt 2>/dev/null || true
+
+          # The dashboard IS expected on Linux now (GLFW + OpenGL3), so the old
+          # "RunDashboardWindow must be absent" check would fail correctly-working
+          # code. What must stay absent is anything that only exists on Windows.
+          # Each pattern below is a different platform-guard regression:
+          #   D3D11CreateDevice   -> DashboardHost.cpp (D3D11) leaked into Linux
+          #   ImGui_ImplDX11      -> the DX11 backend leaked in
+          #   ImGui_ImplWin32     -> the Win32 backend leaked in
+          #   server_gui::        -> the Win32 control panel leaked in
+          fail=0
+          for pattern in "D3D11CreateDevice" "ImGui_ImplDX11" "ImGui_ImplWin32" "server_gui::"; do
+            if grep -q "$pattern" /tmp/symbols.txt; then
+              echo "::error::Windows-only symbol present in the Linux binary: $pattern"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            grep -E "D3D11CreateDevice|ImGui_ImplDX11|ImGui_ImplWin32|server_gui::" /tmp/symbols.txt | head -20
+            exit 1
+          fi
+
+          # And the Linux host must actually be there, otherwise the GUI silently
+          # disappeared and nobody notices until a user reports a missing window.
+          if ! grep -q "RunDashboardWindowLinux" /tmp/symbols.txt; then
+            echo "::error::the Linux dashboard host is missing from the binary"
+            exit 1
+          fi
+
+          # GLFW must be present too: it is the window system the host uses.
+          if ! grep -qi "glfwCreateWindow" /tmp/symbols.txt; then
+            echo "::error::GLFW is not linked into the Linux binary"
+            exit 1
+          fi
+
+          echo "Windows-only symbols absent; Linux dashboard host and GLFW present."
+
+      - name: Smoke test - the binary starts and reports its mode
+        run: |
+          set -e
+          cd build/linux/x86_64/release
+          # No display server in CI. LaunchMode must fall back to Cli rather than
+          # trying to open a window, and the process must exit on a config
+          # generation run instead of blocking forever.
+          timeout 20 ./SkyrimTogetherServer --generate-config /tmp/st-server-test.ini || true
+          test -f /tmp/st-server-test.ini \
+            || { echo "::error::--generate-config produced no ini"; exit 1; }
+          echo "--- generated ini (head) ---"
+          head -20 /tmp/st-server-test.ini
+
+      - name: Smoke test - no DISPLAY selects CLI at startup
+        run: |
+          set -e
+          cd build/linux/x86_64/release
+          # The default is GUI, chosen by a STARTUP environment probe. On a runner
+          # with no X/Wayland session that probe must answer "no display" and the
+          # process must run as a console server - not hang waiting for a window,
+          # and not abort.
+          #
+          # --generate-config is used because it completes and exits, which makes a
+          # hang or a crash unambiguous. env -u guarantees the probe sees no
+          # display regardless of runner configuration.
+          set +e
+          timeout 30 env -u DISPLAY -u WAYLAND_DISPLAY \
+            ./SkyrimTogetherServer --generate-config /tmp/st-headless.ini
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 124 ]; then
+            echo "::error::the binary hung with no DISPLAY; the startup probe did not select CLI"
+            exit 1
+          fi
+          if [ "$rc" -eq 139 ] || [ "$rc" -eq 134 ]; then
+            echo "::error::the binary crashed with no DISPLAY (exit $rc)"
+            exit 1
+          fi
+
+          test -f /tmp/st-headless.ini \
+            || { echo "::error::--generate-config produced no ini with no display"; exit 1; }
+
+          echo "No-display startup OK (exit $rc, ini written)."
+          head -20 /tmp/st-headless.ini
+
+      - name: Smoke test - explicit --cli works with no DISPLAY
+        run: |
+          set -e
+          cd build/linux/x86_64/release
+          # The explicit flags must work regardless of the environment probe. This
+          # is the documented escape hatch for a host whose DISPLAY is set but
+          # whose window cannot open: --cli must not attempt a window at all.
+          set +e
+          timeout 30 env -u DISPLAY -u WAYLAND_DISPLAY \
+            ./SkyrimTogetherServer --cli --generate-config /tmp/st-cli.ini
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ]; then
+            echo "::error::--cli hung"
+            exit 1
+          fi
+          test -f /tmp/st-cli.ini \
+            || { echo "::error::--cli --generate-config produced no ini"; exit 1; }
+          echo "Explicit --cli OK (exit $rc)."
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-x64
+          path: |
+            build/linux/x86_64/release/SkyrimTogetherServer
+            build/linux/x86_64/release/libSTServer.so
+          if-no-files-found: error

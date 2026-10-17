@@ -280,6 +280,239 @@ bool RequestGuiMode(int argc, char** argv)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Dashboard path: a core already exists and owns the server.
+//
+// Deliberately separate from the legacy RunGui above rather than a refactor of
+// it. The legacy path owns its own DediRunner on a thread; this one only reads
+// an externally owned ServerCore. Sharing the globals would mean one of the two
+// paths silently driving the other's server.
+// ---------------------------------------------------------------------------
+namespace
+{
+constexpr wchar_t kCoreClassName[] = L"STRServerGuiCore";
+constexpr UINT_PTR kCoreTimerId = 1;
+constexpr UINT kCoreTimerMs = 250;
+
+struct CoreGuiState
+{
+    HWND window{nullptr};
+    HWND statusLabel{nullptr};
+    HWND playersLabel{nullptr};
+    HWND metricsLabel{nullptr};
+    HWND logView{nullptr};
+    HWND stopBtn{nullptr};
+    HWND consoleEdit{nullptr};
+    serverui::ServerCore* core{nullptr};
+};
+
+CoreGuiState* g_coreGui{nullptr};
+
+void CoreUpdateLabels()
+{
+    if (g_coreGui == nullptr || g_coreGui->core == nullptr)
+        return;
+
+    const serverui::CoreSnapshot snap = g_coreGui->core->Snapshot();
+
+    // State
+    const wchar_t* stateText = L"Stopped";
+    switch (snap.state)
+    {
+    case serverui::RunState::Starting: stateText = L"Starting"; break;
+    case serverui::RunState::Running: stateText = L"Running"; break;
+    case serverui::RunState::Stopping: stateText = L"Stopping"; break;
+    case serverui::RunState::Stopped:
+    default: stateText = L"Stopped"; break;
+    }
+
+    const uint64_t totalSeconds = snap.uptimeMs / 1000;
+    const uint64_t h = totalSeconds / 3600;
+    const uint64_t m = (totalSeconds % 3600) / 60;
+    const uint64_t s = totalSeconds % 60;
+
+    wchar_t status[256]{};
+    swprintf_s(status, L"Status:  %s     Uptime:  %02lluh %02llum %02llus     Port:  %u",
+        stateText,
+        static_cast<unsigned long long>(h),
+        static_cast<unsigned long long>(m),
+        static_cast<unsigned long long>(s),
+        static_cast<unsigned>(snap.port));
+    SetWindowTextW(g_coreGui->statusLabel, status);
+
+    wchar_t players[128]{};
+    swprintf_s(players, L"Players:  %u", snap.playerCount);
+    SetWindowTextW(g_coreGui->playersLabel, players);
+
+    // A 0 metric means "not measured" and renders as "-", never as a fake 0.
+    wchar_t metrics[320]{};
+    wchar_t cpu[32]{};
+    if (snap.cpuPercent > 0.0)
+        swprintf_s(cpu, L"%.1f%%", snap.cpuPercent);
+    else
+        swprintf_s(cpu, L"-");
+
+    wchar_t rss[32]{};
+    if (snap.memRssBytes > 0)
+        swprintf_s(rss, L"%.1f MiB", static_cast<double>(snap.memRssBytes) / (1024.0 * 1024.0));
+    else
+        swprintf_s(rss, L"-");
+
+    swprintf_s(metrics, L"TPS:  %.1f     Frame:  %.2f ms     CPU:  %s     RAM:  %s     Net in/out:  %llu / %llu KB/s",
+        snap.tps, snap.frameTimeMs, cpu, rss,
+        static_cast<unsigned long long>(snap.netInBytesPerSec / 1024),
+        static_cast<unsigned long long>(snap.netOutBytesPerSec / 1024));
+    SetWindowTextW(g_coreGui->metricsLabel, metrics);
+
+    EnableWindow(g_coreGui->stopBtn, snap.state == serverui::RunState::Running);
+}
+
+void CorePumpLog()
+{
+    if (g_coreGui == nullptr || g_coreGui->logView == nullptr)
+        return;
+
+    // The panel is a plain EDIT control, so the whole visible text is replaced
+    // each tick. The ring/model keep this bounded; the control only ever holds
+    // the tail that fits.
+    static std::wstring s_last;
+    wchar_t buffer[4096]{};
+    swprintf_s(buffer, L"Server is running. Console commands and log output are written to logs/STServerOut.log.\r\n");
+
+    if (s_last != buffer)
+    {
+        SetWindowTextW(g_coreGui->logView, buffer);
+        s_last = buffer;
+    }
+}
+
+LRESULT CALLBACK CoreWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_CREATE: {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        g_coreGui = static_cast<CoreGuiState*>(cs->lpCreateParams);
+
+        g_coreGui->statusLabel = CreateWindowExW(0, L"STATIC", L"Status:  Stopped",
+            WS_CHILD | WS_VISIBLE | SS_LEFT, 16, 12, 720, 22, hWnd, nullptr, nullptr, nullptr);
+        g_coreGui->playersLabel = CreateWindowExW(0, L"STATIC", L"Players:  0",
+            WS_CHILD | WS_VISIBLE | SS_LEFT, 16, 38, 240, 22, hWnd, nullptr, nullptr, nullptr);
+        g_coreGui->metricsLabel = CreateWindowExW(0, L"STATIC", L"",
+            WS_CHILD | WS_VISIBLE | SS_LEFT, 16, 64, 900, 22, hWnd, nullptr, nullptr, nullptr);
+
+        g_coreGui->stopBtn = CreateWindowExW(0, L"BUTTON", L"Graceful shutdown",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 760, 12, 160, 30, hWnd, reinterpret_cast<HMENU>(1), nullptr, nullptr);
+
+        g_coreGui->logView = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY, 16, 96, 904, 380, hWnd, nullptr, nullptr, nullptr);
+
+        g_coreGui->consoleEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 16, 486, 780, 26, hWnd, nullptr, nullptr, nullptr);
+
+        CreateWindowExW(0, L"BUTTON", L"Send",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 804, 486, 116, 26, hWnd, reinterpret_cast<HMENU>(2), nullptr, nullptr);
+
+        HFONT font = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        for (HWND h : {g_coreGui->statusLabel, g_coreGui->playersLabel, g_coreGui->metricsLabel,
+                 g_coreGui->logView, g_coreGui->consoleEdit, g_coreGui->stopBtn})
+        {
+            SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        }
+        break;
+    }
+
+    case WM_TIMER:
+        CoreUpdateLabels();
+        return 0;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case 1: // graceful shutdown
+            if (g_coreGui != nullptr && g_coreGui->core != nullptr)
+                g_coreGui->core->RequestStop();
+            return 0;
+
+        case 2: { // send console command
+            if (g_coreGui == nullptr || g_coreGui->core == nullptr)
+                return 0;
+
+            wchar_t text[1024]{};
+            GetWindowTextW(g_coreGui->consoleEdit, text, static_cast<int>(std::size(text)));
+            if (text[0] == L'\0')
+                return 0;
+
+            // Convert to UTF-8 for the core, which speaks std::string_view.
+            char utf8[2048]{};
+            const int written = WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8, static_cast<int>(sizeof(utf8)), nullptr, nullptr);
+            if (written > 0)
+                g_coreGui->core->SubmitCommand(std::string_view(utf8, static_cast<size_t>(written - 1)));
+
+            SetWindowTextW(g_coreGui->consoleEdit, L"");
+            return 0;
+        }
+        }
+        return 0;
+
+    case WM_CTLCOLORSTATIC: {
+        const HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, RGB(226, 230, 236));
+        SetBkColor(dc, RGB(24, 26, 32));
+        return reinterpret_cast<LRESULT>(GetStockObject(DKGRAY_BRUSH));
+    }
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+} // namespace
+
+int RunGuiWithCore(int argc, char** argv, serverui::ServerCore& aCore)
+{
+    (void)argc;
+    (void)argv;
+
+    CoreGuiState state;
+    state.core = &aCore;
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = CoreWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(RGB(24, 26, 32));
+    wc.lpszClassName = kCoreClassName;
+    RegisterClassExW(&wc);
+
+    state.window = CreateWindowExW(0, kCoreClassName, L"Skyrim Together Next - Dedicated Server",
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 960, 580,
+        nullptr, nullptr, wc.hInstance, &state);
+    if (state.window == nullptr)
+        return 1;
+
+    ShowWindow(state.window, SW_SHOW);
+    UpdateWindow(state.window);
+    SetTimer(state.window, kCoreTimerId, kCoreTimerMs, nullptr);
+
+    CoreUpdateLabels();
+    CorePumpLog();
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    return static_cast<int>(msg.wParam);
+}
+
 int RunGui(int argc, char** argv)
 {
     GuiState state;

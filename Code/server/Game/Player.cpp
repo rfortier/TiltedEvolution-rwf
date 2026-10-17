@@ -1,6 +1,8 @@
 #include "Player.h"
 #include <GameServer.h>
 
+#include <chrono>
+
 static uint32_t GenerateId()
 {
     // NOTE(Vince): Start counting like a MAD man at 1, so we can pass this value to lua without
@@ -13,6 +15,12 @@ Player::Player(ConnectionId_t aConnectionId)
     : m_id(GenerateId())
     , m_connectionId(aConnectionId)
 {
+    // Stamped here rather than in OnConnection: the base server class reports a
+    // connection before a Player exists, and the Player is only created once
+    // authentication succeeds, which is the moment that matters for "connected
+    // for". steady_clock is monotonic, so this survives wall clock adjustments.
+    m_connectedAtMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 Player::Player(Player&& aRhs) noexcept
@@ -27,6 +35,8 @@ Player::Player(Player&& aRhs) noexcept
     , m_party{std::exchange(aRhs.m_party, {})}
     , m_questLog{std::exchange(aRhs.m_questLog, {})}
     , m_cell{std::exchange(aRhs.m_cell, {})}
+    , m_connectedAtMs{std::exchange(aRhs.m_connectedAtMs, 0)}
+    , m_pingMs{std::exchange(aRhs.m_pingMs, 0)}
 {
 }
 
@@ -93,6 +103,11 @@ void Player::SetLevel(uint16_t aLevel) noexcept
 void Player::SetCellComponent(const CellIdComponent& aCellComponent) noexcept
 {
     m_cell = aCellComponent;
+}
+
+void Player::SetPingMs(uint32_t aPingMs) noexcept
+{
+    m_pingMs = aPingMs;
 }
 
 void Player::Send(const ServerMessage& acServerMessage) const

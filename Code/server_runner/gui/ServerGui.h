@@ -9,13 +9,23 @@
 
 #include <string>
 
+namespace serverui
+{
+class ServerCore;
+}
+
 namespace server_gui
 {
 // Returns false when a GUI cannot/should not be created (non-Windows,
 // headless); the caller then falls back to the console terminal io.
 bool RequestGuiMode(int argc, char** argv);
 
-// Creates the window on the calling thread and pumps messages until quit.
-// Returns the process exit code.
+// Legacy path: builds and owns its own DediRunner on a background thread.
+// Kept for builds without server_ui. Do NOT combine with RunGuiWithCore.
 int RunGui(int argc, char** argv);
+
+// Dashboard path: shows the window and reads status from an already started
+// core. The core is owned by the caller, which also owns the server lifetime,
+// so there is exactly one server in the process. Returns the exit code.
+int RunGuiWithCore(int argc, char** argv, serverui::ServerCore& aCore);
 } // namespace server_gui

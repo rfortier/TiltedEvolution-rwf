@@ -11,10 +11,18 @@
 #include <console/IniSettingsProvider.h>
 #include <common/GameServerInstance.h>
 
+// Import declarations for the STServer shared library.
+//
+// Windows needs __declspec(dllimport) so the import thunk is generated; without
+// it every call goes through a slower indirect stub. On ELF there is no
+// equivalent: a symbol resolved from a shared object is simply an undefined
+// reference, and attaching a visibility attribute to a *declaration the consumer
+// does not define* is misleading - "default" visibility on an import describes
+// nothing the runner controls.
 #ifdef _WIN32
 #define GS_IMPORT extern __declspec(dllimport)
 #else
-#define GS_IMPORT extern __attribute__((visibility("default")))
+#define GS_IMPORT extern
 #endif
 
 namespace fs = std::filesystem;
@@ -30,6 +38,13 @@ struct DediRunner
     ~DediRunner();
 
     void RunGSThread();
+
+    // One iteration of the loop RunGSThread() runs: advance the server, then
+    // service the console. Exposed so an external loop (the dashboard's
+    // ServerCore) can drive the same work instead of spawning a second loop.
+    // Returns false once the server has stopped listening.
+    bool TickOnce();
+
     void StartTerminalIO();
     void RequestKill();
     void HandleConsole(const TiltedPhoques::String& acCommand);

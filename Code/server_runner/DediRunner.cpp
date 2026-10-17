@@ -135,17 +135,27 @@ void DediRunner::PrintExecutorArrowHack()
     // fmt::print(">>>");
 }
 
+bool DediRunner::TickOnce()
+{
+    if (m_pServerInstance == nullptr || !m_pServerInstance->IsListening())
+        return false;
+
+    m_pServerInstance->Update();
+
+    if (bConsole)
+    {
+        uv_run(&m_loop, UV_RUN_NOWAIT);
+        if (m_console.Update())
+            PrintExecutorArrowHack();
+    }
+
+    return m_pServerInstance->IsListening();
+}
+
 void DediRunner::RunGSThread()
 {
-    while (m_pServerInstance->IsListening())
+    while (TickOnce())
     {
-        m_pServerInstance->Update();
-        if (bConsole)
-        {
-            uv_run(&m_loop, UV_RUN_NOWAIT);
-            if (m_console.Update())
-                PrintExecutorArrowHack();
-        }
     }
 }
 

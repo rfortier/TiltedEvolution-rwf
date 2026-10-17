@@ -89,6 +89,57 @@ GS_EXPORT void RequestServerShutdown()
         GameServer::Get()->Kill();
 }
 
+// Flat, POD mirror of the player fields the control panel needs. Kept free of
+// STL containers so the struct layout crossing the DLL boundary is unambiguous.
+struct ServerPlayerInfo
+{
+    uint32_t connectionId;
+    uint32_t playerId;
+    uint64_t connectedAtMs;
+    uint32_t pingMs;
+    bool isAdmin;
+};
+
+// Copies up to aCapacity rows into apOut and returns how many were written.
+// The caller (the runner's UI thread) owns the buffer; nothing internal is
+// exposed, and the endpoint string is deliberately NOT copied here because it
+// is a TiltedPhoques::String whose lifetime the caller does not control. The
+// runner gets endpoints through a separate, equally copy-based call.
+//
+// Threading: this walks the player manager from the caller's thread. The
+// existing QueryServerPlayerCount() already does the same, so this adds no new
+// race that did not exist before - but it is exactly the unlocked cross-thread
+// read documented in docs/design/SERVER-UI-ARCHITECTURE.md (finding F10) and
+// should be moved onto the server thread when that is addressed.
+GS_EXPORT uint32_t QueryServerPlayers(ServerPlayerInfo* apOut, uint32_t aCapacity)
+{
+    auto* pServer = GameServer::Get();
+    if (pServer == nullptr || apOut == nullptr)
+        return 0;
+
+    const auto& adminSessions = pServer->GetAdminSessions();
+
+    uint32_t written = 0;
+    for (Player* pPlayer : pServer->GetWorld().GetPlayerManager())
+    {
+        if (written >= aCapacity)
+            break;
+
+        ServerPlayerInfo& row = apOut[written++];
+        row.connectionId = pPlayer->GetConnectionId();
+        row.playerId = pPlayer->GetId();
+        row.connectedAtMs = pPlayer->GetConnectedAtMs();
+        row.pingMs = pPlayer->GetPingMs();
+        // find() rather than contains(): TiltedPhoques::Set is a tiltedcore
+        // type whose exact API surface is not readable in this repo, and the one
+        // .contains() call site in GameServer.cpp is commented out. find() works
+        // for any std::set-compatible container.
+        row.isAdmin = adminSessions.find(pPlayer->GetConnectionId()) != adminSessions.end();
+    }
+
+    return written;
+}
+
 // Registers the server's static settings, must be called before loading any settings
 GS_EXPORT void RegisterServerSettings(Console::ConsoleRegistry& aConReg)
 {

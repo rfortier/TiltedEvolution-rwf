@@ -51,10 +51,26 @@ add_requires(
     "zlib v1.3.1"
 )
 if is_plat("windows") then
+    -- Windows dashboard: vendored Win32 + DX11 backends (Code/components/imgui)
+    -- against the plain Dear ImGui package. No GL backend is enabled here, which
+    -- also keeps GLFW out of the Windows build entirely.
     add_requires(
         "discord 3.2.1", 
         "imgui v1.89.7"
     )
+end
+
+if is_plat("linux") then
+    -- Linux dashboard: the same Dear ImGui, but with its GLFW + OpenGL3 backend
+    -- compiled in, because Windows' Win32/DX11 backends do not exist on Linux.
+    -- This is the combination the xmake imgui package documents for GL.
+    --
+    -- Deliberately a separate add_requires rather than one shared entry with a
+    -- config: the config is global to the package, so enabling glfw_opengl3
+    -- inside the Windows branch would pull GLFW and an OpenGL loader into the
+    -- Windows image build for no benefit.
+    add_requires("imgui v1.89.7", {configs = {glfw_opengl3 = true}})
+    add_requires("glfw", "opengl")
 end
 
 -- dependencies' dependencies version pinning
