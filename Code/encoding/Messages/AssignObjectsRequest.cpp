@@ -1,4 +1,5 @@
 #include <Messages/AssignObjectsRequest.h>
+#include <WireLimits.h>
 #include <algorithm>
 
 void AssignObjectsRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
@@ -24,6 +25,12 @@ void AssignObjectsRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader
 
         uint64_t count = 0;
         aReader.ReadBits(count, 8);
+
+        if (count > WireLimits::kMaxElementCount)
+        {
+            Objects.clear();
+            return;
+        }
 
         Objects.resize(count);
 

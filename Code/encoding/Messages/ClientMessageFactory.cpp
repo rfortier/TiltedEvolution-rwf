@@ -50,5 +50,15 @@ UniquePtr<ClientMessage> ClientMessageFactory::Extract(TiltedPhoques::Buffer::Re
     if (!s_clientMessageExtractor[opcode]) [[unlikely]]
         return {nullptr};
 
-    return s_clientMessageExtractor[opcode](aReader);
+    // See ServerMessageFactory::Extract: the message bodies allocate and the frames are
+    // noexcept, so this is the last place a throw can be turned into an unparsed packet.
+    // The server reaches this from a connection it has not authenticated yet.
+    try
+    {
+        return s_clientMessageExtractor[opcode](aReader);
+    }
+    catch (...)
+    {
+        return {nullptr};
+    }
 }

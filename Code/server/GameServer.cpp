@@ -21,6 +21,7 @@
 #include <Messages/NotifySettingsChange.h>
 #include <console/ConsoleRegistry.h>
 #include <resources/ResourceCollection.h>
+#include <Opcodes.h>
 #include <WireLimits.h>
 
 constexpr size_t kMaxServerNameLength = 128u;
@@ -614,7 +615,26 @@ void GameServer::OnConsume(const void* apData, const uint32_t aSize, const Conne
         return;
     }
 
-    m_messageHandlers[pMessage->GetOpcode()](pMessage, aConnectionId);
+    // The handler table is filled by GameServer::Visit, so an opcode the visitor does not
+    // name leaves an empty std::function in its slot, and calling through it throws
+    // std::bad_function_call. Nothing above this catches: the client's own dispatch does
+    // this check, this one did not. A packet from a peer running a different build is the
+    // ordinary way to reach a slot this build never filled.
+    const auto cOpcode = pMessage->GetOpcode();
+    if (cOpcode >= kClientOpcodeMax) [[unlikely]]
+    {
+        spdlog::error("Client message opcode {} from {:x} is outside the handler table", static_cast<int>(cOpcode), aConnectionId);
+        return;
+    }
+
+    auto& handler = m_messageHandlers[cOpcode];
+    if (!handler) [[unlikely]]
+    {
+        spdlog::error("No handler for client message opcode {} from {:x}", static_cast<int>(cOpcode), aConnectionId);
+        return;
+    }
+
+    handler(pMessage, aConnectionId);
     //}
 }
 

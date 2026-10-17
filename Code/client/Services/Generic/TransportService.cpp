@@ -43,6 +43,11 @@ static constexpr auto kHandshakePumpInterval = std::chrono::milliseconds(8);
 // told apart from a dead frame loop in the log alone.
 static constexpr auto kPumpHeartbeat = std::chrono::seconds(5);
 
+// How many parsed messages may wait for the game thread before the oldest is dropped.
+// A running frame loop drains this every tick and never approaches the bound; it only
+// fills while that loop is not running, and then the state it carries is already stale.
+static constexpr size_t kMaxPendingMessages = 4096;
+
 // How long the frame loop may go silent before its tick counts as missing. Well
 // past any frame even on a struggling machine, far short of anything a player
 // would notice.
@@ -198,7 +203,17 @@ bool TransportService::Send(const ClientMessage& acMessage) const noexcept
     // caller already tolerates a lost packet: the next snapshot carries the state.
     std::unique_lock<std::recursive_mutex> lock(m_clientMutex, std::try_to_lock);
     if (!lock.owns_lock())
+    {
+        // Dropping is the intended answer, not a failure to report to the caller: the
+        // next snapshot carries the state and no caller can do anything useful with a
+        // false here. What was missing is that nobody could tell it was happening, so a
+        // session that dropped every packet during a long handshake looked identical in
+        // the log to one that sent them all. Counted rather than logged per packet - the
+        // drop happens on the frame loop, and this path is hit dozens of times per frame
+        // during a cell change.
+        ++m_droppedPackets;
         return false;
+    }
 
     Client::Send(&packet);
 
@@ -246,6 +261,19 @@ void TransportService::OnConsume(const void* apData, uint32_t aSize)
     }
 
     std::lock_guard<std::mutex> lock(m_pendingMutex);
+
+    // The game thread is the only drain, so a frame loop that stops for a long time - a
+    // loading screen, a deadlock in someone else's mod - lets this grow with everything
+    // the server keeps sending. Dropping the oldest rather than refusing the newest is
+    // the right way round: the newest message is the one that carries the state the
+    // session is waiting for, and the oldest is the one that a later snapshot has
+    // already superseded.
+    if (m_pendingMessages.size() >= kMaxPendingMessages)
+    {
+        m_pendingMessages.erase(m_pendingMessages.begin());
+        ++m_droppedPendingMessages;
+    }
+
     m_pendingMessages.push_back(std::move(pMessage));
 }
 
@@ -550,8 +578,9 @@ void TransportService::PumpHeartbeat() noexcept
         m_lastPumpHeartbeat = cNow;
 
         spdlog::info("transport pump heartbeat: update events {}, handshake pending {}, connected {}, owned by handshake "
-                     "pump {}",
-                     m_pumpTicks.load(), m_handshakePending.load(), m_connected.load(), m_handshakeThreadActive.load());
+                     "pump {}, packets dropped {}, queued messages dropped {}",
+                     m_pumpTicks.load(), m_handshakePending.load(), m_connected.load(), m_handshakeThreadActive.load(),
+                     m_droppedPackets.load(), m_droppedPendingMessages.load());
     }
     catch (...)
     {
@@ -727,7 +756,7 @@ void TransportService::HandshakeThreadMain(const std::string acEndpoint) noexcep
             // merely stalling it. Waiting here is bounded by the loop, not by a
             // deadline: the messages stay queued and the frame loop takes them
             // whenever it next runs, however late that is.
-            if (HasPendingMessages())
+            if (!m_handshakeThreadStop.load() && HasPendingMessages())
             {
                 m_world.GetRunner().Queue([this]() { FlushPendingMessages(); });
             }

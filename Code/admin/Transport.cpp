@@ -9,6 +9,7 @@
 #include <TiltedCore/ScratchAllocator.hpp>
 #include <TiltedCore/ViewBuffer.hpp>
 
+#include <Opcodes.h>
 #include <WireLimits.h>
 
 #include <spdlog/spdlog.h>
@@ -37,7 +38,24 @@ void AdminApp::OnConsume(const void* apData, uint32_t aSize)
         return;
     }
 
-    m_messageHandlers[pMessage->GetOpcode()](pMessage);
+    // An opcode the visitor never named leaves an empty std::function in its slot, and
+    // calling through one throws inside a frame with no catcher above it. The client and
+    // the game server both check this before dispatching; the admin app did not.
+    const auto cOpcode = pMessage->GetOpcode();
+    if (cOpcode >= kServerAdminOpcodeMax) [[unlikely]]
+    {
+        spdlog::error("Admin message opcode {} is outside the handler table", static_cast<int>(cOpcode));
+        return;
+    }
+
+    auto& handler = m_messageHandlers[cOpcode];
+    if (!handler) [[unlikely]]
+    {
+        spdlog::error("No handler for admin message opcode {}", static_cast<int>(cOpcode));
+        return;
+    }
+
+    handler(pMessage);
 }
 
 void AdminApp::OnConnected()

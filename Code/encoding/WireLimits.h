@@ -24,7 +24,9 @@
 // what the value is used for, not the transient allocation inside the reader. Bounding
 // the packet itself is what kMaxPacketBytes below does, and the only place for it is a
 // receive entry point (GameServer::OnConsume, TransportService::OnConsume and
-// AdminApp::OnConsume), which see the packet size.
+// AdminApp::OnConsume), which see the packet size. The one allocation a reader does
+// choose itself is the list behind a count field, and that one is checked before the
+// resize: see kMaxElementCount below.
 namespace WireLimits
 {
 
@@ -77,6 +79,26 @@ inline constexpr uint32_t kMaxPacketBytes = 1 << 20;
 {
     return aSize <= kMaxPacketBytes;
 }
+
+// The most elements one message may carry.
+//
+// Every list in this protocol is a count followed by that many entries, and the count is
+// whatever the sender wrote: a handful of bytes can announce a list the receiver then
+// allocates for, because several readers resize before the first entry has been read. No
+// string bound in this file reaches that allocation - it is not a string, it is the
+// container the strings go into - so the count itself has to be checked.
+//
+// The check runs before the resize and rejects the message instead of clamping the count.
+// A clamp leaves the reader at the end of the entries it kept while the stream still holds
+// the rest, so every field after the list would be read from the wrong offset.
+//
+// 65536 cannot fire on an honest sender. The widest count field in the protocol is the 16
+// bit one in StringCacheUpdate, so no peer of ours can name more than 65535 entries, and
+// even the smallest entry on the wire - a single varint - cannot be sent a million times
+// inside a packet of kMaxPacketBytes. What it costs is one comparison per list; what it
+// removes is the case where a count field widens, or a reader stops clamping, and the
+// resize quietly becomes an allocation the sender chose.
+inline constexpr uint64_t kMaxElementCount = 1 << 16;
 
 // Clamps a string that has just been read. Resizing down cannot throw, and every field
 // this is used on is display text, a file name or an opaque buffer whose consumer

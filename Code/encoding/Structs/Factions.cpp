@@ -41,7 +41,16 @@ void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     try
     {
         // Never trust the wire length, and never throw: this runs inside a noexcept frame.
-        const auto npcCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
+        // Clamping the count would leave the reader at the end of the entries it kept while
+        // the stream still holds the rest, so a count past the bound drops the message
+        // instead. Both lists go, because the second one sits behind the first on the stream.
+        const auto npcCount = Serialization::ReadVarInt(aReader);
+        if (npcCount > kMaxFactionCount)
+        {
+            NpcFactions.clear();
+            ExtraFactions.clear();
+            return;
+        }
 
         NpcFactions.resize(npcCount);
         for (auto& entry : NpcFactions)
@@ -49,7 +58,13 @@ void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
             entry.Deserialize(aReader);
         }
 
-        const auto extraCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxFactionCount);
+        const auto extraCount = Serialization::ReadVarInt(aReader);
+        if (extraCount > kMaxFactionCount)
+        {
+            NpcFactions.clear();
+            ExtraFactions.clear();
+            return;
+        }
 
         ExtraFactions.resize(extraCount);
         for (auto& entry : ExtraFactions)

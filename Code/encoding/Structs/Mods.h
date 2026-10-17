@@ -51,7 +51,8 @@ struct Mods
     void Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept;
 
     // The count travels on the wire in 13 bits, so a peer can name up to 8191 entries,
-    // but the writer never sends more than this. Clamp the read side to the same bound:
-    // the count drives a resize, and Deserialize is called from noexcept frames.
+    // but the writer never sends more than this. The read side drops a message that names
+    // more, rather than clamping it: the count drives a resize, and a clamped count leaves
+    // the reader at the end of the entries it kept while the stream still holds the rest.
     static constexpr uint64_t kMaxModCount = 4096;
 };

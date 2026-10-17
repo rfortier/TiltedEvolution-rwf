@@ -25,14 +25,16 @@
 - **MO2 + SKSE 无缝启动**:自带 SKSE 插件,通过 Mod Organizer 2 正常启动 `skse64_loader.exe` 即可加载本 mod,并带**自部署运行时**——首次启动自动把所需文件部署到游戏根目录,无需任何手动复制;
 - **图形化安装引导(中英双语)**:mod 包内置 FOMOD 安装向导(MO2 原生支持),第一步先选中文/English,后续步骤与文案随之切换;联机所需文件自动安装,只把真正需要你选择的东西交给你勾选——两个框架选项(1.6.x 的启动校验脚本、独立启动器),外加**六个可选插件**,每个都带一句说明,一个都不装也不影响联机;
 - **六个可选联机插件内置**:OStimTogether(动作场景同步)、MorphSyncTogether(体型与覆盖层同步)、IEDSyncTogether(装备展示同步)、AnimSyncTogether(动画图谱变量与事件同步)、DAVSyncTogether(Dynamic Armor Variants 外观同步)、TradeTogether(玩家间物品与金币交易)随同一个包分发,在安装向导里按需勾选,不需要单独下载、也不需要自己开放或转发端口;每个插件的附属项(OCum、PPA、体毛覆盖包等)同样在向导里展开;
-- **服务器图形控制面板**:Windows 专用服务器带精简 GUI(状态/在线人数/日志/启停按钮),`--nogui` 可回到纯控制台模式;
+- **服务器图形控制面板(Windows + Linux)**:专用服务器默认以**图形界面**启动,面板包含顶部状态栏(运行状态/运行时长/端口/启动·重启·优雅关机)、性能仪表盘(实测 TPS 与帧时间曲线、CPU、内存、网络上下行与收发包速率)、在线玩家表(延迟/IP/连接时长/管理员标记,右键踢出·封禁·私信)、可搜可按级别过滤并导出的日志面板、底部指令控制台(带命令历史),以及配置热加载面板;日志由无锁环形缓冲从服务器线程汇入,面板只做虚拟滚动渲染,高频日志不会把界面拖死;
+  图形环境不可用(纯命令行 VPS、没有 `DISPLAY` 的容器、Windows 服务会话)时会**自动以控制台模式启动**,无需任何配置;也可用参数强制指定模式——`--gui` 强制图形、`--cli`(等价 `--console`/`--nogui`)强制控制台、`--headless` 只写文件日志。**若显式要求图形而窗口打不开,进程会报错退出而不是悄悄降级**,以免部署方以为跑的是 GUI;
 - **局域网联机开箱即用**:网络层为纯 UDP/GameNetworkingSockets,不依赖 Steam,支持局域网、Radmin LAN、Hamachi、公网 VPS/Docker 等任意组网方式;
-- **Release 自动构建**:推送 tag 即在 GitHub 云端完成 Windows 构建并发布两个包——`SkyrimTogetherNextMod-<版本>`(客户端 mod)与 `SkyrimTogetherNextServer-<版本>`(专用服务器)。
+- **Release 自动构建**:推送 tag 即在 GitHub 云端完成 Windows 构建并发布两个包——`SkyrimTogetherNextMod-<版本>`(客户端 mod)与 `SkyrimTogetherNextServer-<版本>`(专用服务器);
+- **服务端跨平台编译**:专用服务器同时支持 **Windows 10/11** 与 **Ubuntu/Debian**。Windows 用 MSVC 构建,Linux 用 GCC;除图形后端(Windows 走 D3D11、Linux 走 GLFW+OpenGL3)与指标采集来源(Windows 走性能计数器、Linux 走 `/proc`)之外,日志管道、模式路由、玩家与封禁管理、指令分发全部是同一份代码。Linux 侧有独立 CI 任务做真实构建、产物断言与无显示降级的冒烟测试;构建说明见 [docs/BUILD-SERVER.md](docs/BUILD-SERVER.md)。
 
 ## 🚀 快速开始(玩家)
 
 1. 从本仓库 [Releases](../../releases) 下载两个 zip(版本号相同的 Mod 包与 Server 包);
-2. **房主**:解压 Server 包,运行 `SkyrimTogetherServer.exe`(图形界面,默认监听 UDP 10578,记得防火墙放行);
+2. **房主**:解压 Server 包,运行 `SkyrimTogetherServer.exe`(Windows)或 `SkyrimTogetherServer`(Linux)——默认打开图形面板,监听 UDP 10578,记得在防火墙/安全组放行;没有图形环境的机器直接运行即可,会自动进入控制台模式;批量部署或容器里建议显式加 `--headless`;
 3. **所有玩家(含房主)**:把 Mod 包通过 MO2"从文件安装"(会弹出安装向导),或手动解压到游戏 `Data/`;通过 MO2 启动 SKSE 即可;
 4. 进游戏按 **F2** 呼出联机界面,填写 `<房主IP>:10578` 连接。
 

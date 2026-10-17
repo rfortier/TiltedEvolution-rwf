@@ -26,8 +26,12 @@ void NotifyFactionsChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
 
     uint64_t count = Serialization::ReadVarInt(aReader);
 
-    // Early abort as we don't want to allocate a ton of memory
-    if (count >= kMaxChangeCount)
+    // Early abort as we don't want to allocate a ton of memory.
+    //
+    // Strictly greater: the writer sends min(Changes.size(), kMaxChangeCount), so a
+    // batch of exactly kMaxChangeCount entries is a full, legitimate packet. Rejecting
+    // it at >= dropped every saturated update on the floor.
+    if (count > kMaxChangeCount)
         return;
 
     for (auto i = 0u; i < count; ++i)

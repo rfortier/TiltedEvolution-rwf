@@ -48,15 +48,15 @@ struct World : entt::registry
 private:
     entt::dispatcher m_dispatcher;
 
-    // Transport before runner. Members are destroyed in reverse declaration order,
+    // Runner before transport. Members are destroyed in reverse declaration order,
     // so this makes the runner (and the queue it owns) outlive the transport.
     // TransportService::~TransportService joins the handshake pump, and that pump
     // is allowed to put callbacks into the runner's queue; the reverse order left
     // the queue being torn down while a join was still in progress. Neither
     // constructor needs the other: both take only the dispatcher, which is
     // declared above them for the same reason.
-    TransportService m_transport;
     RunnerService m_runner;
+    TransportService m_transport;
 
     ModSystem m_modSystem;
     ServerSettings m_serverSettings{};

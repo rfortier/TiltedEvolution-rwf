@@ -291,8 +291,44 @@ void ActorValueService::RunDeathStateUpdates() noexcept
 
     auto localView = m_world.view<FormIdComponent, LocalComponent>();
 
+    // IsDead() is a papyrus call, so walking every local actor here cost one vm
+    // call per actor four times a second and grew with the number of loaded
+    // actors. The walk is now cut into windows of cMaxActorsPerUpdate and the
+    // next update resumes where this one stopped, which bounds the vm calls of a
+    // single update to that window independently of how many actors exist. A
+    // sweep over M unchanged actors takes ceil(M / 64) updates, so with the 250ms
+    // timer above a death is noticed within ceil(M / 64) * 250ms: 250ms up to 64
+    // actors, 500ms at 100, 4s at 1000. Actors appearing or leaving mid-sweep can
+    // shift the order and push one actor into the next sweep, which costs at most
+    // one extra window and never more than one vm call per actor per window.
+    constexpr uint32_t cMaxActorsPerUpdate = 64;
+
+    // The cursor is an offset into the view rather than an iterator, because
+    // actors are added and removed between updates and an iterator into a changed
+    // view is not something to keep. It is reset to zero once a sweep reaches the
+    // end, so a view that shrank below the cursor costs one idle update and then
+    // starts over from the first actor.
+    uint32_t visited = 0;
+    uint32_t checked = 0;
+    bool complete = true;
+
     for (auto entity : localView)
     {
+        if (visited < m_deathStateCursor)
+        {
+            ++visited;
+            continue;
+        }
+
+        if (checked == cMaxActorsPerUpdate)
+        {
+            complete = false;
+            break;
+        }
+
+        ++visited;
+        ++checked;
+
         const auto& formIdComponent = localView.get<FormIdComponent>(entity);
         Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
         if (!pActor)
@@ -313,6 +349,8 @@ void ActorValueService::RunDeathStateUpdates() noexcept
             m_transport.Send(requestChange);
         }
     }
+
+    m_deathStateCursor = complete ? 0 : visited;
 }
 
 void ActorValueService::RunActorValuesUpdates() noexcept

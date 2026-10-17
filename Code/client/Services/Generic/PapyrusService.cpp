@@ -49,6 +49,48 @@ const void* PapyrusService::Get(const String& acNamespace, const String& acFunct
     }
 }
 
+const void* PapyrusService::Find(const String& acNamespace, const String& acFunction) const noexcept
+{
+    // The retry path of a wrapper whose native arrived late. Same table as Get(),
+    // without the report: the miss was already reported the first time.
+    try
+    {
+        const String key = acNamespace + "::" + acFunction;
+
+        std::scoped_lock lock(m_lock);
+
+        const auto itor = m_functions.find(key);
+        if (itor != std::end(m_functions))
+            return itor->second;
+
+        return nullptr;
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PapyrusService::Find");
+        return nullptr;
+    }
+}
+
+const void* PapyrusDetail::Lookup(const char* acpNamespace, const char* acpFunction) noexcept
+{
+    if (!acpNamespace || !acpFunction)
+        return nullptr;
+
+    // The key is built here, and that is the only allocation on this path. The
+    // world and the service are already there: the wrapper this is called for
+    // could only be constructed by asking the same service for its address.
+    try
+    {
+        return World::Get().ctx().at<PapyrusService>().Find(String(acpNamespace), String(acpFunction));
+    }
+    catch (...)
+    {
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in PapyrusDetail::Lookup");
+        return nullptr;
+    }
+}
+
 void PapyrusService::Capture(const char* acpNamespace, const char* acpName, void* apFunction) noexcept
 {
     if (!acpNamespace || !acpName || !apFunction)

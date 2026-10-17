@@ -70,10 +70,21 @@ void (*Renderer_Init)(Renderer*, BSGraphics::RendererInitOSData*, const BSGraphi
 // WNDPROC seems to be part of the renderer
 LRESULT CALLBACK Hook_WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    if (InputService::WndProc(hwnd, uMsg, wParam, lParam) != 0)
-        return 0;
+    // The engine calls this from its message pump, so there is no C++ caller above
+    // it to catch anything: an exception leaving here reaches Win32 and terminates
+    // the game. DefWindowProc rather than 0 on the way out - returning 0 would
+    // swallow the message and leave the window unresponsive.
+    try
+    {
+        if (InputService::WndProc(hwnd, uMsg, wParam, lParam) != 0)
+            return 0;
 
-    return RealWndProc(hwnd, uMsg, wParam, lParam);
+        return RealWndProc(hwnd, uMsg, wParam, lParam);
+    }
+    catch (...)
+    {
+        return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    }
 }
 
 void Hook_Renderer_Init(Renderer* self, BSGraphics::RendererInitOSData* aOSData, const BSGraphics::ApplicationWindowProperties* aFBData, BSGraphics::RendererInitReturn* aOut)
@@ -89,9 +100,29 @@ void Hook_Renderer_Init(Renderer* self, BSGraphics::RendererInitOSData* aOSData,
 
     Renderer_Init(self, aOSData, aFBData, aOut);
 
-    g_sRs = &World::Get().ctx().at<RenderSystemD3D11>();
+    // World::Create swallows a failed build, so the registry can be there without
+    // a render system in it and this lookup throws where the rest of the function
+    // expects a pointer.
+    try
+    {
+        g_sRs = &World::Get().ctx().at<RenderSystemD3D11>();
+    }
+    catch (...)
+    {
+        g_sRs = nullptr;
+        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Hook_Renderer_Init");
+    }
+
     // This how the game does it too
     g_RenderWindow = &self->Data.RenderWindowA[0];
+
+    // Everything below dereferences g_sRs to hand it the device, so a missing
+    // render system ends the hook here instead of in a null dereference.
+    if (!g_sRs)
+    {
+        spdlog::error("renderer init: no render system in the registry, the overlay cannot start");
+        return;
+    }
 
     const BSGraphics::RendererData& renderer = self->Data;
 

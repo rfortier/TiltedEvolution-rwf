@@ -120,4 +120,7 @@ private:
 
     //! @brief Server ids and collected health changes.
     Map<uint32_t, float> m_smallHealthChanges;
+
+    //! @brief Offset into the local actor view that the death state check resumes from.
+    uint32_t m_deathStateCursor = 0;
 };

@@ -16,6 +16,22 @@ struct StringCache
     // when the cache did not grow.
     static constexpr uint32_t kInvalidId = 0xFFFFFFFFu;
 
+    // How many strings one cache may hold.
+    //
+    // The cache is global on the server and grows with every name a client sends, and
+    // nothing ever removes an entry: an authenticated client that keeps sending names it
+    // has not sent before grows it until the process runs out of memory. There is no
+    // eviction instead of a bound because an id has to stay valid for the whole session -
+    // the cache is a contiguous prefix of the sender's, which is what lets a message name a
+    // string by id - so the only answer left is to stop accepting.
+    //
+    // The names that travel this way are editor ids, tint names and animation names, a few
+    // thousand over a long session, so this is far above any real one. It is also four
+    // times the widest count field in the protocol, so a cache that reaches it cannot have
+    // been filled by an honest client, and it sits far below kInvalidId, so a full cache
+    // cannot produce an id that reads as a failure.
+    static constexpr uint32_t kMaxCachedStrings = 1 << 18;
+
     uint32_t Add(const TiltedPhoques::String&) noexcept;
     [[nodiscard]] void AddWanted(const TiltedPhoques::String&) noexcept;
     [[nodiscard]] size_t Size() const noexcept;

@@ -395,10 +395,76 @@ inline bool ValidatePatchSite(const void* apAddress, const char* acpWhat) noexce
     return true;
 }
 
+// Jump and PutCall write five bytes over a function entry, so the first instruction
+// there has to be at least that long: a shorter one is cut in half and the branch
+// back into the function lands mid-instruction.
+//
+// Deciding that needs an x86 length decoder, and this client has none of its own -
+// MinHook carries hde64, but only as a package dependency, so no header for it is
+// in this source tree. A hand-written opcode table would be wrong precisely on the
+// forms that matter (legacy and REX prefixes, ModRM extensions, VEX) and wrong
+// silently, so the measurement is left to a caller that can make it: install a
+// decoder here and every site is checked. Until one is installed the site is
+// written as before and the unchecked assumption goes to the log.
+using InstructionLengthFn = size_t (*)(const void* apAddress, const size_t aMaxLength);
+
+inline InstructionLengthFn& InstructionLengthDecoder() noexcept
+{
+    static InstructionLengthFn s_decoder = nullptr;
+    return s_decoder;
+}
+
+inline void SetInstructionLengthDecoder(const InstructionLengthFn acDecoder) noexcept
+{
+    InstructionLengthDecoder() = acDecoder;
+}
+
+// False when the bytes about to be overwritten are a whole instruction shorter
+// than the branch, i.e. when writing would leave half an instruction behind.
+inline bool InstructionCovers(const void* apAddress, const size_t acLength, const char* acpWhat) noexcept
+{
+    const auto decoder = InstructionLengthDecoder();
+    if (!decoder)
+    {
+        spdlog::warn("patch '{}': writing {} bytes at {} without checking that the first instruction is that long, no "
+                     "instruction decoder is installed",
+                     acpWhat, acLength, fmt::ptr(apAddress));
+        return true;
+    }
+
+    // The decoder reads the same bytes the write replaces, so the read is guarded
+    // like the one above: a wrong anchor can point at unmapped memory, and the
+    // handler must stay free of C++ objects for the same reason.
+    size_t length = 0;
+    __try
+    {
+        length = decoder(apAddress, acLength);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        length = 0;
+    }
+
+    if (length < acLength)
+    {
+        spdlog::error("patch '{}' skipped: the first instruction at {} is {} bytes, shorter than the {} byte branch that "
+                      "would be written over it",
+                      acpWhat, fmt::ptr(apAddress), length, acLength);
+        return false;
+    }
+
+    return true;
+}
+
 // Overwrites the function at apAddress with an unconditional jmp rel32.
 template <class TFunc> bool Jump(void* apAddress, TFunc aReplacement, const char* acpWhat) noexcept
 {
     if (!ValidatePatchSite(apAddress, acpWhat))
+        return false;
+
+    // Before the branch target is resolved: a site the write would corrupt is not
+    // worth staging a near stub for.
+    if (!InstructionCovers(apAddress, 5, acpWhat))
         return false;
 
     const void* pTarget = BranchTarget(apAddress, reinterpret_cast<const void*>(aReplacement), acpWhat);
@@ -436,6 +502,9 @@ template <class TFunc> bool PutCall(void* apAddress, TFunc aReplacement, const c
     // PutCall exists to write over a site that was just Nop'd, so an existing branch
     // there means the sequence is not what the caller thinks it is.
     if (!ValidatePatchSite(apAddress, acpWhat))
+        return false;
+
+    if (!InstructionCovers(apAddress, 5, acpWhat))
         return false;
 
     const void* pTarget = BranchTarget(apAddress, reinterpret_cast<const void*>(aReplacement), acpWhat);

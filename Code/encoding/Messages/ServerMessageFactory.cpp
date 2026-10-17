@@ -45,5 +45,17 @@ UniquePtr<ServerMessage> ServerMessageFactory::Extract(TiltedPhoques::Buffer::Re
     if (!s_serverMessageExtractor[opcode]) [[unlikely]]
         return {nullptr};
 
-    return s_serverMessageExtractor[opcode](aReader);
+    // Every DeserializeRaw below allocates - a string, a list, a resize - and most of them
+    // do it without a guard of their own, because the frame is noexcept and there was
+    // nowhere above it to catch a throw either. This is that place. The receive entry
+    // points bound the packet size, which bounds the allocation but does not remove it,
+    // and an allocation that fails should cost the packet rather than the process.
+    try
+    {
+        return s_serverMessageExtractor[opcode](aReader);
+    }
+    catch (...)
+    {
+        return {nullptr};
+    }
 }

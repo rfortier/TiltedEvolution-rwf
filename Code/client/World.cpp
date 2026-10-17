@@ -32,8 +32,8 @@
 #include <WireLimits.h>
 
 World::World()
-    : m_transport(*this, m_dispatcher)
-    , m_runner(m_dispatcher)
+    : m_runner(m_dispatcher)
+    , m_transport(*this, m_dispatcher)
     , m_modSystem(m_dispatcher)
     , m_lastFrameTime{std::chrono::high_resolution_clock::now()}
 {

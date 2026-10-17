@@ -35,6 +35,13 @@ uint32_t StringCache::Add(const TiltedPhoques::String& acValue) noexcept
         if (auto id = this->operator[](acValue))
             return *id;
 
+        // A full cache reports the same failure the allocation below does, and the caller
+        // already answers it: Deserialize drops the message and leaves the cache as it is,
+        // so a client cannot grow this past the bound and the two caches simply stop
+        // agreeing about new names. A known name is still resolved by the lookup above.
+        if (m_idToString.size() >= kMaxCachedStrings)
+            return kInvalidId;
+
         const auto allocatedId = m_idToString.size();
         m_stringToId[acValue] = allocatedId & 0xFFFFFFFF;
         m_idToString.push_back(acValue);

@@ -280,6 +280,15 @@ struct BSScript
         NativeFunction(const char* apFunctionName, const char* apClassName, bool aIsStatic, uint32_t aParameterCount)
             : pFunction(nullptr)
         {
+            // The engine constructor is what fills every base member, parameters included.
+            // Returning early without it left them as whatever the allocation happened to
+            // contain, and the derived constructors then write
+            // parameters.data[0].pType through that uninitialised pointer. The comment
+            // above the destructor calls the unmapped case "a leak"; this one was not.
+            parameters.data = nullptr;
+            parameters.size = 0;
+            parameters.capacity = 0;
+
             TP_THIS_FUNCTION(TNativeFunctionCtor, void, NativeFunction, const char*, const char*, bool, uint32_t);
             POINTER_SKYRIMSE(TNativeFunctionCtor, ctor, 104653);
             if (!ctor.Get()) // unmapped on legacy game versions, degrade to a no-op callback

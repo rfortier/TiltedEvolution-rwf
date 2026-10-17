@@ -207,6 +207,17 @@ private:
     std::atomic<uint64_t> m_pumpTicks{0};
     std::chrono::steady_clock::time_point m_lastPumpHeartbeat{};
 
+    // Packets Send() dropped because another thread held the transport. Expected
+    // under contention and harmless on its own - the next snapshot carries the
+    // state - but a number that only ever climbs says the frame loop is losing
+    // every packet it tries to send, which used to be invisible.
+    std::atomic<uint64_t> m_droppedPackets{0};
+
+    // Received messages evicted from m_pendingMessages because the game thread had not
+    // drained them in time. Non-zero means the frame loop stalled long enough to fall
+    // behind the server, which is worth seeing in a log rather than guessing at.
+    std::atomic<uint64_t> m_droppedPendingMessages{0};
+
     // When HandleUpdate last ran, in milliseconds on the steady clock. The
     // handshake pump reads it to know whether the frame loop is doing its job,
     // and there is no point reading that off anything the pump itself wrote.

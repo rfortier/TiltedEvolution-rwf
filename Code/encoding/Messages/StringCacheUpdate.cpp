@@ -28,6 +28,15 @@ void StringCacheUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) n
         StartId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
         const auto count = Serialization::ReadVarInt(aReader) & 0xFFFF;
+
+        // The mask above already keeps this count under the bound, so this cannot fire today;
+        // it is the check every other count in the protocol gets, made before the resize.
+        if (count > WireLimits::kMaxElementCount)
+        {
+            Values.clear();
+            return;
+        }
+
         Values.resize(count);
 
         for (auto i = 0ull; i < count; ++i)

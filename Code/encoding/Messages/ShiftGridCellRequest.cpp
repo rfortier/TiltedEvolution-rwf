@@ -1,4 +1,5 @@
 #include <Messages/ShiftGridCellRequest.h>
+#include <WireLimits.h>
 #include <algorithm>
 
 // The count field is 8 bits wide, so a longer list could not be received anyway:
@@ -35,6 +36,12 @@ void ShiftGridCellRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader
 
         uint64_t count = 0;
         aReader.ReadBits(count, 8);
+
+        if (count > WireLimits::kMaxElementCount)
+        {
+            Cells.clear();
+            return;
+        }
 
         Cells.resize(count);
 

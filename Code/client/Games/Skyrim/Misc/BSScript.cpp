@@ -214,7 +214,10 @@ bool BSScript::NativeFunctionBase::TranslateIPToLineNumber(uint32_t, uint32_t& a
 
 bool BSScript::NativeFunctionBase::GetVarNameForStackIndex(std::uint32_t aIndex, BSFixedString& aNameOut)
 {
-    if (aIndex < parameters.capacity)
+    // capacity is the allocation the engine made, size is how many entries are in it.
+    // Only size entries have a name; reading up to capacity would hand back whatever
+    // the spare slots hold.
+    if (parameters.data && aIndex < parameters.size)
     {
         aNameOut = parameters.data[aIndex].name;
         return true;
@@ -266,6 +269,11 @@ static void* LookUpActorParameterType(const char* acpClassName, const char* acpF
     {
         Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in LookUpActorParameterType");
     }
+
+    // Falling off the end of a non-void function is undefined behaviour, and the
+    // caller stores this straight into a parameter type. The paths above already
+    // mean "no type", so say that.
+    return nullptr;
 }
 
 BSScript::IsRemotePlayerFunc::IsRemotePlayerFunc(const char* apFunctionName, const char* apClassName, FunctionType aFunction, Variable::Type aType)
@@ -275,7 +283,11 @@ BSScript::IsRemotePlayerFunc::IsRemotePlayerFunc(const char* apFunctionName, con
 
     returnType = aType;
 
-    parameters.data[0].pType = LookUpActorParameterType(apClassName, apFunctionName);
+    // Only write a parameter entry the engine actually allocated. When its constructor
+    // did not run, parameters is empty and this write used to go through a null (or
+    // uninitialised) data pointer.
+    if (parameters.data && parameters.size > 0)
+        parameters.data[0].pType = LookUpActorParameterType(apClassName, apFunctionName);
 }
 
 bool BSScript::IsRemotePlayerFunc::MarshallAndDispatch(Variable* apBaseVar, IVirtualMachine* apVm, uint32_t aStackID, Variable* apResult, StackFrame* apStackFrame)
@@ -283,7 +295,11 @@ bool BSScript::IsRemotePlayerFunc::MarshallAndDispatch(Variable* apBaseVar, IVir
     uint32_t page = apStackFrame->GetPageForFrame();
 
     BSScript::Variable* pArg1 = apStackFrame->GetStackFrameVariable(0, page);
-    Actor* pActor = pArg1->ExtractComplexType<Actor>();
+
+    // The frame is only dereferenced below if the argument actually came back. An
+    // absent argument is not an Actor, which is the same answer the null-actor path
+    // further down already gives.
+    Actor* pActor = pArg1 ? pArg1->ExtractComplexType<Actor>() : nullptr;
     if (!pActor)
     {
         // A None argument is an answer, not a failure. The shipped callers cast
@@ -311,7 +327,11 @@ BSScript::IsPlayerFunc::IsPlayerFunc(const char* apFunctionName, const char* apC
 
     returnType = aType;
 
-    parameters.data[0].pType = LookUpActorParameterType(apClassName, apFunctionName);
+    // Only write a parameter entry the engine actually allocated. When its constructor
+    // did not run, parameters is empty and this write used to go through a null (or
+    // uninitialised) data pointer.
+    if (parameters.data && parameters.size > 0)
+        parameters.data[0].pType = LookUpActorParameterType(apClassName, apFunctionName);
 }
 
 bool BSScript::IsPlayerFunc::MarshallAndDispatch(Variable* apBaseVar, IVirtualMachine* apVm, uint32_t aStackID, Variable* apResult, StackFrame* apStackFrame)
@@ -319,7 +339,11 @@ bool BSScript::IsPlayerFunc::MarshallAndDispatch(Variable* apBaseVar, IVirtualMa
     uint32_t page = apStackFrame->GetPageForFrame();
 
     BSScript::Variable* pArg1 = apStackFrame->GetStackFrameVariable(0, page);
-    Actor* pActor = pArg1->ExtractComplexType<Actor>();
+
+    // The frame is only dereferenced below if the argument actually came back. An
+    // absent argument is not an Actor, which is the same answer the null-actor path
+    // further down already gives.
+    Actor* pActor = pArg1 ? pArg1->ExtractComplexType<Actor>() : nullptr;
     if (!pActor)
     {
         // See IsRemotePlayerFunc: the callers pass an unchecked `as Actor` cast,

@@ -303,8 +303,57 @@ AE 每项 +`0x10`。上游 `6f963497` 抬过 `pad1`，**同步时不要把 legac
 | `a8b0f76e` | **未打 tag** | **打包演练首次执行即失败，且是发布阻断**（§24.2）：清单把 `IEDSyncTogether.esp` 列为 **artifact**（"从插件构建输出拷"），但全流程无人生产它——上游在 `build-vortex.ps1` 的 `Write-MinimalPlugin` 里生成，而 CI 对每个插件**只跑 CMake**。`release.yml` 调同一脚本、同一 `ArtifactsRoot`，故推 tag 也会死在这。改为 **payload**（本仓库自持，与 STRPM 的 ini 同构），提交的副本与脚本输出**逐字节相同**（110 B，`9811c7bd…`） |
 | `f1cb45dd` | **未打 tag** | **i18n 七个语言补到 0 缺键**（§25.1）：cs/de/ja/ko/no/ru/tr 各缺 5~11 条，全库 13 个语言文件现已**无一缺键**；逐键核对含 `{{占位符}}` 与英文串一致 |
 | `cd0d90dd` | **未打 tag** | **编码测试从"只编译"改为"真的跑"**（§25.2）：CI 新增 "Run the encoding tests"，编译后、打包前执行 `TPTests.exe` 并**阻断**；实测 step 21 = success |
+| `（待提交）` | **未打 tag** | **World 成员析构顺序与注释相反**（§161.1）：注释写「Transport before runner … makes the runner outlive the transport」，实际 `m_transport`(:58) 先声明、`m_runner`(:59) 后声明，逆序析构使 **runner 先死**；`~TransportService` join 握手泵期间，泵仍可向已析构的 `RunnerService` 队列投递 `[this]` lambda。改为 `m_runner` 在前、`m_transport` 在后，初始化列表同步（消 `-Wreorder`） |
+| `（待提交）` | **未打 tag** | **握手泵循环内投递缺 stop 守卫**（§161.1）：`TransportService.cpp:730` 的 `GetRunner().Queue([this]{...})` 没有 `!m_handshakeThreadStop` 前置条件，而循环后同款投递(:748)有——`:745-747` 的注释恰好描述了该 hazard。泵线程在 sleep 后越过 while 检查仍会投递，对象随后析构 ⇒ 悬空回调。补上守卫 |
+| `（待提交）` | **未打 tag** | **`Hook_WndProc` 异常可穿出引擎窗口过程**（§161.2）：`BSGraphicsRenderer.cpp:71` 无 `try/catch`，转调 `InputService::WndProc`（零 catch）。引擎消息泵之上没有 C++ 调用者能接住 ⇒ `std::terminate`。整体包 `try/catch(...)`，异常路径返回 `DefWindowProc`（**不是 0**，返回 0 会吞消息致窗口假死） |
+| `（待提交）` | **未打 tag** | **`Hook_Renderer_Init` 解引用可能不存在的渲染系统**（§161.2）：`World::Create` 吞掉构建失败（`World.cpp:140-143`）后，`ctx().at<RenderSystemD3D11>()` 仍会抛。只把该 lookup 包 `try/catch`，失败置 `g_sRs=nullptr` + `Diagnostics::ReportFailure`，并在其后加 `if (!g_sRs) return;`——`Renderer_Init` 引擎调用**不包**（包了会掩盖真实崩溃） |
+| `（待提交）` | **未打 tag** | **字节补丁不校验指令边界**（§161.2）：`GamePatch.h` 的 `Jump`/`PutCall` 硬编码写 5 字节，而 `ValidatePatchSite` 只 `memcpy` 2 字节、只判首字节是否 `E9`/`FF 25`，**从不检查首条指令是否够 5 字节**；带 `acExpected` 的严格重载(:415) 无调用者。新增 `InstructionCovers()` + 可注册的 `InstructionLengthFn`：无解码器时仅 warn（行为不变），注册后长度 < 5 则拒绝写入。**未硬编码指令长度表**——仓库内无 hde64/Zydis/Capstone 源码 |
+| `（待提交）` | **未打 tag** | **8 处反序列化按对端计数在读取前 resize**（§161.3）：`WireLimits` 是**读后夹取**（`WireLimits.h:23-27` 自述），全仓零处「剩余可读字节」检查，`StringCacheUpdate.cpp:31` 等处在读到第一个元素前就 `resize(count)`。新增 `kMaxElementCount=1<<16`，统一改为「读 count → 比较 → 超限 clear+return → resize」。**选 reject 而非 clamp**：clamp 会让 reader 停在保留项末尾而流里仍有剩余，后续字段全部错位 |
+| `（待提交）` | **未打 tag** | **`Mods`/`Factions` 的 count 原本是 clamp**（§161.3）：同样理由改 reject，`Mods.cpp:43-51`、`Factions.cpp:44-53/:61-67`；`Factions` 两个 list 任一超限**两个都清**（第二个 list 在流里位于第一个之后）。`Code/tests/encoding.cpp:1160-1177` 断言同步由「被 clamp 到 `kMaxModCount`」改为「空列表」——这是行为契约变更，非迁就代码 |
+| `（待提交）` | **未打 tag** | **`AuthenticationRequest` 未认证可达且无异常保护**（§161.3）：首个消息、解析 3 次 `ReadString` + `UserMods.Deserialize` 全是分配，函数标 `noexcept` 却无 `try/catch` ⇒ 分配失败即 terminate。整体包 `try/catch`，失败清空 `Token/Version/Username/UserMods.ModList`——清 `Version` 是关键：`GameServer.cpp:886` 先比 `Version` 再看 `Token`，解析失败因此导向「版本不符 → kick」，而非「无 mod + 正确密码 → 直接进服」 |
+| `（待提交）` | **未打 tag** | **服务端全局 `StringCache` 无容量上限**（§161.3）：一个已认证客户端可持续送入唯一字符串，服务端 `Clear()` **零调用点**，直到 OOM。`Add` 原有的 `try/catch` 回滚**是对的、保留不动**，缺的是上限。新增 `kMaxCachedStrings=1<<18`，超限返回 `kInvalidId` 复用现有失败路径；**不做 LRU**——`id` 必须是发送方前缀，这是按 id 指名的基础 |
+| `（待提交）` | **未打 tag** | **`NotifyFactionsChanges` 用 `>=` 丢弃满批合法包**（§161.3）：写侧 `std::min(Changes.size(), kMaxChangeCount)` 可正好写出 `0x400`，读侧却用 `count >= kMaxChangeCount` 早退 ⇒ **每一个满批更新都被整包丢掉**。改为 `>`。这条与其余 8 处的「超限才拒绝」判据对齐 |
+| `（待提交）` | **未打 tag** | **`GetStackFrameVariable` 返回值未判空即解引用**（§161.4）：`BSScript.cpp:285`/`:321` 拿到 `pArg1` 后直接 `pArg1->ExtractComplexType<Actor>()`，判空判的是**结果** `pActor` 而不是 `pArg1`。改为 `pArg1 ? pArg1->ExtractComplexType<Actor>() : nullptr`——失败语义与既有的 null-actor 路径完全一致（`Set<bool>(false)` + `return true`），不改变对外行为。全仓仅这两处调用点 |
+| `（待提交）` | **未打 tag** | **`Send()` 丢包不可观测**（§161.1）：`try_to_lock` 失败时静默 `return false`，全仓 72 处调用只有 3 处检查返回值。**丢包本身是设计**（注释明说「the next snapshot carries the state」），所以**不改控制流**——改为把丢弃计数累加到 `m_droppedPackets` 并挂到既有的 `PumpHeartbeat` 日志上。握手期间泵整段持锁时，原本「全丢」和「全发」在日志里长得一模一样 |
+| `（待提交）` | **未打 tag** | **`LookUpActorParameterType` 有路径不返回值**（§161.4）：函数返回 `void*`，但 `catch(...)` 分支结束后**直接落到函数末尾**——非 void 函数走完末尾是 UB，而调用方把这个值直接存进 `parameters.data[0].pType`。补 `return nullptr;` |
+| `（待提交）` | **未打 tag** | **`NativeFunction` 基类 ctor 提前 return 使 `parameters` 未初始化**（§161.4）：引擎 ctor `104653` 未映射时直接 `return`，基类成员（含 `parameters`）保持未初始化，派生类 ctor 随后 `parameters.data[0].pType = ...` **沿垃圾指针写入**。对照同一结构体析构函数的注释「degrade to a leak」——这一处不是 leak，是写野指针。修复：ctor 内先显式把 `parameters` 置空，派生类写入前检查 `parameters.data && parameters.size > 0`。**证据**：`104653` 在 1.5.97 有真实映射（`st_overrides_all.tsv` → `0x1250c80`，capstone `sim=1.00`），且该 ctor 会调 `ae105361(a1+48, a5, 0)` 初始化 `parameters`——所以引擎 ctor 不跑时它确实是空的 |
+| `（待提交）` | **未打 tag** | **`GetVarNameForStackIndex` 用 `capacity` 当边界**（§161.4）：`aIndex < parameters.capacity` 判的是**分配量**，而只有 `size` 个条目有名字，读到 capacity 范围会返回备用槽里的垃圾。改为 `parameters.data && aIndex < parameters.size`，与 `GetParam` 的判据对齐 |
+| `（待提交）` | **未打 tag** | **`m_pendingMessages` 无容量上限**（§161.1）：游戏线程是唯一消费者，帧循环长时间不跑（加载画面、别人的 mod 死锁）时队列随服务端发送无限增长。加 `kMaxPendingMessages = 4096`，**溢出时丢最旧的**——最新的消息才承载会话在等的状态，最旧的已被后续快照取代。同时 `m_droppedPendingMessages` 计数并入心跳日志 |
+| `（待提交）` | **未打 tag** | **消息工厂 `Extract` 是 `noexcept` 却不兜异常**（§161.3）：`ServerMessageFactory::Extract`/`ClientMessageFactory::Extract` 直接调 `DeserializeRaw`，而全仓 **16 个消息文件**的 `DeserializeRaw` 有 `ReadString`/`resize`/`push_back` 却没有自己的 `try/catch`——因为帧本身是 `noexcept`，上层也没地方接。三个接收入口（`TransportService::OnConsume`、`GameServer::OnConsume`、`AdminApp::OnConsume`）都只校验包大小，**不 catch**。一个 peer 撑爆内存 = 进程终止。在 `Extract` 里统一兜底，把分配失败降级为「解析失败的包」 |
+| `（待提交）` | **未打 tag** | **服务端与 admin 分发表不检查空槽**（§161.3）：`GameServer.cpp:617` 与 `admin/Transport.cpp:40` 直接 `m_messageHandlers[opcode](...)`，**无范围检查、无空槽检查、无 try/catch**。而客户端 `TransportService.cpp:288-301` 三项俱全——同一判据在不同模块应用不一致。`Visit` 未命名的 opcode 在槽里留下**空的 `std::function`**，调用即抛 `std::bad_function_call`，在没有 catcher 的帧里就是 `std::terminate`。对端跑不同 build 是走到空槽的常规途径。补齐范围 + 空槽检查，并显式包含 `Opcodes.h` 而非依赖传递包含 |
+| `（待提交）` | **未打 tag** | **Papyrus native 首次未注册即本进程永久失效**（§161.4）：`PAPYRUS_FUNCTION` 的 `s_p##name` 是函数内 `static`，`m_pFunction` 在构造时锁死，`Get()` 此后不再调用。若首次调用早于 `BindEverythingToScript`，该 native 永久返回默认值（`IsDead→false`、`GetOpenState→kNone`、`GetCombatTarget→nullptr`），`Capture` 之后注册进来也无回填路径。改为 `m_pFunction` mutable + `Resolve()` 重解析，命中即缓存；失败按调用次数退避（每 64 次查一次表），既不让未注册的 native 把每次调用变成查表，也能接住迟到注册 |
+| `（待提交）` | **未打 tag** | **每 250ms × 每个本地 actor 一次 Papyrus VM 调用**（§161.4）：`ActorValueService.cpp:303` 的 `pActor->IsDead()` 走 `PAPYRUS_FUNCTION`（`Actor.cpp:1049-1054`），循环体无 per-actor 闸门 ⇒ VM 调用 = `4×N_local` 次/秒。改为轮转窗口：每次最多 64 个 actor，游标为 view 偏移（actor 增删安全），扫到末尾回绕。单次 VM 调用数上界 64 与 actor 总数无关；死亡检测延迟上界 `ceil(M/64)×250ms`（≤64→250ms，100→500ms，1000→4s）已写进注释 |
 
 ## 10. 未修复 / 遗留问题（open，按优先级）
+
+- **【P2，未修，见 §161.3】反序列化无「剩余可读字节」检查**：全仓零处 `Remaining()/BytesLeft/Tell` 命中，
+  `Buffer::Reader` 读越界后的行为（抛 / 返回 0 / UB）**未知**——它随 `tiltedcore` 由 xmake 拉取，不在本仓库。
+  本轮只在 12 处计数型 `resize` 前加了上限；**逐字段的越界读仍未防**。要定论需要 vendor `tiltedcore` 的
+  `Buffer::Reader` 源码。在此之前别把「已加 `kMaxElementCount`」当成「越界读已解决」。
+
+- **【P2，未修，见 §161.2】字节补丁的指令边界校验默认关闭**：`InstructionCovers()` 已就位，但仓库内**没有**
+  可用的 x86 长度解码器（hde64/Zydis/Capstone 无源码；MinHook 只是 `add_packages("minhook")` 的二进制包，
+  工作区无 `MinHook.h`；`Libraries/TiltedReverse` 是空目录）。**无解码器时只 warn、行为与修复前一致。**
+  要真正生效需在启动时调用 `SetInstructionLengthDecoder(&hde64_length)`。
+  **不要**为了「看起来修好了」手写指令长度表——它会在最要命的 legacy/REX 前缀、ModRM 扩展、VEX 上**静默**出错。
+
+- **【P2，未修，见 §161.5】TCP 粘包/半包无法静态审计**：长度前缀 + 循环拆包的代码**不在本仓库**
+  （`Libraries/TiltedConnect` 空目录，`tiltedcore` 由 xmake 拉取）。三个 `OnConsume` 收到的 `aSize`
+  已是一条完整消息的长度，本仓库内无累积缓冲区、无拆包循环。**既不能证实也不能证伪**，
+  需要 vendor 源码才能定论。本条是「不知道」，不是「已修」。
+
+- **【P3，未修，见 §161.4】`Variable::GetObject()` 对 `type>kMax` 且非数组的标签漏 `return`，穿透返回 `data.pObj`。
+  **故意不修**：`Type` 是 `uint64_t` 且 `kMax=16`，数组编码方式没有静态依据，改动等于猜编码。
+
+- **【已知取舍，勿改，见 §161.2】`GamePatch.h:384-395`「目标已有分支只 warn 仍照写」**：这**不是缺陷**。
+  原注释写明理由——走这里的补丁是窗口样式、菜单解冻、线程命名，在用户的 load order 上一直能工作；
+  改成硬失败是把**可见冲突**换成**静默缺功能**。**不要**把它改成硬失败。
+
+- **【待验证，见 §161.4】两个 Papyrus native 无签名来源**：`ObjectReference::Reset`（2 参数，`Actor.cpp:1083-1085`）
+  与 `ObjectReference::GetAnimationVariableInt`（`TESObjectREFR.cpp:1065`）在 `stubs/*.psc` 与
+  `dump_addresses.py` 里**都没有对应声明**。失败模式安全（变 no-op，不崩），但若 `GetAnimationVariableInt`
+  确实不存在，`Actor.cpp:1133` 的 `if(isLevitating)` 恒假，吸血鬼领主变身不再切 `LevitationToggle`
+  动画——**静默功能缺失**。需要 1.5.x 的真实 native 表才能定论。
 
 - **【P1，已结案，见 §11】**0x921F10 / 0x5B2FF0 **没有贴错**，是真实 1.5.97 地址；两个钩子不执行
   是因为 SKSE 路径下游戏主循环由 PE 入口直接进入，而该入口不经过被钩的那条调用链。结论已定，
@@ -21210,6 +21259,185 @@ OStimNG/0008-…   含 Main.cpp / PapyrusThread.h / MainThread.h   整份 LF   0
 **教训**:在 `core.autocrlf=true` 的树上,**用 `git show` 比对文本补丁会得到错误结论**;
 比对补丁内容要用 `git cat-file blob`。而且当目标文件的行尾**不一致**时,
 「一份补丁覆盖多个文件」这件事本身就不成立 —— 应当**按行尾分组拆开**。
+
+---
+
+## 161. 2026-10-18 场次：框架本体四模块审计（线程 / Hook / 协议 / Papyrus）
+
+**范围**：`Code/` 框架本体（1058 个源文件）。**不含** `Code/plugins/patches/` 下已有 53 个 patch 的插件层。
+**方法**：四路并行只读审计，边界互不重叠；每条结论都由协调者对照源码**独立复核**后才计入。
+**本地零编译**，全部静态证据；`Tools/Scripts/check_*.py` 35 个门禁全 PASS。
+
+### 161.1 线程安全：同一个 UAF 的两半
+
+**缺陷**：`World.h` 的成员注释与声明顺序**互相矛盾**。
+注释写「Transport before runner … makes the runner (and the queue it owns) outlive the transport」，
+但 `m_transport`(:58) 先声明、`m_runner`(:59) 后声明——C++ **逆序析构** ⇒ `m_runner` **先死**，
+注释描述的正是它声称已避免的那个 bug。
+
+**另一半**：`TransportService.cpp:730` 的循环内投递
+`m_world.GetRunner().Queue([this]() { FlushPendingMessages(); });`
+**没有** `!m_handshakeThreadStop` 前置条件，而循环**之后**的同款投递(:748)**有**。
+`:745-747` 的注释恰好把这个 hazard 写得很清楚：「a thread that was told to stop ... must not put
+another callback holding a pointer to this into a queue that can outlive the join」。
+
+**触发**：`StopHandshakePump()` 先置 `m_handshakeThreadStop` 再 `join()`。泵线程在 `:738` 的
+`sleep_for` 之后可能**已经越过** `:688` 的 while 条件检查，仍执行到 `:730` 投递一个捕获 `this` 的 lambda；
+对象随后析构 ⇒ 悬空回调。叠加上面的析构顺序问题，队列本身也可能已经不在了。
+
+**修复**：`World.h` 交换为 `m_runner` 在前、`m_transport` 在后（`World.cpp:35-36` 初始化列表同步，
+否则触发 `-Wreorder`，而 `xmake.lua` 开了 `set_warnings("all")`）；`:730` 补上 `!m_handshakeThreadStop.load()`。
+
+**教训**：这两处必须**一起**修。只改析构顺序，泵仍会在 join 期间往队列里塞东西；只改守卫，
+队列本身仍会先于 join 被拆掉。**注释写了「为什么」不等于代码做到了**——这条注释就是反例。
+
+### 161.2 Hook 安全：noexcept 标注比实际保证强
+
+**缺陷一（P1）**：`Hook_WndProc`（`BSGraphicsRenderer.cpp:71`）无 `try/catch`，直接转调
+`InputService::WndProc`（`InputService.cpp:506-749`，**零 catch**）。这是引擎的窗口过程回调，
+栈上没有 C++ 调用者能接住异常 ⇒ 异常到达 Win32 ⇒ `std::terminate`。
+修复：整体包 `try/catch(...)`，异常路径返回 **`DefWindowProc`**——**不是 `0`**，
+返回 0 会吞掉窗口消息、让窗口假死，那比崩溃更难诊断。
+
+**缺陷二（P2）**：`Hook_Renderer_Init`(:79-92) 同样无保护，且 `:92` 直接
+`ctx().at<RenderSystemD3D11>()`。`World::Create` 在构建失败时**吞掉**异常（`World.cpp:140-143`），
+于是 registry 在、渲染系统不在，这个 lookup 会抛。
+修复：**只包这一处 lookup**，失败置 `g_sRs=nullptr` + `Diagnostics::ReportFailure`（noexcept、不分配），
+其后加 `if (!g_sRs) return;`。**`Renderer_Init` 引擎调用不要包**——那是正常路径，包了会掩盖真实崩溃。
+
+**缺陷三（P1）**：`GamePatch::Jump`(:408)/`PutCall`(:445) 硬编码写 **5 字节**，
+而 `ValidatePatchSite`(:366) 只 `memcpy` 了 **2 字节** `head[2]`、只判断首字节是否 `E9`/`FF 25`，
+**从不检查这 5 字节是否落在指令边界上**。首条指令短于 5 字节时写入会把它拦腰截断，
+跳回点落进指令中间。带 `acExpected` 的严格重载(:415)**无任何调用者**。
+
+修复采取**诚实的最小步**：新增 `InstructionLengthFn` / `InstructionLengthDecoder()` /
+`SetInstructionLengthDecoder()` / `InstructionCovers()`。**仓库内没有可用的解码器**
+（hde64/Zydis/Capstone 无源码；MinHook 只是 `add_packages("minhook")` 的二进制包；
+`Libraries/TiltedReverse` 是空目录），因此**没有硬编码任何指令长度表**——手写表会在
+legacy/REX 前缀、ModRM 扩展、VEX 这些**最要命**的形式上**静默**出错，比不检查更危险。
+无解码器时只 `warn`、行为与修复前**完全一致**；注册后长度 < 5 则拒绝写入。
+回调读取用 `__try/__except` 守卫（与 `ValidatePatchSite` 读 `head[2]` 同形，handler 内不含 C++ 对象）。
+
+**已知取舍（勿改）**：`:384-395`「目标已有分支只 warn 仍照写」**不是缺陷**。注释写明理由：
+走这里的补丁是窗口样式、菜单解冻、线程命名，在用户 load order 上一直能工作；
+改硬失败是把**可见冲突**换成**静默缺功能**。
+
+**审计覆盖面**：`HookAudit` 只记录 `TP_HOOK`，而 `TP_HOOK_IMMEDIATE`×5、`TP_HOOK_IAT`×7、
+`GamePatch::*`×13 全在 `Recorded()` 之外。`main.cpp:149` 的「63 recorded, 0 did not land」
+**不是全量健康信号**，别当绿灯读。
+
+### 161.3 网络协议：读后夹取 vs 读前校验
+
+**根因**：`WireLimits.h:23-27` **自己写明了**局限——
+「the clamp runs after the string has been read, so it bounds what the value is used for,
+not the transient allocation inside the reader」。
+全仓**零处**「剩余可读字节」检查，而多个 `Deserialize` 在读到第一个元素**之前**就按对端给的计数
+`resize`。最干净的一例：`StringCacheUpdate.cpp:30-31`，`count` 掩码到 16 位后直接
+`Values.resize(count)`，**2 字节的包就能让客户端分配 65535 个 String**。
+
+**修复**：新增 `kMaxElementCount = 1 << 16`，统一改为「读 count → 比较 → 超限 clear+return → resize」。
+**选 reject 而非 clamp**：clamp 会让 reader 停在「它保留的那些条目」的末尾，而流里还剩着其余的，
+于是**后面每一个字段都从错误的偏移读取**。`Mods.cpp`/`Factions.cpp` 原本就是 clamp，一并改 reject；
+`Factions` 的两个 list 任一超限**两个都清**（第二个 list 在流里位于第一个之后）。
+`Code/tests/encoding.cpp:1160-1177` 的断言由「被 clamp 到 `kMaxModCount`」改为「空列表」——
+这是**行为契约变更**，不是改测试迁就代码。
+
+**`AuthenticationRequest`（未认证可达）**：首个消息就能到达，解析 3 次 `ReadString` 加
+`UserMods.Deserialize` 全是分配，函数标 `noexcept` 却无 `try/catch` ⇒ 分配失败即 terminate。
+修复时**清空 `Version` 是关键**：`GameServer.cpp:886` 先比 `Version` 再看 `Token`(:919-922)，
+所以解析失败会导向「版本不符 → kick」，而**不是**「无 mod + 正确密码 → 直接进服」。
+这个失败方向是刻意选的。
+
+**`StringCache`（服务端全局，无上限）**：一个已认证客户端可持续送入唯一字符串，
+服务端 `Clear()` **零调用点**，直到 OOM。注意 `Add` 原有的 `try/catch` 回滚**是对的、保留不动**，
+缺的是**容量上限**。新增 `kMaxCachedStrings = 1 << 18`，超限返回 `kInvalidId` 复用现有失败路径。
+**不做 LRU**——`id` 必须保持发送方前缀，这是「按 id 指名字符串」的前提（`StringCache.cpp:28-32` 明说）。
+
+**`NotifyFactionsChanges` 的 `>=`**：写侧 `std::min(Changes.size(), kMaxChangeCount)` 可**正好**写出 `0x400`，
+读侧却用 `count >= kMaxChangeCount` 早退 ⇒ 每一个**满批**更新都被整包丢掉。改为 `>`。
+
+**`Differential.h` 未修，理由记在这里**：`Serialize` 对 `Prepare()` 产出的空 `m_nextValue` 调
+`GenerateDifferential` 是 UB，**且 `Deserialize` 里 `m_nextValue.ApplyDifferential(...)` 用的是 `.` 而非 `->`，
+该模板一旦实例化就会编译失败**。它今天**零实例化点**，所以模板体从未被编译过。修一个没人用的模板会**触发**
+那个既有的编译错误，故本轮**整体回退**，保持原状。真要启用它，`Serialize`/`Deserialize` 两处必须一起改。
+
+**消息工厂不兜异常（已修）**：`ServerMessageFactory::Extract` / `ClientMessageFactory::Extract` 都是
+`noexcept` 却**直接调用** `DeserializeRaw`。全仓 **16 个消息文件**的 `DeserializeRaw` 有 `ReadString`/`resize`/
+`push_back` 却没有自己的 `try/catch`——因为帧本身是 `noexcept`，上层也没地方接。三个接收入口
+（`TransportService::OnConsume`、`GameServer::OnConsume`、`AdminApp::OnConsume`）都只校验包大小，
+**都不 catch**。包大小校验约束了单次分配量，但没有消除分配本身。
+修复：在 `Extract` 里统一兜底，分配失败降级为「解析失败的包」而不是终止进程。
+这比给 16 个文件各加一个 `try/catch` 更小，也不会漏掉将来新增的消息。
+
+**分发表空槽（已修）**：`GameServer.cpp:617` 与 `admin/Transport.cpp:40` 直接调用 handler，
+**无范围检查、无空槽检查、无 try/catch**；而客户端 `TransportService.cpp:288-301` 三项俱全——
+**同一判据在不同模块应用不一致**。`Visit` 未命名的 opcode 在槽里留下空的 `std::function`，
+调用即抛 `std::bad_function_call`。对端跑不同 build 是走到空槽的常规途径。已补齐并显式包含 `Opcodes.h`。
+
+**仍开放**：逐字段越界读未防（`Buffer::Reader` 行为未知）。见 §10。
+
+### 161.4 Papyrus：失败路径被设计成静默
+
+**缺陷一（P2，永久锁死）**：`PAPYRUS_FUNCTION` 展开出的 `s_p##name` 是**函数内 static**，
+`m_pFunction` 在构造时由 `Get()` 的返回值**锁死**，`operator()` 此后只读它。
+若首次调用早于 `BindEverythingToScript`，该 native 在本进程内**永久失效**，
+静默返回默认值（`IsDead→false`、`GetOpenState→kNone`、`GetCombatTarget→nullptr`），
+`Capture` 之后注册进来**也没有回填路径**。
+`PapyrusService.cpp:35-41` 的 `captured==0` 自检说明作者**预期过**「先查后注册」这个时序，
+但结论无法被后来的注册修正。
+
+修复：`m_pFunction` 改 `mutable` + 新增 `Resolve()` 重解析，命中即缓存；
+失败按**调用次数**退避（每 64 次查一次表），既不让未注册的 native 把每次调用变成查表，
+也仍能接住迟到注册。新增 `PapyrusService::Find`（`Get` 的安静孪生，首次未命中已由 `Get` 报过，
+重复报会埋掉那行点名函数名的日志）。
+
+**缺陷二（P2，VM 每帧放大）**：`ActorValueService.cpp:303` 的 `pActor->IsDead()` 走
+`PAPYRUS_FUNCTION`（`Actor.cpp:1049-1054`），而 `IsDead` 本是**纯引擎状态读取**，
+不必过 VM。循环体无 per-actor 闸门 ⇒ VM 调用 = `4×N_local` 次/秒，随本地 actor 数线性增长。
+修复：轮转窗口，每次最多 64 个，游标是 **view 偏移**而非迭代器（actor 增删安全），扫到末尾回绕。
+单次 VM 调用上界 64 与 actor 总数无关；延迟上界 `ceil(M/64)×250ms` 已写进注释。
+
+**为什么不用「直接读内存」修 `IsDead`**：本仓库没有可静态验证的 `IsDead` 偏移，
+硬编码偏移的风险**高于**收益（对比 `SkyrimVM::virtualMachine` 那个 §12.3 的真实教训）。
+限制工作量是不需要偏移的唯一正确解。
+
+**`GetStackFrameVariable` 未判空（已修）**：`BSScript.cpp:285`/`:321` 拿到 `pArg1` 后直接解引用，
+判空判的是**结果** `pActor` 而不是 `pArg1`。改为 `pArg1 ? ... : nullptr`，失败语义与既有 null-actor 路径
+完全一致（`Set<bool>(false)` + `return true`），**不改变对外行为**。全仓仅这两处调用点。
+
+**`NativeFunction` 的 `parameters`（已修）**：基类 ctor 在引擎 ctor `104653` 未映射时直接 `return`，
+`parameters` 保持未初始化，派生类随后 `parameters.data[0].pType = ...` **沿垃圾指针写入**。
+对照同一结构体析构函数的注释「degrade to a leak」——那一处是 leak，这一处是写野指针。
+
+这条本轮**拿到了证据**：`104653` 在 1.5.97 **有**真实映射（`st_overrides_all.tsv` → `0x1250c80`，
+capstone `sim=1.00`），且该 ctor 会调 `ae105361(a1+48, a5, 0)` 初始化 `parameters`——所以引擎 ctor
+不跑时它确实是空的。修复：ctor 内先显式置空，派生类写入前检查 `parameters.data && parameters.size > 0`。
+顺带修 `LookUpActorParameterType` 在 `catch(...)` 之后**没有 return**（非 void 函数走到末尾是 UB），
+以及 `GetVarNameForStackIndex` 用 `capacity` 而非 `size` 当边界。
+
+**仍未修（故意）**：`Variable::GetObject()` 的 `type>kMax` 穿透——`Type` 是 `uint64_t` 且数组编码方式
+没有静态依据，改动等于猜编码。见 §10。
+
+**否定结论（证据链完整，可直接引用）**：**未发现跨线程 VM 调用**。
+`TransportService.cpp:239` 只有 `thread id == m_gameThreadId` 才本地 `DispatchMessage`，否则 `:248-249` 只入队；
+泵线程只把 `FlushPendingMessages` 投进 `Queue`（`:730-733`/`:748-751`）；
+`RunnerService.cpp:58-62` 只在 `OnUpdate` 执行；`World.cpp:105` 是唯一驱动点，在游戏线程。
+全树 3 个非游戏线程（`TransportService.cpp:642` pump、`DiscordService.cpp:206`、`BehaviorVar.cpp:769`）均不可达 VM。
+
+### 161.5 本轮**无法**审计的部分（是「不知道」，不是「已修」）
+
+- **TCP 粘包/半包**：长度前缀 + 循环拆包的代码**不在本仓库**（`Libraries/TiltedConnect` 空目录，
+  `tiltedcore` 由 xmake 拉取）。三个 `OnConsume` 收到的 `aSize` 已是**一条完整消息**的长度，
+  本仓库内无累积缓冲区、无拆包循环。**既不能证实也不能证伪。**
+- **`Buffer::Reader` 越界行为**：抛异常 / 返回 0 / UB，三种可能的修法完全不同，未知。
+- **MinHook 的 XMM/EFLAGS 保存**、**`MH_EnableHook` 是否冻结线程**、**`FunctionHookManager::Add` 的 commit 实现**：
+  都在空 submodule 里。
+- **`~World` 是否在运行期执行**：`World` 是 `entt::locator` 进程级单例（`World.cpp:135-137`），
+  只在静态析构期销毁。§161.1 的两条 UAF **机制已闭合**，但**触发频率需运行期证据**才能定级。
+  这不影响修复的正确性——两条都是无条件应当修好的。
+
+**记法**：以上每一条都缺**具体的一份证据**（vendor 源码 / 真机日志 / native 表）。
+拿到那份证据才能定论，在此之前不要把它们当已解决，也不要用猜测填空。
 
 
 

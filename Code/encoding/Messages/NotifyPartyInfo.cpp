@@ -1,4 +1,5 @@
 #include <Messages/NotifyPartyInfo.h>
+#include <WireLimits.h>
 #include <TiltedCore/Serialization.hpp>
 #include <algorithm>
 
@@ -32,6 +33,12 @@ void NotifyPartyInfo::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noe
 
         uint64_t count = 0;
         aReader.ReadBits(count, 8);
+
+        if (count > WireLimits::kMaxElementCount)
+        {
+            PlayerIds.clear();
+            return;
+        }
 
         PlayerIds.resize(count);
 

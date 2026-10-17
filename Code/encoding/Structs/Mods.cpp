@@ -41,8 +41,15 @@ void Mods::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
         aReader.ReadBits(data, 13);
 
         // The count is 13 bits wide, so a peer can name more entries than the writer ever
-        // sends. Clamp to the same bound, or the resize below follows the wire.
-        const size_t modCount = std::min<uint64_t>(data & 0xFFFF, kMaxModCount);
+        // sends. Clamping it would leave the reader at the end of the entries it kept while
+        // the stream still holds the rest, so a count past the bound drops the whole list.
+        const size_t modCount = static_cast<size_t>(data);
+        if (modCount > kMaxModCount)
+        {
+            ModList.clear();
+            return;
+        }
+
         ModList.resize(modCount);
         for (size_t i = 0; i < modCount; ++i)
         {

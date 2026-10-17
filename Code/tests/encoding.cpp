@@ -1157,9 +1157,9 @@ TEST_CASE("Mods count is bounded by the writer bound", "[encoding.mods_count]")
     REQUIRE(recvMods.ModList.size() == Mods::kMaxModCount);
     REQUIRE(recvMods.ModList.front().Filename == "mod.esp");
 
-    // A peer that writes a count past the bound is clamped to it. The entries below are
-    // exactly the ones the writer would have sent for that count, so the clamped reader
-    // consumes the stream and stops.
+    // A peer that writes a count past the bound gets the whole list dropped instead of a
+    // clamped one: the entries below are the ones that count named, and a reader that kept
+    // only the first kMaxModCount of them would be left mid-stream.
     Buffer hostile(1 << 17);
     Buffer::Writer hostileWriter(&hostile);
     hostileWriter.WriteBits(0x1FFFu, 13);
@@ -1174,8 +1174,7 @@ TEST_CASE("Mods count is bounded by the writer bound", "[encoding.mods_count]")
     Buffer::Reader hostileReader(&hostile);
     hostileRecv.Deserialize(hostileReader);
 
-    REQUIRE(hostileRecv.ModList.size() == Mods::kMaxModCount);
-    REQUIRE(hostileRecv.ModList.back().Id == static_cast<uint16_t>(Mods::kMaxModCount - 1));
+    REQUIRE(hostileRecv.ModList.empty());
 }
 
 TEST_CASE("Subtitle topic travels in both directions", "[encoding.subtitle]")
