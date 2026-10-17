@@ -383,7 +383,17 @@ void DiscoveryService::VisitForms() noexcept
 
 void DiscoveryService::OnUpdate(const PreUpdateEvent& acUpdateEvent) noexcept
 {
-    TP_UNUSED(acUpdateEvent);
+    // A quarter second is far below the rate at which the loaded actor set or the
+    // grid centre can actually change, and twenty times less work than the frame
+    // rate. Transitions that must not wait for it - connecting, finishing a load -
+    // call VisitCell(true) directly and do not come through here.
+    constexpr double kVisitInterval = 0.25;
+
+    m_visitAccumulator += acUpdateEvent.Delta;
+    if (m_visitAccumulator < kVisitInterval)
+        return;
+
+    m_visitAccumulator = 0.0;
 
     VisitCell();
     VisitForms();

@@ -6,7 +6,8 @@ using TiltedPhoques::Serialization;
 
 bool ReferenceUpdate::operator==(const ReferenceUpdate& acRhs) const noexcept
 {
-    return UpdatedMovement == acRhs.UpdatedMovement && ActionEvents == acRhs.ActionEvents;
+    return UpdatedMovement == acRhs.UpdatedMovement && ActionEvents == acRhs.ActionEvents &&
+           SampleTick == acRhs.SampleTick;
 }
 
 bool ReferenceUpdate::operator!=(const ReferenceUpdate& acRhs) const noexcept
@@ -17,6 +18,8 @@ bool ReferenceUpdate::operator!=(const ReferenceUpdate& acRhs) const noexcept
 void ReferenceUpdate::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     UpdatedMovement.Serialize(aWriter);
+
+    Serialization::WriteVarInt(aWriter, SampleTick);
 
     // The reader clamps this count to kMaxActionEventCount, so writing more entries
     // than that would desynchronise the stream.
@@ -37,6 +40,8 @@ void ReferenceUpdate::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexce
     try
     {
         UpdatedMovement.Deserialize(aReader);
+
+        SampleTick = Serialization::ReadVarInt(aReader);
 
         // Never trust the wire length, and never throw: this runs inside a noexcept frame.
         const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActionEventCount);

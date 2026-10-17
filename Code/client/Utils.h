@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <type_traits>
 #include "VersionDb.h"
 #include "World.h"
 

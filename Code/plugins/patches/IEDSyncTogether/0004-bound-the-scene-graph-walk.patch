@@ -1,0 +1,68 @@
+diff --git a/src/RemoteIEDRenderer.cpp b/src/RemoteIEDRenderer.cpp
+--- a/src/RemoteIEDRenderer.cpp
++++ b/src/RemoteIEDRenderer.cpp
+@@ -170,15 +170,25 @@ namespace IEDSyncTogether
+             return value ? std::optional<RE::FormID>(value) : std::nullopt;
+         }
+ 
+-        RE::NiAVObject* FindRemoteIEDObject(
++        // A proxy's scene graph is engine-owned and can be both deep and wide, and
++        // the watchdog runs this walk per tracked object per tick. The budget is
++        // per call: it bounds one walk without carrying state between ticks.
++        constexpr int kMaxSearchDepth = 32;
++        constexpr std::size_t kMaxSearchNodes = 4096;
++
++        RE::NiAVObject* FindRemoteIEDObjectRecursive(
+             RE::NiAVObject* current,
+             RE::FormID remoteFormID,
+-            std::string_view expectedAttachment)
++            std::string_view expectedAttachment,
++            int depth,
++            std::size_t& budget)
+         {
+-            if (!current) {
++            if (!current || depth > kMaxSearchDepth || budget == 0) {
+                 return nullptr;
+             }
+ 
++            --budget;
++
+             const auto* rawName = current->name.c_str();
+             const std::string_view name = rawName ? std::string_view(rawName) : std::string_view{};
+             if (auto formID = ParseIEDObjectFormID(name); formID && *formID == remoteFormID) {
+@@ -194,8 +204,12 @@ namespace IEDSyncTogether
+             if (auto* node = current->AsNode()) {
+                 for (const auto& child : node->GetChildren()) {
+                     if (child) {
+-                        if (auto* found = FindRemoteIEDObject(
+-                                child.get(), remoteFormID, expectedAttachment)) {
++                        if (auto* found = FindRemoteIEDObjectRecursive(
++                                child.get(),
++                                remoteFormID,
++                                expectedAttachment,
++                                depth + 1,
++                                budget)) {
+                             return found;
+                         }
+                     }
+@@ -204,6 +218,20 @@ namespace IEDSyncTogether
+             return nullptr;
+         }
+ 
++        RE::NiAVObject* FindRemoteIEDObject(
++            RE::NiAVObject* current,
++            RE::FormID remoteFormID,
++            std::string_view expectedAttachment)
++        {
++            std::size_t budget = kMaxSearchNodes;
++            return FindRemoteIEDObjectRecursive(
++                current,
++                remoteFormID,
++                expectedAttachment,
++                0,
++                budget);
++        }
++
+         float MaxMatrixDelta(
+             const RE::NiMatrix3& matrix,
+             const std::array<float, 9>& expected)

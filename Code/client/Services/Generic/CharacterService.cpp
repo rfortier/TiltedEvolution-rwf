@@ -766,7 +766,10 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
             const auto& movement = update.UpdatedMovement;
 
             InterpolationComponent::TimePoint point;
-            point.Tick = acMessage.Tick;
+            // Per-actor sample time when the sender supplied one; a server that
+            // predates this field sends zero, where the packet's relay time is
+            // the closest approximation available.
+            point.Tick = update.SampleTick != 0 ? update.SampleTick : acMessage.Tick;
             point.Position = movement.Position;
             point.Rotation = {movement.Rotation.x, 0.f, movement.Rotation.y};
             point.Variables = movement.Variables;
@@ -2350,8 +2353,19 @@ void CharacterService::RunRemoteUpdates() noexcept
     // the server or recomputed on the next tick.
     try
     {
-        // Delay by 300ms to let the interpolation system accumulate interpolation points
-        const auto tick = m_transport.GetClock().GetCurrentTick() - 300;
+        // Play the remote world slightly in the past so there is always a sample
+        // ahead of the play head to interpolate towards. The margin has to cover
+        // one snapshot interval (the client sends every 100ms) plus the relay, so
+        // 300ms leaves room for two late snapshots; it is a constant rather than a
+        // tuned value because the clock exposes no round-trip or jitter estimate to
+        // derive it from.
+        //
+        // It is expressed against the same clock the samples carry. A server that
+        // predates the per-actor sample time stamps each packet with its own relay
+        // tick, and on those the margin is what keeps the play head behind it.
+        constexpr uint64_t kPlaybackDelayMs = 300;
+        const auto cNow = m_transport.GetClock().GetCurrentTick();
+        const auto tick = cNow > kPlaybackDelayMs ? cNow - kPlaybackDelayMs : 0;
 
         // Interpolation has to keep running even if the actor is not in view, otherwise we will never know if we need to spawn it
         auto interpolatedEntities = m_world.view<RemoteComponent, InterpolationComponent>();
@@ -2390,11 +2404,19 @@ void CharacterService::RunRemoteUpdates() noexcept
 
         for (auto entity : facegenView)
         {
-            auto& formIdComponent = facegenView.get<FormIdComponent>(entity);
             auto& faceGenComponent = facegenView.get<FaceGenComponent>(entity);
 
-            const auto* pForm = TESForm::GetById(formIdComponent.Id);
-            auto* pActor = Cast<Actor>(pForm);
+            // Checked here as well as inside FaceGenSystem::Update, because the two
+            // costs are different: an already generated head costs nothing there,
+            // but reaching it still needs a TESForm::GetById and an RTTI-backed
+            // Cast per actor per frame. Only the remaining candidates are worth
+            // resolving at all.
+            if (faceGenComponent.Generated)
+                continue;
+
+            auto& formIdComponent = facegenView.get<FormIdComponent>(entity);
+
+            auto* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
             if (!pActor)
                 continue;
 

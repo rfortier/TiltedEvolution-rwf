@@ -1,0 +1,211 @@
+diff --git a/src/ParticipantAlignmentSync.cpp b/src/ParticipantAlignmentSync.cpp
+--- a/src/ParticipantAlignmentSync.cpp
++++ b/src/ParticipantAlignmentSync.cpp
+@@ -156,6 +156,7 @@ namespace OStimTogether
+         _api = api;
+         _listener = listener;
+         _transportRunning.store(true);
++        StartDelayWorker();
+ 
+         SKSE::log::info(
+             "OSTNET ALIGN SYNC TRANSPORT READY channel={} reliable=1 ordered=1",
+@@ -169,6 +170,10 @@ namespace OStimTogether
+             return;
+         }
+ 
++        // Stop the delay worker before the channel goes away: a queued retry
++        // would otherwise call back into a transport that is being torn down.
++        StopDelayWorker();
++
+         if (_api && _api->unregisterChannel && _listener.value != 0) {
+             _api->unregisterChannel(_listener);
+         }
+@@ -260,18 +265,112 @@ namespace OStimTogether
+         _lastBroadcastAt.erase(thread->getThreadID());
+     }
+ 
++    void ParticipantAlignmentSync::StartDelayWorker()
++    {
++        if (_delayWorkerRunning.exchange(true)) {
++            return;
++        }
++
++        _delayWorker = std::jthread(
++            [this](std::stop_token token) {
++                DelayWorkerLoop(token);
++            });
++    }
++
++    void ParticipantAlignmentSync::StopDelayWorker()
++    {
++        if (!_delayWorkerRunning.exchange(false)) {
++            return;
++        }
++
++        if (_delayWorker.joinable()) {
++            _delayWorker.request_stop();
++            _delayWorker.join();
++        }
++
++        // Anything still pending refers to a scene that is already gone.
++        std::scoped_lock lock(_delayMutex);
++        _delayedTasks.clear();
++    }
++
++    void ParticipantAlignmentSync::ScheduleDelayed(
++        std::chrono::milliseconds delay,
++        std::function<void()> run)
++    {
++        if (!run) {
++            return;
++        }
++
++        {
++            std::scoped_lock lock(_delayMutex);
++            _delayedTasks.push_back(DelayedTask{
++                std::chrono::steady_clock::now() + delay,
++                std::move(run) });
++        }
++
++        StartDelayWorker();
++    }
++
++    void ParticipantAlignmentSync::DelayWorkerLoop(
++        std::stop_token stopToken)
++    {
++        // Poll interval bounds the timing error of a scheduled delay; the queue
++        // holds at most a handful of entries, so a full scan per tick is cheaper
++        // than keeping it ordered.
++        constexpr auto kPollInterval = std::chrono::milliseconds(10);
++
++        while (!stopToken.stop_requested() && _delayWorkerRunning.load()) {
++            std::this_thread::sleep_for(kPollInterval);
++
++            if (stopToken.stop_requested() || !_delayWorkerRunning.load()) {
++                break;
++            }
++
++            std::vector<DelayedTask> due;
++            {
++                std::scoped_lock lock(_delayMutex);
++                const auto now = std::chrono::steady_clock::now();
++                for (auto it = _delayedTasks.begin(); it != _delayedTasks.end();) {
++                    if (now >= it->due) {
++                        due.push_back(std::move(*it));
++                        it = _delayedTasks.erase(it);
++                    } else {
++                        ++it;
++                    }
++                }
++            }
++
++            if (due.empty()) {
++                continue;
++            }
++
++            // Everything the callbacks touch is OStim/game state, so they are
++            // handed to the game thread exactly as the detached threads did.
++            auto* tasks = SKSE::GetTaskInterface();
++            if (!tasks) {
++                continue;
++            }
++
++            tasks->AddTask([this, items = std::move(due)]() mutable {
++                if (!_delayWorkerRunning.load()) {
++                    return;
++                }
++                for (auto& item : items) {
++                    if (item.run) {
++                        item.run();
++                    }
++                }
++            });
++        }
++    }
++
+     void ParticipantAlignmentSync::QueueBroadcast(
+         std::int32_t localThreadID,
+         std::chrono::milliseconds delay)
+     {
+-        std::thread([this, localThreadID, delay]() {
+-            std::this_thread::sleep_for(delay);
+-            if (auto* tasks = SKSE::GetTaskInterface()) {
+-                tasks->AddTask([this, localThreadID]() {
+-                    BroadcastNow(localThreadID);
+-                });
+-            }
+-        }).detach();
++        ScheduleDelayed(delay, [this, localThreadID]() {
++            BroadcastNow(localThreadID);
++        });
+     }
+ 
+     void ParticipantAlignmentSync::BroadcastNow(std::int32_t localThreadID)
+@@ -458,14 +557,11 @@ namespace OStimTogether
+         std::uint32_t attempt,
+         std::chrono::milliseconds delay)
+     {
+-        std::thread([this, senderConnectionID, packet = std::move(packet), attempt, delay]() mutable {
+-            std::this_thread::sleep_for(delay);
+-            if (auto* tasks = SKSE::GetTaskInterface()) {
+-                tasks->AddTask([this, senderConnectionID, packet = std::move(packet), attempt]() mutable {
+-                    ApplyIncoming(senderConnectionID, std::move(packet), attempt);
+-                });
+-            }
+-        }).detach();
++        ScheduleDelayed(
++            delay,
++            [this, senderConnectionID, packet = std::move(packet), attempt]() mutable {
++                ApplyIncoming(senderConnectionID, std::move(packet), attempt);
++            });
+     }
+ 
+     void ParticipantAlignmentSync::ApplyIncoming(
+diff --git a/src/ParticipantAlignmentSync.h b/src/ParticipantAlignmentSync.h
+--- a/src/ParticipantAlignmentSync.h
++++ b/src/ParticipantAlignmentSync.h
+@@ -6,6 +6,8 @@
+ #include "OStimAPI/ThreadInterface.h"
+ #include "OStimAPI/ModThreadControl.h"
+ 
++#include <functional>
++
+ namespace OStimTogether
+ {
+     // Ordinary free-standing scenes can contain two different Skyrim forms for
+@@ -84,6 +86,24 @@ namespace OStimTogether
+             std::uint32_t attempt,
+             std::chrono::milliseconds delay);
+ 
++        // Delayed work runs on one owned worker instead of a detached thread per
++        // item: QueueBroadcast and QueueApplyRetry used to spawn a thread for
++        // every broadcast and every retry, and those threads captured `this`
++        // with no lifetime guarantee. The worker only ever posts to the game
++        // thread through SKSE's task interface, so nothing below runs off-thread.
++        struct DelayedTask
++        {
++            std::chrono::steady_clock::time_point due{};
++            std::function<void()> run;
++        };
++
++        void StartDelayWorker();
++        void StopDelayWorker();
++        void DelayWorkerLoop(std::stop_token stopToken);
++        void ScheduleDelayed(
++            std::chrono::milliseconds delay,
++            std::function<void()> run);
++
+         static std::optional<std::string> Field(
+             std::string_view payload,
+             std::string_view key);
+@@ -109,5 +129,10 @@ namespace OStimTogether
+         std::unordered_map<std::int32_t, std::string> _lastBroadcastNode;
+         std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point>
+             _lastBroadcastAt;
++
++        std::mutex _delayMutex;
++        std::vector<DelayedTask> _delayedTasks;
++        std::jthread _delayWorker;
++        std::atomic_bool _delayWorkerRunning{ false };
+     };
+ }

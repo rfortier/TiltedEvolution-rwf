@@ -52,7 +52,13 @@ jobs:
             SkyrimTogether.exe,EarlyLoad.dll,SkyrimTogetherServer.exe,STServer.dll,`
             *.pdb,*.lib,*.exp,*Tests.exe |
             Move-Item -Destination str-build/SkyrimTogetherRuntime/
-          New-Item -ItemType File -Path str-build/SkyrimTogetherRuntime/.str_version | Out-Null
+          # A build stamp, not an empty marker: the bootstrap compares this against
+          # the copy it leaves in the game root to decide whether the deployed payload
+          # is already current (see Code/skse_bootstrap/main.cpp, SameBuild).
+          $stampCommit = (git rev-parse --short HEAD).Trim()
+          $stampBranch = (git rev-parse --abbrev-ref HEAD).Trim()
+          Set-Content -LiteralPath str-build/SkyrimTogetherRuntime/.str_version `
+              -Value "$stampCommit $stampBranch" -NoNewline -Encoding ascii
 
       - name: Verify the self-deploy payload is complete
         run: |

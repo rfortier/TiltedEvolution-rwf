@@ -1,0 +1,33 @@
+diff --git a/src/AnimationClipProbe.cpp b/src/AnimationClipProbe.cpp
+--- a/src/AnimationClipProbe.cpp
++++ b/src/AnimationClipProbe.cpp
+@@ -2,6 +2,8 @@
+ 
+ #include "AnimSyncTogether/OARClient.h"
+ 
++#include <cstddef>
++
+ namespace AnimSyncTogether
+ {
+     void AnimationClipProbe::Install()
+@@ -100,7 +102,19 @@ namespace AnimSyncTogether
+             return nullptr;
+         }
+ 
+-        const auto* animationGraph = SKSE::stl::adjust_pointer<RE::BShkbAnimationGraph>(character, -0xC0);
++        // BShkbAnimationGraph embeds hkbCharacter at a fixed offset, and the engine
++        // hands this probe the embedded object rather than the graph itself. The
++        // offset is spelled out because it is a property of the binary layout, not of
++        // the CommonLib declaration: the plugin builds against the vcpkg
++        // commonlibsse-ng package, whose struct is an opaque blob of padding rather
++        // than a field-for-field mirror, so there is no member to take an offsetof
++        // of. The value matches the offset the engine itself uses (BShkbAnimationGraph
++        // declares the member at 0xC0), and a wrong value shows up immediately as a
++        // null holder rather than as a plausible wrong actor.
++        constexpr std::ptrdiff_t kCharacterOffset = 0xC0;
++
++        const auto* animationGraph =
++            SKSE::stl::adjust_pointer<RE::BShkbAnimationGraph>(character, -kCharacterOffset);
+         return animationGraph ? animationGraph->holder : nullptr;
+     }
+ }

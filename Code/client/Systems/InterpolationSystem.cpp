@@ -18,6 +18,12 @@ namespace
 // which is what a clock resync looks like from here.
 constexpr size_t kMaxSamples = 8;
 
+// How far in the past a sample may still influence the curve. The client reports at
+// 10 Hz, so 800 ms is the span the sample cap already covers; this only bites after
+// a burst, where the same number of samples covers far less time and the cubic ends
+// up fitting almost nothing.
+constexpr uint64_t kMaxWindowAgeMs = 800;
+
 // The play head can end up past the newest sample when a packet is late. The
 // old code clamped the segment parameter to 1.0, which pins the actor to the
 // last known position and then snaps it forward the moment the packet lands.
@@ -48,6 +54,14 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     // Keep the window bounded. Newest samples win; dropping from the front is
     // what makes this safe against a play head that has stopped advancing.
     while (movements.size() > kMaxSamples)
+        movements.pop_front();
+
+    // ...and bounded by age as well as by count. Eight samples is 800 ms at the
+    // client's 100 ms send interval, but a burst right after a stall fills the same
+    // eight with samples spanning a few milliseconds, which leaves the cubic almost
+    // no geometry to work with once the play head reaches them.
+    while (movements.size() > 3 && aTick > movements.front().Tick &&
+           aTick - movements.front().Tick > kMaxWindowAgeMs)
         movements.pop_front();
 
     // Advance the window to the active segment, but stop one sample short of
@@ -88,13 +102,12 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     if (tickDelta > 0.f)
         delta = static_cast<float>(aTick - first.Tick) / tickDelta;
 
-    // Guard both ends. A play head behind the window start would extrapolate
-    // backwards and yank the actor away from its first known sample; a play
-    // head past the window end follows the last segment, bounded above.
-    if (delta < 0.f)
-        delta = 0.f;
-    else
-        delta = TiltedPhoques::Min(delta, kMaxExtrapolation);
+    // Guard both ends. A play head behind the segment start cannot extrapolate
+    // backwards, so it sits on the first sample - the window walk above already
+    // leaves first.Tick <= aTick, and this only catches the case where a packet
+    // landed ahead of the play margin. A play head past the segment end follows
+    // the last known segment, bounded so a long gap cannot fling the actor.
+    delta = TiltedPhoques::Min(TiltedPhoques::Max(delta, 0.f), kMaxExtrapolation);
 
     const NiPoint3 position{CatmullRom(previous.Position, first.Position, second.Position, following.Position, delta)};
 

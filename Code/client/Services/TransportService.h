@@ -223,6 +223,16 @@ private:
     mutable std::mutex m_pendingMutex;
     std::vector<UniquePtr<ServerMessage>> m_pendingMessages;
 
+    // Serialises DispatchMessage itself, as opposed to the queue above. The queue
+    // lock only covers the container: the batch is swapped out and dispatched with
+    // that lock released, and OnConsume dispatches directly when it already runs on
+    // the game thread. Two threads could therefore be inside the same services at
+    // once - one walking the registry in a per-frame pass, the other running a
+    // handler that deletes actors. Taken for the whole batch, and never held while
+    // m_pendingMutex is acquired in the opposite order.
+    mutable std::mutex m_dispatchMutex;
+
+
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_sendServerMessageConnection;
     entt::scoped_connection m_settingsChangeConnection;

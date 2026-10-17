@@ -145,7 +145,25 @@ Get-ChildItem -Path (Join-Path $buildPath '*') |
     } |
     Move-Item -Destination (Join-Path $stagePath 'SkyrimTogetherRuntime/') -Force
 
-New-Item -ItemType File -Path (Join-Path $stagePath 'SkyrimTogetherRuntime/.str_version') | Out-Null
+# The bootstrap compares this file against the copy it leaves in the game root to
+# decide whether the payload already there is current. It holds "<commit> <branch>":
+# the same BUILD_COMMIT/BUILD_BRANCH the client is compiled with (see
+# Code/common/BuildInfo.h.in), so a payload is recognised by the code it was built
+# from rather than by the file merely existing.
+$stampCommit = "unknown-commit"
+$stampBranch = "unknown-branch"
+try {
+    $resolvedCommit = (& git rev-parse --short HEAD 2>$null)
+    $resolvedBranch = (& git rev-parse --abbrev-ref HEAD 2>$null)
+    if ($resolvedCommit) { $stampCommit = "$resolvedCommit".Trim() }
+    if ($resolvedBranch) { $stampBranch = "$resolvedBranch".Trim() }
+} catch {
+    Write-Warning "could not read git identity; writing an unstamped marker"
+}
+if ([string]::IsNullOrWhiteSpace($stampCommit)) { $stampCommit = "unknown-commit" }
+if ([string]::IsNullOrWhiteSpace($stampBranch)) { $stampBranch = "unknown-branch" }
+
+Set-Content -LiteralPath (Join-Path $stagePath "SkyrimTogetherRuntime/.str_version") -Value "$stampCommit $stampBranch" -NoNewline -Encoding ascii
 
 # Both per-version runtimes have to be in the payload: the SKSE bootstrap picks
 # one by game version, and a missing one means the game starts with no Skyrim

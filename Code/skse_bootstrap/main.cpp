@@ -239,6 +239,85 @@ bool SameContents(const std::filesystem::path& acLeft, const std::filesystem::pa
     }
 }
 
+// Reads a deploy marker into a build stamp.
+//
+// The format is a single line: "<commit> <branch>", where commit is the short git
+// sha the payload was built from (BUILD_COMMIT in BuildInfo.h) and branch is the git
+// branch name. Both are written by the packaging scripts, which used to create this
+// file empty - see the comment at the marker write site for why the empty case is
+// still accepted.
+//
+// Returns false when the file cannot be read. An empty or unparsable file returns
+// true with an empty commit, which callers treat as "no stamp available" rather than
+// as an error.
+bool ReadBuildStamp(const std::filesystem::path& acMarker, std::string& aCommit, std::string& aBranch)
+{
+    aCommit.clear();
+    aBranch.clear();
+
+    std::ifstream file(acMarker, std::ios::binary);
+    if (!file.is_open())
+        return false;
+
+    // Bounded: a marker is one short line, and this runs before the game starts. A
+    // file larger than this is not a stamp; it is read as empty rather than trusted.
+    constexpr std::streamsize kMaxMarkerBytes = 256;
+
+    std::string line;
+    line.resize(static_cast<size_t>(kMaxMarkerBytes));
+
+    file.read(line.data(), kMaxMarkerBytes);
+    line.resize(static_cast<size_t>(file.gcount()));
+
+    // Strip a trailing newline and any CR so a file written with CRLF parses the same
+    // way as one written with LF.
+    while (!line.empty() && (line.back() == static_cast<char>(10) || line.back() == static_cast<char>(13)))
+        line.pop_back();
+
+    const auto separator = line.find(static_cast<char>(32));
+    if (separator == std::string::npos)
+    {
+        aCommit = line;
+        return true;
+    }
+
+    aCommit = line.substr(0, separator);
+    aBranch = line.substr(separator + 1);
+    return true;
+}
+
+// True when the payload in the game root is the one this launch would deploy.
+//
+// Two payloads match when their build stamps name the same commit. A stamp that is
+// empty on either side - the shape every package shipped so far has - falls back to
+// comparing the bytes, which is what this check did before the stamp carried
+// anything.
+//
+// The stamp is what makes this a real version check: comparing marker bytes meant two
+// different builds that happened to write the same marker compared equal, and the
+// payload in the game root was then never refreshed.
+bool SameBuild(const std::filesystem::path& acPayloadMarker, const std::filesystem::path& acDeployedMarker)
+{
+    std::string payloadCommit, payloadBranch;
+    std::string deployedCommit, deployedBranch;
+
+    const bool payloadRead = ReadBuildStamp(acPayloadMarker, payloadCommit, payloadBranch);
+    const bool deployedRead = ReadBuildStamp(acDeployedMarker, deployedCommit, deployedBranch);
+
+    if (!payloadRead || !deployedRead)
+        return false;
+
+    // Both sides carry a stamp: the commits are the whole answer. The branch is not
+    // compared - a hotfix built from a release branch is still the same code.
+    if (!payloadCommit.empty() && !deployedCommit.empty())
+        return payloadCommit == deployedCommit;
+
+    // One side is unstamped (a package from before the stamp existed, or a marker
+    // that only ever recorded its own presence). Compare the bytes so those packages
+    // keep deploying exactly as they did.
+    return SameContents(acPayloadMarker, acDeployedMarker);
+}
+
 // Deploys one payload file, reporting the error of the step that actually
 // failed through aError.
 //
@@ -249,6 +328,10 @@ bool SameContents(const std::filesystem::path& acLeft, const std::filesystem::pa
 // reported that, which is why every real failure - a locked target, a denied
 // write, a full disk - showed up in st_deploy_error.log as "error 2". That
 // sends everyone hunting for a file that is present and merely in use.
+// Defined below, next to the rest of the boot logging. Declared here because
+// DeployFile reports a failure mode that is otherwise invisible.
+void AppendLog(const std::filesystem::path& acFile, const std::wstring& acLine);
+
 bool DeployFile(const std::filesystem::path& acSource, const std::filesystem::path& acTarget, DWORD& aError)
 {
     aError = ERROR_SUCCESS;
@@ -301,11 +384,34 @@ bool DeployFile(const std::filesystem::path& acSource, const std::filesystem::pa
 
         if (SameContents(acSource, acTarget))
         {
-            // Identical bytes, so the target is already correct. Touch its
-            // timestamp forward to the payload's so later launches take the
-            // cheap path above instead of hashing the file again.
+            // Identical bytes, so the target is already correct. Touch its timestamp
+            // forward to the payload's so later launches take the cheap path above
+            // instead of hashing the file again.
+            //
+            // When that touch fails - a Mod Organizer deployment that serves the file
+            // read-only is the usual reason - this branch is taken again on every
+            // launch and the file is compared byte for byte each time. That is where
+            // the multi-hundred-megabyte read comes from, and it used to leave no
+            // trace at all: DeployFile still returns true, so the caller has no way
+            // to tell this apart from a healthy deployment.
+            //
+            // Reported once per boot rather than once per file; a modlist that trips
+            // this trips it for dozens of files at once, and a line each would bury
+            // the rest of the log.
             std::error_code touchEc;
             std::filesystem::last_write_time(acTarget, srcTime, touchEc);
+            if (touchEc)
+            {
+                static bool s_reportedTouchFailure = false;
+                if (!s_reportedTouchFailure)
+                {
+                    s_reportedTouchFailure = true;
+                    AppendLog(acTarget.parent_path() / L"st_deploy_error.log",
+                              L"[deploy] could not advance the timestamp on " + acTarget.wstring() +
+                                  L" (error " + std::to_wstring(touchEc.value()) +
+                                  L"); its contents will be compared again on every launch");
+                }
+            }
 
             // Any staging file next to it is a copy of a *previous* payload that
             // this one supersedes, and leaving it behind is how the game root
@@ -448,7 +554,11 @@ std::wstring DescribeDataFolder(const std::filesystem::path& acGameRoot)
 bool DeployRuntime(const std::filesystem::path& acGameRoot, const std::filesystem::path& acPayload,
                    std::vector<std::wstring>& aFailures)
 {
-    // the marker travels with the payload and records its build version
+    // The marker travels with the payload. Its contents are never parsed - it is a
+    // build stamp compared byte for byte against the copy left in the game root after
+    // a successful deploy, which is what makes the short circuit below a version
+    // check rather than a guess. A marker that is missing means the payload folder is
+    // not installed at all.
     std::filesystem::path marker = acPayload / kVersionMarker;
     if (!std::filesystem::exists(marker))
     {
@@ -456,22 +566,83 @@ bool DeployRuntime(const std::filesystem::path& acGameRoot, const std::filesyste
         return false; // payload directory not installed
     }
 
-    // walk the payload and mirror it into the game root
-    std::error_code ec;
-    for (auto it = std::filesystem::recursive_directory_iterator(acPayload, ec);
-         it != std::filesystem::recursive_directory_iterator(); it.increment(ec))
+    // Already deployed? The marker is written into the game root once the mirror below
+    // has succeeded, so a stamp naming the same commit means every file it describes is
+    // already in place and the scan can be skipped entirely. See SameBuild for what
+    // happens when either side carries no stamp.
+    //
+    // This is worth doing rather than trusting the per-file timestamp check: that
+    // check still costs several stat calls per file, and under Mod Organizer every
+    // one of them crosses the USVFS hook. It also cannot help when the timestamp
+    // could not be advanced (see DeployFile), which is exactly the case where the
+    // payload gets compared byte-for-byte on every single launch.
+    //
+    // The one thing the marker cannot vouch for is a file that was removed or
+    // quarantined after the deploy: the payload would be reported as current and the
+    // launch would then fail inside LoadLibraryW, which surfaces as "Windows refused"
+    // rather than as a missing file. Two stats on the client dlls are cheap next to
+    // the scan this saves.
+    const auto clientDllsPresent = [&acGameRoot]() {
+        std::error_code dllEc;
+        return std::filesystem::exists(acGameRoot / kClientDllName, dllEc) ||
+               std::filesystem::exists(acGameRoot / kClientDllLegacyName, dllEc);
+    };
+
+    std::error_code markerEc;
+    const auto deployedMarker = acGameRoot / kVersionMarker;
+    if (std::filesystem::exists(deployedMarker, markerEc) && SameBuild(marker, deployedMarker) && clientDllsPresent())
     {
-        if (ec)
+        // Worth one line: without it the only evidence of the fast path is the
+        // absence of the per-file walk, which is exactly what a user reporting a
+        // stale runtime needs to be able to rule out. An unstamped payload matches
+        // by content, so the line names the commit only when there is one.
+        std::string commit, branch;
+        ReadBuildStamp(marker, commit, branch);
+
+        const std::wstring stamp(commit.begin(), commit.end());
+        AppendLog(acGameRoot / L"st_boot.log",
+                  L"[deploy] payload already current (" + (stamp.empty() ? L"unstamped" : stamp) +
+                      L"), skipping the per-file scan");
+        return true;
+    }
+
+    // walk the payload and mirror it into the game root
+    //
+    // One error_code per call. These used to share a single variable: a failure inside
+    // is_regular_file left a code behind that the next relative() then saw as its own
+    // result, so one unreadable entry could be reported as a path failure and the
+    // other way round. Same mistake the comment in DeployFile warns about.
+    std::error_code walkEc;
+    for (auto it = std::filesystem::recursive_directory_iterator(acPayload, walkEc);
+         it != std::filesystem::recursive_directory_iterator(); it.increment(walkEc))
+    {
+        if (walkEc)
             break;
-        if (!it->is_regular_file(ec))
+
+        std::error_code entryEc;
+        const bool isRegular = it->is_regular_file(entryEc);
+        if (entryEc || !isRegular)
             continue;
 
-        const auto rel = std::filesystem::relative(it->path(), acPayload, ec);
-        if (ec || rel.empty() || rel.native() == kVersionMarker)
+        std::error_code relEc;
+        const auto rel = std::filesystem::relative(it->path(), acPayload, relEc);
+        if (relEc || rel.empty() || rel.native() == kVersionMarker)
             continue; // the marker itself does not belong into the game root
 
         const auto target = acGameRoot / rel;
-        std::filesystem::create_directories(target.parent_path(), ec);
+
+        // A directory that could not be created makes the copy below fail with a
+        // misleading code, so it is reported here under its own name instead.
+        std::error_code dirEc;
+        std::filesystem::create_directories(target.parent_path(), dirEc);
+        if (dirEc)
+        {
+            wchar_t buf[320];
+            swprintf_s(buf, L"failed: cannot create %s (error %d)", target.parent_path().c_str(), dirEc.value());
+            aFailures.emplace_back(buf);
+            continue;
+        }
+
         DWORD error = ERROR_SUCCESS;
         if (!DeployFile(it->path(), target, error))
         {
@@ -479,6 +650,16 @@ bool DeployRuntime(const std::filesystem::path& acGameRoot, const std::filesyste
             swprintf_s(buf, L"failed: %s (error %lu)", rel.c_str(), error);
             aFailures.emplace_back(buf);
         }
+    }
+
+    // Only once every file landed, so a partial deploy is never recorded as
+    // complete. A failure here is not fatal: the next launch simply repeats the
+    // per-file scan it would have repeated anyway.
+    if (aFailures.empty())
+    {
+        std::error_code writeEc;
+        std::filesystem::copy_file(marker, deployedMarker,
+                                   std::filesystem::copy_options::overwrite_existing, writeEc);
     }
 
     return aFailures.empty();

@@ -1,0 +1,265 @@
+diff --git a/src/MorphSyncService.cpp b/src/MorphSyncService.cpp
+--- a/src/MorphSyncService.cpp
++++ b/src/MorphSyncService.cpp
+@@ -3,6 +3,8 @@
+ #include "AppearanceProbe.h"
+ #include "UdpTransport.h"
+ 
++#include <span>
++
+ namespace MorphSyncTogether
+ {
+     namespace
+@@ -299,6 +301,10 @@ namespace MorphSyncTogether
+ 
+         AppearanceProbe::GetSingleton().ProbeLocalPlayer(player);
+ 
++        // Change detection over the captured list, capped to what can be sent at all.
++        // The value that actually goes on the wire is recomputed inside
++        // BroadcastSnapshot, because only it knows how many values survived the chunk
++        // budget; using this one there would let two different sends look identical.
+         const auto values = CaptureMorphs(player);
+         const auto hash = HashMorphs(values);
+         const auto now = std::chrono::steady_clock::now();
+@@ -397,7 +403,7 @@ namespace MorphSyncTogether
+         return result;
+     }
+ 
+-    std::uint64_t MorphSyncService::HashMorphs(const std::vector<MorphValue>& values) const
++    std::uint64_t MorphSyncService::HashMorphs(std::span<const MorphValue> values) const
+     {
+         std::uint64_t hash = 1469598103934665603ULL;
+         constexpr std::uint64_t prime = 1099511628211ULL;
+@@ -432,15 +438,37 @@ namespace MorphSyncTogether
+         const std::vector<MorphValue>& values,
+         std::uint64_t hash)
+     {
++        // hash is the caller's change-detection value over the whole captured list.
++        // It is deliberately not what goes on the wire: see sentHash below.
++        (void)hash;
++
+         if (!UdpTransport::GetSingleton().IsRunning()) {
+             return;
+         }
+ 
++        // The receiver refuses a snapshot carrying more than kMaxMorphValues, so the
++        // sender has to stay under it. It cannot simply drop the whole snapshot: a
++        // player whose mod list exceeds the cap would then never synchronise at all,
++        // which is a worse outcome than a partial one. The list is sorted by name, so
++        // the retained prefix is stable across ticks and the same actors keep the
++        // same morphs.
++        const auto limited = std::min(values.size(), kMaxMorphValues);
++        if (limited < values.size()) {
++            SKSE::log::warn(
++                "MST MORPH TX SNAPSHOT truncated: {} values capped to {} player={:08X}",
++                values.size(),
++                kMaxMorphValues,
++                player->GetFormID());
++        }
++
+         std::vector<std::string> chunks;
+         std::string current;
++        bool truncatedByChunks = false;
++        std::size_t sentValueCount = 0;
+         constexpr std::size_t kChunkLimit = 2200;
+ 
+-        for (const auto& value : values) {
++        for (std::size_t index = 0; index < limited; ++index) {
++            const auto& value = values[index];
+             const auto token = fmt::format(
+                 "{},{},{:.9g}",
+                 HexEncode(value.morphName),
+@@ -449,6 +477,15 @@ namespace MorphSyncTogether
+ 
+             const std::size_t extra = token.size() + (current.empty() ? 0 : 1);
+             if (!current.empty() && current.size() + extra > kChunkLimit) {
++                // The chunk budget is the binding limit, not the value count: a
++                // snapshot that needs more chunks than the receiver accepts cannot be
++                // delivered at all, so the walk stops here and the prefix is sent.
++                // Both caps then describe the same thing, and the receiver never sees
++                // an announced count it refuses.
++                if (chunks.size() + 1 >= kMaxMorphChunks) {
++                    truncatedByChunks = true;
++                    break;
++                }
+                 chunks.push_back(std::move(current));
+                 current.clear();
+             }
+@@ -457,6 +494,7 @@ namespace MorphSyncTogether
+                 current += ';';
+             }
+             current += token;
++            ++sentValueCount;
+         }
+ 
+         if (!current.empty()) {
+@@ -466,19 +504,35 @@ namespace MorphSyncTogether
+             chunks.emplace_back();
+         }
+ 
++        if (truncatedByChunks) {
++            SKSE::log::warn(
++                "MST MORPH TX SNAPSHOT truncated at the chunk budget: {} chunks sentValues={} of {} player={:08X}",
++                chunks.size(),
++                sentValueCount,
++                values.size(),
++                player->GetFormID());
++        }
++
++        // The hash the receiver uses for duplicate detection has to describe what was
++        // actually sent, and only this function knows how many values survived the
++        // chunk budget. It therefore replaces the caller's whole-list hash.
++        const auto sentHash = HashMorphs(
++            std::span<const MorphValue>(values.data(), sentValueCount));
++
+         SKSE::log::info(
+-            "MST MORPH TX SNAPSHOT player={:08X} name=\"{}\" values={} chunks={} hash={:016X} hasMorphs={}",
++            "MST MORPH TX SNAPSHOT player={:08X} name=\"{}\" values={} sentValues={} chunks={} hash={:016X} hasMorphs={}",
+             player->GetFormID(),
+             player->GetName(),
+             values.size(),
++            sentValueCount,
+             chunks.size(),
+-            hash,
++            sentHash,
+             _bodyMorph->HasMorphs(player) ? 1 : 0);
+ 
+         for (std::size_t i = 0; i < chunks.size(); ++i) {
+             UdpTransport::GetSingleton().Send(fmt::format(
+                 "MORPH|hash={:016X}|seq={}|count={}|props={}",
+-                hash,
++                sentHash,
+                 i,
+                 chunks.size(),
+                 chunks[i]));
+@@ -592,6 +646,15 @@ namespace MorphSyncTogether
+         bool complete = false;
+         {
+             std::scoped_lock lock(_remoteMutex);
++            if (!_assemblies.contains(sender) &&
++                _assemblies.size() >= kMaxAssemblies) {
++                SKSE::log::warn(
++                    "MST MORPH RX chunk dropped: assembly table full size={} sender=\"{}\"",
++                    _assemblies.size(),
++                    sender);
++                return;
++            }
++
+             auto& assembly = _assemblies[sender];
+             if (assembly.hash != hash || assembly.expectedChunks != *count) {
+                 assembly = {};
+@@ -632,6 +695,22 @@ namespace MorphSyncTogether
+                 return;
+             }
+ 
++            std::size_t totalValues = 0;
++            for (const auto& chunk : it->second.chunks) {
++                if (!chunk.empty()) {
++                    totalValues += static_cast<std::size_t>(std::count(chunk.begin(), chunk.end(), ';')) + 1;
++                }
++            }
++
++            if (totalValues > kMaxMorphValues) {
++                _assemblies.erase(it);
++                SKSE::log::warn(
++                    "MST MORPH RX snapshot dropped: more than {} values sender=\"{}\"",
++                    kMaxMorphValues,
++                    sender);
++                return;
++            }
++
+             for (const auto& chunk : it->second.chunks) {
+                 if (chunk.empty()) {
+                     continue;
+@@ -986,6 +1065,15 @@ namespace MorphSyncTogether
+             return nullptr;
+         }
+ 
++        // A display name is not an identity: two peers can share one, and any peer
++        // can claim another's. The transport already knows which proxy belongs to
++        // which connection, so that answer is preferred and the name scan below is
++        // only the fallback for a sender the transport has no route for yet.
++        if (auto* routed = UdpTransport::GetSingleton().ResolveProxyBySender(name);
++            routed && IsLikelySTRProxy(routed)) {
++            return routed;
++        }
++
+         auto* processLists = RE::ProcessLists::GetSingleton();
+         auto* localPlayer = RE::PlayerCharacter::GetSingleton();
+         if (!processLists) {
+diff --git a/src/MorphSyncService.h b/src/MorphSyncService.h
+--- a/src/MorphSyncService.h
++++ b/src/MorphSyncService.h
+@@ -5,6 +5,8 @@
+ #include "Config.h"
+ #include "SkeeInterfaces.h"
+ 
++#include <span>
++
+ namespace MorphSyncTogether
+ {
+     class MorphSyncService
+@@ -64,7 +66,7 @@ namespace MorphSyncTogether
+         void TickOnGameThread();
+ 
+         std::vector<MorphValue> CaptureMorphs(RE::TESObjectREFR* actor) const;
+-        std::uint64_t HashMorphs(const std::vector<MorphValue>& values) const;
++        std::uint64_t HashMorphs(std::span<const MorphValue> values) const;
+         void BroadcastSnapshot(
+             RE::PlayerCharacter* player,
+             const std::vector<MorphValue>& values,
+@@ -104,6 +106,12 @@ namespace MorphSyncTogether
+         RE::Actor* ResolveRemoteProxyByName(std::string_view name) const;
+         bool IsLikelySTRProxy(RE::Actor* actor) const;
+ 
++        // Chunk assemblies are pruned by age, so a sender that keeps changing its
++        // name could still create unbounded entries inside one prune window. The
++        // row cap bounds that window; an in-progress assembly is never evicted for
++        // an existing sender, only a new key is refused.
++        static constexpr std::size_t kMaxAssemblies = 128;
++
+         static bool EqualsInsensitive(std::string_view a, std::string_view b);
+         static std::string HexEncode(std::string_view value);
+         static std::optional<std::string> HexDecode(std::string_view value);
+diff --git a/src/MorphSyncServiceBodyHair.cpp b/src/MorphSyncServiceBodyHair.cpp
+--- a/src/MorphSyncServiceBodyHair.cpp
++++ b/src/MorphSyncServiceBodyHair.cpp
+@@ -67,6 +67,15 @@ namespace MorphSyncTogether
+         bool complete = false;
+         {
+             std::scoped_lock lock(_remoteMutex);
++            if (!_assemblies.contains(sender) &&
++                _assemblies.size() >= kMaxAssemblies) {
++                SKSE::log::warn(
++                    "MST MORPH RX chunk dropped: assembly table full size={} sender=\"{}\"",
++                    _assemblies.size(),
++                    sender);
++                return;
++            }
++
+             auto& assembly = _assemblies[sender];
+             if (assembly.hash != hash || assembly.expectedChunks != *count) {
+                 assembly = {};
+@@ -108,6 +117,22 @@ namespace MorphSyncTogether
+                 return;
+             }
+ 
++            std::size_t totalValues = 0;
++            for (const auto& chunk : it->second.chunks) {
++                if (!chunk.empty()) {
++                    totalValues += static_cast<std::size_t>(std::count(chunk.begin(), chunk.end(), ';')) + 1;
++                }
++            }
++
++            if (totalValues > kMaxMorphValues) {
++                _assemblies.erase(it);
++                SKSE::log::warn(
++                    "MST MORPH RX snapshot dropped: more than {} values sender=\"{}\"",
++                    kMaxMorphValues,
++                    sender);
++                return;
++            }
++
+             for (const auto& chunk : it->second.chunks) {
+                 if (chunk.empty()) {
+                     continue;

@@ -32,8 +32,8 @@
 #include <WireLimits.h>
 
 World::World()
-    : m_runner(m_dispatcher)
-    , m_transport(*this, m_dispatcher)
+    : m_transport(*this, m_dispatcher)
+    , m_runner(m_dispatcher)
     , m_modSystem(m_dispatcher)
     , m_lastFrameTime{std::chrono::high_resolution_clock::now()}
 {
@@ -65,7 +65,11 @@ World::World()
     PluginMessagingService::Get().Initialize(*this);
     m_pluginMessagingConnection = m_dispatcher.sink<NotifyPluginMessaging>().connect<&PluginMessagingService::OnPluginMessage>(&PluginMessagingService::Get());
 
-    BehaviorVar::Get()->Init();
+    // Off the main thread: this opens several files per behavior subdirectory, and
+    // under Mod Organizer every one of those calls crosses the USVFS hook right
+    // while the game is still booting. Patch() falls back to the unmodified
+    // descriptor until InitAsync publishes, so nothing here is on the critical path.
+    BehaviorVar::Get()->InitAsync();
 }
 
 World::~World()

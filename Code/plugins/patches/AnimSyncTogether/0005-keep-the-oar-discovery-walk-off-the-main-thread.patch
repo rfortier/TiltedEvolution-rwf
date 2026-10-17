@@ -1,0 +1,62 @@
+diff --git a/src/SyncRules.cpp b/src/SyncRules.cpp
+--- a/src/SyncRules.cpp
++++ b/src/SyncRules.cpp
+@@ -8,6 +8,7 @@
+ #include <fstream>
+ #include <iterator>
+ #include <sstream>
++#include <thread>
+ #include <utility>
+ 
+ namespace AnimSyncTogether
+@@ -89,11 +90,10 @@ namespace AnimSyncTogether
+ 
+     void SyncRules::Initialize()
+     {
+-        if (initialized_) {
++        if (initialized_.exchange(true)) {
+             return;
+         }
+ 
+-        initialized_ = true;
+         LoadRuleFiles();
+ 
+         if (profileCount_ == 0) {
+@@ -102,7 +102,13 @@ namespace AnimSyncTogether
+                 "SyncRules: no external profiles loaded; using built-in Helmet Toggle fallback");
+         }
+ 
+-        DiscoverOARGraphVariables();
++        // Discovery walks both OAR trees and reads every config.json, which on a
++        // large load order is far too long to run inside the kDataLoaded message
++        // on the main thread. It only produces log lines, so it runs detached and
++        // the rules above are already usable when Initialize() returns.
++        std::thread([]() {
++            SyncRules::GetSingleton()->DiscoverOARGraphVariables();
++        }).detach();
+ 
+         SKSE::log::info(
+             "SyncRules: initialized profiles={} events={} graphVariables={}",
+diff --git a/include/AnimSyncTogether/SyncRules.h b/include/AnimSyncTogether/SyncRules.h
+--- a/include/AnimSyncTogether/SyncRules.h
++++ b/include/AnimSyncTogether/SyncRules.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <atomic>
+ #include <cstdint>
+ #include <string>
+ #include <string_view>
+@@ -49,7 +50,11 @@ namespace AnimSyncTogether
+             std::string_view variableName,
+             std::string_view source);
+ 
+-        bool initialized_{ false };
++        // Initialize() is reached from kDataLoaded, kPostLoadGame and kNewGame, so it
++        // runs more than once per session. The flag has to make the whole body
++        // single-shot, including the discovery thread it starts - otherwise each
++        // message spawns another walk over the same OAR trees.
++        std::atomic_bool initialized_{ false };
+         std::size_t profileCount_{ 0 };
+         std::unordered_set<std::string> events_;
+         std::unordered_map<std::string, GraphVariableType> variableTypes_;

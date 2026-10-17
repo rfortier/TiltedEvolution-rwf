@@ -52,7 +52,7 @@ static constexpr uint64_t kGameThreadStallMs = 1000;
 // parsed message before it gives up waiting and dispatches it itself. One frame
 // would be plenty on a healthy client; this leaves room for a loading hiccup
 // without letting an attempt stall on a queue nobody drains.
-static constexpr auto kHandoffTimeout = std::chrono::milliseconds(500);
+
 
 static uint64_t NowMs() noexcept
 {
@@ -152,6 +152,15 @@ TransportService::~TransportService() noexcept
 // long before the transport had more than one thread to worry about.
 void TransportService::Close() noexcept
 {
+    // Synchronous on purpose: every caller immediately starts a replacement attempt
+    // or reports the teardown, and a Close that only scheduled itself would let a
+    // new connect stack on top of the old transport.
+    //
+    // No cycle with m_dispatchMutex: the handshake pump never takes that lock (a
+    // packet it parses off the game thread is queued, never dispatched - see
+    // OnConsume), and the game thread cannot hold m_clientMutex while waiting for
+    // m_dispatchMutex because it only takes the client lock from HandleUpdate, whose
+    // try_to_lock gives up instead of waiting.
     std::lock_guard<std::recursive_mutex> lock(m_clientMutex);
 
     Client::Close();
@@ -159,7 +168,8 @@ void TransportService::Close() noexcept
 
 bool TransportService::Send(const ClientMessage& acMessage) const noexcept
 {
-    std::lock_guard<std::recursive_mutex> lock(m_clientMutex);
+    if (!IsConnected())
+        return false;
 
     static thread_local ScratchAllocator s_allocator(1 << 18);
 
@@ -168,23 +178,31 @@ bool TransportService::Send(const ClientMessage& acMessage) const noexcept
         ~ScopedReset() { s_allocator.Reset(); }
     } allocatorGuard;
 
-    if (IsConnected())
-    {
-        ScopedAllocator _{s_allocator};
+    // Serialisation is pure memory work on the caller's own buffer; it does not
+    // touch the transport and must not keep the transport lock. Cell changes send
+    // dozens of these back to back on the frame loop (PlayerService, ObjectService)
+    // and the handshake pump can hold this lock for a whole Client::Update, so
+    // doing the work inside the critical section turned every one of them into a
+    // wait on the network thread.
+    ScopedAllocator _{s_allocator};
 
-        Buffer buffer(1 << 16);
-        Buffer::Writer writer(&buffer);
-        writer.WriteBits(0, 8); // Write first byte as packet needs it
+    Buffer buffer(1 << 16);
+    Buffer::Writer writer(&buffer);
+    writer.WriteBits(0, 8); // Write first byte as packet needs it
 
-        acMessage.Serialize(writer);
-        TiltedPhoques::PacketView packet(reinterpret_cast<char*>(buffer.GetWriteData()), writer.Size());
+    acMessage.Serialize(writer);
+    TiltedPhoques::PacketView packet(reinterpret_cast<char*>(buffer.GetWriteData()), writer.Size());
 
-        Client::Send(&packet);
+    // Only the hand-off is serialised, and a caller that cannot have the transport
+    // this instant drops the packet rather than stalling the frame for it. Every
+    // caller already tolerates a lost packet: the next snapshot carries the state.
+    std::unique_lock<std::recursive_mutex> lock(m_clientMutex, std::try_to_lock);
+    if (!lock.owns_lock())
+        return false;
 
-        return true;
-    }
+    Client::Send(&packet);
 
-    return false;
+    return true;
 }
 
 void TransportService::OnConsume(const void* apData, uint32_t aSize)
@@ -220,6 +238,9 @@ void TransportService::OnConsume(const void* apData, uint32_t aSize)
     // has no business touching while the game is running.
     if (std::this_thread::get_id() == m_gameThreadId)
     {
+        // Same lock as FlushPendingMessages: dispatch must not run on two threads at
+        // once, whichever of the two routes it took to get here.
+        std::lock_guard<std::mutex> dispatchLock(m_dispatchMutex);
         DispatchMessage(pMessage);
         return;
     }
@@ -264,6 +285,14 @@ bool TransportService::FlushPendingMessages() noexcept
     // could catch a throw.
     try
     {
+        // m_pendingMutex only guards the container. Dispatch runs services that walk
+        // the registry, and OnConsume dispatches directly when it happens to be on the
+        // game thread while this path can be entered from the pump's own queued
+        // callback - two threads inside the same services at once. Taking the dispatch
+        // lock for the whole batch keeps the handover ordered without holding the
+        // container lock while world state is touched.
+        std::lock_guard<std::mutex> dispatchLock(m_dispatchMutex);
+
         std::vector<UniquePtr<ServerMessage>> batch;
         {
             std::lock_guard<std::mutex> lock(m_pendingMutex);
@@ -617,10 +646,16 @@ void TransportService::StopHandshakePump() noexcept
 {
     m_handshakeThreadStop = true;
 
+    // Cleared before the join, not after. The flag is what HandleUpdate reads to
+    // decide whether a second thread may be inside the transport; leaving it set
+    // for the whole join means the frame loop keeps skipping its own pump while
+    // the pump it is waiting for has already been told to stop. Nothing else
+    // depends on the flag outliving the thread: BeginConnect sets it again
+    // immediately, and the frame loop re-checks it every tick.
+    m_handshakeThreadActive = false;
+
     if (m_handshakeThread.joinable())
         m_handshakeThread.join();
-
-    m_handshakeThreadActive = false;
 }
 
 void TransportService::HandshakeThreadMain(const std::string acEndpoint) noexcept
@@ -684,30 +719,17 @@ void TransportService::HandshakeThreadMain(const std::string acEndpoint) noexcep
             // particular becomes a ConnectedEvent, and every service that answers
             // that walks the world.
             //
-            // The wait is bounded on purpose. A frame loop that never arrives would
-            // otherwise leave the attempt hanging on a queue nobody drains, which is
-            // the failure this pump was built to escape - so past the deadline the
-            // pump dispatches itself and says so in the log. That is the one case
-            // where game state is touched off the game thread, and it is reserved
-            // for clients whose tick genuinely never came.
+            // Hand over and stop there. The pump parses; only the game thread
+            // dispatches. It used to give up after a deadline and dispatch these
+            // itself, which put one thread inside CharacterService::OnUpdate's
+            // registry walk while the frame loop was inside the same walk - the
+            // one path in this client that could corrupt the world instead of
+            // merely stalling it. Waiting here is bounded by the loop, not by a
+            // deadline: the messages stay queued and the frame loop takes them
+            // whenever it next runs, however late that is.
             if (HasPendingMessages())
             {
                 m_world.GetRunner().Queue([this]() { FlushPendingMessages(); });
-
-                const auto cHandoffDeadline = std::chrono::steady_clock::now() + kHandoffTimeout;
-                while (HasPendingMessages() && std::chrono::steady_clock::now() < cHandoffDeadline)
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                }
-
-                if (HasPendingMessages())
-                {
-                    spdlog::warn("handshake pump: the frame loop did not take the queued messages within {}ms, so the "
-                                 "pump is dispatching them itself; game state is being touched off the game thread",
-                                 kHandoffTimeout.count());
-
-                    FlushPendingMessages();
-                }
             }
 
             if (!m_handshakePending.load() || m_handshakeThreadStop.load())
@@ -720,7 +742,10 @@ void TransportService::HandshakeThreadMain(const std::string acEndpoint) noexcep
         // thread. Left queued rather than dispatched here: nothing about it is
         // urgent any more, and a session that is going to live is one whose frame
         // loop is running.
-        if (HasPendingMessages())
+        // Only on a clean exit. A thread that was told to stop is on its way out
+        // of an object that may be being torn down, so it must not put another
+        // callback holding a pointer to this into a queue that can outlive the join.
+        if (!m_handshakeThreadStop.load() && HasPendingMessages())
         {
             m_world.GetRunner().Queue([this]() { FlushPendingMessages(); });
         }
@@ -729,7 +754,14 @@ void TransportService::HandshakeThreadMain(const std::string acEndpoint) noexcep
         // the moment the handshake does either way: what follows carries world
         // state, and handling that anywhere but on the game thread is a crash
         // waiting for a busy frame.
-        m_handshakeThreadActive = false;
+        //
+        // Only if this thread still owns the flag. StopHandshakePump clears it
+        // before joining, and BeginConnect sets it again for its own thread, so an
+        // unconditional clear here could land after the next attempt already
+        // started and hand the transport to the frame loop while a live pump
+        // thread is inside it.
+        if (!m_handshakeThreadStop.load())
+            m_handshakeThreadActive = false;
 
         spdlog::info("handshake pump: finished for {}, handshake still pending {}", acEndpoint,
                      m_handshakePending.load());

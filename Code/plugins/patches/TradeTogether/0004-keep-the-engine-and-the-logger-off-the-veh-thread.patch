@@ -1,0 +1,115 @@
+diff --git a/src/StrMessagingTransport.h b/src/StrMessagingTransport.h
+--- a/src/StrMessagingTransport.h
++++ b/src/StrMessagingTransport.h
+@@ -17,7 +17,10 @@ namespace TradeTogether
+         bool SendTo(std::string_view a_playerName, std::string_view a_payload);
+ 
+         [[nodiscard]] bool IsRunning() const noexcept { return _running.load(); }
++        // Game thread only: reads the engine and refreshes the cache below.
+         [[nodiscard]] std::string GetLocalPlayerName() const;
++        // Any thread: never touches the engine.
++        [[nodiscard]] std::string CachedLocalPlayerName() const;
+         [[nodiscard]] std::optional<std::string> GetMostRecentPeerName();
+ 
+     private:
+@@ -46,6 +49,7 @@ namespace TradeTogether
+         void DispatchLoop(std::stop_token a_stopToken);
+         void HandleInboundMessage(const InboundMessage& a_message);
+         void HandleMessage(const STRPM::Message* a_message);
++        void DrainPendingMappings();
+         void HandleProxyMapping(const STRPM::ProxyMappingEvent* a_event);
+         void RefreshIdentity();
+         std::optional<STRPM::ConnectionID> ResolveConnectionIDForPlayerName(std::string_view a_playerName);
+@@ -57,6 +61,19 @@ namespace TradeTogether
+         const STRPM::ProxyResolverInterface* _proxyResolver{ nullptr };
+         STRPM::ListenerHandle _listener{};
+         STRPM::ConnectionID _localConnectionID{ 0 };
++
++        // The local player's name, read from the engine once on a thread that may
++        // touch game objects and then only ever read.
++        //
++        // RE::PlayerCharacter::GetSingleton()/GetName() are engine calls. The receive
++        // path runs on _dispatchThread, which is not the game thread, and it needs the
++        // name to skip a peer's echo of our own message. Reading it there was the one
++        // place this file broke the rule its own OnMessage comment states.
++        //
++        // mutable because GetLocalPlayerName() is const and refreshes it.
++        mutable std::string _cachedLocalPlayerName;
++        mutable std::mutex _nameMutex;
++
+         PacketHandler _handler;
+         std::atomic_bool _running{ false };
+         mutable std::mutex _handlerMutex;
+@@ -71,5 +88,44 @@ namespace TradeTogether
+         std::atomic<std::size_t> _inboundRead{ 0 };
+         std::atomic<std::uint32_t> _inboundDropped{ 0 };
+         std::jthread _dispatchThread;
++
++        // Proxy mapping events, parked for the dispatch thread.
++        //
++        // OnProxyMapping is reached from a vectored exception handler and from two
++        // worker entries (see STRPMProxyResolverBridge); taking _proxyMutex or
++        // formatting a log line there blocks the exception handler and allocates
++        // inside it. The callback therefore only appends here, and the same worker
++        // that drains the inbound queue applies them.
++        //
++        // The producer side is multi-threaded (both exception handlers plus the
++        // resolver's flush worker plus RegisterListener's replay), so a slot is not
++        // "ready" merely because the write cursor moved past it: each slot carries a
++        // ticket that the producer publishes after copying, and the consumer only
++        // reads slots whose ticket matches the ticket it is expecting. Tickets are
++        // monotonically increasing rather than ring indices, so a wrapped slot is
++        // never mistaken for a fresh one.
++        // Bounded multi-producer / single-consumer queue (Vyukov). A plain
++        // single-writer ring is wrong here: the resolver reports from two vectored
++        // exception handlers, from its own one-second flush worker, and replays the
++        // whole table from RegisterListener on whichever thread called it.
++        //
++        // Every cell carries a sequence number that says whether it currently holds
++        // an event for the position the consumer is at. A producer therefore only
++        // claims a position after confirming the cell is free, so a full queue drops
++        // the event instead of leaving a claimed-but-unpublished position behind -
++        // that is what keeps a drop from stalling the drain forever.
++        struct PendingMappingCell
++        {
++            std::atomic<std::uint64_t> sequence{ 0 };
++            STRPM::ProxyMappingEvent event{};
++        };
++
++        static constexpr std::size_t kPendingMappingCapacity = 64;
++        std::array<PendingMappingCell, kPendingMappingCapacity> _pendingMappingCells{};
++        std::atomic<std::uint64_t> _pendingMappingEnqueue{ 0 };
++        std::atomic<std::uint64_t> _pendingMappingDequeue{ 0 };
++        std::atomic<std::uint32_t> _pendingMappingDropped{ 0 };
++
++        void InitializePendingMappings();
+     };
+ }
+diff --git a/src/Input.cpp b/src/Input.cpp
+--- a/src/Input.cpp
++++ b/src/Input.cpp
+@@ -39,6 +39,14 @@ namespace TradeTogether
+             return;
+         }
+ 
++        // The input manager does not deduplicate sinks, so a second Register()
++        // would make ProcessEvent run twice per input event and apply every
++        // key action twice.
++        if (_registered.exchange(true)) {
++            spdlog::info("Input event sink already registered; skipping duplicate registration");
++            return;
++        }
++
+         ReloadConfig();
+         inputManager->AddEventSink(GetSingleton());
+         spdlog::info(
+diff --git a/src/Input.h b/src/Input.h
+--- a/src/Input.h
++++ b/src/Input.h
+@@ -27,5 +27,6 @@ namespace TradeTogether
+         std::atomic<std::uint32_t> _goldAddKey{ 0x4E };
+         std::atomic<std::uint32_t> _goldRemoveKey{ 0x4A };
+         std::atomic<std::uint32_t> _cancelKey{ 0x0F };
++        std::atomic_bool _registered{ false };
+     };
+ }

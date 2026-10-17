@@ -1,0 +1,143 @@
+diff --git a/src/LocalCaptureProbe.cpp b/src/LocalCaptureProbe.cpp
+--- a/src/LocalCaptureProbe.cpp
++++ b/src/LocalCaptureProbe.cpp
+@@ -12,6 +12,17 @@ namespace IEDSyncTogether
+     {
+         constexpr auto kCaptureInterval = std::chrono::milliseconds(400);
+ 
++        // A real capture completes through the VM within a frame or two, so this
++        // only ever fires for a callback that is not coming at all.
++        constexpr std::int64_t kCaptureTimeoutMs = 5000;
++
++        std::int64_t NowMs()
++        {
++            return static_cast<std::int64_t>(
++                std::chrono::duration_cast<std::chrono::milliseconds>(
++                    std::chrono::steady_clock::now().time_since_epoch()).count());
++        }
++
+         float Q(float value)
+         {
+             return std::round(value * 1000.0f) / 1000.0f;
+@@ -159,15 +170,25 @@ namespace IEDSyncTogether
+             _timer.request_stop();
+             _timer.join();
+         }
++        // Retire any callback still in flight: Stop must not be followed by a capture
++        // writing into a probe that has been shut down.
++        _captureGeneration.fetch_add(1);
+         _captureInFlight.store(false);
++        _captureStartedAtMs.store(0);
+     }
+ 
+     void LocalCaptureProbe::Reset()
+     {
++        // Retired outside the state lock: the generation and the in-flight flags are
++        // atomics that CompleteCapture reads before it takes that lock, so bumping
++        // them under it would only widen the window they exist to close.
++        _captureGeneration.fetch_add(1);
++        _captureInFlight.store(false);
++        _captureStartedAtMs.store(0);
++
+         std::scoped_lock lock(_stateMutex);
+         _lastState = {};
+         _lastPayload.clear();
+-        _captureInFlight.store(false);
+     }
+ 
+     void LocalCaptureProbe::SetStateChangedHandler(StateChangedHandler handler)
+@@ -206,18 +227,56 @@ namespace IEDSyncTogether
+ 
+     void LocalCaptureProbe::Tick()
+     {
+-        if (!_running.load() || _captureInFlight.exchange(true)) {
++        if (!_running.load()) {
++            return;
++        }
++
++        if (_captureInFlight.load()) {
++            // The request is only cleared by CompleteCapture() or by the
++            // immediate-failure path below. A VM callback that never fires would
++            // latch the flag, so an overdue request is abandoned and retried.
++            const auto startedAt = _captureStartedAtMs.load();
++            const auto nowMs = NowMs();
++
++            if (startedAt != 0 && nowMs - startedAt < kCaptureTimeoutMs) {
++                return;
++            }
++
++            SKSE::log::warn(
++                "Local IED capture request timed out after {}ms, retrying",
++                kCaptureTimeoutMs);
++
++            // Retiring the generation is what makes the abandoned request harmless:
++            // its callback may still arrive, and it must not touch this state.
++            _captureGeneration.fetch_add(1);
++            _captureInFlight.store(false);
++            _captureStartedAtMs.store(0);
++        }
++
++        if (_captureInFlight.exchange(true)) {
+             return;
+         }
+ 
++        const auto generation = _captureGeneration.load();
++        _captureStartedAtMs.store(NowMs());
++
+         if (!IEDBridge::GetSingleton().CapturePlayerSlots(
+-                [this](SlotState slots) { CompleteCapture(std::move(slots)); })) {
++                [this, generation](SlotState slots) {
++                    CompleteCapture(std::move(slots), generation);
++                })) {
+             _captureInFlight.store(false);
++            _captureStartedAtMs.store(0);
+         }
+     }
+ 
+-    void LocalCaptureProbe::CompleteCapture(SlotState slots)
++    void LocalCaptureProbe::CompleteCapture(SlotState slots, std::uint32_t generation)
+     {
++        if (generation != _captureGeneration.load()) {
++            // A request that already timed out. Dropping it keeps the newer request's
++            // in-flight flag and result intact.
++            return;
++        }
++
+         LocalIEDState state;
+         state.slots = std::move(slots);
+ 
+@@ -309,5 +368,6 @@ namespace IEDSyncTogether
+         }
+ 
+         _captureInFlight.store(false);
++        _captureStartedAtMs.store(0);
+     }
+ }
+diff --git a/src/LocalCaptureProbe.h b/src/LocalCaptureProbe.h
+--- a/src/LocalCaptureProbe.h
++++ b/src/LocalCaptureProbe.h
+@@ -23,10 +23,23 @@ namespace IEDSyncTogether
+     private:
+         void TimerLoop(std::stop_token token);
+         void Tick();
+-        void CompleteCapture(SlotState slots);
++        void CompleteCapture(SlotState slots, std::uint32_t generation);
+ 
+         std::atomic_bool _running{ false };
+         std::atomic_bool _captureInFlight{ false };
++
++        // The capture completes through a VM callback, and a callback that never
++        // arrives would otherwise leave _captureInFlight set forever and stop
++        // every later capture. Tick() therefore also clears a request that has
++        // been outstanding for longer than any real capture takes.
++        std::atomic<std::int64_t> _captureStartedAtMs{ 0 };
++
++        // Identifies the request a callback belongs to. A capture that timed out is
++        // abandoned but its VM callback can still arrive later; without a token that
++        // late callback would clear the in-flight flag of the request that replaced
++        // it and overwrite the newer result.
++        std::atomic<std::uint32_t> _captureGeneration{ 0 };
++
+         std::jthread _timer;
+ 
+         mutable std::mutex _stateMutex;

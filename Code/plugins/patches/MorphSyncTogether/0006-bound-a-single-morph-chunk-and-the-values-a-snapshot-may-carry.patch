@@ -1,97 +1,53 @@
 diff --git a/src/MorphSyncService.h b/src/MorphSyncService.h
-index 977ae90..bdb31d4 100644
 --- a/src/MorphSyncService.h
 +++ b/src/MorphSyncService.h
-@@ -110,6 +110,18 @@ namespace MorphSyncTogether
+@@ -110,6 +110,21 @@ namespace MorphSyncTogether
          static std::vector<std::string> Split(std::string_view text, char delimiter);
          static std::optional<std::string> ReadField(std::string_view packet, std::string_view key);
  
 +        // The chunk count is bounded above, but neither the size of a single
 +        // chunk nor the number of morph values a snapshot may carry is: a peer
-+        // that ignores the chunker can send 128 chunks of the largest packet the
++        // that ignores the chunker can send chunks of the largest packet the
 +        // transport allows, and the apply path then walks every value it holds.
-+        // Both are bounded by what this plugin's own sender can produce -
-+        // BroadcastSnapshot chunks at kChunkLimit (2200 characters), so a chunk
-+        // twice that size cannot come from it, and a snapshot is one actor's own
-+        // morph list. A packet over the first cap and a snapshot over the second
-+        // are refused instead of being applied in part.
++        // Both are bounded by what this plugin own sender can produce, and the
++        // sender now refuses to exceed the chunk cap it shares with the reader.
 +        static constexpr std::size_t kMaxMorphChunkBytes = 4096;
 +        static constexpr std::size_t kMaxMorphValues = 4096;
++
++        // The receiver refuses a snapshot split into more than this many chunks,
++        // so the sender has to stay under the same number. Both sides read this
++        // one constant: a sender that exceeds it produces a snapshot that can
++        // never be assembled, and the failure would be silent on the send side.
++        static constexpr std::size_t kMaxMorphChunks = 128;
 +
          Config _config{};
          SKEE::IBodyMorphInterface* _bodyMorph{ nullptr };
          bool _initialized{ false };
-diff --git a/src/MorphSyncServiceBodyHair.cpp b/src/MorphSyncServiceBodyHair.cpp
-index ecf6313..a5b529d 100644
---- a/src/MorphSyncServiceBodyHair.cpp
-+++ b/src/MorphSyncServiceBodyHair.cpp
-@@ -57,7 +57,8 @@ namespace MorphSyncTogether
-         const auto count = ParseSize(ReadField(payload, "count"));
-         const auto props = ReadField(payload, "props");
- 
--        if (hash == 0 || !sequence || !count || !props || *count == 0 || *count > 128 || *sequence >= *count) {
-+        if (hash == 0 || !sequence || !count || !props || *count == 0 || *count > 128 || *sequence >= *count ||
-+            props->size() > kMaxMorphChunkBytes) {
-             SKSE::log::warn("MST MORPH RX invalid packet sender=\"{}\"", sender);
-             return;
-         }
-@@ -106,6 +107,22 @@ namespace MorphSyncTogether
-                 return;
-             }
- 
-+            std::size_t totalValues = 0;
-+            for (const auto& chunk : it->second.chunks) {
-+                if (!chunk.empty()) {
-+                    totalValues += static_cast<std::size_t>(std::count(chunk.begin(), chunk.end(), ';')) + 1;
-+                }
-+            }
-+
-+            if (totalValues > kMaxMorphValues) {
-+                _assemblies.erase(it);
-+                SKSE::log::warn(
-+                    "MST MORPH RX snapshot dropped: more than {} values sender=\"{}\"",
-+                    kMaxMorphValues,
-+                    sender);
-+                return;
-+            }
-+
-             for (const auto& chunk : it->second.chunks) {
-                 if (chunk.empty()) {
-                     continue;
 diff --git a/src/MorphSyncService.cpp b/src/MorphSyncService.cpp
-index 1959ce3..3d28d67 100644
 --- a/src/MorphSyncService.cpp
 +++ b/src/MorphSyncService.cpp
-@@ -572,7 +572,8 @@ namespace MorphSyncTogether
+@@ -582,7 +582,9 @@ namespace MorphSyncTogether
          const auto count = ParseSize(ReadField(payload, "count"));
          const auto props = ReadField(payload, "props");
  
 -        if (hash == 0 || !sequence || !count || !props || *count == 0 || *count > 128 || *sequence >= *count) {
-+        if (hash == 0 || !sequence || !count || !props || *count == 0 || *count > 128 || *sequence >= *count ||
++        if (hash == 0 || !sequence || !count || !props || *count == 0 ||
++            *count > kMaxMorphChunks || *sequence >= *count ||
 +            props->size() > kMaxMorphChunkBytes) {
              SKSE::log::warn("MST MORPH RX invalid packet sender=\"{}\"", sender);
              return;
          }
-@@ -620,6 +621,22 @@ namespace MorphSyncTogether
-                 return;
-             }
+diff --git a/src/MorphSyncServiceBodyHair.cpp b/src/MorphSyncServiceBodyHair.cpp
+--- a/src/MorphSyncServiceBodyHair.cpp
++++ b/src/MorphSyncServiceBodyHair.cpp
+@@ -57,7 +57,9 @@ namespace MorphSyncTogether
+         const auto count = ParseSize(ReadField(payload, "count"));
+         const auto props = ReadField(payload, "props");
  
-+            std::size_t totalValues = 0;
-+            for (const auto& chunk : it->second.chunks) {
-+                if (!chunk.empty()) {
-+                    totalValues += static_cast<std::size_t>(std::count(chunk.begin(), chunk.end(), ';')) + 1;
-+                }
-+            }
-+
-+            if (totalValues > kMaxMorphValues) {
-+                _assemblies.erase(it);
-+                SKSE::log::warn(
-+                    "MST MORPH RX snapshot dropped: more than {} values sender=\"{}\"",
-+                    kMaxMorphValues,
-+                    sender);
-+                return;
-+            }
-+
-             for (const auto& chunk : it->second.chunks) {
-                 if (chunk.empty()) {
-                     continue;
+-        if (hash == 0 || !sequence || !count || !props || *count == 0 || *count > 128 || *sequence >= *count) {
++        if (hash == 0 || !sequence || !count || !props || *count == 0 ||
++            *count > kMaxMorphChunks || *sequence >= *count ||
++            props->size() > kMaxMorphChunkBytes) {
+             SKSE::log::warn("MST MORPH RX invalid packet sender=\"{}\"", sender);
+             return;
+         }

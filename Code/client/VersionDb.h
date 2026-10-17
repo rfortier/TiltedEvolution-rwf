@@ -563,11 +563,17 @@ template <class T> struct VersionDbPtr
             {
                 m_pPtr = VersionDb::Get().FindAddressById(m_id);
 
-                // legacy runtimes (1.5.x) have a partial id mapping; unresolved
-                // entries fall back to a zero-returning stub so callers degrade
-                // instead of crashing. Sites that cannot tolerate a stub opt out
-                // via the constructor flag (rtti lookups, ctors, ...).
-                if (m_pPtr == nullptr && m_allowUnresolvedStub && VersionDb::Get().IsLegacyFormat())
+                // A partial id mapping is not a legacy-only condition: the 1.6.x
+                // and 1.7.x libraries shipped here are not as thoroughly covered as
+                // version-1-5-97-0.bin, and an id that resolves to null is dereferenced
+                // by whatever calls through it - ThisCall sites, POINTER_SKYRIMSE data
+                // reads, and the patch anchors that already check for null. Falling
+                // back to the zero-returning stub on *every* runtime is what turns that
+                // into "this call does nothing" instead of an access violation at 0.
+                //
+                // Sites that cannot tolerate a stub (RTTI descriptors, which the game's
+                // dynamic_cast walks as a structure) opt out via the constructor flag.
+                if (m_pPtr == nullptr && m_allowUnresolvedStub)
                 {
                     m_pPtr = VersionDb::Get().GetUnresolvedStub();
 

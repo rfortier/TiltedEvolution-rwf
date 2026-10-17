@@ -1,0 +1,165 @@
+diff --git a/src/DAVProbe.cpp b/src/DAVProbe.cpp
+--- a/src/DAVProbe.cpp
++++ b/src/DAVProbe.cpp
+@@ -13,6 +13,16 @@ namespace DAVSyncTogether
+         constexpr auto kSleepSlice = std::chrono::milliseconds(100);
+         constexpr auto kPostReequipGuardWindow = std::chrono::seconds(15);
+ 
++        // One bounded walk of the player's 3D graph. Armor-addon nodes sit close to
++        // the root, so the depth cap costs nothing, and the node budget keeps a
++        // pathological graph from stalling the game thread on every probe tick.
++        constexpr int kMaxVisitDepth = 32;
++        constexpr std::size_t kMaxVisitNodes = 4096;
++
++        // A worn armor set is a handful of items even with every slot filled, so
++        // this cap only ever trips on a malformed inventory.
++        constexpr std::size_t kMaxWornArmors = 64;
++
+         void SortAndUniqueIdentities(std::vector<FormIdentity>& values)
+         {
+             std::sort(values.begin(), values.end(), FormIdentityLess);
+@@ -128,7 +138,17 @@ namespace DAVSyncTogether
+         }
+ 
+         ActiveAddonMap activeAddons;
+-        VisitArmorNodes(player->Get3D(), activeAddons);
++        if (!VisitArmorNodes(player->Get3D(), activeAddons)) {
++            // The walk hit its budget, so this map is missing addons. Classifying from
++            // it would publish a wrong visual state for every affected armor, so the
++            // capture is abandoned and the previous snapshot stays in place until a
++            // later tick completes the walk.
++            SKSE::log::warn(
++                "DAVST armor node walk exhausted budget; skipping this capture player={:08X}",
++                player->GetFormID());
++            return {};
++        }
++
+         for (auto& [armo, addons] : activeAddons) {
+             std::sort(addons.begin(), addons.end());
+             addons.erase(std::unique(addons.begin(), addons.end()), addons.end());
+@@ -138,6 +158,12 @@ namespace DAVSyncTogether
+             return object.IsArmor();
+         });
+ 
++        // The full inventory is walked on every probe tick, and a worn set is a
++        // handful of items, so the count is capped rather than the scan. The worn
++        // entries are collected and ordered first: GetInventory is unordered, so
++        // capping during iteration would keep a different subset on each tick and
++        // make the state hash flap for no reason.
++        std::vector<RE::TESObjectARMO*> wornArmors;
+         for (const auto& [item, data] : inventory) {
+             const auto& [count, entry] = data;
+             if (count <= 0 || !entry || !entry->IsWorn()) {
+@@ -149,6 +175,19 @@ namespace DAVSyncTogether
+                 continue;
+             }
+ 
++            wornArmors.push_back(armor);
++        }
++
++        std::sort(wornArmors.begin(), wornArmors.end(), [](const auto* lhs, const auto* rhs) {
++            return lhs->GetFormID() < rhs->GetFormID();
++        });
++
++        const bool truncated = wornArmors.size() > kMaxWornArmors;
++        if (truncated) {
++            wornArmors.resize(kMaxWornArmors);
++        }
++
++        for (auto* armor : wornArmors) {
+             WornArmorState state;
+             state.armor = MakeFormIdentity(armor);
+             if (const char* editorID = armor->GetFormEditorID(); editorID) {
+@@ -185,6 +224,13 @@ namespace DAVSyncTogether
+             snapshot.wornArmors.push_back(std::move(state));
+         }
+ 
++        if (truncated) {
++            SKSE::log::warn(
++                "DAVST worn armor capture truncated at {} entries player={:08X}",
++                kMaxWornArmors,
++                player->GetFormID());
++        }
++
+         std::sort(snapshot.wornArmors.begin(), snapshot.wornArmors.end(), [](const auto& lhs, const auto& rhs) {
+             return FormIdentityLess(lhs.armor, rhs.armor);
+         });
+@@ -388,12 +434,25 @@ namespace DAVSyncTogether
+         return ::GetModuleHandleW(L"DynamicArmorVariants.dll") != nullptr;
+     }
+ 
+-    void DAVProbe::VisitArmorNodes(RE::NiAVObject* object, ActiveAddonMap& activeAddons)
++    void DAVProbe::VisitArmorNodesRecursive(
++        RE::NiAVObject* object,
++        ActiveAddonMap& activeAddons,
++        int depth,
++        std::size_t& budget,
++        bool& exhausted)
+     {
+         if (!object) {
+             return;
+         }
+ 
++        if (depth > kMaxVisitDepth || budget == 0) {
++            // A node was reachable but not visited, so the map is incomplete.
++            exhausted = true;
++            return;
++        }
++
++        --budget;
++
+         const char* rawName = object->name.c_str();
+         if (rawName && *rawName) {
+             if (const auto parsed = ParseArmorNode(rawName)) {
+@@ -405,12 +464,30 @@ namespace DAVSyncTogether
+         if (auto* node = object->AsNode()) {
+             for (auto& child : node->GetChildren()) {
+                 if (child) {
+-                    VisitArmorNodes(child.get(), activeAddons);
++                    VisitArmorNodesRecursive(
++                        child.get(),
++                        activeAddons,
++                        depth + 1,
++                        budget,
++                        exhausted);
+                 }
+             }
+         }
+     }
+ 
++    bool DAVProbe::VisitArmorNodes(RE::NiAVObject* object, ActiveAddonMap& activeAddons)
++    {
++        // The player's 3D graph is engine-owned and this walk runs on every probe
++        // tick, so one walk is bounded instead of trusting the graph's depth. The
++        // result says whether the whole graph was seen: a partial walk would report
++        // armor addons as missing and ClassifyVisualState would then publish a visual
++        // state that is wrong rather than merely incomplete.
++        std::size_t budget = kMaxVisitNodes;
++        bool exhausted = false;
++        VisitArmorNodesRecursive(object, activeAddons, 0, budget, exhausted);
++        return !exhausted;
++    }
++
+     std::optional<std::pair<RE::FormID, RE::FormID>> DAVProbe::ParseArmorNode(std::string_view name)
+     {
+         const auto firstOpen = name.find('(');
+diff --git a/src/DAVProbe.h b/src/DAVProbe.h
+--- a/src/DAVProbe.h
++++ b/src/DAVProbe.h
+@@ -27,7 +27,15 @@ namespace DAVSyncTogether
+         void LogSnapshotDiff(const DAVStateSnapshot& current, std::string_view reason);
+ 
+         static bool IsDAVLoaded();
+-        static void VisitArmorNodes(RE::NiAVObject* object, ActiveAddonMap& activeAddons);
++        [[nodiscard]] static bool VisitArmorNodes(
++            RE::NiAVObject* object,
++            ActiveAddonMap& activeAddons);
++        static void VisitArmorNodesRecursive(
++            RE::NiAVObject* object,
++            ActiveAddonMap& activeAddons,
++            int depth,
++            std::size_t& budget,
++            bool& exhausted);
+         static std::optional<std::pair<RE::FormID, RE::FormID>> ParseArmorNode(std::string_view name);
+         static std::optional<RE::FormID> ParseFormID(std::string_view text);
+         static ArmorVisualState ClassifyVisualState(

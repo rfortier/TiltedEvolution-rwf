@@ -24,4 +24,12 @@ struct ReferenceUpdate
 
     Movement UpdatedMovement{};
     Vector<ActionEvent> ActionEvents{};
+
+    // When the owner sampled this snapshot, on the server's clock. Carried per
+    // actor rather than per packet because one packet interleaves actors whose
+    // snapshots were taken at different moments (the server relays each actor
+    // once, whenever that actor's owner reported it). The receiver interpolates
+    // against this instead of the packet's relay time, so a slow or bursty relay
+    // no longer shows up as a change of walking speed.
+    uint64_t SampleTick{};
 };

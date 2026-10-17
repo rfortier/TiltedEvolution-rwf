@@ -12,8 +12,9 @@
 namespace HookAudit
 {
 // Remember the target a hook is about to be installed on, along with the bytes
-// currently there.
-void Record(void** appTargetSlot) noexcept;
+// currently there. Returns false when that target must not be hooked at all -
+// a null slot, or the shared unresolved-id stub - and has already said why.
+bool Record(void** appTargetSlot) noexcept;
 
 // Check every recorded target against what is there now, once the hooks have
 // been committed.
@@ -26,7 +27,16 @@ void Verify(const char* acpWhen) noexcept;
 
 template <class T, class U> void Add(T** appTargetSlot, U* apHookFunction) noexcept
 {
-    Record(reinterpret_cast<void**>(appTargetSlot));
+    // The gate matters on every runtime, not just 1.5.x. An id the loaded address
+    // library does not carry resolves to the shared zero-returning stub, and MinHook
+    // detours whatever bytes are at its target: installing on the stub would send
+    // every other unresolved call in the client into this hook, and installing on a
+    // null slot would hand address 0 to the detour engine. Neither is recoverable
+    // later, and both are one missing library entry away, so they are refused here
+    // rather than patched over at each call site.
+    if (!Record(reinterpret_cast<void**>(appTargetSlot)))
+        return;
+
     TiltedPhoques::FunctionHookManager::GetInstance().Add(appTargetSlot, apHookFunction, true);
 }
 } // namespace HookAudit

@@ -23,6 +23,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 
@@ -137,18 +138,40 @@ inline bool WriteBytes(void* apAddress, const void* acpData, const size_t acSize
     // applied either way, and the answer says what happened to it.
     try
     {
-        if (!apAddress)
+        if (!apAddress || acSize == 0)
             return false;
 
+        // One protect scope per page, not one for the whole range. VirtualProtect
+        // only covers the pages that start inside the range it is handed, so a patch
+        // site that straddles a 4 KB boundary left the second page at its original
+        // RX protection and the write raised an access violation. No site does that
+        // today - the largest is 6 bytes and the offsets come from disassembly
+        // alignment - but those offsets are exactly the thing that moves between
+        // game builds, so this is a matter of when rather than whether.
+        constexpr size_t kPageSize = 4096;
+
+        auto* pDestination = static_cast<uint8_t*>(apAddress);
+        const auto* pSource = static_cast<const uint8_t*>(acpData);
+
+        size_t written = 0;
+        while (written < acSize)
         {
-            const mem::protect scope({apAddress, acSize});
-            if (!scope)
+            auto* pChunk = pDestination + written;
+            const size_t remainingOnPage = kPageSize - (reinterpret_cast<uintptr_t>(pChunk) % kPageSize);
+            const size_t chunkSize = (std::min)(acSize - written, remainingOnPage);
+
             {
-                spdlog::error("patch '{}' failed: cannot unprotect {} bytes at {}", acpWhat, acSize, fmt::ptr(apAddress));
-                return false;
+                const mem::protect scope({pChunk, chunkSize});
+                if (!scope)
+                {
+                    spdlog::error("patch '{}' failed: cannot unprotect {} bytes at {}", acpWhat, chunkSize, fmt::ptr(pChunk));
+                    return false;
+                }
+
+                std::memcpy(pChunk, pSource + written, chunkSize);
             }
 
-            std::memcpy(apAddress, acpData, acSize);
+            written += chunkSize;
         }
 
         FlushInstructionCache(GetCurrentProcess(), apAddress, acSize);
@@ -168,32 +191,32 @@ template <class T> bool Put(void* apAddress, const T acValue, const char* acpWha
 
 inline bool Nop(void* apAddress, const size_t acLength, const char* acpWhat) noexcept
 {
-    // Byte-patch helpers. The report is the only allocation; the patch itself is
-    // applied either way, and the answer says what happened to it.
-    try
+    // Expressed as a write so both helpers share one protection strategy; a second
+    // hand-rolled mem::protect scope here is how the two drifted apart before.
+    //
+    // Every call site in the client passes six bytes or fewer, so a single fill
+    // covers them all; anything larger spills onto the stack buffer in blocks and
+    // still goes through WriteBytes, which keeps the per-page handling in one place.
+    if (!apAddress || acLength == 0)
+        return false;
+
+    // Deliberately not an allocation: this is noexcept, so a throwing container would
+    // terminate the game. One stack buffer, walked over the range when it is longer.
+    constexpr size_t kStackBuffer = 64;
+    uint8_t filler[kStackBuffer];
+    std::memset(filler, 0x90, kStackBuffer);
+
+    auto* pDestination = static_cast<uint8_t*>(apAddress);
+    for (size_t written = 0; written < acLength;)
     {
-        if (!apAddress)
+        const size_t chunkSize = (std::min)(acLength - written, kStackBuffer);
+        if (!WriteBytes(pDestination + written, filler, chunkSize, acpWhat))
             return false;
 
-        {
-            const mem::protect scope({apAddress, acLength});
-            if (!scope)
-            {
-                spdlog::error("patch '{}' failed: cannot unprotect {} bytes at {}", acpWhat, acLength, fmt::ptr(apAddress));
-                return false;
-            }
-
-            std::memset(apAddress, 0x90, acLength);
-        }
-
-        FlushInstructionCache(GetCurrentProcess(), apAddress, acLength);
-        return true;
+        written += chunkSize;
     }
-    catch (...)
-    {
-        Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in Nop");
-        return false;
-    }
+
+    return true;
 }
 
 // The runtime is not always within reach of a rel32 branch, and this is the
@@ -275,6 +298,15 @@ template <class TFunc> bool SwapCall(void* apAddress, TFunc& aOriginal, TFunc aR
         if (!apAddress)
             return false;
 
+        // Only the stub is checked here, not the branch signature: this site is a
+        // call, so the byte under test is 0xE8 and ValidatePatchSite would refuse a
+        // site SwapCall is specifically meant to rewrite.
+        if (apAddress == VersionDb::GetUnresolvedStub())
+        {
+            spdlog::error("patch '{}' skipped: the anchor is the unresolved-id stub, so this site is not in the game", acpWhat);
+            return false;
+        }
+
         auto* pSite = static_cast<uint8_t*>(apAddress);
         if (*pSite != 0xE8)
         {
@@ -302,10 +334,71 @@ template <class TFunc> bool SwapCall(void* apAddress, TFunc& aOriginal, TFunc aR
     }
 }
 
+// Both write helpers above overwrite an instruction without looking at what is there.
+// SwapCall has always validated its site (it requires 0xE8); these two did not, so a
+// near-miss offset silently overwrote five bytes in the middle of a function and the
+// crash surfaced in an unrelated one.
+//
+// The check below needs no measured byte, which is why it can run unconditionally:
+// both answers are decidable from the bytes actually present.
+//
+//   - The shared unresolved-id stub is refused outright. Overwriting it redirects
+//     every other unmapped call in the client into this patch, which HookAudit
+//     already reports as the reason a hook can never reach the game.
+//   - A site that already begins with E9/FF 25 is refused because something else
+//     owns it: another mod, or an earlier patch of ours. Writing a second branch
+//     over the first one strands the original target and the half-overwritten
+//     branch lands wherever the displacement bytes happen to say.
+inline bool ValidatePatchSite(const void* apAddress, const char* acpWhat) noexcept
+{
+    if (!apAddress)
+        return false;
+
+    if (const_cast<void*>(apAddress) == VersionDb::GetUnresolvedStub())
+    {
+        spdlog::error("patch '{}' skipped: the anchor is the unresolved-id stub, so this site is not in the game", acpWhat);
+        return false;
+    }
+
+    // The read is guarded because a wrong anchor can point at unmapped memory, but the
+    // handler itself must stay free of C++ objects: spdlog allocates, and running that
+    // from an SEH handler is undefined. Same shape as HookAudit's SafeReadCode.
+    uint8_t head[2]{};
+    bool readable = false;
+    __try
+    {
+        std::memcpy(head, apAddress, sizeof(head));
+        readable = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        readable = false;
+    }
+
+    if (!readable)
+    {
+        spdlog::error("patch '{}' skipped: {} is not readable", acpWhat, fmt::ptr(apAddress));
+        return false;
+    }
+
+    // A site that already begins with a branch belongs to someone else - another mod,
+    // most likely. That is reported rather than refused: the patches routed through
+    // here are window style, menu unfreeze and thread naming, which shipped working
+    // on top of whatever the user's load order already did. Turning this into a hard
+    // failure would trade a visible conflict for a silently missing feature.
+    if (head[0] == 0xE9 || (head[0] == 0xFF && head[1] == 0x25))
+    {
+        spdlog::warn("patch '{}': {} already begins with a branch, so another mod owns it; writing on top of it", acpWhat,
+                     fmt::ptr(apAddress));
+    }
+
+    return true;
+}
+
 // Overwrites the function at apAddress with an unconditional jmp rel32.
 template <class TFunc> bool Jump(void* apAddress, TFunc aReplacement, const char* acpWhat) noexcept
 {
-    if (!apAddress)
+    if (!ValidatePatchSite(apAddress, acpWhat))
         return false;
 
     const void* pTarget = BranchTarget(apAddress, reinterpret_cast<const void*>(aReplacement), acpWhat);
@@ -319,12 +412,30 @@ template <class TFunc> bool Jump(void* apAddress, TFunc aReplacement, const char
     return WriteBytes(apAddress, patch, sizeof(patch), acpWhat);
 }
 
+template <class TFunc> bool Jump(void* apAddress, TFunc aReplacement, const uint8_t acExpected, const char* acpWhat) noexcept
+{
+    if (!apAddress || !ValidatePatchSite(apAddress, acpWhat))
+        return false;
+
+    if (*static_cast<const uint8_t*>(apAddress) != acExpected)
+    {
+        spdlog::error("patch '{}' skipped: expected {:#04x} at {}, found {:#04x} on game {}", acpWhat, acExpected,
+                      fmt::ptr(apAddress), *static_cast<const uint8_t*>(apAddress),
+                      VersionDb::Get().GetLoadedVersionString());
+        return false;
+    }
+
+    return GamePatch::Jump(apAddress, aReplacement, acpWhat);
+}
+
 // Writes a fresh `call rel32` where the original instruction was already
 // replaced (typically by Nop). Unlike SwapCall it does not recover the old
 // target, so there is nothing to validate beyond the anchor.
 template <class TFunc> bool PutCall(void* apAddress, TFunc aReplacement, const char* acpWhat) noexcept
 {
-    if (!apAddress)
+    // PutCall exists to write over a site that was just Nop'd, so an existing branch
+    // there means the sequence is not what the caller thinks it is.
+    if (!ValidatePatchSite(apAddress, acpWhat))
         return false;
 
     const void* pTarget = BranchTarget(apAddress, reinterpret_cast<const void*>(aReplacement), acpWhat);

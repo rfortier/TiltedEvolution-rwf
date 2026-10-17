@@ -333,6 +333,11 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
 
             auto& movementComponent = view.get<MovementComponent>(*it);
             movementComponent.Position = message.Position;
+            // The teleport above already told every other player where this actor
+            // went, so Sent stays true to keep the move relay from repeating it.
+            // The stamp is set anyway so a later relay of this pose carries a
+            // truthful sample time rather than the epoch.
+            movementComponent.Tick = GameServer::Get()->GetTick();
             movementComponent.Sent = true;
         }
 
@@ -1192,6 +1197,12 @@ void CharacterService::ProcessMovementChanges() const noexcept
                 movement.Variables = movementComponent.Variables;
 
                 update.ActionEvents = animationComponent.Actions;
+
+                // The moment the owner actually sampled this pose, not the moment
+                // this relay happened to run. Without it the receiver derives the
+                // segment length from the relay cadence, which mixes network jitter
+                // into the interpolated speed.
+                update.SampleTick = movementComponent.Tick;
 
                 actionsQueued = true;
             }

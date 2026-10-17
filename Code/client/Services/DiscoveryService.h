@@ -110,6 +110,13 @@ private:
     uint32_t m_interiorCellId = 0;
     struct TESForm* m_pLocation = nullptr;
 
+    // Seconds accumulated since the last periodic visit. Neither the loaded actor
+    // set nor the grid centre changes inside a single frame, and World::Update is
+    // allowed to run at ~125 Hz, so visiting on every call meant walking the whole
+    // high-actor array - with a GetByHandle and a GetNiNode each - a hundred times
+    // a second. The forced paths (connect, load finished) bypass this entirely.
+    double m_visitAccumulator = 0.0;
+
     entt::scoped_connection m_preUpdateConnection;
     entt::scoped_connection m_connectedConnection;
 };

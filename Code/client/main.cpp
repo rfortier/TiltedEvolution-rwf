@@ -114,8 +114,24 @@ void RunTiltedInit(const std::filesystem::path& acGamePath, const String& aExeVe
         // 1.6.x and a few differ on 1.5.x (Actor's two flags fields sit 8
         // bytes earlier), so treat any 1.5.x crash as worth reporting rather
         // than assuming a bug.
-        spdlog::warn("legacy game version detected (1.5.x): unmapped ids degrade to stubs, "
-                     "1.6.x-only patches are skipped, struct offsets may differ.");
+        //
+        // The version gate above only checks the "1.5." prefix, but every legacy
+        // patch offset in Games/GamePatch.h was measured on 1.5.97 - ten different
+        // 1.5.x libraries ship with the client and their code is not
+        // interchangeable. On any other 1.5.x build At() refuses those sites and
+        // the menu/QoL patches are skipped, so say which case this is instead of
+        // letting "supported version" imply the patches landed.
+        const bool cPatchesVerified = VersionDb::Get().GetLoadedVersionString().rfind("1.5.97", 0) == 0;
+
+        if (cPatchesVerified)
+            spdlog::warn("legacy game version {} detected: unmapped ids degrade to stubs, 1.6.x-only patches are "
+                         "skipped, struct offsets may differ.",
+                         VersionDb::Get().GetLoadedVersionString());
+        else
+            spdlog::warn("legacy game version {} detected, which no patch offset in this build was measured for: every "
+                         "menu/QoL patch will be skipped and only core sync is available. 1.5.97 is the verified "
+                         "legacy target.",
+                         VersionDb::Get().GetLoadedVersionString());
     }
 
     TiltedOnlineApp::InstallHooks2();

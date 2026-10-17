@@ -36,7 +36,9 @@
 #include <Camera/TESCamera.h> // Camera 1st person is only in Skyrim?
 #include <Camera/PlayerCamera.h>
 
+#include <atomic>
 #include <mutex>
+#include <thread>
 std::mutex mutex_lock;
 
 // How long we failList a behavior hash that can't be translated.
@@ -314,6 +316,14 @@ const AnimationGraphDescriptor* BehaviorVar::ConstructModdedDescriptor(
 
 const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apManager, Actor* apActor)
 {
+    // Not published yet: InitAsync is still walking the behaviors folder on its
+    // worker, so behaviorPool may be half filled and the descriptor hashes may still
+    // change. Answering with a fresh descriptor here is also wrong (it would be
+    // cached as final by the manager), so the caller keeps whatever it has and the
+    // next invocation - by then ready - does the real work.
+    if (!IsReady())
+        return nullptr;
+
     // Serialize, Actors are multi-threaded. Might not be strictly necessary between being on
     // the main game loop and under a BSRecursiveLock, but if so it won't hurt anything.
     std::lock_guard guard(mutex_lock);
@@ -692,6 +702,12 @@ TiltedPhoques::Vector<uint64_t> BehaviorVar::SignatureMatches(const uint64_t acH
 
 void BehaviorVar::Init()
 {
+    // InitAsync runs this on a worker, so everything mutated below is published to
+    // the readers in Patch() through m_ready only once the pool is complete. Patch
+    // is reached from a game-thread hook while this populates behaviorPool, and a
+    // vector that reallocates under an in-progress iteration is a crash. The flag
+    // starts false and is set at the end of InitAsync, never here.
+    //
     // Initialize original (base STR) behaviors so we can search them.
     BehaviorOrig::BehaviorOrigInit();
 
@@ -741,6 +757,26 @@ void BehaviorVar::Init()
             break;
         }
     }
+}
+
+void BehaviorVar::InitAsync()
+{
+    // Detached on purpose: nothing joins it, and the only shared state it touches is
+    // behaviorPool and the two descriptor hashes, all of which are read only after
+    // m_ready is set. A failed init leaves the flag false, so readers keep the
+    // unmodified descriptor - the same answer as a machine without the behaviors
+    // folder.
+    std::thread([this]() {
+        try
+        {
+            Init();
+            m_ready.store(true, std::memory_order_release);
+        }
+        catch (...)
+        {
+            Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory while loading behavior variables");
+        }
+    }).detach();
 }
 
 void BehaviorVar::Debug()

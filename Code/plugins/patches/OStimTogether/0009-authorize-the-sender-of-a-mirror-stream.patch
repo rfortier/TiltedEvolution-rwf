@@ -1,0 +1,222 @@
+diff --git a/src/CoopSessionManager.cpp b/src/CoopSessionManager.cpp
+--- a/src/CoopSessionManager.cpp
++++ b/src/CoopSessionManager.cpp
+@@ -14,6 +14,12 @@ namespace OStimTogether
+         constexpr const char* kPluginName = "OStimTogether";
+         constexpr auto kConsentTimeout = std::chrono::seconds(30);
+         constexpr auto kRestartRetryDelay = std::chrono::milliseconds(100);
++    // Pending mirror starts are produced by the network thread and consumed only
++    // when the local client happens to open a matching scene. A peer that keeps
++    // sending START| while this client never enters a scene would grow the queue
++    // without bound, so entries expire on both sides and the queue is capped.
++    constexpr auto kPendingMirrorStartTTL = std::chrono::seconds(5);
++    constexpr std::size_t kMaxPendingMirrorStarts = 32;
+ 
+         std::string GetNodeID(OStim::Thread* thread)
+         {
+@@ -364,7 +370,7 @@ namespace OStimTogether
+                 _pendingMirrorStarts.begin(),
+                 _pendingMirrorStarts.end(),
+                 [now](const PendingMirrorStart& entry) {
+-                    return now - entry.created > std::chrono::seconds(5);
++                    return now - entry.created > kPendingMirrorStartTTL;
+                 }),
+             _pendingMirrorStarts.end());
+ 
+@@ -821,6 +827,55 @@ namespace OStimTogether
+         return false;
+     }
+ 
++    bool CoopSessionManager::IsAuthorizedMirrorSender(
++        STRPMApi::ConnectionID senderConnectionID,
++        std::int32_t ownerThreadID) const
++    {
++        if (senderConnectionID == 0) {
++            return false;
++        }
++
++        std::scoped_lock lock(_mutex);
++
++        // The mirror stream is addressed by the OWNER's thread id, which is the remote
++        // client's id - not one of ours. RouteOwnerPayload only ever forwards these
++        // packets from the client that owns the thread (it broadcasts to that
++        // session's participants), so the sender is the owner exactly when
++        // _mirrorByRemote holds a route under (sender, thread).
++        //
++        // The earlier version of this function fell back to _activeOwnerByThread, which
++        // is keyed by LOCAL thread ids. A remote owner id and a local thread id are both
++        // small integers, so that lookup could hit an unrelated local session and
++        // authorize a peer that never owned this mirror at all. There is no case in
++        // which the local table answers this question, so it is not consulted.
++        const auto routeIt = _mirrorByRemote.find(
++            MirrorKey(senderConnectionID, ownerThreadID));
++        if (routeIt == _mirrorByRemote.end()) {
++            return false;
++        }
++
++        // The sender owns the mirror. Whether it may still drive it is a question
++        // about the session, so the session is looked up when there is one and
++        // trusted when there is not: a mirror can exist without a coop session (free
++        // scenes), and refusing those would break a working path.
++        //
++        // The lookup goes through the LOCAL thread id the route recorded, because
++        // _activeOwnerByThread is keyed by our own ids while ownerThreadID belongs to
++        // the peer. Asking that table about a remote id would answer about an
++        // unrelated local thread.
++        const auto ownerIt = _activeOwnerByThread.find(routeIt->second);
++        if (ownerIt == _activeOwnerByThread.end()) {
++            return true;
++        }
++
++        const auto sessionIt = _ownerSessions.find(ownerIt->second);
++        if (sessionIt == _ownerSessions.end()) {
++            return true;
++        }
++
++        return sessionIt->second.active && !sessionIt->second.canceled;
++    }
++
+     bool CoopSessionManager::HandleControlRequest(
+         STRPMApi::ConnectionID senderConnectionID,
+         std::string_view payload)
+@@ -835,6 +890,8 @@ namespace OStimTogether
+         {
+             std::scoped_lock lock(_mutex);
+             const auto activeIt = _activeOwnerByThread.find(*threadID);
++            // NOTE: IsAuthorizedMirrorSender below repeats this same lookup for the
++            // mirror stream. Keep the two in step if the ownership model changes.
+             if (activeIt != _activeOwnerByThread.end()) {
+                 const auto sessionIt = _ownerSessions.find(activeIt->second);
+                 if (sessionIt != _ownerSessions.end()) {
+@@ -950,11 +1007,31 @@ namespace OStimTogether
+ 
+         std::scoped_lock lock(_mutex);
+         if (payload.starts_with("START|")) {
++            // Prune here as well: TakePendingMirrorStart only runs when the local
++            // client opens a player scene, so a stream of START| packets from a
++            // peer would otherwise accumulate for as long as no scene is opened.
++            const auto now = std::chrono::steady_clock::now();
++            _pendingMirrorStarts.erase(
++                std::remove_if(
++                    _pendingMirrorStarts.begin(),
++                    _pendingMirrorStarts.end(),
++                    [now](const PendingMirrorStart& entry) {
++                        return now - entry.created > kPendingMirrorStartTTL;
++                    }),
++                _pendingMirrorStarts.end());
++
++            // Drop the oldest entry once full: the newest START| describes the
++            // scene the peer is actually in, and a stale one would be consumed by
++            // TakePendingMirrorStart first and attach the mirror to a dead node.
++            if (_pendingMirrorStarts.size() >= kMaxPendingMirrorStarts) {
++                _pendingMirrorStarts.erase(_pendingMirrorStarts.begin());
++            }
++
+             _pendingMirrorStarts.push_back(PendingMirrorStart{
+                 ownerConnectionID,
+                 *threadID,
+                 Field(payload, "node").value_or(""),
+-                std::chrono::steady_clock::now() });
++                now });
+             return;
+         }
+ 
+diff --git a/src/CoopSessionManager.h b/src/CoopSessionManager.h
+--- a/src/CoopSessionManager.h
++++ b/src/CoopSessionManager.h
+@@ -138,6 +138,16 @@ namespace OStimTogether
+             bool stop{ false };
+         };
+ 
++        // True when senderConnectionID is a participant of the session that owns
++        // ownerThreadID - the same test the CONTROL_* path already applies before it
++        // lets a peer drive a local thread. The mirror stream (START/NODE/SPEED/STOP)
++        // had no equivalent, so any peer could start or stop a real OStim scene here.
++        //
++        // Called on the game thread from the payload handler.
++        [[nodiscard]] bool IsAuthorizedMirrorSender(
++            STRPMApi::ConnectionID senderConnectionID,
++            std::int32_t ownerThreadID) const;
++
+         static std::optional<std::string> Field(std::string_view payload, std::string_view key);
+         static std::optional<std::int32_t> ThreadID(std::string_view payload);
+         static std::optional<std::uint64_t> SessionID(std::string_view payload);
+diff --git a/src/ActorResolverSTRPM.cpp b/src/ActorResolverSTRPM.cpp
+--- a/src/ActorResolverSTRPM.cpp
++++ b/src/ActorResolverSTRPM.cpp
+@@ -1,6 +1,7 @@
+ #include "PCH.h"
+ #include "ActorResolver.h"
+ #include "AddonBridge.h"
++#include "CoopSessionManager.h"
+ #include "OStimBridge.h"
+ #include "STRPMTransport.h"
+ 
+@@ -1077,6 +1078,16 @@ namespace OStimTogether
+             return;
+         }
+ 
++        // Every branch below drives real OStim state on this machine: START creates a
++        // mirror thread, NODE navigates it, SPEED changes it, STOP ends it. None of
++        // them used to ask who sent the packet, so any peer that reached the server
++        // could start or stop a local scene. The control channel already applies this
++        // rule (CoopSessionManager::HandleControlRequest), so the mirror stream now
++        // uses the same test through the same accessor.
++        //
++        // START is exempt from the thread check on purpose: it is the packet that
++        // establishes the session, so there is no owner to compare against yet. It
++        // still runs through the same participant bookkeeping downstream.
+         if (payload.starts_with("START|")) {
+             HandleStart(sender, payload, senderConnectionID);
+             return;
+@@ -1092,6 +1103,16 @@ namespace OStimTogether
+                 return;
+             }
+ 
++            if (!CoopSessionManager::GetSingleton().IsAuthorizedMirrorSender(
++                    senderConnectionID,
++                    *threadID)) {
++                SKSE::log::warn(
++                    "OSTNET MIRROR NODE reject connection={} remoteThread={} reason=not-participant",
++                    senderConnectionID,
++                    *threadID);
++                return;
++            }
++
+             OStimBridge::GetSingleton().NavigateRemoteMirror(
+                 sender,
+                 *threadID,
+@@ -1107,6 +1128,16 @@ namespace OStimTogether
+                 return;
+             }
+ 
++            if (!CoopSessionManager::GetSingleton().IsAuthorizedMirrorSender(
++                    senderConnectionID,
++                    *threadID)) {
++                SKSE::log::warn(
++                    "OSTNET MIRROR SPEED reject connection={} remoteThread={} reason=not-participant",
++                    senderConnectionID,
++                    *threadID);
++                return;
++            }
++
+             try {
+                 const auto speed =
+                     static_cast<std::int32_t>(std::stol(*speedValue));
+@@ -1140,6 +1171,16 @@ namespace OStimTogether
+         if (payload.starts_with("STOP|")) {
+             const auto threadID = ParseThreadID(payload);
+             if (threadID) {
++                if (!CoopSessionManager::GetSingleton().IsAuthorizedMirrorSender(
++                        senderConnectionID,
++                        *threadID)) {
++                    SKSE::log::warn(
++                        "OSTNET MIRROR STOP reject connection={} remoteThread={} reason=not-participant",
++                        senderConnectionID,
++                        *threadID);
++                    return;
++                }
++
+                 OStimBridge::GetSingleton().StopRemoteMirror(
+                     sender,
+                     *threadID);

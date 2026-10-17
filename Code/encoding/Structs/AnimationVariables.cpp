@@ -90,10 +90,19 @@ void AnimationVariables::GenerateDiff(const AnimationVariables& aPrevious, Tilte
     changedVector.resize(booleansSize);
     changedVector.reserve(sizeChangedVector);
 
+    // Hoisted: a size comparison per element was recomputed for every variable of
+    // every actor in every snapshot, and the answer cannot change inside the loop.
+    // Compared against the declared sizes rather than the clamped ones, so a peer
+    // that sends more than kMaxVariableCount still marks every entry changed
+    // exactly as before; a mismatch also means the previous vector must not be
+    // indexed, which is what the short circuit is for.
+    const bool integersLengthChanged = aPrevious.Integers.size() != Integers.size();
+    const bool floatsLengthChanged = aPrevious.Floats.size() != Floats.size();
+
     for (size_t i = 0; i < integersSize; i++)
-        changedVector.push_back(aPrevious.Integers.size() != Integers.size() || aPrevious.Integers[i] != Integers[i]);
+        changedVector.push_back(integersLengthChanged || aPrevious.Integers[i] != Integers[i]);
     for (size_t i = 0; i < floatsSize; i++)
-        changedVector.push_back(aPrevious.Floats.size() != Floats.size() || aPrevious.Floats[i] != Floats[i]);
+        changedVector.push_back(floatsLengthChanged || aPrevious.Floats[i] != Floats[i]);
 
     // Now serialize: VarInts Booleans.size(), Integers.size(), Floats.size(),
     // then the change table bits, then changed Integers, then changed Floats.

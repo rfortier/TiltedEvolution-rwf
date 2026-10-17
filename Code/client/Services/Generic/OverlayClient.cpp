@@ -55,13 +55,13 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
         else if (eventName == "setTime")
             ProcessSetTimeCommand(eventArgs);
         else if (eventName == "launchParty")
-            World::Get().GetPartyService().CreateParty();
+            World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().CreateParty(); });
         else if (eventName == "leaveParty")
-            World::Get().GetPartyService().LeaveParty();
+            World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().LeaveParty(); });
         else if (eventName == "createPartyInvite")
         {
-            uint32_t aPlayerId = eventArgs->GetInt(0);
-            World::Get().GetPartyService().CreateInvite(aPlayerId);
+            const uint32_t aPlayerId = eventArgs->GetInt(0);
+            World::Get().GetRunner().Queue([aPlayerId]() { World::Get().GetPartyService().CreateInvite(aPlayerId); });
         }
         else if (eventName == "acceptPartyInvite")
         {
@@ -71,13 +71,13 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
         }
         else if (eventName == "kickPartyMember")
         {
-            uint32_t aPlayerId = eventArgs->GetInt(0);
-            World::Get().GetPartyService().KickPartyMember(aPlayerId);
+            const uint32_t aPlayerId = eventArgs->GetInt(0);
+            World::Get().GetRunner().Queue([aPlayerId]() { World::Get().GetPartyService().KickPartyMember(aPlayerId); });
         }
         else if (eventName == "changePartyLeader")
         {
-            uint32_t aPlayerId = eventArgs->GetInt(0);
-            World::Get().GetPartyService().ChangePartyLeader(aPlayerId);
+            const uint32_t aPlayerId = eventArgs->GetInt(0);
+            World::Get().GetRunner().Queue([aPlayerId]() { World::Get().GetPartyService().ChangePartyLeader(aPlayerId); });
         }
         else if (eventName == "teleportToPlayer")
             ProcessTeleportMessage(eventArgs);
@@ -141,8 +141,11 @@ void OverlayClient::ProcessAbandonAttemptMessage()
 
 void OverlayClient::ProcessRevealPlayersMessage()
 {
+    // Closing the UI is CEF's own state and has to happen here; the reveal
+    // walks every remote player and adds a magic target to each, which is game
+    // state and belongs on the game thread.
     SetUIVisible(false);
-    World::Get().GetMagicService().StartRevealingOtherPlayers();
+    World::Get().GetRunner().Queue([]() { World::Get().GetMagicService().StartRevealingOtherPlayers(); });
 }
 
 void OverlayClient::ProcessChatMessage(CefRefPtr<CefListValue> aEventArgs)
@@ -164,8 +167,13 @@ void OverlayClient::ProcessSetTimeCommand(CefRefPtr<CefListValue> aEventArgs)
 {
     const uint8_t hours = static_cast<uint8_t>(aEventArgs->GetInt(0));
     const uint8_t minutes = static_cast<uint8_t>(aEventArgs->GetInt(1));
-    const uint32_t senderId = m_transport.GetLocalPlayerId();
-    World::Get().GetDispatcher().trigger(SetTimeCommandEvent(hours, minutes, senderId));
+
+    // The dispatcher is not thread safe and this runs on the CEF message thread.
+    // Queueing also keeps the local player id read on the thread that owns it.
+    World::Get().GetRunner().Queue([hours, minutes]() {
+        const uint32_t senderId = World::Get().GetTransport().GetLocalPlayerId();
+        World::Get().GetDispatcher().trigger(SetTimeCommandEvent(hours, minutes, senderId));
+    });
 }
 
 void OverlayClient::ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs)
@@ -178,7 +186,10 @@ void OverlayClient::ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs)
 
 void OverlayClient::ProcessToggleDebugUI()
 {
-    World::Get().GetDebugService().m_showDebugStuff = !World::Get().GetDebugService().m_showDebugStuff;
+    World::Get().GetRunner().Queue([]() {
+        auto& debugService = World::Get().GetDebugService();
+        debugService.m_showDebugStuff = !debugService.m_showDebugStuff;
+    });
 }
 
 void OverlayClient::ProcessOpenPlayGuide()

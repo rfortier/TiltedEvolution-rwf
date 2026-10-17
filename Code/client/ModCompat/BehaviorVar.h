@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include <Structs/AnimationGraphDescriptorManager.h>
 #include <Structs/Skyrim/AnimationGraphDescriptor_Master_Behavior.h>
 #include <Structs/Skyrim/AnimationGraphDescriptor_BHR_Master.h>
@@ -22,10 +24,40 @@ struct BehaviorVar
     const AnimationGraphDescriptor* Patch(BSAnimationGraphManager* apManager, Actor* apActor);
     bool FailListed(const uint64_t acHash);
     void FailList(const uint64_t acHash);
-    static const bool IsDragon(const uint64_t acHash) { return acHash == Get()->m_dragonGraphDescriptorHash; }
-    static const uint64_t GetHumanoidHash()           { return Get()->m_humanoidGraphDescriptorHash; }
+    // Both hashes are seeded with the unmodified keys and can be overwritten by
+    // InitAsync's worker, so a reader that arrives early must see the seeded value
+    // rather than a torn one. Before publication the seeded defaults are also the
+    // correct answer: no modded behavior has been recognised yet.
+    static bool IsDragon(const uint64_t acHash)
+    {
+        return !Get()->IsReady() ? acHash == AnimationGraphDescriptor_BHR_Master::m_key
+                                 : acHash == Get()->m_dragonGraphDescriptorHash;
+    }
+
+    static uint64_t GetHumanoidHash()
+    {
+        return !Get()->IsReady() ? AnimationGraphDescriptor_Master_Behavior::m_key : Get()->m_humanoidGraphDescriptorHash;
+    }
 
     void Init();
+
+    /**
+     * @brief Runs Init() on a worker thread.
+     *
+     * Init walks Data/SkyrimTogetherRebornBehaviors and opens several files per
+     * subdirectory. Under Mod Organizer every one of those calls crosses the USVFS
+     * hook, and World::Create calls this on the thread that is still booting the
+     * game, so the cost lands directly on startup.
+     *
+     * Readers must not observe the pool while it is being filled: Patch() runs from
+     * a game-thread hook and iterates behaviorPool, and a vector that reallocates
+     * underneath it is a crash. IsReady() is the publication point - it is false
+     * until the pool is complete, and Patch() falls back to the unmodified
+     * descriptor while it is false.
+     */
+    void InitAsync();
+    [[nodiscard]] bool IsReady() const noexcept { return m_ready.load(std::memory_order_acquire); }
+
     void Debug();
 
 private:
@@ -58,6 +90,11 @@ private:
 
     TiltedPhoques::Vector<Replacer> behaviorPool; // Pool for loaded behaviors
     TiltedPhoques::Map<uint64_t, std::chrono::steady_clock::time_point> failedBehaviors;
+
+    // Release/acquire pair between InitAsync's worker and every game-thread reader.
+    // Also guards m_humanoidGraphDescriptorHash and m_dragonGraphDescriptorHash,
+    // which Init may overwrite.
+    std::atomic<bool> m_ready{false};
 };
 
 extern const AnimationGraphDescriptor* BehaviorVarPatch(BSAnimationGraphManager* apManager, Actor* apActor);

@@ -100,7 +100,7 @@ static uintptr_t BranchTarget(const uint8_t* acpCode, const uintptr_t aFrom) noe
     return 0;
 }
 
-void HookAudit::Record(void** appTargetSlot) noexcept
+bool HookAudit::Record(void** appTargetSlot) noexcept
 {
     // The hook audit runs while the client is still installing hooks. Its records
     // and its reports allocate; a hook that could not be recorded is simply not
@@ -112,7 +112,7 @@ void HookAudit::Record(void** appTargetSlot) noexcept
             // A null target means the address behind the hook never resolved, so
             // MinHook has nothing to patch and the hook is lost without a word
             spdlog::error("hook has no target to install on: the resolved address is null");
-            return;
+            return false;
         }
 
         RecordedHook recorded{};
@@ -126,6 +126,7 @@ void HookAudit::Record(void** appTargetSlot) noexcept
         {
             spdlog::error("hook target is the unresolved-id stub: the address library has no mapping for it, so this hook "
                           "is patched onto the fallback and can never reach the game");
+            return false;
         }
 
         for (const auto& previous : Recorded())
@@ -157,10 +158,15 @@ void HookAudit::Record(void** appTargetSlot) noexcept
         SafeReadCode(recorded.before, recorded.pTarget, sizeof(recorded.before));
 
         Recorded().push_back(recorded);
+        return true;
     }
     catch (...)
     {
         Diagnostics::ReportFailure(__FUNCTION__, "ran out of memory in HookAudit::Record");
+        // A hook that could not be audited is still a hook the caller asked to
+        // install; failing closed here would silently drop working hooks on an
+        // allocation failure, which is the opposite of what this gate is for.
+        return true;
     }
 }
 
