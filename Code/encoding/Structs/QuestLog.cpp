@@ -41,20 +41,41 @@ void QuestLog::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
         aReader.ReadBits(temp, 16);
 
         // Never trust the wire length, and never throw: this runs inside a noexcept frame.
-        const auto count = std::min<size_t>(temp & 0xFFFF, kMaxEntryCount);
+        // A count past kMaxEntryCount cannot come from a well behaved peer: Serialize clamps
+        // the list with std::min(Entries.size(), kMaxEntryCount) before it writes the count, so
+        // the number on the stream is never larger than the bound.
+        //
+        // This drops the message, where the read side used to clamp the count and parse that
+        // many entries. Clamping was the milder of the two old mistakes and it is still wrong:
+        // it stops the walk at the bound while the stream continues past it, so every field
+        // behind this log - AssignCharacterRequest continues with FaceTints, the flags and
+        // CurrentActorData, CharacterData with FaceTints and AllActorValues - is then read from
+        // an offset the sender never wrote. A packet that has already lost the frame is not one
+        // worth handing half a quest log from.
+        //
+        // Consuming the over-long run so the cursor stays aligned is not the answer either: how
+        // many entries it walks is decided by the peer's 16 bit count, not by the packet - a two
+        // byte message buys up to 65535 entries, where the drop costs zero. An entry is two
+        // VarInts plus a stage, so the bytes left (GetBytePosition/GetSize) bound the count only
+        // loosely.
+        const auto entryCount = static_cast<size_t>(temp & 0xFFFF);
+        if (entryCount > kMaxEntryCount)
+        {
+            Entries.clear();
+            return;
+        }
 
         // The message is not guaranteed to arrive into a fresh object: append semantics
         // would silently grow the list on every reuse.
         Entries.clear();
+        Entries.resize(entryCount);
 
-        for (size_t i = 0; i < count; ++i)
+        for (auto& entry : Entries)
         {
-            Entry entry;
             entry.Id.Deserialize(aReader);
             aReader.ReadBits(temp, 16);
 
             entry.Stage = temp & 0xFFFF;
-            Entries.push_back(entry);
         }
     }
     catch (...)

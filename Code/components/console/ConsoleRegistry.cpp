@@ -330,15 +330,25 @@ ResultAnd<bool> ConsoleRegistry::CreateArgStack(const CommandBase* apCommand, co
 
 bool ConsoleRegistry::Update()
 {
-    // Drain the queue one by one
-    if (m_queue.HasWork())
+    // Drain the queue completely, not one item per call. A single frame can produce
+    // more than one command (a paste delivers every line of the buffer inside one
+    // uv_run pass), and the queue holds four; leaving the rest for later than the
+    // upload that filled it spins the writer forever. Producer and consumer are the
+    // same thread, so draining cannot starve anyone.
+    //
+    // The loop terminates because every Fetch advances m_first past the slot just
+    // taken, so HasWork() strictly decreases until the queue is empty. A handler
+    // that uploads further commands keeps the queue non-empty on purpose: commands
+    // may chain into follow-up commands, and those are meant to run in this frame.
+    bool executedAny = false;
+    while (m_queue.HasWork())
     {
         CommandQueue::Item item;
         m_queue.Fetch(item);
         item.m_pCommand->m_Handler(item.m_stack);
-        return true;
+        executedAny = true;
     }
 
-    return false;
+    return executedAny;
 }
 } // namespace Console

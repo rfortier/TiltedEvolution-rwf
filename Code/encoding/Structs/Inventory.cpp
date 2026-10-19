@@ -69,7 +69,35 @@ void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexc
 
         ExtraEnchantId.Deserialize(aReader);
         ExtraEnchantCharge = Serialization::ReadVarInt(aReader) & 0xFFFF;
-        const auto effectCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxEffectCount);
+        // A count past kMaxEffectCount cannot come from a well behaved peer: Serialize clamps
+        // the list with std::min(size, kMaxEffectCount) before it writes the count, so the
+        // number on the stream is never larger than the bound. Clamping the count here, which
+        // is what this used to do, walked only the effects below the bound while the stream
+        // went on, so ExtraHealth, the poison fields, the flags - and in Inventory::Deserialize
+        // every entry behind this one - were read from an offset the sender never wrote.
+        //
+        // Consuming the over-long run to keep the cursor aligned is not the answer either:
+        // how many effects it walks is decided by the peer's count, not by the packet, so a
+        // small message buys kMaxEffectCount worth of EffectItem parses, and
+        // docs/PITFALLS.md:330 records that what a Buffer::Reader does past its end is
+        // unknown (throw, return zero, or undefined - it ships with tiltedcore, not here).
+        //
+        // Returning here does not drop the packet the way the same check does in the structs
+        // that own their list: this is called once per entry by Inventory::Deserialize, and
+        // that loop goes on to read the next entry from wherever this one stopped. What it
+        // does do is stop the runaway: the rest of this entry - five fields and the flags - is
+        // no longer read from a misaligned cursor, the work stays inside the counts the two
+        // loops were already bounded to, and the caller is left with an item carrying no
+        // effects rather than with 64 bogus ones. It is the same contract the catch block
+        // below already had, and the only alternative is a way to signal failure out of a
+        // noexcept function that returns void, which would mean changing its signature.
+        const auto effectCount = Serialization::ReadVarInt(aReader);
+        if (effectCount > kMaxEffectCount)
+        {
+            EnchantData.Effects.clear();
+            return;
+        }
+
         EnchantData.Effects.clear();
         for (uint64_t i = 0; i < effectCount; i++)
         {
@@ -133,13 +161,33 @@ void Inventory::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 
 void Inventory::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    // The entry list is the allocation. An empty inventory is the safe answer, and
-    // the equipment field below this block is still read.
+    // The entry list is the allocation. An empty inventory is the safe answer.
     try
     {
-        const auto count = std::min<uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFF, kMaxEntryCount);
+        // A count past kMaxEntryCount cannot come from a well behaved peer: Serialize clamps
+        // the list with std::min(size, kMaxEntryCount) before it writes the count, so the
+        // number on the stream is never larger than the bound. Clamping the count here, which
+        // is what this used to do, walked only the first kMaxEntryCount entries while the
+        // stream went on, so every entry behind the bound - and the equipment field after
+        // them - was read from an offset the sender never wrote.
+        //
+        // Consuming the over-long run to keep the cursor aligned is not the answer either:
+        // how many entries it walks is decided by the peer's count, not by the packet, so a
+        // three byte message buys thousands of Entry parses that each allocate, and
+        // docs/PITFALLS.md:330 records that what a Buffer::Reader does past its end is
+        // unknown (throw, return zero, or undefined - it ships with tiltedcore, not here).
+        //
+        // The equipment field behind this list is unreachable on that path, so the message is
+        // dropped whole rather than half read: the caller sees an inventory with no entries.
+        const auto count = Serialization::ReadVarInt(aReader);
+        if (count > kMaxEntryCount)
+        {
+            Entries.clear();
+            return;
+        }
+
         Entries.clear();
-        for (uint32_t i = 0; i < count; i++)
+        for (uint64_t i = 0; i < count; i++)
         {
             Entry entry;
             entry.Deserialize(aReader);

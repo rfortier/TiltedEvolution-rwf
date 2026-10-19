@@ -41,13 +41,45 @@ void NotifyPluginMessaging::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
         SenderPlayerId = static_cast<std::uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFFu);
         SenderIsHost = Serialization::ReadBool(aReader);
 
-        const auto size = static_cast<std::uint32_t>(Serialization::ReadVarInt(aReader));
-        const auto bounded = std::min<std::uint32_t>(size, kMaxPayloadBytes);
-        PluginData.resize(bounded);
-        for (std::uint32_t i = 0; i < bounded; ++i)
+        // SerializeRaw clamps what it writes to kMaxPayloadBytes, so a claim past that
+        // bound can only come from a peer that is not speaking this protocol, and a claim
+        // that fits the bound still says nothing about how many bytes followed it.
+        //
+        // Compared as 64 bits, before any narrowing: 2^32 + 10 truncates to 10 in a
+        // uint32_t and would otherwise be accepted as a legitimate small payload.
+        const std::uint64_t claimedBytes = Serialization::ReadVarInt(aReader);
+        if (claimedBytes > kMaxPayloadBytes)
+        {
+            PluginData.clear();
+            return;
+        }
+
+        const auto size = static_cast<std::uint32_t>(claimedBytes);
+
+        // Bytes actually left, spelled as a subtraction: Advance() does not clamp, so a
+        // cursor already past the end would turn "position + size" into a wrapped-around
+        // count that reads as free space.
+        const std::size_t position = aReader.GetBytePosition();
+        const std::size_t bufferSize = aReader.GetBuffer()->GetSize();
+        if (position > bufferSize || static_cast<std::size_t>(size) > bufferSize - position)
+        {
+            PluginData.clear();
+            return;
+        }
+
+        PluginData.resize(size);
+        for (std::uint32_t i = 0; i < size; ++i)
         {
             std::uint64_t byte = 0;
-            aReader.ReadBits(byte, 8);
+            // ReadBits reports failure and leaves the cursor alone, so its return value is
+            // the only thing separating "the wire ran out" from "the peer sent a zero
+            // byte". Ignoring it stored every missing byte as 0 and the payload was then
+            // dispatched as if it had arrived intact.
+            if (!aReader.ReadBits(byte, 8))
+            {
+                PluginData.clear();
+                return;
+            }
             PluginData[i] = static_cast<std::uint8_t>(byte & 0xFF);
         }
 

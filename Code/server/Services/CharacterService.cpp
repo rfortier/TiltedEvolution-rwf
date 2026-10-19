@@ -710,6 +710,21 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
         const auto gameId = message.ReferenceId;
         const auto baseId = message.FormId;
 
+        // A reference the client never asks about again is never collected, so this table is
+        // counted and refused at the object table's limit rather than allowed to grow. Counting
+        // the pool keeps the bound stateless: no second number can drift from the registry.
+        auto characterView = m_world.view<CharacterComponent>();
+
+        uint32_t characterCount = 0;
+        for (auto it = std::begin(characterView); it != std::end(characterView); ++it)
+            ++characterCount;
+
+        if (characterCount >= kMaxCharacterEntities)
+        {
+            spdlog::error("Character table is full ({} entities), player {} was refused", characterCount, acMessage.pPlayer->GetConnectionId());
+            return;
+        }
+
         const auto cEntity = m_world.create();
         const auto isTemporary = gameId.ModId == std::numeric_limits<uint32_t>::max();
         const auto isPlayer = (gameId.ModId == 0 && gameId.BaseId == 0x14);

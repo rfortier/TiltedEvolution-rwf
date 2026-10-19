@@ -12,7 +12,11 @@ struct ActorValues
     void Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept;
 
     // The game only has kActorValueCount actor values, so a well behaved peer can never
-    // send more. Clamp instead of throwing: Deserialize is called from noexcept frames.
+    // send more: Serialize clamps the list to this bound before it writes the count, so a
+    // larger count on the wire did not come from a peer that obeys the same writer. Deserialize
+    // drops the whole list for one instead of clamping, because clamping would stop the walk at
+    // the bound while the stream kept going and put every field behind it on an offset the
+    // sender never wrote. It cannot throw either way: Deserialize runs in a noexcept frame.
     static constexpr uint64_t kMaxActorValueCount = 164;
 
     // The keys are indices into that same table and the engine is handed them as is,

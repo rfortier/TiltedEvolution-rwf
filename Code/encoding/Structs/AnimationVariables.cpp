@@ -131,9 +131,36 @@ void AnimationVariables::GenerateDiff(const AnimationVariables& aPrevious, Tilte
 // 
 void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    const size_t booleansSize = std::min<uint64_t>(TiltedPhoques::Serialization::ReadVarInt(aReader), kMaxVariableCount);
-    const size_t integersSize = std::min<uint64_t>(TiltedPhoques::Serialization::ReadVarInt(aReader), kMaxVariableCount);
-    const size_t floatsSize   = std::min<uint64_t>(TiltedPhoques::Serialization::ReadVarInt(aReader), kMaxVariableCount);
+    // Two byte counts past kMaxVariableCount cannot come from a well behaved peer: GenerateDiff
+    // clamps all three with std::min(size, kMaxVariableCount) before it writes them, so the
+    // numbers on the stream are never larger than the bound. Clamping them here, which is what
+    // this used to do, sized the change table from the clamped counts while the sender sized
+    // its bit stream from the ones it wrote - the table then started one length and the changed
+    // values that follow it were read from an offset the sender never wrote.
+    //
+    // Consuming the over-long run to keep the cursor aligned is not the answer either: how much
+    // it walks is decided by the peer's three counts, not by the packet, and the entries have no
+    // fixed width to divide the remaining bytes by (GetBytePosition/GetSize exist, but the packed
+    // change table makes the byte count a function of the data). Dropping the message costs this
+    // side nothing at all.
+    //
+    // All three go, not only the one that overflowed: they share one change table and the
+    // later two are described by it, so nothing here survives a refusal at any of them.
+    const uint64_t booleansRaw = TiltedPhoques::Serialization::ReadVarInt(aReader);
+    const uint64_t integersRaw = TiltedPhoques::Serialization::ReadVarInt(aReader);
+    const uint64_t floatsRaw = TiltedPhoques::Serialization::ReadVarInt(aReader);
+    if (booleansRaw > kMaxVariableCount || integersRaw > kMaxVariableCount || floatsRaw > kMaxVariableCount)
+    {
+        Booleans.clear();
+        Integers.clear();
+        Floats.clear();
+        return;
+    }
+
+    const size_t booleansSize = static_cast<size_t>(booleansRaw);
+    const size_t integersSize = static_cast<size_t>(integersRaw);
+    const size_t floatsSize = static_cast<size_t>(floatsRaw);
+
     if (Integers.size() != integersSize)
         Integers.assign(integersSize, 0);
     if (Floats.size() != floatsSize)

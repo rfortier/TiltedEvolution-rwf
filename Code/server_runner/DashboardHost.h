@@ -38,13 +38,22 @@ struct DashboardHostActions
     void (*beforeFrame)(serverui::DashboardModel&) = nullptr;
 };
 
+// Returned when no window could be opened: the D3D11 device or swap chain
+// failed. Declared here *and* in DashboardHostLinux.h, with the same value in
+// both, because main() reads kDashboardWindowUnavailable after the platform
+// branch has merged and only one of the two headers is included there.
+constexpr int kDashboardWindowUnavailable = 1;
+
 // Runs the dashboard window on the calling thread until it is closed.
 // aModel is driven by the caller between frames (the caller owns the core).
 // Returns the process exit code: 0 on a normal close.
 //
-// Returns 1 without creating a window when the D3D11 device or swap chain
-// cannot be created, so the caller can fall back to a console run instead of
-// silently doing nothing.
+// Returns kDashboardWindowUnavailable without creating a window when the D3D11
+// device or swap chain cannot be created. The server does NOT silently drop to
+// the console on this: the requested mode failed, so the caller reports it and
+// exits non-zero, and a deployment notices instead of quietly running in a
+// different mode than the one it asked for. Use --cli/--headless to run without
+// a window deliberately.
 int RunDashboardWindow(serverui::DashboardModel& aModel, const DashboardHostActions& acActions,
     const wchar_t* apTitle, int aWidth, int aHeight);
 

@@ -177,15 +177,16 @@ int RunDashboardWindow(serverui::DashboardModel& aModel, const DashboardHostActi
         100, 100, aWidth, aHeight, nullptr, nullptr, wc.hInstance, nullptr);
 
     if (g_host.hwnd == nullptr)
-        return 1;
+        return kDashboardWindowUnavailable;
 
     if (!CreateDeviceD3D(g_host.hwnd))
     {
-        // No D3D11: report it so the caller can fall back to a console run.
+        // No D3D11: the requested mode failed, so the caller reports it and exits
+        // non-zero rather than silently downgrading to a console run.
         CleanupDeviceD3D();
         DestroyWindow(g_host.hwnd);
         UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        return 1;
+        return kDashboardWindowUnavailable;
     }
 
     ShowWindow(g_host.hwnd, SW_SHOWDEFAULT);

@@ -80,6 +80,14 @@ protected:
 private:
     World& m_world;
 
+    // A character entity is created by a request the client sends, and the only entity
+    // destroyed for a player is the one their Player names: a request for a reference the
+    // client then abandons leaves an entity behind for the rest of the session. The count is
+    // therefore bounded like the object table in ObjectService.h, for the same reason - the
+    // key is the peer's to pick, so a full table refuses the new character instead of growing
+    // without limit.
+    static constexpr uint32_t kMaxCharacterEntities = 64 * 1024;
+
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_exteriorCellChangeEventConnection;
     entt::scoped_connection m_interiorCellChangeEventConnection;

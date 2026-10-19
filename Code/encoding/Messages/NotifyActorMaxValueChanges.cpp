@@ -39,7 +39,28 @@ void NotifyActorMaxValueChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& a
         // message would linger and be applied a second time.
         Values.clear();
 
-        const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), ActorValues::kMaxActorValueCount);
+        // A count past ActorValues::kMaxActorValueCount cannot come from a well behaved peer:
+        // SerializeRaw clamps the map with std::min(size, ActorValues::kMaxActorValueCount)
+        // before it writes the count, so the number on the stream is never larger than the
+        // bound. Clamping the count here instead, which is what this used to do, walked only
+        // the entries below the bound while the stream went on, so the rest of the packet was
+        // read from an offset the sender never wrote. Dropping a packet that cannot exist on
+        // the wire therefore costs a well behaved peer nothing.
+        //
+        // Consuming the over-long run so the cursor would stay aligned is not the answer
+        // either: how many entries it walks is decided by the peer's count, not by the packet,
+        // so a two byte header buys tens of thousands of reads. An entry is a VarInt plus a
+        // float, so the bytes left (GetBytePosition/GetSize) bound the count only loosely.
+        //
+        // This count is the last field of the message, so returning leaves the caller with a
+        // message that carries no values, which is what the sender of an empty map produces.
+        const auto count = Serialization::ReadVarInt(aReader);
+        if (count > ActorValues::kMaxActorValueCount)
+        {
+            Values.clear();
+            return;
+        }
+
         for (uint64_t i = 0; i < count; i++)
         {
             const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;

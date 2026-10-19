@@ -40,9 +40,18 @@ void Mods::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
         uint64_t data = 0;
         aReader.ReadBits(data, 13);
 
-        // The count is 13 bits wide, so a peer can name more entries than the writer ever
-        // sends. Clamping it would leave the reader at the end of the entries it kept while
-        // the stream still holds the rest, so a count past the bound drops the whole list.
+        // A count past kMaxModCount cannot come from a well behaved peer: Serialize clamps
+        // the list with std::min(ModList.size(), kMaxModCount) before it writes the count, so
+        // the number on the stream is never larger than the bound. Dropping the whole list is
+        // therefore the correct answer to one that is, and it costs this side no work at all.
+        //
+        // Reading the over-long run to keep the cursor aligned instead is worse: how many
+        // entries it walks is decided by the peer's 13 bit count, not by the packet, so a three
+        // byte message buys up to 8191 entries - and every one of them starts by reading a
+        // length prefix that is then used to size a string. Each entry's width comes from that
+        // prefix, so it cannot be derived from the bytes left (GetBytePosition/GetSize would only
+        // give an upper bound on the count, not the offsets), which makes reading the run an
+        // uncontrolled read rather than merely wasteful.
         const size_t modCount = static_cast<size_t>(data);
         if (modCount > kMaxModCount)
         {

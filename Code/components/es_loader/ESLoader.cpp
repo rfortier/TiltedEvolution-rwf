@@ -12,15 +12,50 @@ namespace ESLoader
 {
 String ReadZString(Buffer::Reader& aReader) noexcept
 {
-    String zstring = String(reinterpret_cast<const char*>(aReader.GetDataAtPosition()));
-    aReader.Advance(zstring.size() + 1);
+    // A ZString carries no length of its own: its extent is whatever the terminator says.
+    // Building one from the cursor therefore scans for '\0' with nothing to stop it, and a
+    // chunk whose declared size overstates its payload - or a file truncated under it -
+    // leaves no terminator before the end of the buffer, so the scan runs off the end of
+    // the allocation. The scan is bounded by the bytes that really remain instead.
+    const size_t position = aReader.GetBytePosition();
+    const size_t bufferSize = aReader.GetBuffer()->GetSize();
+    if (position > bufferSize)
+        return String();
+
+    const char* pString = reinterpret_cast<const char*>(aReader.GetDataAtPosition());
+    const size_t available = bufferSize - position;
+
+    size_t length = 0;
+    while (length < available && pString[length] != '\0')
+        ++length;
+
+    // Unterminated: that string is simply not in the file. Answering empty keeps the
+    // failure local to this one field. Advancing by a guessed length instead would hand
+    // the caller a window of bytes that were never validated, and the caller stores it.
+    if (length == available)
+        return String();
+
+    String zstring(pString, length);
+    aReader.Advance(length + 1);
     return zstring;
 }
 
 String ReadWString(Buffer::Reader& aReader) noexcept
 {
     uint16_t stringLength = 0;
-    aReader.ReadBytes(reinterpret_cast<uint8_t*>(&stringLength), 2);
+    // ReadBytes reports failure and does not move the cursor when the field does not fit,
+    // so without this the length keeps the value it was initialised to.
+    if (!aReader.ReadBytes(reinterpret_cast<uint8_t*>(&stringLength), 2))
+        return String();
+
+    // The length is 16 bits of file data and nothing ties it to the bytes that are left:
+    // it can name a window running past the end of the buffer, which the view taken below
+    // would then read from and the caller would keep.
+    const size_t position = aReader.GetBytePosition();
+    const size_t bufferSize = aReader.GetBuffer()->GetSize();
+    if (position > bufferSize || stringLength > bufferSize - position)
+        return String();
+
     String wstring = String(reinterpret_cast<const char*>(aReader.GetDataAtPosition()), stringLength);
     aReader.Advance(stringLength);
     return wstring;

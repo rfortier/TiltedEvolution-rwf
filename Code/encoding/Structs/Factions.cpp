@@ -41,9 +41,19 @@ void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     try
     {
         // Never trust the wire length, and never throw: this runs inside a noexcept frame.
-        // Clamping the count would leave the reader at the end of the entries it kept while
-        // the stream still holds the rest, so a count past the bound drops the message
-        // instead. Both lists go, because the second one sits behind the first on the stream.
+        // A count past kMaxFactionCount cannot come from a well behaved peer: Serialize
+        // clamps each list with std::min(size, kMaxFactionCount) before it writes the count,
+        // so the number on the stream is never larger than the bound. Dropping the message is
+        // therefore the correct answer to one that is, and it costs this side no work at all.
+        //
+        // Consuming the over-long run to keep the cursor aligned instead - reading the entries
+        // past the bound so the fields behind this struct start where the sender put them - is
+        // worse: how many entries it walks is decided by the peer's count, not by the packet, so
+        // a three byte message buys tens of thousands of Deserialize calls. The work is bounded
+        // only by the peer's own count: unlike es_loader, which can ask Buffer::Reader how many
+        // bytes are really left (GetBytePosition/GetSize), this loop consumes entries whose size
+        // it does not know in advance, so "read the run and discard it" is an uncontrolled read
+        // bought with a 3 byte message. That is a worse failure than the discard it replaces.
         const auto npcCount = Serialization::ReadVarInt(aReader);
         if (npcCount > kMaxFactionCount)
         {
@@ -58,6 +68,9 @@ void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
             entry.Deserialize(aReader);
         }
 
+        // The second list sits behind the first on the stream, so a count refused here is just
+        // as undefined a read as one refused above, and it has already been misparsed by the
+        // time it arrives: both lists go.
         const auto extraCount = Serialization::ReadVarInt(aReader);
         if (extraCount > kMaxFactionCount)
         {

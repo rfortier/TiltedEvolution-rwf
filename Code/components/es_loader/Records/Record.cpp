@@ -28,8 +28,27 @@ void Record::IterateChunks(const std::function<void(ChunkId, Buffer::Reader&)>& 
     if (Compressed())
     {
         uint32_t size = 0;
-        reader.ReadBytes(reinterpret_cast<uint8_t*>(&size), 4);
-        pDecompressed.Resize(size);
+        // m_dataSize is file data and nothing has checked it against 4 yet, so the
+        // subtraction below would wrap to a huge value and hand inflate a compressed size
+        // that runs off the end of the record. This also covers the read of the length
+        // itself: a body shorter than four bytes has no size field to read.
+        if (m_dataSize < 4 || !reader.ReadBytes(reinterpret_cast<uint8_t*>(&size), 4))
+            return;
+
+        // size is the declared decompressed length, so it sizes an allocation before a
+        // single byte of it has been produced. The cap is a deliberate ceiling rather than
+        // a format limit: an inflated claim here would otherwise ask the allocator for
+        // whatever the file names, and the failure would surface as a bad_alloc thrown
+        // through a noexcept caller. A record nowhere near this size is malformed anyway.
+        static constexpr uint32_t kMaxDecompressedSize = 1 << 24;
+        if (size == 0 || size > kMaxDecompressedSize)
+            return;
+
+        // Resize reports failure without changing the buffer, which would leave the reader
+        // below wrapping a buffer whose size and data disagree.
+        if (!pDecompressed.Resize(size))
+            return;
+
         const uint32_t fieldSize = m_dataSize - 4;
 
         DecompressChunkData(reader.GetDataAtPosition(), fieldSize, pDecompressed.GetWriteData(), pDecompressed.GetSize());
@@ -41,6 +60,14 @@ void Record::IterateChunks(const std::function<void(ChunkId, Buffer::Reader&)>& 
 
     while (!reader.Eof())
     {
+        // Eof() only says the cursor is not at the end yet, so a chunk header can start in
+        // the last few bytes of the data. The header is six bytes formed by pointer
+        // arithmetic and dereferenced on the next line, so it has to be wholly present.
+        const size_t chunkPosition = reader.GetBytePosition();
+        const size_t chunkDataSize = reader.GetBuffer()->GetSize();
+        if (chunkPosition > chunkDataSize || chunkDataSize - chunkPosition < sizeof(Record::Chunk))
+            return;
+
         Record::Chunk* pChunk = reinterpret_cast<Chunk*>(reader.GetDataAtPosition());
         reader.Advance(sizeof(Record::Chunk));
 

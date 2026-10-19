@@ -61,8 +61,31 @@ void ActorValues::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
         ActorValuesList.clear();
         ActorMaxValuesList.clear();
 
-        // Never trust the wire length: a peer can claim far more entries than it sent.
-        const auto count = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActorValueCount);
+        // A count past kMaxActorValueCount cannot come from a well behaved peer: Serialize
+        // clamps each list with std::min(size, kMaxActorValueCount) before it writes the
+        // count, so the number on the stream is never larger than the bound. Clamping the
+        // count here instead is what used to happen, and it left the walk short of the
+        // entries the sender wrote while the stream continued past them, so every field
+        // behind this struct was then read from an offset the sender never wrote.
+        //
+        // Consuming the over-long run so the cursor would stay aligned is not the answer
+        // either: how many entries it walks is decided by the peer's count, not by the
+        // packet, so a two byte header buys tens of thousands of reads, and
+        // docs/PITFALLS.md:330 records that what a Buffer::Reader does past its end is
+        // unknown (throw, return zero, or undefined - it ships with tiltedcore, not here).
+        // Dropping the message costs this side nothing at all.
+        //
+        // Both lists go, not just the one that overflowed: the maximum list sits behind
+        // this one on the stream, so returning before it is reached is the only way to
+        // stop the parse at the point where the frame was lost.
+        const auto count = Serialization::ReadVarInt(aReader);
+        if (count > kMaxActorValueCount)
+        {
+            ActorValuesList.clear();
+            ActorMaxValuesList.clear();
+            return;
+        }
+
         for (uint64_t i = 0; i < count; i++)
         {
             const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
@@ -76,7 +99,15 @@ void ActorValues::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
             ActorValuesList.insert({key, value});
         }
 
-        const auto maxCount = std::min<uint64_t>(Serialization::ReadVarInt(aReader), kMaxActorValueCount);
+        // Same judgement as above, applied to the last field of this struct.
+        const auto maxCount = Serialization::ReadVarInt(aReader);
+        if (maxCount > kMaxActorValueCount)
+        {
+            ActorValuesList.clear();
+            ActorMaxValuesList.clear();
+            return;
+        }
+
         for (uint64_t i = 0; i < maxCount; i++)
         {
             const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;

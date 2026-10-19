@@ -26,6 +26,10 @@ void NotifyFactionsChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
 
     uint64_t count = Serialization::ReadVarInt(aReader);
 
+    // A message object can be reused: without this the entries of the previous
+    // message would linger and be applied a second time.
+    Changes.clear();
+
     // Early abort as we don't want to allocate a ton of memory.
     //
     // Strictly greater: the writer sends min(Changes.size(), kMaxChangeCount), so a

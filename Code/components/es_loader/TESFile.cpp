@@ -27,7 +27,12 @@ bool TESFile::LoadFile(const std::filesystem::path& acPath) noexcept
     m_filename = acPath.filename().string();
 
     const uintmax_t fileSize = std::filesystem::file_size(acPath);
-    m_buffer.Resize(fileSize);
+
+    // Resize reports failure and leaves the buffer at its previous size when it fails, and
+    // the read below then writes fileSize bytes - a number taken from the file itself -
+    // into an allocation that does not hold them.
+    if (!m_buffer.Resize(fileSize))
+        return false;
 
     std::ifstream file(acPath, std::ios::binary);
     if (file.fail())
@@ -62,6 +67,19 @@ bool TESFile::ReadGroupOrRecord(Buffer::Reader& aReader, RecordCollection& aReco
     if (aReader.Eof())
         return false;
 
+    // Eof() only answers "the cursor is not at the end yet", so a record header can begin
+    // inside the last few bytes of the file. Both branches below read a fixed-size header
+    // straight out of m_buffer - the record branch forms a Record* by pointer arithmetic
+    // and dereferences it immediately - so the whole header has to be present first.
+    // The comparison is written as a subtraction, not "position + headerSize < bufferSize",
+    // because Advance() does not clamp: a record whose declared size overruns leaves the
+    // cursor past the end, and such a sum would then wrap around and report plenty of room.
+    const size_t position = aReader.GetBytePosition();
+    const size_t bufferSize = aReader.GetBuffer()->GetSize();
+    const size_t headerSize = sizeof(Record) > sizeof(Group) ? sizeof(Record) : sizeof(Group);
+    if (position > bufferSize || bufferSize - position < headerSize)
+        return false;
+
     uint32_t type = 0;
     aReader.ReadBytes(reinterpret_cast<uint8_t*>(&type), 4);
     uint32_t size = 0;
@@ -70,17 +88,38 @@ bool TESFile::ReadGroupOrRecord(Buffer::Reader& aReader, RecordCollection& aReco
 
     if (type == static_cast<uint32_t>(FormEnum::GRUP))
     {
-        const size_t endOfGroup = aReader.GetBytePosition() + size;
+        // size is the group's declared length, read out of the file with nothing comparing
+        // it against what is left, so "position + size" can address past the end and the
+        // loop below would recurse into bytes that are not there. An overrunning group is
+        // not clamped to the end either: one that lies about its extent cannot be walked
+        // correctly, so the walk stops and the caller abandons the rest of the file.
+        if (size > bufferSize - position)
+            return false;
+
+        const size_t endOfGroup = position + size;
         aReader.Advance(sizeof(Group));
 
         while (aReader.GetBytePosition() < endOfGroup)
         {
-            ReadGroupOrRecord(aReader, aRecordCollection);
+            // The child's result used to be ignored. It leaves the cursor untouched when it
+            // cannot read another header, so ignoring it is also what would spin this loop
+            // at a single position forever once such a header exists.
+            if (!ReadGroupOrRecord(aReader, aRecordCollection))
+                return false;
         }
     }
     else // Records
     {
-        Record* pRecord = reinterpret_cast<Record*>(m_buffer.GetWriteData() + aReader.GetBytePosition());
+        Record* pRecord = reinterpret_cast<Record*>(m_buffer.GetWriteData() + position);
+
+        // size is the record's declared body length: nothing ties those four file bytes to
+        // the file's real extent. Record::IterateChunks hands exactly that many bytes, read
+        // from just after the header, to a Buffer of its own, so an overstated size turns
+        // that into a read past the end of m_buffer. Checked before the record is parsed
+        // rather than after, because the declaration is the only thing that says where this
+        // record ends - there is no smaller body to fall back to.
+        if (size > bufferSize - position - headerSize)
+            return false;
 
         switch (pRecord->GetType())
         {

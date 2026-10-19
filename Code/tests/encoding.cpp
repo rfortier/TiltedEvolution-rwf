@@ -1158,12 +1158,20 @@ TEST_CASE("Mods count is bounded by the writer bound", "[encoding.mods_count]")
     REQUIRE(recvMods.ModList.front().Filename == "mod.esp");
 
     // A peer that writes a count past the bound gets the whole list dropped instead of a
-    // clamped one: the entries below are the ones that count named, and a reader that kept
-    // only the first kMaxModCount of them would be left mid-stream.
-    Buffer hostile(1 << 17);
+    // clamped one. A well behaved sender can never write such a count: Serialize clamps with
+    // std::min(ModList.size(), kMaxModCount) before it writes the count, so the number on the
+    // stream is never larger than the bound and one past it is a malformed packet.
+    //
+    // The packet below claims 0x1FFF entries and carries three, which is the shape this case
+    // exists for. Reading every entry the count names - what it takes to keep the cursor
+    // aligned - would walk off the end of this buffer long before the count ran out, and an
+    // entry's width comes from its own contents, so the bytes left (GetBytePosition/GetSize)
+    // bound the walk only loosely. Dropping the packet reads nothing beyond the three entries
+    // that are really here.
+    Buffer hostile(64);
     Buffer::Writer hostileWriter(&hostile);
     hostileWriter.WriteBits(0x1FFFu, 13);
-    for (size_t index = 0; index < Mods::kMaxModCount; ++index)
+    for (size_t index = 0; index < 3; ++index)
     {
         hostileWriter.WriteBits(static_cast<uint16_t>(index), 16);
         Serialization::WriteBool(hostileWriter, false);
@@ -1837,13 +1845,21 @@ TEST_CASE("A quest log cannot make the reader allocate what it never sent", "[en
     REQUIRE(recvLog.Entries.front().Id == GameId(1, 0));
     REQUIRE(recvLog.Entries.back().Stage == static_cast<uint16_t>(QuestLog::kMaxEntryCount - 1));
 
-    // A peer that claims the full 16 bit count is clamped to the same bound. The entries
-    // below are exactly the ones the writer would have sent for that count, so the
-    // clamped reader consumes the stream and stops.
-    Buffer hostile(1 << 17);
+    // A count past the bound drops the whole log. This is stricter than clamping it, and the
+    // extra strictness is the point: a clamped read stops at kMaxEntryCount while the stream
+    // keeps going, so every field behind this log is then read from an offset the sender never
+    // wrote. A packet that has already lost the frame is not one to take half a log from.
+    //
+    // The packet below claims 0xFFFF entries and carries three, which is the shape this case
+    // exists for. Reading every entry the count names - what it takes to keep the cursor
+    // aligned - would walk off the end of this buffer long before the count ran out, and an
+    // entry's width comes from its own contents, so the bytes left (GetBytePosition/GetSize)
+    // bound the walk only loosely. Dropping the packet reads nothing beyond the three entries
+    // that are really here.
+    Buffer hostile(64);
     Buffer::Writer hostileWriter(&hostile);
     hostileWriter.WriteBits(0xFFFFu, 16);
-    for (size_t index = 0; index < QuestLog::kMaxEntryCount; ++index)
+    for (size_t index = 0; index < 3; ++index)
     {
         GameId(1, static_cast<uint32_t>(index)).Serialize(hostileWriter);
         hostileWriter.WriteBits(static_cast<uint16_t>(index), 16);
@@ -1853,8 +1869,7 @@ TEST_CASE("A quest log cannot make the reader allocate what it never sent", "[en
     Buffer::Reader hostileReader(&hostile);
     hostileRecv.Deserialize(hostileReader);
 
-    REQUIRE(hostileRecv.Entries.size() == QuestLog::kMaxEntryCount);
-    REQUIRE(hostileRecv.Entries.back().Stage == static_cast<uint16_t>(QuestLog::kMaxEntryCount - 1));
+    REQUIRE(hostileRecv.Entries.empty());
 
     // The log is replaced, not appended to: the message arrives into a reused object.
     Buffer small(64);

@@ -61,11 +61,28 @@ private:
     static void ReadStdin(uv_stream_t* apStream, ssize_t aRead, const uv_buf_t* acpBuffer);
     static void AllocateBuffer(uv_handle_t* apHandle, size_t aSuggestedSize, uv_buf_t* apBuffer);
 
+    // Hands the complete lines of aBuffer to the console while m_stdinBudget
+    // lasts; whatever is left stays in aBuffer. Shared by the libuv read
+    // callback and the per-tick pump so both draw on the same tick ceiling.
+    void DrainStdinBuffer(TiltedPhoques::String& aBuffer);
+    // Processes the lines a read callback had to leave buffered, for the case
+    // where no further read event ever arrives.
+    void PumpPendingCommands();
+
 private:
     // fs::path m_configPath;
     //  Order here matters for constructor calling order.
     uv_loop_t m_loop;
     uv_tty_t m_tty;
+    // Partially received console line, plus complete lines a read callback could
+    // not hand over without overflowing the command queue. Kept on the runner
+    // and not in the terminal's read context because TickOnce() also runs from
+    // the dashboard, which never calls StartTerminalIO() at all. Bounded by
+    // kMaxPendingStdinBytes in the .cpp: a read that would push it past that
+    // ceiling is dropped and reported instead of appended.
+    TiltedPhoques::String m_stdinPending;
+    // Commands still allowed to be produced before the next console drain.
+    size_t m_stdinBudget{0};
     fs::path m_SettingsPath;
     bool m_useIni{false};
     Console::ConsoleRegistry m_console;
